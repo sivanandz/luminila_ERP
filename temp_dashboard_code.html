@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Luminila Dashboard</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        primary: "#eebd2b", // Champagne Gold
+                        "bg-navy": "#0f172a", // Midnight Navy
+                        "surface-navy": "#1e293b", // Lighter Navy for cards
+                        "surface-hover": "#334155",
+                        "moonstone": "#94a3b8", // Silver/Grey
+                    },
+                    fontFamily: {
+                        "display": ["Manrope", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.5rem",
+                        "lg": "0.75rem",
+                        "xl": "1rem",
+                        "2xl": "1.5rem"
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569; 
+        }
+    </style>
+</head>
+<body class="bg-bg-navy text-white font-display h-screen flex overflow-hidden">
+<aside class="w-64 bg-bg-navy border-r border-surface-hover flex flex-col shrink-0">
+<div class="p-6 flex items-center gap-3">
+<div class="size-10 rounded-full bg-surface-navy flex items-center justify-center border border-primary/20">
+<span class="material-symbols-outlined text-primary">diamond</span>
+</div>
+<div>
+<h1 class="text-white text-lg font-bold leading-tight">Luminila</h1>
+<p class="text-moonstone text-xs font-medium tracking-wider">JEWELRY</p>
+</div>
+</div>
+<nav class="flex-1 px-4 space-y-2 overflow-y-auto">
+<a class="flex items-center gap-3 px-3 py-3 rounded-lg bg-surface-navy border border-primary/10 group transition-colors" href="#">
+<span class="material-symbols-outlined text-primary">dashboard</span>
+<span class="text-white font-medium text-sm">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-surface-navy/50 text-moonstone hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">inventory_2</span>
+<span class="font-medium text-sm">Inventory</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-surface-navy/50 text-moonstone hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">sell</span>
+<span class="font-medium text-sm">Sales</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-surface-navy/50 text-moonstone hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">point_of_sale</span>
+<span class="font-medium text-sm">PoS</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-surface-navy/50 text-moonstone hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">analytics</span>
+<span class="font-medium text-sm">Analytics</span>
+</a>
+<div class="pt-4 mt-4 border-t border-surface-hover">
+<p class="px-3 text-xs font-bold text-moonstone uppercase tracking-widest mb-2">System</p>
+<a class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-surface-navy/50 text-moonstone hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-medium text-sm">Settings</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-surface-navy/50 text-moonstone hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="font-medium text-sm">Support</span>
+</a>
+</div>
+</nav>
+<div class="p-4 border-t border-surface-hover">
+<div class="flex items-center gap-3 p-2 rounded-lg bg-surface-navy/50">
+<div class="bg-center bg-no-repeat bg-cover rounded-full size-8 shrink-0" data-alt="Portrait of a female store manager smiling" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAs3r_L7mtA_1ayVlnZMhI1Le6C_teTBYyyeWI71aEHPxzE_0DEPkaCsAU0brSDnw5Umngcm5Cc9JixwLyTFeXHRLDdf9jNnlRN3-PqH5KrKLwYscNKfbKLDF9EsVt1i9p1L5tPXjBl7Rgv-C-s0g_AStH5liBbcZb24QikcuzewBZruJuXyU3rmZ3_C3jgWiMdtDwWTBwrSoxe9wsQYmIXL5IjTJaaSOhTrwu0q66kTq_YBFtZcF3wzVbM3mpXh0mVwQ-eAu0iQ7s");'></div>
+<div class="flex flex-col min-w-0">
+<p class="text-white text-sm font-medium truncate">Sophia R.</p>
+<p class="text-moonstone text-xs truncate">Store Manager</p>
+</div>
+</div>
+</div>
+</aside>
+<main class="flex-1 flex flex-col min-w-0 bg-bg-navy">
+<header class="flex items-center justify-between px-8 py-6 border-b border-surface-hover bg-bg-navy sticky top-0 z-20 gap-8">
+<div class="flex items-center gap-6 flex-1 max-w-3xl">
+<h2 class="text-white text-xl font-bold tracking-tight whitespace-nowrap">Dashboard Overview</h2>
+<div class="relative group flex-1 max-w-md ml-4">
+<div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-moonstone group-focus-within:text-primary">
+<span class="material-symbols-outlined text-[20px]">search</span>
+</div>
+<input class="bg-surface-navy border-none text-white text-sm rounded-lg block w-full pl-10 py-3 pr-4 focus:ring-1 focus:ring-primary placeholder-moonstone transition-all" placeholder="Search inventory, orders..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<button class="bg-surface-navy hover:bg-surface-hover text-white size-11 rounded-lg transition-colors relative flex items-center justify-center">
+<span class="material-symbols-outlined text-[22px]">notifications</span>
+<span class="absolute top-2.5 right-3 size-2 bg-red-500 rounded-full border border-bg-navy"></span>
+</button>
+<button class="bg-surface-navy hover:bg-surface-hover text-white h-11 px-4 rounded-lg transition-colors flex items-center gap-2.5">
+<span class="material-symbols-outlined text-[22px] animate-spin-slow" style="animation-duration: 3s;">sync</span>
+<span class="text-xs font-bold text-moonstone uppercase tracking-wide hidden xl:block">Synced</span>
+</button>
+<button class="bg-primary hover:bg-primary/90 text-bg-navy h-11 px-5 rounded-lg text-sm font-bold flex items-center gap-2 transition-colors ml-1">
+<span class="material-symbols-outlined text-[20px]">add</span>
+<span>New Sale</span>
+</button>
+</div>
+</header>
+<div class="flex-1 overflow-y-auto p-8 scroll-smooth">
+<div class="max-w-7xl mx-auto flex flex-col gap-8">
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+<div class="bg-surface-navy p-6 rounded-xl border border-surface-hover flex flex-col gap-1">
+<div class="flex justify-between items-start">
+<p class="text-moonstone text-sm font-medium">Total Stock Value</p>
+<span class="material-symbols-outlined text-primary bg-primary/10 p-1 rounded">diamond</span>
+</div>
+<p class="text-white text-2xl font-bold mt-2">$124,500</p>
+<p class="text-green-400 text-xs font-medium flex items-center gap-1 mt-1">
+<span class="material-symbols-outlined text-[14px]">trending_up</span>
+                            +2.4% from last month
+                        </p>
+</div>
+<div class="bg-surface-navy p-6 rounded-xl border border-surface-hover flex flex-col gap-1">
+<div class="flex justify-between items-start">
+<p class="text-moonstone text-sm font-medium">Daily Revenue</p>
+<span class="material-symbols-outlined text-primary bg-primary/10 p-1 rounded">payments</span>
+</div>
+<p class="text-white text-2xl font-bold mt-2">$4,230</p>
+<p class="text-green-400 text-xs font-medium flex items-center gap-1 mt-1">
+<span class="material-symbols-outlined text-[14px]">trending_up</span>
+                            +12% vs yesterday
+                        </p>
+</div>
+<div class="bg-surface-navy p-6 rounded-xl border border-surface-hover flex flex-col gap-1">
+<div class="flex justify-between items-start">
+<p class="text-moonstone text-sm font-medium">Pending Orders</p>
+<span class="material-symbols-outlined text-primary bg-primary/10 p-1 rounded">shopping_bag</span>
+</div>
+<p class="text-white text-2xl font-bold mt-2">12</p>
+<p class="text-moonstone text-xs font-medium mt-1">Requires processing</p>
+</div>
+<div class="bg-surface-navy p-6 rounded-xl border border-surface-hover flex flex-col gap-1 relative overflow-hidden group">
+<div class="absolute right-0 top-0 w-16 h-16 bg-red-500/10 rounded-bl-full -mr-2 -mt-2 transition-transform group-hover:scale-110"></div>
+<div class="flex justify-between items-start relative z-10">
+<p class="text-moonstone text-sm font-medium">Low Stock Alerts</p>
+<span class="material-symbols-outlined text-red-400 bg-red-400/10 p-1 rounded">warning</span>
+</div>
+<p class="text-white text-2xl font-bold mt-2 relative z-10">8</p>
+<p class="text-red-400 text-xs font-medium mt-1 relative z-10">Needs restock immediately</p>
+</div>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+<div class="lg:col-span-2 bg-surface-navy rounded-xl border border-surface-hover p-6">
+<div class="flex items-center justify-between mb-6">
+<div>
+<h3 class="text-white text-lg font-bold">Sales &amp; Inventory Trends</h3>
+<p class="text-moonstone text-sm">Last 30 Days Performance</p>
+</div>
+<select class="bg-bg-navy border border-surface-hover text-white text-xs rounded-lg p-2 focus:ring-primary focus:border-primary">
+<option>Last 30 Days</option>
+<option>This Week</option>
+<option>This Year</option>
+</select>
+</div>
+<div class="relative h-64 w-full">
+<svg class="w-full h-full" preserveAspectRatio="none" viewBox="0 0 800 300">
+<defs>
+<linearGradient id="gradientPrimary" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="#eebd2b" stop-opacity="0.3"></stop>
+<stop offset="100%" stop-color="#eebd2b" stop-opacity="0"></stop>
+</linearGradient>
+</defs>
+<line stroke="#334155" stroke-dasharray="4 4" stroke-width="1" x1="0" x2="800" y1="225" y2="225"></line>
+<line stroke="#334155" stroke-dasharray="4 4" stroke-width="1" x1="0" x2="800" y1="150" y2="150"></line>
+<line stroke="#334155" stroke-dasharray="4 4" stroke-width="1" x1="0" x2="800" y1="75" y2="75"></line>
+<path d="M0,250 C100,200 150,280 250,150 C350,20 450,100 550,80 C650,60 700,120 800,50 L800,300 L0,300 Z" fill="url(#gradientPrimary)"></path>
+<path d="M0,250 C100,200 150,280 250,150 C350,20 450,100 550,80 C650,60 700,120 800,50" fill="none" stroke="#eebd2b" stroke-linecap="round" stroke-width="3"></path>
+</svg>
+<div class="flex justify-between text-moonstone text-xs mt-2 px-2">
+<span>Week 1</span>
+<span>Week 2</span>
+<span>Week 3</span>
+<span>Week 4</span>
+</div>
+</div>
+</div>
+<div class="bg-surface-navy rounded-xl border border-surface-hover p-6 flex flex-col">
+<div class="flex items-center justify-between mb-4">
+<h3 class="text-white text-lg font-bold flex items-center gap-2">
+                                Needs Attention 
+                                <span class="bg-red-500 text-bg-navy text-[10px] font-bold px-1.5 py-0.5 rounded-full">3</span>
+</h3>
+<button class="text-primary text-xs font-bold hover:underline">View All</button>
+</div>
+<div class="flex flex-col gap-3 overflow-y-auto flex-1 max-h-[300px] pr-1">
+<div class="flex items-center gap-3 p-3 rounded-lg bg-bg-navy border border-surface-hover hover:border-primary/50 transition-colors group cursor-pointer">
+<div class="size-10 rounded bg-cover bg-center shrink-0" data-alt="Gold necklace with pendant on display" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAQar0nmZd3daqfAymT00McrQAmRHKNw5qMRN7-0_kzHVIuCXuIIaDywrjnrcd0d-Uq-s-DKeTvpg2KFHkPhyX9vflPSNh9d1L7gut2vKdI9Pgohhd9Ub-Kp4UkRzT9NCb3DluSB2142R-JFek3mtXFfLlkLKrWTfPo6dTerW29AJWRkmRP5jITuoBaOYmcnZ816lf5B15gA5goRiGoqgi4W2AcghxMoiUFesRcpuzoy_WGvM8hwsQLEhRMY6N6E1LjS_MbpRToUP0");'></div>
+<div class="flex-1 min-w-0">
+<h4 class="text-white text-sm font-medium truncate">Golden Horizon Necklace</h4>
+<p class="text-red-400 text-xs font-bold">Only 2 left in stock</p>
+</div>
+<button class="text-moonstone group-hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[20px]">chevron_right</span>
+</button>
+</div>
+<div class="flex items-center gap-3 p-3 rounded-lg bg-bg-navy border border-surface-hover hover:border-primary/50 transition-colors group cursor-pointer">
+<div class="size-10 rounded bg-cover bg-center shrink-0" data-alt="Silver ring with gemstone" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAV1uFEGxM1nhe15qMgVbVWf5_Ehdx37LEvFL3YCTgTOaotddxlSigb7uSD-wi2iIyehx_yehM_t9Kr7IJUbZbmMkVYBcpWHSBfEJqv7rrHH2rqW26tGCQHAoAAQ7m3wrCNkQUEn9_bTZ84bjr7MKfAbalV-QtUa3GfPCSksqFUnR3adX4Lgtx1s-orOesdq8CqGn-B3OoKRG5gTu8BYPkZSxb29T4jKArfCciS9te-62Hew-NujfdmbNwmzaWov0SMbf75hN-JWs0");'></div>
+<div class="flex-1 min-w-0">
+<h4 class="text-white text-sm font-medium truncate">Moonstone Ring Size 7</h4>
+<p class="text-orange-400 text-xs font-bold">Sync Error (Shopify)</p>
+</div>
+<button class="text-moonstone group-hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[20px]">refresh</span>
+</button>
+</div>
+<div class="flex items-center gap-3 p-3 rounded-lg bg-bg-navy border border-surface-hover hover:border-primary/50 transition-colors group cursor-pointer">
+<div class="size-10 rounded bg-cover bg-center shrink-0" data-alt="Pearl earrings pair" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuBym9njhFvPVAbwBYePmB3l-_EK271SxaFbnjMMI5G0eEzWHMDba1Ujl2Wc_hZoUv3uOnfVozQwGHJCJr4A0P02ZcWTQEzogDovd6MXfCdUvxvRYNr7byNhR6LXYIX7dvc9zZei6KxVS5xHtlTGkcYEx5OTPMHKaB-yt7tc339uYhBUbSrwsEL74_E9aqmxQkSefav1Q4iRvxA7Y0L8Q7_CeZLcmhyjen3s1YyIOGYrJWM4x5U_efkVbldPbJA6kDZCBwfU6wLuQsc");'></div>
+<div class="flex-1 min-w-0">
+<h4 class="text-white text-sm font-medium truncate">Pearl Drop Earrings</h4>
+<p class="text-red-400 text-xs font-bold">Out of Stock</p>
+</div>
+<button class="text-moonstone group-hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[20px]">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<div class="bg-surface-navy rounded-xl border border-surface-hover overflow-hidden">
+<div class="p-6 border-b border-surface-hover flex items-center justify-between">
+<h3 class="text-white text-lg font-bold">Recent Orders</h3>
+<div class="flex gap-2">
+<button class="bg-bg-navy text-moonstone hover:text-white px-3 py-1.5 rounded-lg text-xs font-medium border border-surface-hover transition-colors">Filter</button>
+<button class="bg-bg-navy text-moonstone hover:text-white px-3 py-1.5 rounded-lg text-xs font-medium border border-surface-hover transition-colors">Export</button>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead class="bg-bg-navy text-xs uppercase text-moonstone font-semibold">
+<tr>
+<th class="px-6 py-4">Order ID</th>
+<th class="px-6 py-4">Customer</th>
+<th class="px-6 py-4">Product</th>
+<th class="px-6 py-4">Amount</th>
+<th class="px-6 py-4">Status</th>
+<th class="px-6 py-4 text-right">Action</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-hover text-sm">
+<tr class="hover:bg-bg-navy/50 transition-colors">
+<td class="px-6 py-4 text-white font-medium">#ORD-2904</td>
+<td class="px-6 py-4 text-moonstone">Alicia Keys</td>
+<td class="px-6 py-4 text-white">
+<div class="flex items-center gap-2">
+<div class="size-6 rounded bg-cover bg-center" data-alt="Gold bracelet detail" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuDGNfAxAdCmq4rQxd3CpiaisRo8XNCNXanYzqvPC7K0kStsmTMFf5C2Ms-ULFd5SzTynvAsz5HZ5HGhOn7FuiY1yE3U4KJr8uluexm1TuD1q7lbRLSexot3owGBlaSO3jd3FC1-yaBoIRarCnFmwRB9fciSi4o-o2q7pfdFBdciHEMIpBVkgVvS11u783QqgF9C2VfXKlVZ8kSA4se_ZBZBnMhtzCfH933GOh6Ui8Eu-v2eoI0L5ORu0ogYE02JVlDB-t8eOPF2QCA");'></div>
+<span>Gold Link Bracelet</span>
+</div>
+</td>
+<td class="px-6 py-4 text-white">$450.00</td>
+<td class="px-6 py-4"><span class="bg-green-500/10 text-green-400 px-2 py-1 rounded-md text-xs font-bold">Completed</span></td>
+<td class="px-6 py-4 text-right">
+<button class="text-moonstone hover:text-primary"><span class="material-symbols-outlined">more_vert</span></button>
+</td>
+</tr>
+<tr class="hover:bg-bg-navy/50 transition-colors">
+<td class="px-6 py-4 text-white font-medium">#ORD-2903</td>
+<td class="px-6 py-4 text-moonstone">Michael B.</td>
+<td class="px-6 py-4 text-white">
+<div class="flex items-center gap-2">
+<div class="size-6 rounded bg-cover bg-center" data-alt="Silver cufflinks" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuCaNK4WeNhS0Vd5QmPdAOLRc8DccIfuy12mYTcdbdJyMId5nfpLbTYDerf3KR4Ks4hyPF4UmivC-cmOZF--Zigyh-HSWu7txzKwEPQAQi3drCn33GTSdJKygQuNfAs3oS3NmINY8Q3sqkUZG6qsVjrzb5DfiDa3mmtRm-I6k6AZpSs0muiyARId-FIrYu3A4t-t3Hos_ePUIGhYgPqGj8bzKV_M_KAIHAfABRWQC8dDtJyKzBhdZcXlVvJKjkbhRS8930cNbBtpqCw");'></div>
+<span>Silver Cufflinks</span>
+</div>
+</td>
+<td class="px-6 py-4 text-white">$120.00</td>
+<td class="px-6 py-4"><span class="bg-yellow-500/10 text-yellow-400 px-2 py-1 rounded-md text-xs font-bold">Processing</span></td>
+<td class="px-6 py-4 text-right">
+<button class="text-moonstone hover:text-primary"><span class="material-symbols-outlined">more_vert</span></button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+</main>
+<aside class="w-80 bg-surface-navy border-l border-surface-hover flex flex-col shrink-0">
+<div class="h-[73px] flex items-center justify-between px-6 border-b border-surface-hover bg-surface-navy">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-green-400">chat</span>
+<h3 class="text-white font-bold text-sm">WhatsApp</h3>
+</div>
+<button class="text-moonstone hover:text-white transition-colors">
+<span class="material-symbols-outlined text-[20px]">open_in_new</span>
+</button>
+</div>
+<div class="flex-1 overflow-y-auto">
+<div class="p-4 space-y-2">
+<div class="p-3 rounded-lg bg-bg-navy border border-primary/30 cursor-pointer hover:bg-bg-navy/80 transition-colors">
+<div class="flex justify-between items-start mb-1">
+<h4 class="text-white text-sm font-bold">Sarah Jenkins</h4>
+<span class="text-xs text-primary font-bold">12:30 PM</span>
+</div>
+<p class="text-moonstone text-xs truncate">Is the Emerald cut ring still available in size 6?</p>
+<div class="mt-2 flex gap-2">
+<span class="bg-surface-navy text-xs text-moonstone px-2 py-0.5 rounded border border-surface-hover">Inquiry</span>
+</div>
+</div>
+<div class="p-3 rounded-lg hover:bg-bg-navy border border-transparent hover:border-surface-hover cursor-pointer transition-colors">
+<div class="flex justify-between items-start mb-1">
+<h4 class="text-white text-sm font-bold">David Miller</h4>
+<span class="text-xs text-moonstone">Yesterday</span>
+</div>
+<p class="text-moonstone text-xs truncate">Thanks, I received the tracking number.</p>
+</div>
+<div class="p-3 rounded-lg hover:bg-bg-navy border border-transparent hover:border-surface-hover cursor-pointer transition-colors">
+<div class="flex justify-between items-start mb-1">
+<h4 class="text-white text-sm font-bold">Priya Patel</h4>
+<span class="text-xs text-moonstone">Yesterday</span>
+</div>
+<p class="text-moonstone text-xs truncate">Can you send me the catalog for the new collection?</p>
+</div>
+<div class="p-3 rounded-lg hover:bg-bg-navy border border-transparent hover:border-surface-hover cursor-pointer transition-colors opacity-60">
+<div class="flex justify-between items-start mb-1">
+<h4 class="text-white text-sm font-bold">Unknown User</h4>
+<span class="text-xs text-moonstone">2 days ago</span>
+</div>
+<p class="text-moonstone text-xs truncate">Hello, do you ship to Canada?</p>
+</div>
+</div>
+</div>
+<div class="p-4 border-t border-surface-hover bg-surface-navy">
+<button class="w-full bg-surface-hover hover:bg-surface-hover/80 text-white py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-colors mb-2">
+<span class="material-symbols-outlined text-[18px]">share</span>
+                Quick Share Catalog
+            </button>
+<div class="grid grid-cols-2 gap-2">
+<button class="bg-bg-navy hover:bg-surface-hover text-moonstone hover:text-white py-2 rounded-lg text-xs font-medium transition-colors">
+                    Templates
+                </button>
+<button class="bg-bg-navy hover:bg-surface-hover text-moonstone hover:text-white py-2 rounded-lg text-xs font-medium transition-colors">
+                    Auto-Reply
+                </button>
+</div>
+</div>
+</aside>
+</body></html>

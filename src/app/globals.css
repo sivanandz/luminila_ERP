@@ -1,0 +1,202 @@
+@import "tailwindcss";
+
+@plugin "tailwindcss-animate";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ==============================================
+   LUMINILA THEME - Consolidated OKLCH Colors
+   Clean dark mode with proper contrast ratios
+   ============================================== */
+
+:root {
+  --radius: 0.875rem;
+
+  /* Base */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+
+  /* Cards & Surfaces */
+  --card: oklch(0.98 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+
+  /* Primary - Teal accent (Luminila brand) */
+  --primary: oklch(0.60 0.13 163);
+  --primary-foreground: oklch(0.98 0.02 166);
+
+  /* Secondary */
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+
+  /* Muted */
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.45 0.016 285.938);
+
+  /* Accent */
+  --accent: oklch(0.60 0.13 163);
+  --accent-foreground: oklch(0.98 0.02 166);
+
+  /* Destructive */
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.98 0 0);
+
+  /* Borders & Inputs */
+  --border: oklch(0.88 0.004 286.32);
+  --input: oklch(0.88 0.004 286.32);
+  --ring: oklch(0.60 0.13 163);
+
+  /* Charts */
+  --chart-1: oklch(0.85 0.13 165);
+  --chart-2: oklch(0.77 0.15 163);
+  --chart-3: oklch(0.70 0.15 162);
+  --chart-4: oklch(0.60 0.13 163);
+  --chart-5: oklch(0.51 0.10 166);
+
+  /* Sidebar */
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar-primary: oklch(0.60 0.13 163);
+  --sidebar-primary-foreground: oklch(0.98 0.02 166);
+  --sidebar-accent: oklch(0.95 0.01 163);
+  --sidebar-accent-foreground: oklch(0.30 0.05 163);
+  --sidebar-border: oklch(0.90 0.004 286.32);
+  --sidebar-ring: oklch(0.60 0.13 163);
+}
+
+/* Dark Mode - High Contrast */
+.dark {
+  /* Base - Deeper background */
+  --background: oklch(0.12 0.005 285);
+  --foreground: oklch(0.95 0 0);
+
+  /* Cards - Elevated surfaces with clear separation */
+  --card: oklch(0.18 0.006 285);
+  --card-foreground: oklch(0.95 0 0);
+  --popover: oklch(0.20 0.006 285);
+  --popover-foreground: oklch(0.95 0 0);
+
+  /* Primary - Brighter in dark mode */
+  --primary: oklch(0.75 0.15 162);
+  --primary-foreground: oklch(0.15 0.04 165);
+
+  /* Secondary */
+  --secondary: oklch(0.25 0.006 286);
+  --secondary-foreground: oklch(0.95 0 0);
+
+  /* Muted - Better readable */
+  --muted: oklch(0.22 0.006 286);
+  --muted-foreground: oklch(0.70 0.01 286);
+
+  /* Accent */
+  --accent: oklch(0.75 0.15 162);
+  --accent-foreground: oklch(0.15 0.04 165);
+
+  /* Destructive */
+  --destructive: oklch(0.65 0.20 25);
+  --destructive-foreground: oklch(0.95 0 0);
+
+  /* Borders - Visible but subtle */
+  --border: oklch(0.30 0.005 286);
+  --input: oklch(0.25 0.005 286);
+  --ring: oklch(0.75 0.15 162);
+
+  /* Charts - Vibrant in dark mode */
+  --chart-1: oklch(0.80 0.15 165);
+  --chart-2: oklch(0.75 0.16 163);
+  --chart-3: oklch(0.70 0.15 162);
+  --chart-4: oklch(0.65 0.14 160);
+  --chart-5: oklch(0.60 0.12 158);
+
+  /* Sidebar */
+  --sidebar: oklch(0.15 0.006 285);
+  --sidebar-foreground: oklch(0.95 0 0);
+  --sidebar-primary: oklch(0.75 0.15 162);
+  --sidebar-primary-foreground: oklch(0.15 0.04 165);
+  --sidebar-accent: oklch(0.25 0.04 163);
+  --sidebar-accent-foreground: oklch(0.90 0.02 165);
+  --sidebar-border: oklch(0.28 0.005 286);
+  --sidebar-ring: oklch(0.75 0.15 162);
+}
+
+/* Theme color mappings for Tailwind */
+@theme inline {
+  --color-background: oklch(from var(--background) l c h);
+  --color-foreground: oklch(from var(--foreground) l c h);
+  --color-card: oklch(from var(--card) l c h);
+  --color-card-foreground: oklch(from var(--card-foreground) l c h);
+  --color-popover: oklch(from var(--popover) l c h);
+  --color-popover-foreground: oklch(from var(--popover-foreground) l c h);
+  --color-primary: oklch(from var(--primary) l c h);
+  --color-primary-foreground: oklch(from var(--primary-foreground) l c h);
+  --color-secondary: oklch(from var(--secondary) l c h);
+  --color-secondary-foreground: oklch(from var(--secondary-foreground) l c h);
+  --color-muted: oklch(from var(--muted) l c h);
+  --color-muted-foreground: oklch(from var(--muted-foreground) l c h);
+  --color-accent: oklch(from var(--accent) l c h);
+  --color-accent-foreground: oklch(from var(--accent-foreground) l c h);
+  --color-destructive: oklch(from var(--destructive) l c h);
+  --color-destructive-foreground: oklch(from var(--destructive-foreground) l c h);
+  --color-border: oklch(from var(--border) l c h);
+  --color-input: oklch(from var(--input) l c h);
+  --color-ring: oklch(from var(--ring) l c h);
+  --color-sidebar: oklch(from var(--sidebar) l c h);
+  --color-sidebar-foreground: oklch(from var(--sidebar-foreground) l c h);
+  --color-sidebar-primary: oklch(from var(--sidebar-primary) l c h);
+  --color-sidebar-primary-foreground: oklch(from var(--sidebar-primary-foreground) l c h);
+  --color-sidebar-accent: oklch(from var(--sidebar-accent) l c h);
+  --color-sidebar-accent-foreground: oklch(from var(--sidebar-accent-foreground) l c h);
+  --color-sidebar-border: oklch(from var(--sidebar-border) l c h);
+  --color-sidebar-ring: oklch(from var(--sidebar-ring) l c h);
+
+  /* Chart colors */
+  --color-chart-1: oklch(from var(--chart-1) l c h);
+  --color-chart-2: oklch(from var(--chart-2) l c h);
+  --color-chart-3: oklch(from var(--chart-3) l c h);
+  --color-chart-4: oklch(from var(--chart-4) l c h);
+  --color-chart-5: oklch(from var(--chart-5) l c h);
+
+  /* Radius */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+
+  /* Fonts */
+  --font-sans: var(--font-sans);
+  --font-display: var(--font-manrope), "Manrope", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* Custom Animations */
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.2);
+  }
+
+  50% {
+    transform: translateX(0%) scaleX(0.5);
+  }
+
+  100% {
+    transform: translateX(100%) scaleX(0.2);
+  }
+}
+
+.animate-progress-indeterminate {
+  animation: progress-indeterminate 1.5s infinite linear;
+}

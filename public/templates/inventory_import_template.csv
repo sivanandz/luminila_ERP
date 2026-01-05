@@ -1,0 +1,44 @@
+SKU,Name,Category,HSN Code,Base Price,Stock,Status,Material,Color,Size,Weight,Brand,Description
+,Diamond Ring,Jewelry,7117,12500,5,available,Gold,Yellow,7,5g,Custom,18k gold diamond ring
+,Silver Necklace,Jewelry,7117,2500,10,available,Silver,,18 inch,15g,Sterling,925 sterling silver necklace
+,Leather Wallet,Accessories,4202,1200,20,available,Leather,Brown,Standard,100g,Premium,Genuine leather bifold
+,Wireless Mouse,Electronics,8471,800,50,available,Plastic,Black,One Size,80g,Tech Co,Ergonomic wireless mouse
+
+INSTRUCTIONS FOR BULK IMPORT
+-----------------------------
+
+REQUIRED COLUMNS:
+- Name: Product name (REQUIRED)
+- Category: Must match exactly a category defined in Settings > Categories (REQUIRED)
+- Base Price: Price in INR without currency symbol (REQUIRED)
+- Stock: Initial stock quantity (REQUIRED)
+
+OPTIONAL COLUMNS:
+- SKU: Leave EMPTY for auto-generation OR provide your own
+- HSN Code: GST HSN Code (default: 7117 for jewelry)
+- Status: available | damaged | lost | reserved | discontinued (default: available)
+- Material: Product material
+- Color: Product color  
+- Size: Product size/dimensions
+- Weight: Product weight with unit
+- Brand: Brand name
+- Description: Product description
+
+AUTO-SKU GENERATION:
+When SKU is left empty, the system will auto-generate:
+Format: [CATEGORY_PREFIX]-[MATERIAL]-[COLOR]-[TIMESTAMP]
+Example: JEW-GO-YE-ABC123
+
+IMPORTANT NOTES:
+1. First row must be the header row (do not modify headers)
+2. Category names must match EXACTLY (case-sensitive)
+3. Custom attributes from Settings will be matched by column name
+4. Empty cells are allowed for optional fields
+5. Save as CSV (comma-separated) before importing
+
+STATUS OPTIONS:
+- available: Ready for sale
+- damaged: Damaged goods (excluded from stock count)
+- lost: Lost inventory
+- reserved: Reserved for orders
+- discontinued: No longer sold
