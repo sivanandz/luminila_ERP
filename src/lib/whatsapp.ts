@@ -34,6 +34,16 @@ export interface WPPMessage {
         pushname: string;
         phone: string;
     };
+    // Quoted/reply message support
+    quotedMsg?: {
+        id: string;
+        body: string;
+        type: string;
+        caption?: string;
+        sender?: string;
+        mediaUrl?: string;
+        mimetype?: string;
+    };
 }
 
 interface WPPContact {
@@ -301,6 +311,338 @@ export async function deleteMessage(
     }
 }
 
+/**
+ * Star/unstar a message
+ */
+export async function starMessage(
+    sessionId: string,
+    messageId: string,
+    star: boolean = true
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/star-message`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                messageId,
+                star
+            })
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Archive/unarchive a chat
+ */
+export async function archiveChat(
+    sessionId: string,
+    chatId: string,
+    archive: boolean = true
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/archive-chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chatId,
+                archive
+            })
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Get all contacts
+ */
+export async function getAllContacts(sessionId: string): Promise<WPPContact[]> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/contacts`);
+        if (!response.ok) return [];
+
+        const data = await response.json();
+        return (data.contacts || []).map((contact: any) => ({
+            id: contact.id?._serialized || contact.id || '',
+            name: contact.name || contact.pushname || '',
+            pushname: contact.pushname || '',
+            phone: contact.id?.user || '',
+            isMyContact: contact.isMyContact || false,
+            isGroup: contact.isGroup || false
+        }));
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Check if a phone number is registered on WhatsApp
+ */
+export async function checkNumberStatus(
+    sessionId: string,
+    phone: string
+): Promise<{ exists: boolean; jid?: string }> {
+    try {
+        const formattedPhone = phone.replace(/\D/g, '');
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/check-number/${formattedPhone}`);
+        if (!response.ok) return { exists: false };
+
+        const data = await response.json();
+        return {
+            exists: data.exists || data.numberExists || false,
+            jid: data.jid || data.id?._serialized || undefined
+        };
+    } catch {
+        return { exists: false };
+    }
+}
+
+// ==============================
+// LABELS (CRM) FUNCTIONS
+// ==============================
+
+export interface WPPLabel {
+    id: string;
+    name: string;
+    color: number;
+    count?: number;
+}
+
+/**
+ * Get all labels
+ */
+export async function getAllLabels(sessionId: string): Promise<WPPLabel[]> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/labels`);
+        if (!response.ok) return [];
+
+        const data = await response.json();
+        return data.labels || [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Add a new label
+ */
+export async function addLabel(
+    sessionId: string,
+    name: string,
+    color?: number
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/labels`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, color })
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Add or remove a label from a chat
+ */
+export async function addOrRemoveLabel(
+    sessionId: string,
+    labelId: string,
+    chatIds: string[],
+    action: 'add' | 'remove' = 'add'
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/labels/${labelId}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chatIds, action })
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Delete a label
+ */
+export async function deleteLabel(sessionId: string, labelId: string): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/labels/${labelId}`, {
+            method: "DELETE"
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
+// ==============================
+// BUSINESS PROFILE FUNCTIONS
+// ==============================
+
+export interface BusinessProfile {
+    description?: string;
+    email?: string;
+    website?: string[];
+    address?: string;
+    categories?: string[];
+}
+
+/**
+ * Get business profile (own or another contact's)
+ */
+export async function getBusinessProfile(
+    sessionId: string,
+    chatId?: string
+): Promise<BusinessProfile | null> {
+    try {
+        const url = chatId
+            ? `${WPPCONNECT_URL}/api/${sessionId}/business-profile?chatId=${encodeURIComponent(chatId)}`
+            : `${WPPCONNECT_URL}/api/${sessionId}/business-profile`;
+        const response = await fetch(url);
+        if (!response.ok) return null;
+
+        const data = await response.json();
+        return data.profile || null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Edit own business profile
+ */
+export async function editBusinessProfile(
+    sessionId: string,
+    profile: BusinessProfile
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/business-profile`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(profile)
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
+// ==============================
+// CATALOG FUNCTIONS
+// ==============================
+
+export interface CatalogProduct {
+    id: string;
+    name: string;
+    description?: string;
+    price?: number;
+    currency?: string;
+    imageUrl?: string;
+    url?: string;
+    isHidden?: boolean;
+}
+
+/**
+ * Get products from catalog
+ */
+export async function getCatalogProducts(
+    sessionId: string,
+    chatId?: string
+): Promise<CatalogProduct[]> {
+    try {
+        const url = chatId
+            ? `${WPPCONNECT_URL}/api/${sessionId}/catalog/products?chatId=${encodeURIComponent(chatId)}`
+            : `${WPPCONNECT_URL}/api/${sessionId}/catalog/products`;
+        const response = await fetch(url);
+        if (!response.ok) return [];
+
+        const data = await response.json();
+        return data.products || [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Create a new product in catalog
+ */
+export async function createCatalogProduct(
+    sessionId: string,
+    product: {
+        name: string;
+        description?: string;
+        price?: number;
+        currency?: string;
+        imageBase64?: string;
+        url?: string;
+    }
+): Promise<{ success: boolean; productId?: string }> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(product)
+        });
+        const data = await response.json();
+        return { success: data.success, productId: data.result?.id };
+    } catch {
+        return { success: false };
+    }
+}
+
+/**
+ * Delete a product from catalog
+ */
+export async function deleteCatalogProduct(
+    sessionId: string,
+    productId: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${productId}`, {
+            method: "DELETE"
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Send an order message
+ */
+export async function sendCatalogOrder(
+    sessionId: string,
+    phone: string,
+    items: { productId: string; quantity: number }[],
+    options?: { orderText?: string }
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-order`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ phone, items, options })
+        });
+        const data = await response.json();
+        return data.success;
+    } catch {
+        return false;
+    }
+}
+
 
 /**
  * Get all chats/conversations
@@ -404,32 +746,98 @@ export async function getChatMessages(sessionId: string, chatId: string, count =
         if (!response.ok) return [];
 
         const data = await response.json();
-        return (data.messages || []).map((msg: any) => {
-            const isMediaType = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.type);
-
-            return {
-                id: msg.id?._serialized || msg.id,
-                from: msg.from,
-                to: msg.to,
-                // For media messages, body often contains base64 - use caption instead
-                body: isMediaType ? (msg.caption || '') : (msg.body || msg.caption || ''),
-                timestamp: msg.t || msg.timestamp || 0,
-                isGroupMsg: msg.isGroupMsg || false,
-                fromMe: msg.fromMe || msg.id?.fromMe || false,
-                type: msg.type || 'chat',
-                caption: msg.caption || '',
-                // DON'T use msg.body as fallback - it contains raw base64 for images
-                // Let the frontend call downloadMedia instead
-                mediaUrl: msg.deprecatedMms3Url || (typeof msg.mediaUrl === 'string' && msg.mediaUrl.startsWith('http') ? msg.mediaUrl : ''),
-                mimetype: msg.mimetype || '',
-                filename: msg.filename || '',
-                sender: {
-                    name: msg.sender?.name || '',
-                    pushname: msg.sender?.pushname || '',
-                    phone: msg.sender?.id?.user || ''
+        return (data.messages || [])
+            // Filter out system/notification messages that don't have readable content
+            .filter((msg: any) => {
+                const systemTypes = ['e2e_notification', 'notification_template', 'gp2', 'protocol', 'ciphertext', 'revoked'];
+                // Keep message if it's not a system type, or if it has actual body content
+                if (systemTypes.includes(msg.type)) {
+                    // Check if body is just an internal ID (like 277798686064737@lid)
+                    const bodyIsInternalId = typeof msg.body === 'string' && /^\d+@\w+$/.test(msg.body);
+                    return !bodyIsInternalId;
                 }
-            };
-        });
+                return true;
+            })
+            .map((msg: any) => {
+                const isMediaType = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.type);
+
+                // Helper to detect if content is base64 data (should not be displayed as text)
+                const isBase64Content = (str: string) => {
+                    if (!str || typeof str !== 'string') return false;
+                    // Base64 image/media content is usually very long or starts with data URI
+                    return str.length > 500 || str.startsWith('data:') || /^[A-Za-z0-9+/=]{100,}$/.test(str);
+                };
+
+                // Helper to detect internal WhatsApp IDs
+                const isInternalId = (str: string) => {
+                    if (!str || typeof str !== 'string') return false;
+                    return /^\d+@(lid|c\.us|g\.us|broadcast)$/.test(str) || str.includes('@lid');
+                };
+
+                // Get body - filter out base64 content and internal IDs
+                let body = '';
+                if (isMediaType) {
+                    body = msg.caption || '';
+                } else {
+                    const candidateBody = msg.body || msg.caption || '';
+                    body = isBase64Content(candidateBody) ? '' : candidateBody;
+                }
+
+                // Parse quoted message if present
+                let quotedMsg = undefined;
+                if (msg.quotedMsg || msg.quotedMsgObj) {
+                    const quoted = msg.quotedMsg || msg.quotedMsgObj;
+                    const quotedIsMedia = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(quoted.type);
+
+                    // Get the quoted body, filtering out internal IDs and base64
+                    let quotedBody = '';
+                    if (quotedIsMedia) {
+                        quotedBody = quoted.caption || `[${quoted.type}]`;
+                    } else {
+                        const candidateBody = quoted.body || quoted.caption || quoted.text || '';
+                        // Filter out WhatsApp internal IDs (contain @lid, @c.us, @g.us, etc.) and base64
+                        const isQuotedInternalId = typeof candidateBody === 'string' &&
+                            (candidateBody.includes('@lid') || candidateBody.includes('@c.us') || candidateBody.includes('@g.us') ||
+                                /^\d+@\w+$/.test(candidateBody));
+                        quotedBody = (isQuotedInternalId || isBase64Content(candidateBody)) ? '' : candidateBody;
+                    }
+
+                    quotedMsg = {
+                        id: quoted.id?._serialized || quoted.id || quoted.stanzaId || '',
+                        body: quotedBody || (quotedIsMedia ? `[${quoted.type}]` : '[Message]'),
+                        type: quoted.type || 'chat',
+                        caption: quoted.caption || '',
+                        sender: quoted.sender?.pushname || quoted.sender?.name || quoted.notifyName ||
+                            quoted.participant?.split('@')[0] || '',
+                        // For image thumbnails - use deprecatedMms3Url or thumbnail if available
+                        mediaUrl: quotedIsMedia ? (quoted.deprecatedMms3Url || quoted.mediaUrl || '') : '',
+                        mimetype: quoted.mimetype || ''
+                    };
+                }
+
+                return {
+                    id: msg.id?._serialized || msg.id,
+                    from: msg.from,
+                    to: msg.to,
+                    body,
+                    timestamp: msg.t || msg.timestamp || 0,
+                    isGroupMsg: msg.isGroupMsg || false,
+                    fromMe: msg.fromMe || msg.id?.fromMe || false,
+                    type: msg.type || 'chat',
+                    caption: msg.caption || '',
+                    // DON'T use msg.body as fallback - it contains raw base64 for images
+                    // Let the frontend call downloadMedia instead
+                    mediaUrl: msg.deprecatedMms3Url || (typeof msg.mediaUrl === 'string' && msg.mediaUrl.startsWith('http') ? msg.mediaUrl : ''),
+                    mimetype: msg.mimetype || '',
+                    filename: msg.filename || '',
+                    sender: {
+                        name: msg.sender?.name || msg.notifyName || '',
+                        pushname: msg.sender?.pushname || msg.notifyName || '',
+                        phone: msg.sender?.id?.user || ''
+                    },
+                    quotedMsg
+                };
+            });
     } catch {
         return [];
     }
@@ -444,16 +852,19 @@ export async function sendMessage(
     message: string
 ): Promise<boolean> {
     try {
-        // Format phone number (remove non-digits, ensure country code)
-        const formattedPhone = phone.replace(/\D/g, "");
+        // If phone is already a chat ID (contains @), use it as-is
+        // Otherwise, format as phone number (remove non-digits)
+        const chatIdOrPhone = phone.includes('@')
+            ? phone
+            : phone.replace(/\D/g, "");
 
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-message`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                phone: formattedPhone,
+                phone: chatIdOrPhone,
                 message,
-                isGroup: false,
+                isGroup: phone.includes('@g.us'),
             }),
         });
 
@@ -610,7 +1021,7 @@ export function generateAutoReply(
 /**
  * Request Pairing Code for Phone Login
  */
-export async function requestPairingCode(sessionId: string, phone: string): Promise<string | null> {
+export async function requestPairingCode(sessionId: string, phone: string): Promise<{ code: string; session: string } | null> {
     try {
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/pair-phone`, {
             method: "POST",
@@ -618,7 +1029,7 @@ export async function requestPairingCode(sessionId: string, phone: string): Prom
             body: JSON.stringify({ phone })
         });
         const data = await response.json();
-        return data.success ? data.code : null;
+        return data.success ? { code: data.code, session: data.phoneSession } : null;
     } catch {
         return null;
     }
@@ -630,7 +1041,21 @@ export class WhatsAppManager {
     private messageCallback: ((messages: WPPMessage[]) => void) | null = null;
 
     constructor(sessionId: string = "luminila") {
-        this.sessionId = sessionId;
+        // Try to restore session ID from localStorage for persistence across page refreshes
+        if (typeof window !== 'undefined' && window.localStorage) {
+            const storedSessionId = localStorage.getItem('wpp_session_id');
+            this.sessionId = storedSessionId || sessionId;
+        } else {
+            this.sessionId = sessionId;
+        }
+    }
+
+    setSessionId(id: string) {
+        this.sessionId = id;
+        // Persist to localStorage for page refresh persistence
+        if (typeof window !== 'undefined' && window.localStorage) {
+            localStorage.setItem('wpp_session_id', id);
+        }
     }
 
     async connect(): Promise<boolean> {
@@ -651,7 +1076,7 @@ export class WhatsAppManager {
         return getSessionQR(this.sessionId);
     }
 
-    async requestPairingCode(phone: string): Promise<string | null> {
+    async requestPairingCode(phone: string): Promise<{ code: string; session: string } | null> {
         return requestPairingCode(this.sessionId, phone);
     }
 

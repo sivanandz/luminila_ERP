@@ -297,8 +297,8 @@ app.post('/api/:session/pair-phone', async (req, res) => {
         // Create a promise that resolves when pairing code is received
         const codePromise = new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                reject(new Error("Timeout waiting for pairing code (30s)"));
-            }, 30000);
+                reject(new Error("Timeout waiting for pairing code (90s)"));
+            }, 90000);
 
             wpp.create({
                 session: phoneSession,
@@ -346,11 +346,50 @@ app.post('/api/:session/pair-phone', async (req, res) => {
     }
 });
 
+// Logout session (keeps session files for reconnection)
+app.post('/api/:session/logout', async (req, res) => {
+    const { session } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not found' });
+    }
+
+    try {
+        await sessionData.client.logout();
+        sessionData.connected = false;
+        sessions.delete(session);
+        res.json({ success: true, message: 'Logged out successfully' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Close session (completely removes session)
+app.post('/api/:session/close', async (req, res) => {
+    const { session } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        sessions.delete(session);
+        return res.json({ success: true, message: 'Session closed' });
+    }
+
+    try {
+        await sessionData.client.close();
+        sessions.delete(session);
+        res.json({ success: true, message: 'Session closed successfully' });
+    } catch (error) {
+        sessions.delete(session);
+        res.json({ success: true, message: 'Session force closed' });
+    }
+});
+
 
 // Send text message
 app.post('/api/:session/send-message', async (req, res) => {
     const { session } = req.params;
-    const { phone, message } = req.body;
+    const { phone, message, isGroup } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -358,7 +397,14 @@ app.post('/api/:session/send-message', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.sendText(`${phone}@c.us`, message);
+        // Handle both full chat IDs (123@c.us) and plain phone numbers (123)
+        let chatId = phone;
+        if (!phone.includes('@')) {
+            // Plain phone number - add suffix based on isGroup flag
+            chatId = isGroup ? `${phone}@g.us` : `${phone}@c.us`;
+        }
+
+        const result = await sessionData.client.sendText(chatId, message);
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1862,6 +1908,172 @@ app.delete('/api/:session/catalog/products/:productId', async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 });
+
+// ==============================
+// LABELS ENDPOINTS
+// ==============================
+
+// Get all labels
+app.get('/api/:session/labels', async (req, res) => {
+    const { session } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const labels = await sessionData.client.getAllLabels();
+        res.json({ success: true, labels });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Add new label
+app.post('/api/:session/labels', async (req, res) => {
+    const { session } = req.params;
+    const { name, color } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.addNewLabel(name, { labelColor: color });
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Add or remove label from chat
+app.post('/api/:session/labels/:labelId', async (req, res) => {
+    const { session, labelId } = req.params;
+    const { chatIds, action = 'add' } = req.body; // action: 'add' or 'remove'
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.addOrRemoveLabels(
+            Array.isArray(chatIds) ? chatIds : [chatIds],
+            [{ labelId, type: action }]
+        );
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Delete label
+app.delete('/api/:session/labels/:labelId', async (req, res) => {
+    const { session, labelId } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.deleteLabel(labelId);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Get chats by label
+app.get('/api/:session/labels/:labelId/chats', async (req, res) => {
+    const { session, labelId } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const chats = await sessionData.client.getChatsByLabelId(labelId);
+        res.json({ success: true, chats });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ==============================
+// BUSINESS PROFILE ENDPOINTS
+// ==============================
+
+// Get business profile
+app.get('/api/:session/business-profile', async (req, res) => {
+    const { session } = req.params;
+    const { chatId } = req.query;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const profile = chatId
+            ? await sessionData.client.getBusinessProfile(chatId)
+            : await sessionData.client.getBusinessProfile();
+        res.json({ success: true, profile });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Edit own business profile
+app.put('/api/:session/business-profile', async (req, res) => {
+    const { session } = req.params;
+    const { description, email, website, address, categories } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.editBusinessProfile({
+            description,
+            email,
+            website: Array.isArray(website) ? website : [website].filter(Boolean),
+            address,
+            categories
+        });
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ==============================
+// ORDER MESSAGE ENDPOINTS
+// ==============================
+
+// Send order message
+app.post('/api/:session/send-order', async (req, res) => {
+    const { session } = req.params;
+    const { phone, items, options } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        // items: array of { productId, quantity }
+        const result = await sessionData.client.sendOrderMessage(phone, items, options || {});
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 
 process.on('SIGTERM', () => process.emit('SIGINT'));
 

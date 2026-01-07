@@ -10,7 +10,7 @@ import {
 } from "@/lib/whatsapp";
 import type { WPPMessage, WPPChat } from "@/lib/whatsapp";
 import { supabase } from "@/lib/supabase";
-import { findMatchingProducts } from "@/lib/image-matcher";
+import { findMatchingProducts, generateImageHash } from "@/lib/image-matcher";
 import {
     MessageCircle,
     Wifi,
@@ -56,6 +56,15 @@ import {
     type Customer,
     type CustomerOrder
 } from "@/lib/customer-lookup";
+import { getCategories, type Category } from "@/lib/categories";
+import { getAttributes, type ProductAttribute } from "@/lib/attributes";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 
 // --- Types ---
 
@@ -73,6 +82,16 @@ interface Message {
     mimetype?: string;
     filename?: string;
     parsed?: ReturnType<typeof parseOrderFromMessage>;
+    // Quoted/reply message support
+    quotedMsg?: {
+        id: string;
+        body: string;
+        type: string;
+        caption?: string;
+        sender?: string;
+        mediaUrl?: string;
+        mimetype?: string;
+    };
 }
 
 interface ChatListItem {
@@ -296,23 +315,97 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const hasLinks = msg.body && urlRegex.test(msg.body);
 
+    // Helper to render the quoted message block
+    const QuotedBlock = () => {
+        if (!msg.quotedMsg) return null;
+
+        const isMediaQuote = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.quotedMsg.type);
+
+        // Handle click to scroll to quoted message
+        const handleQuoteClick = () => {
+            if (msg.quotedMsg?.id) {
+                // Try to find element by ID (IDs may contain special chars)
+                const quotedId = msg.quotedMsg.id;
+                let quotedElement = document.getElementById(`msg-${quotedId}`);
+
+                // Fallback: search by data attribute if direct ID doesn't work
+                if (!quotedElement) {
+                    quotedElement = document.querySelector(`[data-msg-id="${CSS.escape(quotedId)}"]`) as HTMLElement;
+                }
+
+                if (quotedElement) {
+                    quotedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    quotedElement.classList.add('ring-2', 'ring-primary');
+                    setTimeout(() => quotedElement?.classList.remove('ring-2', 'ring-primary'), 2000);
+                } else {
+                    console.log('Quoted message not found:', quotedId);
+                }
+            }
+        };
+
+        return (
+            <div
+                onClick={handleQuoteClick}
+                className={`mb-2 border-l-2 pl-2 py-1 text-xs rounded cursor-pointer hover:opacity-80 transition-opacity flex gap-2 ${msg.fromMe ? 'border-primary-foreground/50 bg-primary/20' : 'border-primary/50 bg-muted/50'}`}
+            >
+                {/* Image thumbnail for media quotes */}
+                {isMediaQuote && msg.quotedMsg.type === 'image' && (
+                    <div className="w-10 h-10 flex-shrink-0 rounded overflow-hidden bg-muted">
+                        {msg.quotedMsg.mediaUrl ? (
+                            <img
+                                src={msg.quotedMsg.mediaUrl}
+                                alt=""
+                                className="w-full h-full object-cover"
+                                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                            />
+                        ) : (
+                            <ImageIcon size={16} className="w-full h-full p-2 text-muted-foreground" />
+                        )}
+                    </div>
+                )}
+
+                <div className="flex-1 min-w-0">
+                    {msg.quotedMsg.sender && (
+                        <p className="font-semibold opacity-80 truncate">{msg.quotedMsg.sender}</p>
+                    )}
+                    <p className="opacity-70 line-clamp-2">
+                        {isMediaQuote && msg.quotedMsg.type !== 'image'
+                            ? `📎 ${msg.quotedMsg.type === 'ptt' ? 'Voice message' : msg.quotedMsg.type === 'video' ? 'Video' : msg.quotedMsg.type === 'document' ? 'Document' : msg.quotedMsg.type}`
+                            : isMediaQuote && msg.quotedMsg.type === 'image'
+                                ? (msg.quotedMsg.caption || '📷 Photo')
+                                : (msg.quotedMsg.body || msg.quotedMsg.caption || '')
+                        }
+                    </p>
+                </div>
+            </div>
+        );
+    };
+
     if (hasLinks) {
         const parts = msg.body.split(urlRegex);
         return (
-            <p className="text-sm leading-relaxed">
-                {parts.map((part, i) =>
-                    urlRegex.test(part) ? (
-                        <a key={i} href={part} target="_blank" rel="noopener noreferrer"
-                            className="text-green-700 hover:text-green-600 hover:underline break-all font-medium">
-                            {part}
-                        </a>
-                    ) : part
-                )}
-            </p>
+            <div>
+                <QuotedBlock />
+                <p className="text-sm leading-relaxed">
+                    {parts.map((part, i) =>
+                        urlRegex.test(part) ? (
+                            <a key={i} href={part} target="_blank" rel="noopener noreferrer"
+                                className="text-green-700 hover:text-green-600 hover:underline break-all font-medium">
+                                {part}
+                            </a>
+                        ) : part
+                    )}
+                </p>
+            </div>
         );
     }
 
-    return <p className="text-sm leading-relaxed">{msg.body}</p>;
+    return (
+        <div>
+            <QuotedBlock />
+            <p className="text-sm leading-relaxed">{msg.body}</p>
+        </div>
+    );
 }
 
 // --- Main Page ---
@@ -335,6 +428,19 @@ export default function WhatsAppPage() {
     const [replyText, setReplyText] = useState("");
     const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
 
+    // Attachment State
+    const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+    const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
+    const [sendingAttachment, setSendingAttachment] = useState(false);
+    const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+    // Voice Recording State
+    const [isRecording, setIsRecording] = useState(false);
+    const [recordingDuration, setRecordingDuration] = useState(0);
+    const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+    const audioChunksRef = React.useRef<Blob[]>([]);
+    const recordingIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
+
     // Concierge State
     const [products, setProducts] = useState<Product[]>([]);
     const [searchQuery, setSearchQuery] = useState("");
@@ -349,6 +455,29 @@ export default function WhatsAppPage() {
     const [customer, setCustomer] = useState<Customer | null>(null);
     const [customerOrders, setCustomerOrders] = useState<CustomerOrder[]>([]);
     const [loadingCustomer, setLoadingCustomer] = useState(false);
+
+    // Add Product Modal State
+    const [showAddProductModal, setShowAddProductModal] = useState(false);
+    const [addProductForm, setAddProductForm] = useState({
+        sku: '',
+        name: '',
+        description: '',
+        category: '',
+        hsn_code: '7117',
+        base_price: 0,
+        cost_price: 0,
+        image_url: '',
+        initial_stock: 0
+    });
+    const [addingProduct, setAddingProduct] = useState(false);
+    const [selectedMessageImage, setSelectedMessageImage] = useState<string | null>(null);
+    const [productCategories, setProductCategories] = useState<Category[]>([]);
+    const [productAttributes, setProductAttributes] = useState<ProductAttribute[]>([]);
+    const [attributeValues, setAttributeValues] = useState<Record<string, string>>({});
+
+    // P2: Parent-Child SKU Structure
+    const [isVariant, setIsVariant] = useState(false);
+    const [selectedParentProduct, setSelectedParentProduct] = useState<Product | null>(null);
 
     // Initial Load
     const loadExistingChats = useCallback(async () => {
@@ -398,6 +527,10 @@ export default function WhatsAppPage() {
             }
         };
         fetchProducts();
+
+        // Fetch categories and attributes for Add Product modal
+        getCategories().then(setProductCategories);
+        getAttributes().then(setProductAttributes);
     }, []);
 
     // Polling & Status
@@ -429,20 +562,27 @@ export default function WhatsAppPage() {
             setLoadingMessages(true);
             try {
                 const msgs = await whatsappManager.getMessages(selectedChat, 50);
-                const parsed: Message[] = msgs.map((msg) => ({
-                    id: msg.id,
-                    from: msg.from || selectedChat,
-                    fromName: msg.sender?.pushname || msg.sender?.name || "Unknown",
-                    body: msg.body,
-                    timestamp: new Date(msg.timestamp * 1000),
-                    isOrder: parseOrderFromMessage(msg.body).isOrder,
-                    fromMe: msg.fromMe,
-                    type: msg.type,
-                    mediaUrl: msg.mediaUrl || '',
-                    mimetype: msg.mimetype || '',
-                    caption: msg.caption || '',
-                    parsed: parseOrderFromMessage(msg.body),
-                }));
+                const parsed: Message[] = msgs.map((msg) => {
+                    // Better name resolution fallback chain
+                    const fromName = msg.sender?.pushname || msg.sender?.name ||
+                        (msg.fromMe ? 'You' : selectedChat.split('@')[0] || 'Unknown');
+
+                    return {
+                        id: msg.id,
+                        from: msg.from || selectedChat,
+                        fromName,
+                        body: msg.body,
+                        timestamp: new Date(msg.timestamp * 1000),
+                        isOrder: parseOrderFromMessage(msg.body).isOrder,
+                        fromMe: msg.fromMe,
+                        type: msg.type,
+                        mediaUrl: msg.mediaUrl || '',
+                        mimetype: msg.mimetype || '',
+                        caption: msg.caption || '',
+                        parsed: parseOrderFromMessage(msg.body),
+                        quotedMsg: msg.quotedMsg, // Pass through quoted message
+                    };
+                });
                 parsed.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 setSelectedChatMessages(parsed);
             } catch (err) {
@@ -693,20 +833,23 @@ export default function WhatsAppPage() {
 
     const handleRequestPairingCode = async () => {
         if (!phoneNumber) {
-            alert("Please enter a phone number");
+            setPairingCode(null); // Clear any old code
             return;
         }
         setPairingLoading(true);
+        setPairingCode(null); // Clear previous code while loading
         try {
-            const code = await whatsappManager.requestPairingCode(phoneNumber);
-            if (code) {
-                setPairingCode(code);
-                alert(`Pairing Code: ${code}\n\nEnter this code on your phone.`);
+            const response = await whatsappManager.requestPairingCode(phoneNumber);
+            if (response && response.code) {
+                setPairingCode(response.code);
+                // IMPORTANT: Switch manager to the phone-specific session for proper polling
+                whatsappManager.setSessionId(response.session);
             } else {
-                alert("Failed to get pairing code. Check server logs.");
+                setPairingCode(null);
             }
         } catch (e: any) {
-            alert("Error requesting pairing code: " + e.message);
+            console.error("Error requesting pairing code:", e.message);
+            setPairingCode(null);
         } finally {
             setPairingLoading(false);
         }
@@ -735,6 +878,409 @@ export default function WhatsAppPage() {
         }
     };
 
+    // Attachment Handlers
+    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setAttachmentFile(file);
+
+        // Create preview for images
+        if (file.type.startsWith('image/')) {
+            const reader = new FileReader();
+            reader.onload = () => setAttachmentPreview(reader.result as string);
+            reader.readAsDataURL(file);
+        } else {
+            setAttachmentPreview(null);
+        }
+    };
+
+    const handleSendAttachment = async () => {
+        if (!selectedChat || !attachmentFile) return;
+
+        setSendingAttachment(true);
+        try {
+            const reader = new FileReader();
+            reader.onload = async () => {
+                const base64 = (reader.result as string).split(',')[1];
+                let success = false;
+
+                if (attachmentFile.type.startsWith('image/')) {
+                    success = await whatsappManager.sendImage(
+                        selectedChat,
+                        base64,
+                        replyText || undefined,
+                        attachmentFile.name
+                    );
+                } else {
+                    success = await whatsappManager.sendFile(
+                        selectedChat,
+                        base64,
+                        attachmentFile.name,
+                        replyText || undefined
+                    );
+                }
+
+                if (success) {
+                    // Add to local messages
+                    setSelectedChatMessages(prev => [...prev, {
+                        id: `sent-${Date.now()}`,
+                        from: "me",
+                        fromName: "You",
+                        body: replyText || `[${attachmentFile.type.startsWith('image/') ? 'Image' : 'File'}] ${attachmentFile.name}`,
+                        timestamp: new Date(),
+                        isOrder: false,
+                        fromMe: true,
+                        type: attachmentFile.type.startsWith('image/') ? 'image' : 'document',
+                        mediaUrl: attachmentPreview || ''
+                    }]);
+
+                    // Clear state
+                    setAttachmentFile(null);
+                    setAttachmentPreview(null);
+                    setReplyText("");
+                }
+            };
+            reader.readAsDataURL(attachmentFile);
+        } catch (err) {
+            console.error("Failed to send attachment:", err);
+        } finally {
+            setSendingAttachment(false);
+        }
+    };
+
+    const clearAttachment = () => {
+        setAttachmentFile(null);
+        setAttachmentPreview(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    // Voice Recording Handlers
+    const startRecording = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const mediaRecorder = new MediaRecorder(stream);
+            mediaRecorderRef.current = mediaRecorder;
+            audioChunksRef.current = [];
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    audioChunksRef.current.push(e.data);
+                }
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                const audioFile = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+
+                // Convert to base64 and send
+                const reader = new FileReader();
+                reader.onload = async () => {
+                    const base64 = (reader.result as string).split(',')[1];
+                    if (selectedChat) {
+                        // Note: WPPConnect might need audio to be sent differently
+                        // For now, send as file
+                        const success = await whatsappManager.sendFile(
+                            selectedChat,
+                            base64,
+                            audioFile.name,
+                            'Voice message'
+                        );
+                        if (success) {
+                            setSelectedChatMessages(prev => [...prev, {
+                                id: `sent-${Date.now()}`,
+                                from: "me",
+                                fromName: "You",
+                                body: "🎤 Voice message",
+                                timestamp: new Date(),
+                                isOrder: false,
+                                fromMe: true,
+                                type: "ptt"
+                            }]);
+                        }
+                    }
+                };
+                reader.readAsDataURL(audioBlob);
+
+                // Stop all tracks
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start();
+            setIsRecording(true);
+            setRecordingDuration(0);
+
+            // Update duration every second
+            recordingIntervalRef.current = setInterval(() => {
+                setRecordingDuration(d => d + 1);
+            }, 1000);
+
+        } catch (err) {
+            console.error('Failed to start recording:', err);
+            alert('Microphone access denied or not available');
+        }
+    };
+
+    const stopRecording = () => {
+        if (mediaRecorderRef.current && isRecording) {
+            mediaRecorderRef.current.stop();
+            setIsRecording(false);
+            if (recordingIntervalRef.current) {
+                clearInterval(recordingIntervalRef.current);
+                recordingIntervalRef.current = null;
+            }
+        }
+    };
+
+    const cancelRecording = () => {
+        if (mediaRecorderRef.current && isRecording) {
+            mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+            setIsRecording(false);
+            setRecordingDuration(0);
+            if (recordingIntervalRef.current) {
+                clearInterval(recordingIntervalRef.current);
+                recordingIntervalRef.current = null;
+            }
+        }
+    };
+
+    const formatDuration = (seconds: number) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    // Auto-generate SKU from category, attributes, pricing, and optional image hash
+    const generateSKU = async (category: string, attrVals: Record<string, string>) => {
+        if (!category) return;
+
+        // 2-char category prefix
+        const catPrefix = category.substring(0, 2).toUpperCase();
+
+        // 1-char per attribute (first letter), max 3
+        const attrCodes = Object.values(attrVals)
+            .filter(v => v && v.length > 0)
+            .map(v => v.substring(0, 1).toUpperCase())
+            .slice(0, 3)
+            .join('');
+
+        // 1-char price tier: E/S/P/L
+        const salePrice = addProductForm.base_price || 0;
+        let priceTier = 'E';
+        if (salePrice >= 5000) priceTier = 'L';
+        else if (salePrice >= 2000) priceTier = 'P';
+        else if (salePrice >= 500) priceTier = 'S';
+
+        // Generate image hash as unique identifier if image is present (reusing existing image matcher)
+        let imgHash = '';
+        const imageUrl = selectedMessageImage || addProductForm.image_url;
+        if (imageUrl) {
+            try {
+                const hash = await generateImageHash(imageUrl);
+                // Convert binary hash to hex-like 6-char code for uniqueness
+                imgHash = parseInt(hash.slice(0, 24), 2).toString(16).toUpperCase().padStart(6, '0').slice(-6);
+            } catch {
+                imgHash = '';
+            }
+        }
+
+        // Use image hash as unique ID when available, otherwise use timestamp
+        // This ensures same image = same SKU (enables deduplication)
+        const uniqueId = imgHash || Date.now().toString(36).toUpperCase().slice(-4);
+
+        // Format: CA-ATR-T-UNIQUE (e.g., EA-GSR-P-3F2A1B or EA-GSR-P-X7AB)
+        const sku = `${catPrefix}-${attrCodes || 'X'}-${priceTier}-${uniqueId}`;
+        setAddProductForm(f => ({ ...f, sku }));
+    };
+
+    // Add Product to Inventory Handler
+    const handleAddProduct = async () => {
+        if (!addProductForm.sku.trim() || !addProductForm.name.trim()) {
+            alert('SKU and Name are required');
+            return;
+        }
+
+        setAddingProduct(true);
+        try {
+            // P0: Check for duplicate using image hash
+            const imageUrl = selectedMessageImage || addProductForm.image_url;
+            if (imageUrl) {
+                try {
+                    const imgHash = await generateImageHash(imageUrl);
+                    // Check if this image hash already exists in DB
+                    const { data: existingProducts } = await supabase
+                        .from('products')
+                        .select('id, sku, name, image_hash')
+                        .eq('image_hash', imgHash)
+                        .limit(1);
+
+                    if (existingProducts && existingProducts.length > 0) {
+                        const existing = existingProducts[0] as any;
+                        const confirmNew = confirm(
+                            `⚠️ Similar product already exists!\n\n` +
+                            `Existing: ${existing.name} (${existing.sku})\n\n` +
+                            `Click OK to update existing stock, or Cancel to create new anyway.`
+                        );
+
+                        if (confirmNew) {
+                            // User wants to update existing - redirect to stock update
+                            setAddingProduct(false);
+                            setShowAddProductModal(false);
+                            // Add to cart with existing product for stock update
+                            const matchedProduct = {
+                                id: existing.id,
+                                sku: existing.sku,
+                                name: existing.name,
+                                base_price: 0,
+                                stock: 0,
+                                image_url: imageUrl
+                            };
+                            setCart(prev => {
+                                const existingItem = prev.find(i => i.product.id === matchedProduct.id);
+                                if (existingItem) {
+                                    return prev.map(i => i.product.id === matchedProduct.id
+                                        ? { ...i, quantity: i.quantity + (addProductForm.initial_stock || 1) }
+                                        : i);
+                                }
+                                return [...prev, { product: matchedProduct, quantity: addProductForm.initial_stock || 1 }];
+                            });
+                            setAddedToast(`Added ${addProductForm.initial_stock || 1} to: ${existing.name}`);
+                            setTimeout(() => setAddedToast(null), 3000);
+                            return;
+                        }
+                        // User clicked Cancel - continue creating new product
+                    }
+                } catch (hashErr) {
+                    console.warn('Image hash check failed, proceeding:', hashErr);
+                }
+            }
+
+            // Generate and store image hash with the product
+            let imageHash = '';
+            if (imageUrl) {
+                try {
+                    const hash = await generateImageHash(imageUrl);
+                    imageHash = hash;
+                } catch { /* ignore */ }
+            }
+
+            // Insert product
+            const { data: productData, error: productError } = await supabase
+                .from('products')
+                .insert({
+                    sku: addProductForm.sku.trim(),
+                    name: addProductForm.name.trim(),
+                    description: addProductForm.description.trim() || null,
+                    category: addProductForm.category.trim() || null,
+                    base_price: addProductForm.base_price || 0,
+                    cost_price: addProductForm.cost_price || null,
+                    image_url: imageUrl || null,
+                    image_hash: imageHash || null,
+                    parent_sku: isVariant && selectedParentProduct ? selectedParentProduct.sku : null,
+                    is_active: true
+                })
+                .select()
+                .single();
+
+            if (productError) {
+                throw productError;
+            }
+
+            // If initial stock provided, create a variant with that stock
+            if (addProductForm.initial_stock > 0 && productData) {
+                await supabase.from('product_variants').insert({
+                    product_id: productData.id,
+                    sku_suffix: 'DEFAULT',
+                    variant_name: 'Default',
+                    price_adjustment: 0,
+                    stock_level: addProductForm.initial_stock,
+                    low_stock_threshold: 5
+                });
+            }
+
+            // Reset form and close modal
+            setAddProductForm({
+                sku: '', name: '', description: '', category: '', hsn_code: '7117',
+                base_price: 0, cost_price: 0, image_url: '', initial_stock: 0
+            });
+            setAttributeValues({});
+            setSelectedMessageImage(null);
+            setShowAddProductModal(false);
+            setAddedToast(`Added: ${addProductForm.name}`);
+            setTimeout(() => setAddedToast(null), 3000);
+
+            // Refresh products list
+            const { data } = await supabase
+                .from("products")
+                .select("id, sku, name, base_price, image_url")
+                .eq("is_active", true)
+                .order("name");
+            if (data) setProducts(data.map(p => ({ ...p, stock: 0 })));
+
+        } catch (err: any) {
+            console.error('Failed to add product:', err);
+            alert(err.message || 'Failed to add product');
+        } finally {
+            setAddingProduct(false);
+        }
+    };
+
+    // Open Add Product Modal from a message image - with duplicate detection
+    const openAddProductFromMessage = async (msg: Message) => {
+        // If message has an image, try to get the URL
+        let imageUrl = '';
+        if (msg.type === 'image' && msg.mediaUrl) {
+            imageUrl = msg.mediaUrl;
+        } else if (msg.type === 'image' && msg.id) {
+            // Download media if not already loaded
+            const mediaData = await whatsappManager.downloadMedia(msg.id);
+            if (mediaData) {
+                imageUrl = mediaData;
+            }
+        }
+
+        if (!imageUrl) {
+            // No image, open add product modal directly
+            setShowAddProductModal(true);
+            return;
+        }
+
+        // Check for matching existing products using image matcher
+        try {
+            const matches = await findMatchingProducts(imageUrl, 0.7); // 70% threshold
+
+            if (matches.length > 0) {
+                // Found matches - show match modal for stock update
+                // Map to ImageMatch format (add stock: 0 as placeholder)
+                const mappedMatches = matches.map(m => ({
+                    product: { ...m.product, stock: 0 },
+                    similarity: m.similarity
+                }));
+                setImageMatches(mappedMatches);
+                setSelectedMessageImage(imageUrl);
+                setShowMatchModal(true);
+                return;
+            }
+        } catch (err) {
+            console.warn('Image matching failed, proceeding to add new product:', err);
+        }
+
+        // No matches found - open add product modal for new product
+        setSelectedMessageImage(imageUrl);
+        setAddProductForm({
+            sku: '',
+            name: '',
+            description: msg.caption || '',
+            category: '',
+            hsn_code: '7117',
+            base_price: 0,
+            cost_price: 0,
+            image_url: imageUrl,
+            initial_stock: 0
+        });
+        setAttributeValues({});
+        setShowAddProductModal(true);
+    };
 
 
     return (
@@ -797,18 +1343,102 @@ export default function WhatsAppPage() {
 
                         {sessionStatus === "qr" && (
                             <div className="p-6 flex flex-col items-center justify-center flex-1 space-y-4">
-                                {qrCode ? (
-                                    <>
-                                        <img src={qrCode} className="w-64 h-64 border-4 border-white rounded-lg shadow-lg object-contain bg-white" alt="QR Code" />
-                                        <p className="text-sm text-center text-muted-foreground font-medium">Scan with WhatsApp</p>
-                                        <div className="text-[10px] text-muted-foreground max-w-[200px] text-center">
-                                            Open WhatsApp &gt; Menu &gt; Linked Devices &gt; Link a Device
+                                {/* Login Method Tabs */}
+                                <div className="flex bg-muted rounded-lg p-1 mb-4 w-full max-w-[250px]">
+                                    <button
+                                        className={`flex-1 text-xs font-bold py-1.5 rounded-md transition-all ${loginMethod === 'qr' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                                        onClick={() => setLoginMethod('qr')}
+                                    >
+                                        QR Code
+                                    </button>
+                                    <button
+                                        className={`flex-1 text-xs font-bold py-1.5 rounded-md transition-all ${loginMethod === 'phone' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                                        onClick={() => setLoginMethod('phone')}
+                                    >
+                                        Phone Number
+                                    </button>
+                                </div>
+
+                                {loginMethod === 'qr' ? (
+                                    qrCode ? (
+                                        <>
+                                            <div className="bg-white p-2 rounded-xl mb-2">
+                                                <img src={qrCode} className="w-64 h-64 object-contain" alt="QR Code" />
+                                            </div>
+                                            <p className="text-sm text-center text-muted-foreground font-medium">Scan with WhatsApp</p>
+                                            <div className="text-[10px] text-muted-foreground max-w-[200px] text-center mt-1">
+                                                Menu &gt; Linked Devices &gt; Link a Device
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <div className="flex flex-col items-center gap-2 py-10">
+                                            <Loader2 size={32} className="animate-spin text-primary" />
+                                            <p className="text-sm text-muted-foreground">Generating QR Code...</p>
                                         </div>
-                                    </>
+                                    )
                                 ) : (
-                                    <div className="flex flex-col items-center gap-2">
-                                        <Loader2 size={32} className="animate-spin text-primary" />
-                                        <p className="text-sm text-muted-foreground">Generating QR Code...</p>
+                                    <div className="flex flex-col items-center w-full max-w-[280px] space-y-4">
+                                        {!pairingCode ? (
+                                            <>
+                                                <div className="text-center">
+                                                    <h3 className="font-bold text-sm">Link with Phone Number</h3>
+                                                    <p className="text-[10px] text-muted-foreground mt-1">Enter your number to get a pairing code</p>
+                                                </div>
+
+                                                <div className="w-full space-y-2">
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold uppercase text-muted-foreground">Phone Number</label>
+                                                        <div className="flex bg-muted border border-border rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-primary">
+                                                            <span className="px-3 py-2 text-muted-foreground text-sm flex items-center bg-muted/50 border-r border-border">+</span>
+                                                            <input
+                                                                className="flex-1 bg-transparent px-3 py-2 text-sm focus:outline-none"
+                                                                placeholder="CountryCode + Number (e.g., 919876543210)"
+                                                                value={phoneNumber}
+                                                                onChange={e => setPhoneNumber(e.target.value.replace(/\D/g, ''))}
+                                                            />
+                                                        </div>
+                                                    </div>
+
+                                                    <button
+                                                        onClick={handleRequestPairingCode}
+                                                        disabled={pairingLoading || !phoneNumber}
+                                                        className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-sm py-2.5 rounded-lg flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                                                    >
+                                                        {pairingLoading ? <Loader2 size={16} className="animate-spin" /> : <LinkIcon size={16} />}
+                                                        Get Pairing Code
+                                                    </button>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className="flex flex-col items-center animate-in zoom-in-95 duration-300">
+                                                <div className="text-center mb-4">
+                                                    <h3 className="font-bold text-lg text-primary">Pairing Code</h3>
+                                                    <p className="text-xs text-muted-foreground">Enter this code on your phone</p>
+                                                </div>
+
+                                                <div className="flex gap-2 mb-6">
+                                                    {pairingCode.split('').map((char, i) => (
+                                                        <div key={i} className="w-8 h-10 flex items-center justify-center bg-muted border border-primary/20 rounded text-xl font-mono font-bold shadow-sm">
+                                                            {char}
+                                                        </div>
+                                                    ))}
+                                                </div>
+
+                                                <div className="text-[10px] text-muted-foreground bg-muted/30 p-3 rounded-lg text-center max-w-[250px]">
+                                                    1. Open WhatsApp on your phone<br />
+                                                    2. Go to <b>Linked Devices &gt; Link a Device</b><br />
+                                                    3. Tap <b>"Link with phone number instead"</b><br />
+                                                    4. Enter the code shown above
+                                                </div>
+
+                                                <button
+                                                    onClick={() => setPairingCode(null)}
+                                                    className="mt-6 text-xs text-muted-foreground hover:text-primary underline"
+                                                >
+                                                    Back to Phone Entry
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -850,8 +1480,17 @@ export default function WhatsAppPage() {
                             <>
                                 <div className="h-14 border-b border-border flex items-center px-4 bg-background/50 backdrop-blur justify-between">
                                     <div className="flex items-center gap-2">
-                                        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-                                            <User size={16} className="text-primary" />
+                                        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden">
+                                            {chats.find(c => c.id === selectedChat)?.profilePic ? (
+                                                <img
+                                                    src={chats.find(c => c.id === selectedChat)?.profilePic || ''}
+                                                    alt=""
+                                                    className="w-full h-full object-cover"
+                                                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                                />
+                                            ) : (
+                                                <User size={16} className="text-primary" />
+                                            )}
                                         </div>
                                         <span className="font-bold text-sm">{chats.find(c => c.id === selectedChat)?.name}</span>
                                     </div>
@@ -865,7 +1504,12 @@ export default function WhatsAppPage() {
 
                                 <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-muted/10">
                                     {selectedChatMessages.map(msg => (
-                                        <div key={msg.id} className={`flex ${msg.fromMe ? 'justify-end' : 'justify-start'}`}>
+                                        <div
+                                            key={msg.id}
+                                            id={`msg-${msg.id}`}
+                                            data-msg-id={msg.id}
+                                            className={`flex transition-all duration-300 ${msg.fromMe ? 'justify-end' : 'justify-start'}`}
+                                        >
                                             <div className={`max-w-[80%] p-3 rounded-xl text-sm ${msg.fromMe ? 'bg-primary text-primary-foreground rounded-br-none' : 'bg-card border border-border rounded-tl-none'}`}>
                                                 <MessageContent
                                                     msg={msg}
@@ -877,17 +1521,95 @@ export default function WhatsAppPage() {
                                     ))}
                                 </div>
 
-                                <div className="p-3 bg-card border-t border-border flex gap-2">
+                                {/* Attachment Preview */}
+                                {attachmentFile && (
+                                    <div className="px-3 py-2 bg-muted/50 border-t border-border flex items-center gap-2">
+                                        {attachmentPreview ? (
+                                            <img src={attachmentPreview} alt="Preview" className="w-16 h-16 object-cover rounded-lg" />
+                                        ) : (
+                                            <div className="w-16 h-16 bg-muted rounded-lg flex items-center justify-center">
+                                                <FileText size={24} className="text-muted-foreground" />
+                                            </div>
+                                        )}
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium truncate">{attachmentFile.name}</p>
+                                            <p className="text-xs text-muted-foreground">{(attachmentFile.size / 1024).toFixed(1)} KB</p>
+                                        </div>
+                                        <button onClick={clearAttachment} className="p-1 hover:bg-muted rounded text-muted-foreground hover:text-foreground">
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
+                                )}
+
+                                {/* Message Input */}
+                                <div className="p-3 bg-card border-t border-border flex gap-2 items-center">
+                                    {/* Hidden File Input */}
                                     <input
-                                        className="flex-1 bg-muted rounded-lg px-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                        placeholder="Type a message..."
-                                        value={replyText}
-                                        onChange={e => setReplyText(e.target.value)}
-                                        onKeyDown={e => e.key === 'Enter' && sendReply()}
+                                        type="file"
+                                        ref={fileInputRef}
+                                        onChange={handleFileSelect}
+                                        accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+                                        className="hidden"
                                     />
-                                    <button onClick={sendReply} className="p-2 bg-primary text-primary-foreground rounded-lg">
-                                        <Send size={18} />
+
+                                    {/* Attachment Button */}
+                                    <button
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
+                                        title="Attach file"
+                                    >
+                                        <ImageIcon size={18} />
                                     </button>
+
+                                    {/* Recording Indicator or Text Input */}
+                                    {isRecording ? (
+                                        <div className="flex-1 flex items-center gap-2 bg-red-500/10 rounded-lg px-3 py-2">
+                                            <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                                            <span className="text-sm text-red-500 font-medium">{formatDuration(recordingDuration)}</span>
+                                            <span className="text-xs text-muted-foreground flex-1">Recording...</span>
+                                            <button onClick={cancelRecording} className="text-muted-foreground hover:text-foreground">
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <input
+                                            className="flex-1 bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                            placeholder={attachmentFile ? "Add a caption..." : "Type a message..."}
+                                            value={replyText}
+                                            onChange={e => setReplyText(e.target.value)}
+                                            onKeyDown={e => e.key === 'Enter' && (attachmentFile ? handleSendAttachment() : sendReply())}
+                                        />
+                                    )}
+
+                                    {/* Microphone Button (when not typing) */}
+                                    {!replyText.trim() && !attachmentFile && !isRecording && (
+                                        <button
+                                            onClick={startRecording}
+                                            className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
+                                            title="Record voice message"
+                                        >
+                                            <Mic size={18} />
+                                        </button>
+                                    )}
+
+                                    {/* Send/Stop Button */}
+                                    {isRecording ? (
+                                        <button
+                                            onClick={stopRecording}
+                                            className="p-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                                            title="Send voice message"
+                                        >
+                                            <Send size={18} />
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={attachmentFile ? handleSendAttachment : sendReply}
+                                            disabled={sendingAttachment || (!replyText.trim() && !attachmentFile)}
+                                            className="p-2 bg-primary text-primary-foreground rounded-lg disabled:opacity-50 transition-opacity"
+                                        >
+                                            {sendingAttachment ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                                        </button>
+                                    )}
                                 </div>
                             </>
                         ) : (
@@ -1237,10 +1959,10 @@ export default function WhatsAppPage() {
                 </div>
             )}
 
-            {/* Image Match Modal */}
+            {/* Image Match Modal - Search First UX */}
             {showMatchModal && imageMatches.length > 0 && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowMatchModal(false)}>
-                    <div className="bg-card rounded-xl border border-border max-w-md w-full max-h-[70vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+                    <div className="bg-card rounded-xl border border-border max-w-md w-full max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
                         <div className="p-4 border-b border-border flex justify-between items-center">
                             <h3 className="font-bold flex items-center gap-2">
                                 <Sparkles size={18} className="text-primary" />
@@ -1248,7 +1970,12 @@ export default function WhatsAppPage() {
                             </h3>
                             <button onClick={() => setShowMatchModal(false)} className="text-muted-foreground hover:text-foreground">&times;</button>
                         </div>
-                        <div className="p-4 space-y-3 overflow-y-auto max-h-[50vh]">
+
+                        {/* Match Results */}
+                        <div className="p-4 space-y-3 overflow-y-auto max-h-[45vh]">
+                            <p className="text-xs text-muted-foreground mb-2">
+                                These products match the image. Click + to add stock, or create new if different.
+                            </p>
                             {imageMatches.map(match => (
                                 <div key={match.product.id} className="flex gap-3 p-3 bg-muted/20 rounded-lg border border-border">
                                     <div className="w-16 h-16 rounded-lg bg-muted overflow-hidden flex-shrink-0">
@@ -1276,6 +2003,340 @@ export default function WhatsAppPage() {
                                     </button>
                                 </div>
                             ))}
+                        </div>
+
+                        {/* Footer - Create New Option */}
+                        <div className="p-4 border-t border-border bg-muted/20">
+                            <button
+                                onClick={() => {
+                                    setShowMatchModal(false);
+                                    // Open add product modal with the image
+                                    setAddProductForm({
+                                        sku: '',
+                                        name: '',
+                                        description: '',
+                                        category: '',
+                                        hsn_code: '7117',
+                                        base_price: 0,
+                                        cost_price: 0,
+                                        image_url: selectedMessageImage || '',
+                                        initial_stock: 0
+                                    });
+                                    setShowAddProductModal(true);
+                                }}
+                                className="w-full py-2.5 px-4 border border-border rounded-lg text-sm text-muted-foreground hover:bg-muted flex items-center justify-center gap-2"
+                            >
+                                <Plus size={14} />
+                                None of These - Create New Product
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Add Product to Inventory Modal */}
+            {showAddProductModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div className="bg-card rounded-xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-hidden">
+                        {/* Header */}
+                        <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
+                            <div className="flex items-center gap-2">
+                                <Package className="text-primary" size={20} />
+                                <h3 className="font-semibold text-lg">Add Product to Inventory</h3>
+                            </div>
+                            <button
+                                onClick={() => setShowAddProductModal(false)}
+                                className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        {/* Form */}
+                        <div className="p-4 overflow-y-auto max-h-[calc(90vh-140px)] space-y-4">
+                            {/* Image Preview */}
+                            {(selectedMessageImage || addProductForm.image_url) && (
+                                <div className="flex justify-center">
+                                    <img
+                                        src={selectedMessageImage || addProductForm.image_url}
+                                        alt="Product"
+                                        className="w-32 h-32 object-cover rounded-xl border border-border"
+                                    />
+                                </div>
+                            )}
+
+                            {/* P2: Variant Toggle */}
+                            <div className="flex items-center gap-3 p-3 bg-muted/30 rounded-lg">
+                                <input
+                                    type="checkbox"
+                                    id="isVariant"
+                                    checked={isVariant}
+                                    onChange={e => {
+                                        setIsVariant(e.target.checked);
+                                        if (!e.target.checked) {
+                                            setSelectedParentProduct(null);
+                                        }
+                                    }}
+                                    className="w-4 h-4 rounded accent-primary"
+                                />
+                                <label htmlFor="isVariant" className="text-sm cursor-pointer flex-1">
+                                    This is a variant of an existing product
+                                </label>
+                            </div>
+
+                            {/* Parent Product Selector (when variant) */}
+                            {isVariant && (
+                                <div className="p-3 bg-muted/20 rounded-lg border border-primary/30">
+                                    <label className="text-xs text-muted-foreground mb-2 block">Parent Product *</label>
+                                    <Select
+                                        value={selectedParentProduct?.id || ''}
+                                        onValueChange={(id) => {
+                                            const parent = products.find(p => p.id === id) || null;
+                                            setSelectedParentProduct(parent);
+                                            if (parent) {
+                                                // Auto-generate variant SKU from parent
+                                                const attrSuffix = Object.values(attributeValues)
+                                                    .filter(v => v && v.length > 0)
+                                                    .map(v => v.substring(0, 1).toUpperCase())
+                                                    .slice(0, 3)
+                                                    .join('') || 'V1';
+                                                setAddProductForm(f => ({
+                                                    ...f,
+                                                    sku: `${parent.sku}-${attrSuffix}`,
+                                                    name: `${parent.name} (${attrSuffix})`,
+                                                    category: '' // inherit from parent
+                                                }));
+                                            }
+                                        }}
+                                    >
+                                        <SelectTrigger className="w-full bg-muted border-0">
+                                            <SelectValue placeholder="Select parent product" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {products.map(p => (
+                                                <SelectItem key={p.id} value={p.id}>
+                                                    {p.sku} - {p.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    {selectedParentProduct && (
+                                        <p className="text-xs text-muted-foreground mt-2">
+                                            Variant SKU will be: <span className="font-mono text-primary">{addProductForm.sku}</span>
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+                            {/* SKU & Name Row */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">SKU *</label>
+                                    <input
+                                        type="text"
+                                        value={addProductForm.sku}
+                                        onChange={e => setAddProductForm(f => ({ ...f, sku: e.target.value }))}
+                                        placeholder="e.g. PRD-001"
+                                        className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">Name *</label>
+                                    <input
+                                        type="text"
+                                        value={addProductForm.name}
+                                        onChange={e => setAddProductForm(f => ({ ...f, name: e.target.value }))}
+                                        placeholder="Product Name"
+                                        className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Description */}
+                            <div>
+                                <label className="text-xs text-muted-foreground mb-1 block">Description</label>
+                                <textarea
+                                    value={addProductForm.description}
+                                    onChange={e => setAddProductForm(f => ({ ...f, description: e.target.value }))}
+                                    placeholder="Product description..."
+                                    rows={2}
+                                    className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                                />
+                            </div>
+
+                            {/* Category & HSN Code Row */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">Category</label>
+                                    <Select
+                                        value={addProductForm.category}
+                                        onValueChange={(v) => {
+                                            setAddProductForm(f => ({ ...f, category: v }));
+                                            generateSKU(v, attributeValues);
+                                        }}
+                                    >
+                                        <SelectTrigger className="w-full bg-muted border-0">
+                                            <SelectValue placeholder="Select category" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {productCategories.length === 0 ? (
+                                                <SelectItem value="uncategorized">Uncategorized</SelectItem>
+                                            ) : (
+                                                productCategories.map(cat => (
+                                                    <SelectItem key={cat.id} value={cat.name}>{cat.name}</SelectItem>
+                                                ))
+                                            )}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">HSN Code</label>
+                                    <input
+                                        type="text"
+                                        value={addProductForm.hsn_code}
+                                        onChange={e => setAddProductForm(f => ({ ...f, hsn_code: e.target.value }))}
+                                        placeholder="7117"
+                                        className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Prices Row */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">Selling Price (₹)</label>
+                                    <input
+                                        type="number"
+                                        value={addProductForm.base_price || ''}
+                                        onChange={e => {
+                                            const newPrice = parseFloat(e.target.value) || 0;
+                                            setAddProductForm(f => ({ ...f, base_price: newPrice }));
+                                            // Regenerate SKU with new price tier
+                                            setTimeout(() => generateSKU(addProductForm.category, attributeValues), 0);
+                                        }}
+                                        placeholder="0"
+                                        className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">Cost Price (₹)</label>
+                                    <input
+                                        type="number"
+                                        value={addProductForm.cost_price || ''}
+                                        onChange={e => {
+                                            const newCost = parseFloat(e.target.value) || 0;
+                                            setAddProductForm(f => ({ ...f, cost_price: newCost }));
+                                            // Regenerate SKU with new margin code
+                                            setTimeout(() => generateSKU(addProductForm.category, attributeValues), 0);
+                                        }}
+                                        placeholder="0"
+                                        className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Dynamic Attributes */}
+                            {productAttributes.length > 0 && (
+                                <div className="space-y-3 border-t border-border pt-3">
+                                    <label className="text-xs text-muted-foreground block">Custom Attributes</label>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        {productAttributes.map(attr => (
+                                            <div key={attr.id}>
+                                                <label className="text-xs text-muted-foreground mb-1 block">
+                                                    {attr.name}
+                                                    {attr.is_required && <span className="text-red-500 ml-0.5">*</span>}
+                                                </label>
+                                                {attr.attribute_type === 'select' && attr.options ? (
+                                                    <Select
+                                                        value={attributeValues[attr.id || ''] || ''}
+                                                        onValueChange={(v) => {
+                                                            const newVals = { ...attributeValues, [attr.id || '']: v };
+                                                            setAttributeValues(newVals);
+                                                            generateSKU(addProductForm.category, newVals);
+                                                        }}
+                                                    >
+                                                        <SelectTrigger className="w-full bg-muted border-0">
+                                                            <SelectValue placeholder={`Select ${attr.name.toLowerCase()}`} />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {attr.options.map((opt: string) => (
+                                                                <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                ) : attr.attribute_type === 'boolean' ? (
+                                                    <div className="flex items-center gap-2 h-9 px-3 bg-muted rounded-lg">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={attributeValues[attr.id || ''] === 'true'}
+                                                            onChange={(e) => setAttributeValues(prev => ({
+                                                                ...prev,
+                                                                [attr.id || '']: e.target.checked ? 'true' : 'false'
+                                                            }))}
+                                                            className="w-4 h-4 rounded"
+                                                        />
+                                                        <span className="text-sm text-muted-foreground">Yes</span>
+                                                    </div>
+                                                ) : (
+                                                    <input
+                                                        type={attr.attribute_type === 'number' ? 'number' : 'text'}
+                                                        placeholder={`Enter ${attr.name.toLowerCase()}`}
+                                                        value={attributeValues[attr.id || ''] || ''}
+                                                        onChange={(e) => setAttributeValues(prev => ({
+                                                            ...prev,
+                                                            [attr.id || '']: e.target.value
+                                                        }))}
+                                                        className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                                    />
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Image URL (if no message image) */}
+                            {!selectedMessageImage && (
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">Image URL</label>
+                                    <input
+                                        type="text"
+                                        value={addProductForm.image_url}
+                                        onChange={e => setAddProductForm(f => ({ ...f, image_url: e.target.value }))}
+                                        placeholder="https://..."
+                                        className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                </div>
+                            )}
+
+                            {/* Initial Stock */}
+                            <div>
+                                <label className="text-xs text-muted-foreground mb-1 block">Initial Stock Level</label>
+                                <input
+                                    type="number"
+                                    value={addProductForm.initial_stock || ''}
+                                    onChange={e => setAddProductForm(f => ({ ...f, initial_stock: parseInt(e.target.value) || 0 }))}
+                                    placeholder="0"
+                                    className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="flex gap-3 p-4 border-t border-border bg-muted/20">
+                            <button
+                                onClick={() => setShowAddProductModal(false)}
+                                className="flex-1 py-2.5 rounded-lg border border-border hover:bg-muted transition-colors text-sm font-medium"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleAddProduct}
+                                disabled={addingProduct || !addProductForm.sku.trim() || !addProductForm.name.trim()}
+                                className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-all text-sm font-medium flex items-center justify-center gap-2"
+                            >
+                                {addingProduct ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                                Add Product
+                            </button>
                         </div>
                     </div>
                 </div>

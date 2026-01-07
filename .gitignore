@@ -60,3 +60,4 @@ next-env.d.ts
 # Specific ignores
 wppconnect-sidecar/tokens
 wppconnect-sidecar/userData
+src-tauri/binaries/
