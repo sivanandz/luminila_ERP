@@ -20,7 +20,8 @@ import {
     CopyPlus,
     Trash2,
     Save,
-    Loader2
+    Loader2,
+    ScanBarcode
 } from "lucide-react";
 import {
     DropdownMenu,
@@ -48,6 +49,7 @@ import {
 } from "@/components/ui/select";
 import { getCategories, type Category } from "@/lib/categories";
 import { getAttributes, type ProductAttribute } from "@/lib/attributes";
+import { printLabels, parseSKUFromBarcode } from "@/lib/barcode-generator";
 
 interface Product {
     id: string;
@@ -78,6 +80,99 @@ export default function InventoryPage() {
     // Edit mode - reuses Add Product dialog
     const [isEditMode, setIsEditMode] = useState(false);
     const [editingProductId, setEditingProductId] = useState<string | null>(null);
+
+    // P3: Scan & Stock Update State
+    const [showScanDialog, setShowScanDialog] = useState(false);
+    const [scanQuery, setScanQuery] = useState("");
+    const [scanResult, setScanResult] = useState<Product | null>(null);
+    const [scanStockInput, setScanStockInput] = useState("1");
+    const scanInputRef = useRef<HTMLInputElement>(null);
+
+    // Handle Scan Logic
+    const handleScanSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!scanQuery.trim()) return;
+
+        // Try to find product by SKU (exact or barcode match)
+        const normalizedQuery = scanQuery.trim().toUpperCase();
+        // Check if query is a barcode format or direct SKU
+        const extractedSku = parseSKUFromBarcode(normalizedQuery) || normalizedQuery;
+
+        const found = products.find(p =>
+            p.sku.toUpperCase() === extractedSku ||
+            p.sku.toUpperCase() === normalizedQuery ||
+            p.name.toUpperCase().includes(normalizedQuery) // Fallback name search
+        );
+
+        if (found) {
+            setScanResult(found);
+            setScanStockInput("1"); // Reset stock input
+        } else {
+            alert("Product not found! Try searching by name if SKU fails.");
+            setScanResult(null);
+        }
+    };
+
+    // Update stock from scanner
+    const handleScanStockUpdate = async (change: number) => {
+        if (!scanResult) return;
+
+        try {
+            const newStock = scanResult.stock + change;
+            if (newStock < 0) {
+                alert("Stock cannot be negative");
+                return;
+            }
+
+            // Find variant (assuming single variant/default for now)
+            const { data: variant } = await supabase
+                .from('product_variants')
+                .select('id')
+                .eq('variant_sku', scanResult.sku)
+                .single();
+
+            // If no variant found by SKU, try finding by product_id (first variant)
+            let variantId = variant?.id;
+            if (!variantId) {
+                const { data: firstVar } = await supabase
+                    .from('product_variants')
+                    .select('id')
+                    .eq('product_id', scanResult.id)
+                    .limit(1)
+                    .single();
+                variantId = firstVar?.id;
+            }
+
+            if (variantId) {
+                const { error } = await supabase
+                    .from('product_variants')
+                    .update({ stock_level: newStock })
+                    .eq('id', variantId);
+
+                if (error) throw error;
+
+                // Update local list
+                setProducts(prev => prev.map(p =>
+                    p.id === scanResult.id ? { ...p, stock: newStock } : p
+                ));
+                setScanResult(prev => prev ? { ...prev, stock: newStock } : null);
+
+                // If adding stock, maybe clear result to scan next? 
+                // For now keep result to allow multiple adds
+                if (change > 0) {
+                    // Optional: Auto-clear if high-speed scanning needed
+                    // setScanQuery("");
+                    // setScanResult(null);
+                    // scanInputRef.current?.focus();
+                }
+            } else {
+                alert("Could not find variant record to update.");
+            }
+        } catch (err) {
+            console.error("Stock update failed", err);
+            alert("Failed to update stock");
+        }
+    };
 
     // Router for navigation
     const router = useRouter();
@@ -540,6 +635,15 @@ export default function InventoryPage() {
                             >
                                 <RefreshCw size={16} className={loading ? "animate-spin" : ""} /> Sync
                             </button>
+                            <button
+                                onClick={() => {
+                                    setShowScanDialog(true);
+                                    setTimeout(() => scanInputRef.current?.focus(), 100);
+                                }}
+                                className="bg-primary/20 hover:bg-primary/30 text-primary h-10 px-4 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors border border-primary/30"
+                            >
+                                <ScanBarcode size={16} /> Scan Stock
+                            </button>
                             <input
                                 type="file"
                                 ref={fileInputRef}
@@ -625,8 +729,8 @@ export default function InventoryPage() {
                                             <button
                                                 onClick={(e) => {
                                                     e.stopPropagation();
-                                                    // Navigate to labels page with product data as query params
-                                                    router.push(`/labels?sku=${encodeURIComponent(product.sku)}&name=${encodeURIComponent(product.name)}&price=${product.price}`);
+                                                    // Print label directly using new utility
+                                                    printLabels([product], 1);
                                                 }}
                                                 className="bg-bg-navy text-white border-2 border-white/80 p-2 rounded-lg hover:scale-110 transition-transform shadow-lg hover:bg-surface-navy"
                                                 title="Print Label"
@@ -982,6 +1086,110 @@ export default function InventoryPage() {
                             <Button onClick={handleBulkImport} disabled={importLoading || importData.length === 0}>
                                 {importLoading ? "Importing..." : `Import ${importData.length} Products`}
                             </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+            {/* Scan & Stock Dialog */}
+            <Dialog open={showScanDialog} onOpenChange={(open) => {
+                setShowScanDialog(open);
+                if (!open) { setScanQuery(""); setScanResult(null); }
+            }}>
+                <DialogContent className="max-w-md bg-bg-navy border-surface-hover text-white">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <ScanBarcode className="text-primary" />
+                            Scan Product / Update Stock
+                        </DialogTitle>
+                    </DialogHeader>
+
+                    <div className="space-y-6 mt-4">
+                        {/* Scanner Input Area */}
+                        <form onSubmit={handleScanSubmit} className="relative">
+                            <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-moonstone">
+                                <Search size={18} />
+                            </div>
+                            <input
+                                ref={scanInputRef}
+                                type="text"
+                                value={scanQuery}
+                                onChange={(e) => setScanQuery(e.target.value)}
+                                placeholder="Scan Barcode or Type SKU..."
+                                className="bg-surface-navy border border-surface-hover text-white text-lg rounded-lg block w-full pl-10 py-4 pr-4 focus:ring-2 focus:ring-primary focus:border-transparent transition-all shadow-inner font-mono"
+                                autoFocus
+                            />
+                            <div className="absolute inset-y-0 right-2 flex items-center">
+                                <Button type="submit" size="sm" className="h-8">Search</Button>
+                            </div>
+                        </form>
+
+                        {/* Scan Result */}
+                        {scanResult ? (
+                            <div className="bg-surface-navy/50 border border-primary/30 rounded-xl p-4 animate-in fade-in zoom-in duration-200">
+                                <div className="flex gap-4">
+                                    {scanResult.image ? (
+                                        <img src={scanResult.image} alt={scanResult.name} className="w-20 h-20 object-cover rounded-lg border border-surface-hover" />
+                                    ) : (
+                                        <div className="w-20 h-20 bg-surface-navy rounded-lg flex items-center justify-center border border-surface-hover">
+                                            <Package className="text-moonstone/50" />
+                                        </div>
+                                    )}
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-bold text-primary mb-1">{scanResult.sku}</p>
+                                        <h3 className="font-bold text-lg leading-tight truncate">{scanResult.name}</h3>
+                                        <p className="text-moonstone text-sm">{scanResult.category}</p>
+                                        <div className="mt-2 flex items-center gap-2">
+                                            <span className="text-xl font-bold">Qty: {scanResult.stock}</span>
+                                            {scanResult.stock <= 5 && (
+                                                <span className="text-[10px] font-bold bg-orange-500/20 text-orange-400 px-2 py-0.5 rounded">LOW STOCK</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-surface-hover/50">
+                                    <Button
+                                        variant="destructive"
+                                        className="gap-2"
+                                        onClick={() => handleScanStockUpdate(-1)}
+                                    >
+                                        <span className="text-lg font-bold">-</span> Remove 1
+                                    </Button>
+                                    <Button
+                                        className="gap-2 bg-emerald-600 hover:bg-emerald-500"
+                                        onClick={() => handleScanStockUpdate(1)}
+                                    >
+                                        <span className="text-lg font-bold">+</span> Add 1
+                                    </Button>
+                                </div>
+                                <div className="mt-3 flex gap-2">
+                                    <Input
+                                        type="number"
+                                        value={scanStockInput}
+                                        onChange={(e) => setScanStockInput(e.target.value)}
+                                        className="bg-bg-navy border-surface-hover text-center"
+                                        min="1"
+                                    />
+                                    <Button
+                                        variant="secondary"
+                                        className="flex-1"
+                                        onClick={() => handleScanStockUpdate(parseInt(scanStockInput) || 0)}
+                                    >
+                                        Add {scanStockInput} Units
+                                    </Button>
+                                </div>
+                            </div>
+                        ) : (
+                            scanQuery && !scanResult && (
+                                <div className="text-center py-8 text-moonstone">
+                                    <ScanBarcode size={48} className="mx-auto mb-3 opacity-20" />
+                                    <p>Ready to scan. Aim scanner at barcode.</p>
+                                </div>
+                            )
+                        )}
+
+                        <div className="flex justify-end pt-2">
+                            <Button variant="ghost" onClick={() => setShowScanDialog(false)}>Done</Button>
                         </div>
                     </div>
                 </DialogContent>
