@@ -43,7 +43,7 @@ import {
 } from "@/lib/purchase";
 import { getVendors, type Vendor } from "@/lib/vendors";
 import { formatINR, GST_RATES, HSN_CODES } from "@/lib/gst";
-import { supabase } from "@/lib/supabase";
+import { pb } from "@/lib/pocketbase";
 
 interface ProductVariant {
     id: string;
@@ -81,18 +81,25 @@ export default function CreatePurchaseOrderPage() {
             const vendorData = await getVendors();
             setVendors(vendorData);
 
-            const { data } = await supabase
-                .from("product_variants")
-                .select(`
-                    id,
-                    variant_name,
-                    sku_suffix,
-                    product:products(id, name, sku, base_price)
-                `)
-                .order("variant_name");
-
-            if (data) {
-                setProducts(data as unknown as ProductVariant[]);
+            try {
+                const variants = await pb.collection('product_variants').getFullList({
+                    sort: 'variant_name',
+                    expand: 'product',
+                });
+                const productList: ProductVariant[] = variants.map((v: any) => ({
+                    id: v.id,
+                    variant_name: v.variant_name,
+                    sku_suffix: v.sku_suffix,
+                    product: v.expand?.product ? {
+                        id: v.expand.product.id,
+                        name: v.expand.product.name,
+                        sku: v.expand.product.sku,
+                        base_price: v.expand.product.base_price,
+                    } : { id: '', name: '', sku: '', base_price: 0 },
+                }));
+                setProducts(productList);
+            } catch (e) {
+                console.error('Failed to load products:', e);
             }
         }
         loadData();
@@ -218,9 +225,9 @@ export default function CreatePurchaseOrderPage() {
                         <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <div className="space-y-2 md:col-span-2">
                                 <Label>Vendor *</Label>
-                                <Select value={vendorId} onValueChange={setVendorId}>
+                                <Select value={vendorId} onValueChange={(v) => v && setVendorId(v)}>
                                     <SelectTrigger>
-                                        <SelectValue placeholder="Select vendor" />
+                                        <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {vendors.map((v) => (

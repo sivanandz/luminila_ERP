@@ -109,6 +109,7 @@ export default function CustomersPage() {
                 phone: formData.phone || undefined,
                 email: formData.email || undefined,
                 customer_type: formData.customer_type,
+                store_credit: 0,
                 preferred_contact: "phone",
                 opt_in_marketing: true,
             });
@@ -128,6 +129,15 @@ export default function CustomersPage() {
             <Header
                 title="Customers"
                 subtitle={`${stats?.totalCustomers || 0} registered customers`}
+                action={
+                    <Button
+                        onClick={() => setShowAddDialog(true)}
+                        className="bg-primary text-midnight hover:bg-primary/90"
+                    >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Customer
+                    </Button>
+                }
             />
 
             <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
@@ -203,7 +213,7 @@ export default function CustomersPage() {
                             />
                         </div>
 
-                        <Select value={typeFilter} onValueChange={setTypeFilter}>
+                        <Select value={typeFilter} onValueChange={(v) => v && setTypeFilter(v)}>
                             <SelectTrigger className="w-36 bg-card border-border">
                                 <SelectValue />
                             </SelectTrigger>
@@ -215,14 +225,6 @@ export default function CustomersPage() {
                             </SelectContent>
                         </Select>
                     </div>
-
-                    <Button
-                        onClick={() => setShowAddDialog(true)}
-                        className="bg-primary text-midnight hover:bg-primary/90"
-                    >
-                        <Plus className="w-4 h-4 mr-2" />
-                        Add Customer
-                    </Button>
                 </div>
 
                 {/* Customer Grid */}
@@ -242,7 +244,7 @@ export default function CustomersPage() {
                                 <Card
                                     key={customer.id}
                                     className="bg-card border-border hover:border-primary/30 cursor-pointer transition-all"
-                                    onClick={() => router.push(`/customers/${customer.id}`)}
+                                    onClick={() => router.push(`/customers/detail?id=${customer.id}`)}
                                 >
                                     <CardContent className="pt-6">
                                         <div className="flex items-start justify-between mb-3">
@@ -332,7 +334,7 @@ export default function CustomersPage() {
                             <Label>Type</Label>
                             <Select
                                 value={formData.customer_type}
-                                onValueChange={(v) => setFormData({ ...formData, customer_type: v as CustomerType })}
+                                onValueChange={(v) => v && setFormData({ ...formData, customer_type: v as CustomerType })}
                             >
                                 <SelectTrigger>
                                     <SelectValue />

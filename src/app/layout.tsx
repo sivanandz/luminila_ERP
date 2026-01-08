@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/layout";
+import { AuthProvider } from "@/contexts/AuthContext";
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
@@ -33,10 +34,12 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} ${manrope.variable} antialiased flex h-screen w-full overflow-hidden bg-background`}
       >
-        <Sidebar />
-        <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
-          {children}
-        </main>
+        <AuthProvider>
+          <Sidebar />
+          <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
+            {children}
+          </main>
+        </AuthProvider>
       </body>
     </html>
   );

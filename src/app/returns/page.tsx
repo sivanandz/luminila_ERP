@@ -48,6 +48,7 @@ const statusConfig: Record<CreditNoteStatus, { label: string; color: string; ico
     pending: { label: "Pending", color: "bg-yellow-500/20 text-yellow-400", icon: Clock },
     approved: { label: "Approved", color: "bg-blue-500/20 text-blue-400", icon: CheckCircle },
     refunded: { label: "Refunded", color: "bg-green-500/20 text-green-400", icon: DollarSign },
+    exchanged: { label: "Exchanged", color: "bg-purple-500/20 text-purple-400", icon: RotateCcw },
     cancelled: { label: "Cancelled", color: "bg-red-500/20 text-red-400", icon: XCircle },
 };
 
@@ -158,7 +159,7 @@ export default function ReturnsPage() {
                             />
                         </div>
 
-                        <Select value={statusFilter} onValueChange={setStatusFilter}>
+                        <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
                             <SelectTrigger className="w-36 bg-card border-border">
                                 <SelectValue />
                             </SelectTrigger>
@@ -211,7 +212,7 @@ export default function ReturnsPage() {
                                             <TableRow
                                                 key={cn.id}
                                                 className="border-border cursor-pointer hover:bg-muted/20"
-                                                onClick={() => router.push(`/returns/${cn.id}`)}
+                                                onClick={() => router.push(`/returns/detail?id=${cn.id}`)}
                                             >
                                                 <TableCell className="font-mono text-sm">
                                                     {cn.credit_note_number}

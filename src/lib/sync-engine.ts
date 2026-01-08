@@ -1,9 +1,9 @@
 /**
  * Unified Sync Engine
- * Orchestrates synchronization across all channels
+ * Orchestrates synchronization across all channels using PocketBase
  */
 
-import { supabase } from "./supabase";
+import { pb } from "./pocketbase";
 import {
     isShopifyConfigured,
     fetchAllShopifyProducts,
@@ -94,30 +94,24 @@ export async function pullAllProducts(
             onProgress?.("shopify", 0);
             const products = await fetchAllShopifyProducts();
 
-            // Upsert to Supabase
             let processed = 0;
             for (const product of products) {
-                // Check if product exists
-                const { data: existing } = await supabase
-                    .from("products")
-                    .select("id")
-                    .eq("sku", product.handle)
-                    .single();
+                try {
+                    const existing = await pb.collection('products').getFirstListItem(`sku="${product.handle}"`).catch(() => null);
 
-                if (existing) {
-                    // Update existing
-                    const existingTyped = existing as { id: string };
-                    await supabase
-                        .from("products")
-                        .update({ name: product.title, updated_at: new Date().toISOString() } as never)
-                        .eq("id", existingTyped.id);
-                } else {
-                    // Insert new
-                    await supabase.from("products").insert({
-                        sku: product.handle,
-                        name: product.title,
-                        is_active: true,
-                    } as never);
+                    if (existing) {
+                        await pb.collection('products').update(existing.id, {
+                            name: product.title,
+                        });
+                    } else {
+                        await pb.collection('products').create({
+                            sku: product.handle,
+                            name: product.title,
+                            is_active: true,
+                        });
+                    }
+                } catch (e) {
+                    console.error(`Failed to upsert product ${product.handle}:`, e);
                 }
 
                 processed++;
@@ -159,25 +153,23 @@ export async function pullAllProducts(
 
             let processed = 0;
             for (const product of products) {
-                const { data: existing } = await supabase
-                    .from("products")
-                    .select("id")
-                    .eq("sku", product.sku)
-                    .single();
+                try {
+                    const existing = await pb.collection('products').getFirstListItem(`sku="${product.sku}"`).catch(() => null);
 
-                if (existing) {
-                    const existingTyped = existing as { id: string };
-                    await supabase
-                        .from("products")
-                        .update({ name: product.name, updated_at: new Date().toISOString() } as never)
-                        .eq("id", existingTyped.id);
-                } else {
-                    await supabase.from("products").insert({
-                        sku: product.sku,
-                        name: product.name,
-                        base_price: parseFloat(product.price),
-                        is_active: true,
-                    } as never);
+                    if (existing) {
+                        await pb.collection('products').update(existing.id, {
+                            name: product.name,
+                        });
+                    } else {
+                        await pb.collection('products').create({
+                            sku: product.sku,
+                            name: product.name,
+                            base_price: parseFloat(product.price),
+                            is_active: true,
+                        });
+                    }
+                } catch (e) {
+                    console.error(`Failed to upsert product ${product.sku}:`, e);
                 }
 
                 processed++;
@@ -226,11 +218,10 @@ export async function pushInventoryToAll(
     const results: SyncResult[] = [];
 
     // Get variant info for channel mappings
-    const { data: variant } = await supabase
-        .from("product_variants")
-        .select("shopify_inventory_id, woocommerce_product_id")
-        .eq("id", variantId)
-        .single();
+    let variant: any = null;
+    try {
+        variant = await pb.collection('product_variants').getOne(variantId);
+    } catch (e) { }
 
     // Push to Shopify
     if (isShopifyConfigured()) {
@@ -246,10 +237,9 @@ export async function pushInventoryToAll(
     }
 
     // Push to WooCommerce
-    const variantTyped = variant as { shopify_inventory_id?: string; woocommerce_product_id?: number } | null;
-    if (isWooCommerceConfigured() && variantTyped?.woocommerce_product_id) {
+    if (isWooCommerceConfigured() && variant?.woocommerce_product_id) {
         const success = await pushInventoryToWoo(
-            variantTyped.woocommerce_product_id,
+            variant.woocommerce_product_id,
             null,
             newQuantity
         );
@@ -280,26 +270,25 @@ export async function pullAllOrders(
             const orders = await fetchShopifyOrders(since);
 
             for (const order of orders) {
-                // Check if order exists
-                const { data: existing } = await supabase
-                    .from("sales")
-                    .select("id")
-                    .eq("channel_order_id", order.id)
-                    .eq("channel", "shopify")
-                    .single();
+                try {
+                    const existing = await pb.collection('sales').getFirstListItem(
+                        `channel_order_id="${order.id}" && channel="shopify"`
+                    ).catch(() => null);
 
-                if (!existing) {
-                    // Insert new order
-                    await supabase.from("sales").insert({
-                        channel: "shopify",
-                        channel_order_id: order.id,
-                        customer_name: order.customer?.displayName || null,
-                        customer_phone: order.customer?.phone || null,
-                        total: parseFloat(order.totalPriceSet.shopMoney.amount),
-                        subtotal: parseFloat(order.totalPriceSet.shopMoney.amount),
-                        discount: 0,
-                        status: mapShopifyStatus(order.fulfillmentStatus),
-                    } as never);
+                    if (!existing) {
+                        await pb.collection('sales').create({
+                            channel: "shopify",
+                            channel_order_id: order.id,
+                            customer_name: order.customer?.displayName || '',
+                            customer_phone: order.customer?.phone || '',
+                            total: parseFloat(order.totalPriceSet.shopMoney.amount),
+                            subtotal: parseFloat(order.totalPriceSet.shopMoney.amount),
+                            discount: 0,
+                            status: mapShopifyStatus(order.fulfillmentStatus),
+                        });
+                    }
+                } catch (e) {
+                    console.error(`Failed to upsert order ${order.id}:`, e);
                 }
             }
 
@@ -329,25 +318,26 @@ export async function pullAllOrders(
             const orders = await fetchWooOrders(since);
 
             for (const order of orders) {
-                const { data: existing } = await supabase
-                    .from("sales")
-                    .select("id")
-                    .eq("channel_order_id", order.id.toString())
-                    .eq("channel", "woocommerce")
-                    .single();
+                try {
+                    const existing = await pb.collection('sales').getFirstListItem(
+                        `channel_order_id="${order.id}" && channel="woocommerce"`
+                    ).catch(() => null);
 
-                if (!existing) {
-                    await supabase.from("sales").insert({
-                        channel: "woocommerce",
-                        channel_order_id: order.id.toString(),
-                        customer_name: `${order.billing.first_name} ${order.billing.last_name}`,
-                        customer_phone: order.billing.phone || null,
-                        customer_address: `${order.billing.address_1}, ${order.billing.city}`,
-                        total: parseFloat(order.total),
-                        subtotal: parseFloat(order.total),
-                        discount: 0,
-                        status: mapWooStatus(order.status),
-                    } as never);
+                    if (!existing) {
+                        await pb.collection('sales').create({
+                            channel: "woocommerce",
+                            channel_order_id: order.id.toString(),
+                            customer_name: `${order.billing.first_name} ${order.billing.last_name}`,
+                            customer_phone: order.billing.phone || '',
+                            customer_address: `${order.billing.address_1}, ${order.billing.city}`,
+                            total: parseFloat(order.total),
+                            subtotal: parseFloat(order.total),
+                            discount: 0,
+                            status: mapWooStatus(order.status),
+                        });
+                    }
+                } catch (e) {
+                    console.error(`Failed to upsert order ${order.id}:`, e);
                 }
             }
 
@@ -374,9 +364,6 @@ export async function pullAllOrders(
     return results;
 }
 
-/**
- * Map Shopify fulfillment status to internal status
- */
 function mapShopifyStatus(status: string): "pending" | "confirmed" | "shipped" | "delivered" | "cancelled" {
     switch (status?.toLowerCase()) {
         case "fulfilled": return "shipped";
@@ -386,9 +373,6 @@ function mapShopifyStatus(status: string): "pending" | "confirmed" | "shipped" |
     }
 }
 
-/**
- * Map WooCommerce status to internal status
- */
 function mapWooStatus(status: string): "pending" | "confirmed" | "shipped" | "delivered" | "cancelled" {
     switch (status) {
         case "completed": return "delivered";

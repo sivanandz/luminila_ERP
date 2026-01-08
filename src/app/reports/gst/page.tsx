@@ -24,7 +24,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 
-import { getGSTR1Report, exportToCSV, printReport, type GSTR1Row } from "@/lib/reports";
+import { getGSTR1Report, generateGSTR1JSON, exportToJSON, exportToCSV, printReport, type GSTR1Row } from "@/lib/reports";
 import { formatINR } from "@/lib/gst";
 
 export default function GSTReportPage() {
@@ -33,6 +33,7 @@ export default function GSTReportPage() {
     const [b2b, setB2B] = useState<GSTR1Row[]>([]);
     const [b2c, setB2C] = useState<GSTR1Row[]>([]);
     const [summary, setSummary] = useState<any>({});
+    const [gstin, setGstin] = useState("");
 
     // Default to current month
     const [startDate, setStartDate] = useState(
@@ -63,6 +64,23 @@ export default function GSTReportPage() {
         exportToCSV(b2c, "gstr1_b2c");
     };
 
+    const handleExportJSON = async () => {
+        if (!gstin) {
+            alert("Please enter Organization GSTIN");
+            return;
+        }
+        try {
+            setLoading(true);
+            const jsonData = await generateGSTR1JSON(startDate, endDate, gstin);
+            exportToJSON(jsonData, `GSTR1_${format(new Date(), 'MMMyyyy')}`);
+        } catch (error) {
+            console.error(error);
+            alert("Failed to generate JSON");
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="GST Report (GSTR-1)" subtitle="B2B and B2C invoices for filing" />
@@ -76,6 +94,13 @@ export default function GSTReportPage() {
                     </Button>
 
                     <div className="flex items-center gap-4">
+                        <Input
+                            placeholder="Org GSTIN"
+                            value={gstin}
+                            onChange={(e) => setGstin(e.target.value)}
+                            className="w-40 bg-card uppercase font-mono"
+                            maxLength={15}
+                        />
                         <div className="flex items-center gap-2">
                             <Input
                                 type="date"
@@ -91,6 +116,10 @@ export default function GSTReportPage() {
                                 className="w-40 bg-card"
                             />
                         </div>
+                        <Button onClick={handleExportJSON} className="bg-green-600 hover:bg-green-700">
+                            <FileText className="w-4 h-4 mr-2" />
+                            Export JSON
+                        </Button>
                     </div>
                 </div>
 

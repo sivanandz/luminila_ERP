@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { supabase } from "./supabase";
+import { pb } from "./pocketbase";
 
 interface LowStockItem {
     variantId: string;
@@ -66,45 +66,21 @@ export async function fetchLowStockItems(threshold?: number): Promise<LowStockIt
     const effectiveThreshold = threshold ?? config.defaultThreshold;
 
     try {
-        const { data, error } = await supabase
-            .from("product_variants")
-            .select(`
-        id,
-        product_id,
-        variant_name,
-        sku_suffix,
-        stock_level,
-        low_stock_threshold,
-        product:products(id, name, sku)
-      `)
-            .lte("stock_level", effectiveThreshold)
-            .order("stock_level", { ascending: true });
-
-        if (error) throw error;
-
-        interface VariantWithProduct {
-            id: string;
-            product_id: string;
-            variant_name: string;
-            sku_suffix: string;
-            stock_level: number;
-            low_stock_threshold: number;
-            product: { id: string; name: string; sku: string } | null;
-        }
-
-        const typedData = data as unknown as VariantWithProduct[];
-
-        return (typedData || []).map((item) => {
-            return {
-                variantId: item.id,
-                productId: item.product?.id || "",
-                productName: item.product?.name || "Unknown",
-                variantName: item.variant_name,
-                sku: `${item.product?.sku || ""}-${item.sku_suffix}`,
-                currentStock: item.stock_level,
-                threshold: item.low_stock_threshold || effectiveThreshold,
-            };
+        const data = await pb.collection('product_variants').getFullList({
+            filter: `stock_level<=${effectiveThreshold}`,
+            sort: 'stock_level',
+            expand: 'product',
         });
+
+        return (data || []).map((item: any) => ({
+            variantId: item.id,
+            productId: item.expand?.product?.id || "",
+            productName: item.expand?.product?.name || "Unknown",
+            variantName: item.variant_name,
+            sku: `${item.expand?.product?.sku || ""}-${item.sku_suffix}`,
+            currentStock: item.stock_level,
+            threshold: item.low_stock_threshold || effectiveThreshold,
+        }));
     } catch (err) {
         console.error("Failed to fetch low stock items:", err);
         return [];
@@ -120,13 +96,11 @@ export async function sendDesktopNotification(
 ): Promise<boolean> {
     if (typeof window === "undefined") return false;
 
-    // Check if notifications are supported
     if (!("Notification" in window)) {
         console.warn("Desktop notifications not supported");
         return false;
     }
 
-    // Request permission if needed
     if (Notification.permission === "default") {
         const permission = await Notification.requestPermission();
         if (permission !== "granted") return false;
@@ -156,7 +130,6 @@ export async function checkAndAlert(): Promise<LowStockItem[]> {
 
     if (lowStockItems.length === 0) return [];
 
-    // Desktop notification
     if (config.notifyDesktop) {
         const count = lowStockItems.length;
         const criticalCount = lowStockItems.filter((i) => i.currentStock <= 0).length;
@@ -169,9 +142,6 @@ export async function checkAndAlert(): Promise<LowStockItem[]> {
         await sendDesktopNotification("Low Stock Alert", message);
     }
 
-    // TODO: Email notification (requires backend)
-    // TODO: WhatsApp notification (requires WPPConnect)
-
     return lowStockItems;
 }
 
@@ -183,12 +153,10 @@ export function useLowStockAlerts() {
     const [isLoading, setIsLoading] = useState(true);
     const [config, setConfig] = useState<AlertConfig>(DEFAULT_CONFIG);
 
-    // Load config on mount
     useEffect(() => {
         setConfig(loadAlertConfig());
     }, []);
 
-    // Check alerts
     const checkAlerts = useCallback(async () => {
         setIsLoading(true);
         const items = await fetchLowStockItems(config.defaultThreshold);
@@ -197,7 +165,6 @@ export function useLowStockAlerts() {
         return items;
     }, [config.defaultThreshold]);
 
-    // Initial check and periodic polling
     useEffect(() => {
         checkAlerts();
 
@@ -207,19 +174,16 @@ export function useLowStockAlerts() {
         }
     }, [checkAlerts, config.enabled, config.checkIntervalMs]);
 
-    // Update config
     const updateConfig = useCallback((updates: Partial<AlertConfig>) => {
         const newConfig = { ...config, ...updates };
         setConfig(newConfig);
         saveAlertConfig(newConfig);
     }, [config]);
 
-    // Dismiss single alert
     const dismissAlert = useCallback((variantId: string) => {
         setAlerts((prev) => prev.filter((a) => a.variantId !== variantId));
     }, []);
 
-    // Dismiss all alerts
     const dismissAll = useCallback(() => {
         setAlerts([]);
     }, []);

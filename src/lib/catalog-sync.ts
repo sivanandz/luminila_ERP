@@ -1,7 +1,7 @@
-import { supabase } from '@/lib/supabase';
+import { pb } from '@/lib/pocketbase';
 import { Product } from '@/types/database';
 
-const SIDECAR_URL = 'http://localhost:21465/api/default'; // Assuming 'default' session
+const SIDECAR_URL = 'http://localhost:21465/api/default';
 
 interface WhatsAppProduct {
     id: string;
@@ -10,8 +10,8 @@ interface WhatsAppProduct {
     price: number;
     currency: string;
     isHidden: boolean;
-    image?: string; // URL or Base64? usually URL in get response
-    retailerId?: string; // We map this to SKU
+    image?: string;
+    retailerId?: string;
     url?: string;
 }
 
@@ -29,19 +29,16 @@ export async function syncCatalog() {
     console.log('Starting catalog sync...');
 
     // 1. Create Sync Log
-    const { data: logData, error: logError } = await supabase
-        .from('catalog_sync_logs')
-        .insert({
+    let logData;
+    try {
+        logData = await pb.collection('catalog_sync_logs').create({
             status: 'running',
             products_added: 0,
             products_updated: 0,
             products_deleted: 0,
-            errors: []
-        })
-        .select()
-        .single();
-
-    if (logError || !logData) {
+            errors: [],
+        });
+    } catch (logError) {
         console.error('Failed to create sync log:', logError);
         return { success: false, error: 'Failed to create sync log' };
     }
@@ -53,14 +50,8 @@ export async function syncCatalog() {
     const errors: any[] = [];
 
     try {
-        // 2. Fetch Supabase Products. 
-        // We assume 'supabase' client is configured. 
-        // In a real background job, use createClient with SERVICE_KEY.
-        const { data: dbProducts, error: dbError } = await supabase
-            .from('products')
-            .select('*');
-
-        if (dbError) throw new Error(`DB Fetch Error: ${dbError.message}`);
+        // 2. Fetch PocketBase Products
+        const dbProducts = await pb.collection('products').getFullList();
 
         // 3. Fetch WhatsApp Catalog
         let waProducts: WhatsAppProduct[] = [];
@@ -70,22 +61,19 @@ export async function syncCatalog() {
             const json = await res.json();
             if (json.success) {
                 const rawProducts = json.products || [];
-                // Normalize structure if needed, depends on WPPConnect response
                 waProducts = rawProducts.map((p: any) => ({
                     id: p.id,
                     name: p.name,
                     description: p.description,
-                    price: p.price, // might be p.price / 1000 or similar? Need to verify unit. WPP usually takes integer amount? 
-                    // Wait, standard WA API uses amount/1000. WPPConnect usually handles this? 
-                    // We'll assume direct value mapping for now, will monitor in testing.
+                    price: p.price,
                     currency: p.currency,
                     isHidden: p.isHidden,
                     image: p.image,
-                    retailerId: p.retailerId || p.sku // map sku to retailerId if provided
+                    retailerId: p.retailerId || p.sku
                 }));
             }
         } catch (e: any) {
-            console.warn('Could not fetch WA catalog, assuming empty or error:', e.message);
+            console.warn('Could not fetch WA catalog:', e.message);
             errors.push({ type: 'fetch_wa_catalog', error: e.message });
         }
 
@@ -98,27 +86,22 @@ export async function syncCatalog() {
         // 5. Iterate DB Products
         for (const p of dbProducts) {
             try {
-                if (!p.sku) continue; // Skip products without SKU
+                if (!p.sku) continue;
 
                 const waP = waMap.get(p.sku);
 
                 if (p.is_active) {
                     if (!waP) {
-                        // CREATE
-                        await createProductInWhatsApp(p);
+                        await createProductInWhatsApp(p as unknown as Product);
                         added++;
                     } else {
-                        // UPDATE
-                        // Simple check: price or name diff
                         if (waP.price !== p.base_price || waP.name !== p.name) {
-                            await updateProductInWhatsApp(waP.id, p);
+                            await updateProductInWhatsApp(waP.id, p as unknown as Product);
                             updated++;
                         }
                     }
                 } else {
-                    // Inactive in DB
                     if (waP) {
-                        // DELETE from WA
                         await deleteProductInWhatsApp(waP.id);
                         deleted++;
                     }
@@ -130,30 +113,24 @@ export async function syncCatalog() {
         }
 
         // 6. Finish
-        await supabase
-            .from('catalog_sync_logs')
-            .update({
-                status: 'success',
-                completed_at: new Date().toISOString(),
-                products_added: added,
-                products_updated: updated,
-                products_deleted: deleted,
-                errors: errors
-            })
-            .eq('id', logId);
+        await pb.collection('catalog_sync_logs').update(logId, {
+            status: 'success',
+            completed_at: new Date().toISOString(),
+            products_added: added,
+            products_updated: updated,
+            products_deleted: deleted,
+            errors: errors
+        });
 
         return { success: true, added, updated, deleted, errors };
 
     } catch (error: any) {
         console.error('Sync failed:', error);
-        await supabase
-            .from('catalog_sync_logs')
-            .update({
-                status: 'failed',
-                completed_at: new Date().toISOString(),
-                errors: [...errors, { type: 'fatal', error: error.message }]
-            })
-            .eq('id', logId);
+        await pb.collection('catalog_sync_logs').update(logId, {
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            errors: [...errors, { type: 'fatal', error: error.message }]
+        });
 
         return { success: false, error: error.message };
     }
@@ -161,7 +138,6 @@ export async function syncCatalog() {
 
 // Helpers
 async function createProductInWhatsApp(p: Product) {
-    // Need base64 image
     let imageBase64 = '';
     if (p.image_url) {
         try {
@@ -174,7 +150,7 @@ async function createProductInWhatsApp(p: Product) {
     const payload = {
         name: p.name,
         description: p.description || '',
-        price: p.base_price, // Assuming integer or float matches.
+        price: p.base_price,
         currency: 'INR',
         isHidden: false,
         url: p.image_url || '',
@@ -192,7 +168,6 @@ async function createProductInWhatsApp(p: Product) {
 }
 
 async function updateProductInWhatsApp(waId: string, p: Product) {
-    // Only updating price and name for now. Image update often tricky.
     const payload = {
         options: {
             name: p.name,
@@ -202,7 +177,6 @@ async function updateProductInWhatsApp(waId: string, p: Product) {
         }
     };
 
-    // WPPConnect edit might use PUT
     const res = await fetch(`${SIDECAR_URL}/catalog/products/${waId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

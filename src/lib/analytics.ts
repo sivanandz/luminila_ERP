@@ -1,9 +1,9 @@
 /**
  * Analytics Service Layer
- * Dashboard queries and aggregations for Luminila Inventory Management
+ * Dashboard queries and aggregations for Luminila Inventory Management using PocketBase
  */
 
-import { supabase } from './supabase';
+import { pb } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -16,7 +16,7 @@ export interface DashboardStats {
     todayRevenue: number;
     todayOrders: number;
     pendingOrders: number;
-    revenueChange: number; // Percentage change vs last period
+    revenueChange: number;
 }
 
 export interface SalesDataPoint {
@@ -54,77 +54,90 @@ export interface RecentActivity {
 // ===========================================
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayISO = today.toISOString();
+    try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayISO = today.toISOString();
 
-    // Last 30 days
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const thirtyDaysAgoISO = thirtyDaysAgo.toISOString();
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const thirtyDaysAgoISO = thirtyDaysAgo.toISOString();
 
-    // Previous 30 days (for comparison)
-    const sixtyDaysAgo = new Date();
-    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
-    const sixtyDaysAgoISO = sixtyDaysAgo.toISOString();
+        const sixtyDaysAgo = new Date();
+        sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+        const sixtyDaysAgoISO = sixtyDaysAgo.toISOString();
 
-    // Total revenue & orders (last 30 days)
-    const { data: salesData } = await supabase
-        .from('sales')
-        .select('total, created_at')
-        .gte('created_at', thirtyDaysAgoISO);
+        // Fetch sales data
+        const salesData = await pb.collection('sales').getFullList({
+            filter: `created>="${sixtyDaysAgoISO}"`,
+        });
 
-    const totalRevenue = salesData?.reduce((sum: number, s: any) => sum + (s.total || 0), 0) || 0;
-    const totalOrders = salesData?.length || 0;
+        // Fetch sales orders
+        let ordersData: any[] = [];
+        try {
+            ordersData = await pb.collection('sales_orders').getFullList({
+                filter: `created>="${sixtyDaysAgoISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+            });
+        } catch (e) {
+            // Collection might not exist yet
+        }
 
-    // Today's stats
-    const { data: todayData } = await supabase
-        .from('sales')
-        .select('total')
-        .gte('created_at', todayISO);
+        const sumRevenue = (items: any[]) => items.reduce((sum, item) => sum + (item.total || 0), 0);
 
-    const todayRevenue = todayData?.reduce((sum: number, s: any) => sum + (s.total || 0), 0) || 0;
-    const todayOrders = todayData?.length || 0;
+        const salesLast30 = salesData.filter((s: any) => s.created >= thirtyDaysAgoISO);
+        const ordersLast30 = ordersData.filter((o: any) => o.created >= thirtyDaysAgoISO);
 
-    // Previous period revenue
-    const { data: prevData } = await supabase
-        .from('sales')
-        .select('total')
-        .gte('created_at', sixtyDaysAgoISO)
-        .lt('created_at', thirtyDaysAgoISO);
+        const salesPrev30 = salesData.filter((s: any) => s.created < thirtyDaysAgoISO && s.created >= sixtyDaysAgoISO);
+        const ordersPrev30 = ordersData.filter((o: any) => o.created < thirtyDaysAgoISO && o.created >= sixtyDaysAgoISO);
 
-    const prevRevenue = prevData?.reduce((sum: number, s: any) => sum + (s.total || 0), 0) || 0;
-    const revenueChange = prevRevenue > 0
-        ? Math.round(((totalRevenue - prevRevenue) / prevRevenue) * 100)
-        : 0;
+        const salesToday = salesData.filter((s: any) => s.created >= todayISO);
+        const ordersToday = ordersData.filter((o: any) => o.created >= todayISO);
 
-    // Product counts
-    const { count: totalProducts } = await supabase
-        .from('products')
-        .select('*', { count: 'exact', head: true });
+        const totalRevenue = sumRevenue(salesLast30) + sumRevenue(ordersLast30);
+        const totalOrders = salesLast30.length + ordersLast30.length;
 
-    // Low stock count
-    const { count: lowStockCount } = await supabase
-        .from('product_variants')
-        .select('*', { count: 'exact', head: true })
-        .lt('stock_level', 10);
+        const todayRevenue = sumRevenue(salesToday) + sumRevenue(ordersToday);
+        const todayOrdersCount = salesToday.length + ordersToday.length;
 
-    // Pending orders from orders table
-    const { count: pendingOrders } = await supabase
-        .from('orders')
-        .select('*', { count: 'exact', head: true })
-        .in('status', ['pending', 'processing']);
+        const prevRevenue = sumRevenue(salesPrev30) + sumRevenue(ordersPrev30);
+        const revenueChange = prevRevenue > 0
+            ? Math.round(((totalRevenue - prevRevenue) / prevRevenue) * 100)
+            : 0;
 
-    return {
-        totalRevenue,
-        totalOrders,
-        totalProducts: totalProducts || 0,
-        lowStockCount: lowStockCount || 0,
-        todayRevenue,
-        todayOrders,
-        pendingOrders: pendingOrders || 0,
-        revenueChange,
-    };
+        // Product count
+        const products = await pb.collection('products').getList(1, 1, { filter: 'is_active=true' });
+        const totalProducts = products.totalItems;
+
+        // Low stock count
+        const lowStock = await pb.collection('product_variants').getList(1, 1, { filter: 'stock_level<10' });
+        const lowStockCount = lowStock.totalItems;
+
+        // Pending orders
+        let pendingOrders = 0;
+        try {
+            const pending = await pb.collection('sales_orders').getList(1, 1, {
+                filter: 'status="draft" || status="sent" || status="confirmed" || status="shipped"',
+            });
+            pendingOrders = pending.totalItems;
+        } catch (e) { }
+
+        return {
+            totalRevenue,
+            totalOrders,
+            totalProducts,
+            lowStockCount,
+            todayRevenue,
+            todayOrders: todayOrdersCount,
+            pendingOrders,
+            revenueChange,
+        };
+    } catch (error) {
+        console.error('Error fetching dashboard stats:', error);
+        return {
+            totalRevenue: 0, totalOrders: 0, totalProducts: 0, lowStockCount: 0,
+            todayRevenue: 0, todayOrders: 0, pendingOrders: 0, revenueChange: 0,
+        };
+    }
 }
 
 // ===========================================
@@ -132,42 +145,57 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 // ===========================================
 
 export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]> {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-    startDate.setHours(0, 0, 0, 0);
+    try {
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+        startDate.setHours(0, 0, 0, 0);
+        const startDateISO = startDate.toISOString();
 
-    const { data: sales } = await supabase
-        .from('sales')
-        .select('total, created_at')
-        .gte('created_at', startDate.toISOString())
-        .order('created_at', { ascending: true });
-
-    // Group by date
-    const byDate = new Map<string, { revenue: number; orders: number }>();
-
-    // Initialize all dates
-    for (let i = 0; i < days; i++) {
-        const date = new Date(startDate);
-        date.setDate(date.getDate() + i);
-        const key = date.toISOString().split('T')[0];
-        byDate.set(key, { revenue: 0, orders: 0 });
-    }
-
-    // Aggregate sales
-    sales?.forEach((sale: any) => {
-        const dateKey = new Date(sale.created_at).toISOString().split('T')[0];
-        const existing = byDate.get(dateKey) || { revenue: 0, orders: 0 };
-        byDate.set(dateKey, {
-            revenue: existing.revenue + (sale.total || 0),
-            orders: existing.orders + 1,
+        const sales = await pb.collection('sales').getFullList({
+            filter: `created>="${startDateISO}"`,
         });
-    });
 
-    return Array.from(byDate.entries()).map(([date, data]) => ({
-        date,
-        revenue: data.revenue,
-        orders: data.orders,
-    }));
+        let orders: any[] = [];
+        try {
+            orders = await pb.collection('sales_orders').getFullList({
+                filter: `created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+            });
+        } catch (e) { }
+
+        const byDate = new Map<string, { revenue: number; orders: number }>();
+
+        for (let i = 0; i < days; i++) {
+            const date = new Date(startDate);
+            date.setDate(date.getDate() + i);
+            const key = date.toISOString().split('T')[0];
+            byDate.set(key, { revenue: 0, orders: 0 });
+        }
+
+        const aggregate = (items: any[]) => {
+            items.forEach((item: any) => {
+                const dateKey = new Date(item.created).toISOString().split('T')[0];
+                const existing = byDate.get(dateKey);
+                if (existing) {
+                    byDate.set(dateKey, {
+                        revenue: existing.revenue + (item.total || 0),
+                        orders: existing.orders + 1,
+                    });
+                }
+            });
+        };
+
+        aggregate(sales);
+        aggregate(orders);
+
+        return Array.from(byDate.entries()).map(([date, data]) => ({
+            date,
+            revenue: data.revenue,
+            orders: data.orders,
+        }));
+    } catch (error) {
+        console.error('Error fetching sales trend:', error);
+        return [];
+    }
 }
 
 // ===========================================
@@ -175,52 +203,50 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
 // ===========================================
 
 export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    try {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const { data } = await supabase
-        .from('sale_items')
-        .select(`
-            quantity,
-            total_price,
-            variant:product_variants(
-                id,
-                product:products(id, name, sku)
-            )
-        `)
-        .gte('created_at', thirtyDaysAgo.toISOString());
-
-    // Aggregate by product
-    const byProduct = new Map<string, { name: string; sku: string; sold: number; revenue: number }>();
-
-    data?.forEach((item: any) => {
-        const product = item.variant?.product;
-        if (!product) return;
-
-        const existing = byProduct.get(product.id) || {
-            name: product.name,
-            sku: product.sku,
-            sold: 0,
-            revenue: 0,
-        };
-
-        byProduct.set(product.id, {
-            ...existing,
-            sold: existing.sold + (item.quantity || 0),
-            revenue: existing.revenue + (item.total_price || 0),
+        const saleItems = await pb.collection('sale_items').getFullList({
+            filter: `created>="${thirtyDaysAgo.toISOString()}"`,
+            expand: 'variant,variant.product',
         });
-    });
 
-    return Array.from(byProduct.entries())
-        .map(([id, data]) => ({
-            id,
-            name: data.name,
-            sku: data.sku,
-            totalSold: data.sold,
-            revenue: data.revenue,
-        }))
-        .sort((a, b) => b.revenue - a.revenue)
-        .slice(0, limit);
+        const byProduct = new Map<string, { name: string; sku: string; sold: number; revenue: number }>();
+
+        saleItems.forEach((item: any) => {
+            const product = item.expand?.variant?.expand?.product;
+            if (!product) return;
+
+            const itemRevenue = (item.quantity || 0) * (item.unit_price || 0);
+            const existing = byProduct.get(product.id) || {
+                name: product.name,
+                sku: product.sku,
+                sold: 0,
+                revenue: 0,
+            };
+
+            byProduct.set(product.id, {
+                ...existing,
+                sold: existing.sold + (item.quantity || 0),
+                revenue: existing.revenue + itemRevenue,
+            });
+        });
+
+        return Array.from(byProduct.entries())
+            .map(([id, data]) => ({
+                id,
+                name: data.name,
+                sku: data.sku,
+                totalSold: data.sold,
+                revenue: data.revenue,
+            }))
+            .sort((a, b) => b.revenue - a.revenue)
+            .slice(0, limit);
+    } catch (error) {
+        console.error('Error fetching top products:', error);
+        return [];
+    }
 }
 
 // ===========================================
@@ -228,50 +254,56 @@ export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> 
 // ===========================================
 
 export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    try {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const { data } = await supabase
-        .from('orders')
-        .select('channel, total')
-        .gte('created_at', thirtyDaysAgo.toISOString());
+        const byChannel = new Map<string, { orders: number; revenue: number }>();
 
-    // Group by channel
-    const byChannel = new Map<string, { orders: number; revenue: number }>();
+        // Sales Orders
+        try {
+            const salesOrders = await pb.collection('sales_orders').getFullList({
+                filter: `created>="${thirtyDaysAgo.toISOString()}" && status="confirmed"`,
+            });
 
-    data?.forEach((order: any) => {
-        const channel = order.channel || 'Unknown';
-        const existing = byChannel.get(channel) || { orders: 0, revenue: 0 };
-        byChannel.set(channel, {
-            orders: existing.orders + 1,
-            revenue: existing.revenue + (order.total || 0),
+            salesOrders.forEach((order: any) => {
+                const channel = 'B2B / Online';
+                const existing = byChannel.get(channel) || { orders: 0, revenue: 0 };
+                byChannel.set(channel, {
+                    orders: existing.orders + 1,
+                    revenue: existing.revenue + (order.total || 0),
+                });
+            });
+        } catch (e) { }
+
+        // POS Sales
+        const posData = await pb.collection('sales').getFullList({
+            filter: `created>="${thirtyDaysAgo.toISOString()}"`,
         });
-    });
 
-    // Add POS sales
-    const { data: posData } = await supabase
-        .from('sales')
-        .select('total')
-        .gte('created_at', thirtyDaysAgo.toISOString());
-
-    if (posData && posData.length > 0) {
-        const posRevenue = posData.reduce((sum: number, s: any) => sum + (s.total || 0), 0);
-        byChannel.set('POS', {
-            orders: posData.length,
-            revenue: posRevenue,
+        posData.forEach((sale: any) => {
+            const channel = sale.channel === 'pos' ? 'In-Store (POS)' : (sale.channel || 'Other');
+            const existing = byChannel.get(channel) || { orders: 0, revenue: 0 };
+            byChannel.set(channel, {
+                orders: existing.orders + 1,
+                revenue: existing.revenue + (sale.total || 0),
+            });
         });
+
+        const totalRevenue = Array.from(byChannel.values()).reduce((sum, c) => sum + c.revenue, 0);
+
+        return Array.from(byChannel.entries())
+            .map(([channel, data]) => ({
+                channel,
+                orders: data.orders,
+                revenue: data.revenue,
+                percentage: totalRevenue > 0 ? Math.round((data.revenue / totalRevenue) * 100) : 0,
+            }))
+            .sort((a, b) => b.revenue - a.revenue);
+    } catch (error) {
+        console.error('Error fetching channel breakdown:', error);
+        return [];
     }
-
-    const totalRevenue = Array.from(byChannel.values()).reduce((sum, c) => sum + c.revenue, 0);
-
-    return Array.from(byChannel.entries())
-        .map(([channel, data]) => ({
-            channel,
-            orders: data.orders,
-            revenue: data.revenue,
-            percentage: totalRevenue > 0 ? Math.round((data.revenue / totalRevenue) * 100) : 0,
-        }))
-        .sort((a, b) => b.revenue - a.revenue);
 }
 
 // ===========================================
@@ -281,70 +313,74 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
 export async function getRecentActivity(limit: number = 10): Promise<RecentActivity[]> {
     const activities: RecentActivity[] = [];
 
-    // Recent sales
-    const { data: sales } = await supabase
-        .from('sales')
-        .select('id, total, customer_name, created_at')
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-    sales?.forEach((sale: any) => {
-        activities.push({
-            id: sale.id,
-            type: 'sale',
-            title: 'New Sale',
-            description: sale.customer_name || 'Walk-in customer',
-            amount: sale.total,
-            timestamp: sale.created_at,
+    try {
+        // Recent sales
+        const sales = await pb.collection('sales').getList(1, 5, { sort: '-created' });
+        sales.items.forEach((sale: any) => {
+            activities.push({
+                id: sale.id,
+                type: 'sale',
+                title: 'New Sale (POS)',
+                description: sale.customer_name || 'Walk-in customer',
+                amount: sale.total,
+                timestamp: sale.created,
+            });
         });
-    });
 
-    // Recent orders
-    const { data: orders } = await supabase
-        .from('orders')
-        .select('id, total, customer_name, channel, created_at')
-        .order('created_at', { ascending: false })
-        .limit(5);
+        // Recent sales orders
+        try {
+            const orders = await pb.collection('sales_orders').getList(1, 5, { sort: '-created' });
+            orders.items.forEach((order: any) => {
+                activities.push({
+                    id: order.id,
+                    type: 'order',
+                    title: `Order ${order.order_number}`,
+                    description: `${order.customer_name} (${order.status})`,
+                    amount: order.total,
+                    timestamp: order.created,
+                });
+            });
+        } catch (e) { }
 
-    orders?.forEach((order: any) => {
-        activities.push({
-            id: order.id,
-            type: 'order',
-            title: `${order.channel || 'New'} Order`,
-            description: order.customer_name || 'Customer',
-            amount: order.total,
-            timestamp: order.created_at,
-        });
-    });
+        // Recent purchase orders
+        try {
+            const purchases = await pb.collection('purchase_orders').getList(1, 5, {
+                sort: '-created',
+                expand: 'vendor',
+            });
+            purchases.items.forEach((po: any) => {
+                activities.push({
+                    id: po.id,
+                    type: 'invoice',
+                    title: `PO ${po.po_number}`,
+                    description: `${po.expand?.vendor?.name || 'Vendor'} (${po.status})`,
+                    amount: po.total,
+                    timestamp: po.created,
+                });
+            });
+        } catch (e) { }
 
-    // Recent stock movements
-    const { data: movements } = await supabase
-        .from('stock_movements')
-        .select(`
-            id, 
-            quantity, 
-            movement_type, 
-            created_at,
-            variant:product_variants(
-                variant_name,
-                product:products(name)
-            )
-        `)
-        .order('created_at', { ascending: false })
-        .limit(5);
+        // Recent stock movements
+        try {
+            const movements = await pb.collection('stock_movements').getList(1, 5, {
+                sort: '-created',
+                expand: 'variant,variant.product',
+            });
+            movements.items.forEach((mov: any) => {
+                const productName = mov.expand?.variant?.expand?.product?.name || 'Unknown';
+                activities.push({
+                    id: mov.id,
+                    type: 'stock',
+                    title: `Stock ${mov.movement_type}`,
+                    description: `${productName} (${mov.quantity > 0 ? '+' : ''}${mov.quantity})`,
+                    timestamp: mov.created,
+                });
+            });
+        } catch (e) { }
+    } catch (error) {
+        console.error('Error fetching recent activity:', error);
+    }
 
-    movements?.forEach((mov: any) => {
-        const productName = mov.variant?.product?.name || 'Unknown';
-        activities.push({
-            id: mov.id,
-            type: 'stock',
-            title: `Stock ${mov.movement_type}`,
-            description: `${productName} (${mov.quantity > 0 ? '+' : ''}${mov.quantity})`,
-            timestamp: mov.created_at,
-        });
-    });
-
-    // Sort by timestamp and limit
     return activities
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, limit);
@@ -359,35 +395,50 @@ export async function getRevenueSummary(period: 'today' | 'week' | 'month' | 'ye
     orders: number;
     avgOrderValue: number;
 }> {
-    const now = new Date();
-    let startDate: Date;
+    try {
+        const now = new Date();
+        let startDate: Date;
 
-    switch (period) {
-        case 'today':
-            startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            break;
-        case 'week':
-            startDate = new Date(now);
-            startDate.setDate(startDate.getDate() - 7);
-            break;
-        case 'month':
-            startDate = new Date(now);
-            startDate.setMonth(startDate.getMonth() - 1);
-            break;
-        case 'year':
-            startDate = new Date(now);
-            startDate.setFullYear(startDate.getFullYear() - 1);
-            break;
+        switch (period) {
+            case 'today':
+                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                break;
+            case 'week':
+                startDate = new Date(now);
+                startDate.setDate(startDate.getDate() - 7);
+                break;
+            case 'month':
+                startDate = new Date(now);
+                startDate.setMonth(startDate.getMonth() - 1);
+                break;
+            case 'year':
+                startDate = new Date(now);
+                startDate.setFullYear(startDate.getFullYear() - 1);
+                break;
+        }
+
+        const startDateISO = startDate.toISOString();
+
+        const sales = await pb.collection('sales').getFullList({
+            filter: `created>="${startDateISO}"`,
+        });
+
+        let orders: any[] = [];
+        try {
+            orders = await pb.collection('sales_orders').getFullList({
+                filter: `created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+            });
+        } catch (e) { }
+
+        const revenue = sales.reduce((sum: number, s: any) => sum + (s.total || 0), 0) +
+            orders.reduce((sum: number, o: any) => sum + (o.total || 0), 0);
+
+        const count = sales.length + orders.length;
+        const avgOrderValue = count > 0 ? Math.round(revenue / count) : 0;
+
+        return { revenue, orders: count, avgOrderValue };
+    } catch (error) {
+        console.error('Error fetching revenue summary:', error);
+        return { revenue: 0, orders: 0, avgOrderValue: 0 };
     }
-
-    const { data } = await supabase
-        .from('sales')
-        .select('total')
-        .gte('created_at', startDate.toISOString());
-
-    const revenue = data?.reduce((sum: number, s: any) => sum + (s.total || 0), 0) || 0;
-    const orders = data?.length || 0;
-    const avgOrderValue = orders > 0 ? Math.round(revenue / orders) : 0;
-
-    return { revenue, orders, avgOrderValue };
 }

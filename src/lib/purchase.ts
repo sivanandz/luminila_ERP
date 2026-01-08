@@ -1,9 +1,9 @@
 /**
  * Purchase Order Service Layer
- * CRUD operations for POs and GRNs
+ * CRUD operations for POs and GRNs using PocketBase
  */
 
-import { supabase } from './supabase';
+import { pb } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -27,7 +27,7 @@ export interface PurchaseOrderItem {
         id: string;
         variant_name: string;
         sku_suffix: string;
-        product: {
+        product?: {
             id: string;
             name: string;
             sku: string;
@@ -84,6 +84,67 @@ export interface GoodsReceivedNote {
 }
 
 // ===========================================
+// NUMBER GENERATION
+// ===========================================
+async function generatePONumber(): Promise<string> {
+    const today = new Date();
+    const yymm = `${today.getFullYear().toString().slice(-2)}${(today.getMonth() + 1).toString().padStart(2, '0')}`;
+    const seqName = `po_${yymm}`;
+
+    try {
+        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
+
+        let nextValue: number;
+        if (seq) {
+            nextValue = (seq.current_value || 0) + 1;
+            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
+        } else {
+            nextValue = 1;
+            await pb.collection('number_sequences').create({
+                name: seqName,
+                prefix: 'PO',
+                current_value: nextValue,
+                padding: 4,
+            });
+        }
+
+        return `PO/${yymm}/${nextValue.toString().padStart(4, '0')}`;
+    } catch (error) {
+        console.error('Error generating PO number:', error);
+        return `PO/${Date.now()}`;
+    }
+}
+
+async function generateGRNNumber(): Promise<string> {
+    const today = new Date();
+    const yymm = `${today.getFullYear().toString().slice(-2)}${(today.getMonth() + 1).toString().padStart(2, '0')}`;
+    const seqName = `grn_${yymm}`;
+
+    try {
+        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
+
+        let nextValue: number;
+        if (seq) {
+            nextValue = (seq.current_value || 0) + 1;
+            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
+        } else {
+            nextValue = 1;
+            await pb.collection('number_sequences').create({
+                name: seqName,
+                prefix: 'GRN',
+                current_value: nextValue,
+                padding: 4,
+            });
+        }
+
+        return `GRN/${yymm}/${nextValue.toString().padStart(4, '0')}`;
+    } catch (error) {
+        console.error('Error generating GRN number:', error);
+        return `GRN/${Date.now()}`;
+    }
+}
+
+// ===========================================
 // PURCHASE ORDER CRUD
 // ===========================================
 
@@ -91,12 +152,7 @@ export async function createPurchaseOrder(
     po: Omit<PurchaseOrder, 'id' | 'po_number' | 'created_at' | 'updated_at'>
 ): Promise<PurchaseOrder> {
     // Generate PO number
-    const { data: poNumber, error: numError } = await supabase.rpc('generate_po_number');
-
-    if (numError) {
-        console.error('Error generating PO number:', numError);
-        throw numError;
-    }
+    const poNumber = await generatePONumber();
 
     // Calculate totals
     const subtotal = po.items.reduce((sum, item) => sum + item.total_price, 0);
@@ -104,87 +160,128 @@ export async function createPurchaseOrder(
     const total = subtotal + gstAmount + (po.shipping_cost || 0) - (po.discount_amount || 0);
 
     // Insert PO
-    const { data: poData, error: poError } = await supabase
-        .from('purchase_orders')
-        .insert({
-            po_number: poNumber,
-            vendor_id: po.vendor_id,
-            status: po.status,
-            order_date: po.order_date,
-            expected_date: po.expected_date,
-            subtotal,
-            gst_amount: gstAmount,
-            shipping_cost: po.shipping_cost || 0,
-            discount_amount: po.discount_amount || 0,
-            total,
-            shipping_address: po.shipping_address,
-            notes: po.notes,
-        })
-        .select()
-        .single();
-
-    if (poError) {
-        console.error('Error creating PO:', poError);
-        throw poError;
-    }
+    const poData = await pb.collection('purchase_orders').create({
+        po_number: poNumber,
+        vendor: po.vendor_id || '',
+        status: po.status,
+        order_date: po.order_date,
+        expected_date: po.expected_date || '',
+        subtotal,
+        gst_amount: gstAmount,
+        shipping_cost: po.shipping_cost || 0,
+        discount_amount: po.discount_amount || 0,
+        total,
+        shipping_address: po.shipping_address || '',
+        notes: po.notes || '',
+    });
 
     // Insert PO items
-    const itemsWithPOId = po.items.map(item => ({
-        po_id: poData.id,
-        variant_id: item.variant_id,
-        description: item.description,
-        hsn_code: item.hsn_code || '7113',
-        quantity_ordered: item.quantity_ordered,
-        quantity_received: 0,
-        unit: item.unit || 'PCS',
-        unit_price: item.unit_price,
-        gst_rate: item.gst_rate,
-        gst_amount: item.gst_amount,
-        total_price: item.total_price,
-    }));
-
-    const { error: itemsError } = await supabase
-        .from('purchase_order_items')
-        .insert(itemsWithPOId);
-
-    if (itemsError) {
-        console.error('Error creating PO items:', itemsError);
-        // Cleanup PO
-        await supabase.from('purchase_orders').delete().eq('id', poData.id);
-        throw itemsError;
+    const createdItems: PurchaseOrderItem[] = [];
+    for (const item of po.items) {
+        const itemRecord = await pb.collection('purchase_order_items').create({
+            purchase_order: poData.id,
+            variant: item.variant_id || '',
+            description: item.description,
+            hsn_code: item.hsn_code || '7113',
+            quantity_ordered: item.quantity_ordered,
+            quantity_received: 0,
+            unit: item.unit || 'PCS',
+            unit_price: item.unit_price,
+            gst_rate: item.gst_rate,
+            gst_amount: item.gst_amount,
+            total_price: item.total_price,
+        });
+        createdItems.push({
+            ...item,
+            id: itemRecord.id,
+            po_id: poData.id,
+            quantity_received: 0,
+        });
     }
 
     return {
-        ...poData,
-        items: itemsWithPOId,
+        id: poData.id,
+        po_number: poNumber,
+        vendor_id: po.vendor_id,
+        status: po.status,
+        order_date: po.order_date,
+        expected_date: po.expected_date,
+        subtotal,
+        gst_amount: gstAmount,
+        shipping_cost: po.shipping_cost || 0,
+        discount_amount: po.discount_amount || 0,
+        total,
+        shipping_address: po.shipping_address,
+        notes: po.notes,
+        items: createdItems,
+        created_at: poData.created,
+        updated_at: poData.updated,
     };
 }
 
 export async function getPurchaseOrder(id: string): Promise<PurchaseOrder | null> {
-    const { data, error } = await supabase
-        .from('purchase_orders')
-        .select(`
-            *,
-            vendor:vendors(id, name, phone, email, address),
-            items:purchase_order_items(
-                *,
-                variant:product_variants(
-                    id,
-                    variant_name,
-                    sku_suffix,
-                    product:products(id, name, sku)
-                )
-            )
-        `)
-        .eq('id', id)
-        .single();
+    try {
+        const po = await pb.collection('purchase_orders').getOne(id, {
+            expand: 'vendor',
+        });
 
-    if (error) {
+        const items = await pb.collection('purchase_order_items').getFullList({
+            filter: `purchase_order="${id}"`,
+            expand: 'variant,variant.product',
+        });
+
+        return {
+            id: po.id,
+            po_number: po.po_number,
+            vendor_id: po.vendor,
+            status: po.status,
+            order_date: po.order_date,
+            expected_date: po.expected_date,
+            received_date: po.received_date,
+            subtotal: po.subtotal,
+            gst_amount: po.gst_amount,
+            shipping_cost: po.shipping_cost || 0,
+            discount_amount: po.discount_amount || 0,
+            total: po.total,
+            shipping_address: po.shipping_address,
+            notes: po.notes,
+            vendor: po.expand?.vendor ? {
+                id: po.expand.vendor.id,
+                name: po.expand.vendor.name,
+                phone: po.expand.vendor.phone,
+                email: po.expand.vendor.email,
+            } : undefined,
+            items: items.map((item: any) => ({
+                id: item.id,
+                po_id: item.purchase_order,
+                variant_id: item.variant,
+                description: item.description,
+                hsn_code: item.hsn_code,
+                quantity_ordered: item.quantity_ordered,
+                quantity_received: item.quantity_received || 0,
+                unit: item.unit,
+                unit_price: item.unit_price,
+                gst_rate: item.gst_rate,
+                gst_amount: item.gst_amount,
+                total_price: item.total_price,
+                variant: item.expand?.variant ? {
+                    id: item.expand.variant.id,
+                    variant_name: item.expand.variant.variant_name,
+                    sku_suffix: item.expand.variant.sku_suffix,
+                    product: item.expand.variant.expand?.product ? {
+                        id: item.expand.variant.expand.product.id,
+                        name: item.expand.variant.expand.product.name,
+                        sku: item.expand.variant.expand.product.sku,
+                    } : undefined,
+                } : undefined,
+            })),
+            created_at: po.created,
+            updated_at: po.updated,
+        };
+    } catch (error) {
         console.error('Error fetching PO:', error);
         return null;
     }
-
-    return data as unknown as PurchaseOrder;
 }
 
 export async function getPurchaseOrders(filters?: {
@@ -193,45 +290,91 @@ export async function getPurchaseOrders(filters?: {
     startDate?: string;
     endDate?: string;
 }): Promise<PurchaseOrder[]> {
-    let query = supabase
-        .from('purchase_orders')
-        .select(`
-            *,
-            vendor:vendors(id, name, phone),
-            items:purchase_order_items(id, quantity_ordered, quantity_received)
-        `)
-        .order('order_date', { ascending: false });
+    try {
+        const filterParts: string[] = [];
 
-    if (filters?.status) {
-        query = query.eq('status', filters.status);
-    }
-    if (filters?.vendorId) {
-        query = query.eq('vendor_id', filters.vendorId);
-    }
-    if (filters?.startDate) {
-        query = query.gte('order_date', filters.startDate);
-    }
-    if (filters?.endDate) {
-        query = query.lte('order_date', filters.endDate);
-    }
+        if (filters?.status) {
+            filterParts.push(`status="${filters.status}"`);
+        }
+        if (filters?.vendorId) {
+            filterParts.push(`vendor="${filters.vendorId}"`);
+        }
+        if (filters?.startDate) {
+            filterParts.push(`order_date>="${filters.startDate}"`);
+        }
+        if (filters?.endDate) {
+            filterParts.push(`order_date<="${filters.endDate}"`);
+        }
 
-    const { data, error } = await query;
+        const pos = await pb.collection('purchase_orders').getFullList({
+            filter: filterParts.join(' && ') || '',
+            sort: '-order_date',
+            expand: 'vendor',
+        });
 
-    if (error) {
+        // Fetch items for all POs
+        const poIds = pos.map(p => p.id);
+        let allItems: any[] = [];
+        if (poIds.length > 0) {
+            const itemFilter = poIds.map(id => `purchase_order="${id}"`).join(' || ');
+            allItems = await pb.collection('purchase_order_items').getFullList({
+                filter: itemFilter,
+            });
+        }
+
+        // Group items by PO
+        const itemsByPO = new Map<string, any[]>();
+        allItems.forEach(item => {
+            if (!itemsByPO.has(item.purchase_order)) {
+                itemsByPO.set(item.purchase_order, []);
+            }
+            itemsByPO.get(item.purchase_order)!.push(item);
+        });
+
+        return pos.map((po: any) => ({
+            id: po.id,
+            po_number: po.po_number,
+            vendor_id: po.vendor,
+            status: po.status,
+            order_date: po.order_date,
+            expected_date: po.expected_date,
+            received_date: po.received_date,
+            subtotal: po.subtotal,
+            gst_amount: po.gst_amount,
+            shipping_cost: po.shipping_cost || 0,
+            discount_amount: po.discount_amount || 0,
+            total: po.total,
+            shipping_address: po.shipping_address,
+            notes: po.notes,
+            vendor: po.expand?.vendor ? {
+                id: po.expand.vendor.id,
+                name: po.expand.vendor.name,
+                phone: po.expand.vendor.phone,
+            } : undefined,
+            items: (itemsByPO.get(po.id) || []).map((item: any) => ({
+                id: item.id,
+                po_id: item.purchase_order,
+                variant_id: item.variant,
+                description: item.description || '',
+                unit: item.unit || 'pcs',
+                unit_price: item.unit_price || 0,
+                gst_rate: item.gst_rate || 0,
+                gst_amount: item.gst_amount || 0,
+                total_price: item.total_price || 0,
+                quantity_ordered: item.quantity_ordered,
+                quantity_received: item.quantity_received || 0,
+            })),
+            created_at: po.created,
+            updated_at: po.updated,
+        }));
+    } catch (error) {
         console.error('Error fetching POs:', error);
         return [];
     }
-
-    return data as unknown as PurchaseOrder[];
 }
 
 export async function updatePOStatus(id: string, status: POStatus): Promise<void> {
-    const { error } = await supabase
-        .from('purchase_orders')
-        .update({ status, updated_at: new Date().toISOString() })
-        .eq('id', id);
-
-    if (error) throw error;
+    await pb.collection('purchase_orders').update(id, { status });
 }
 
 export async function cancelPurchaseOrder(id: string): Promise<void> {
@@ -244,79 +387,158 @@ export async function cancelPurchaseOrder(id: string): Promise<void> {
 
 export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number' | 'created_at'>): Promise<GoodsReceivedNote> {
     // Generate GRN number
-    const { data: grnNumber, error: numError } = await supabase.rpc('generate_grn_number');
-
-    if (numError) {
-        console.error('Error generating GRN number:', numError);
-        throw numError;
-    }
+    const grnNumber = await generateGRNNumber();
 
     // Insert GRN
-    const { data: grnData, error: grnError } = await supabase
-        .from('goods_received_notes')
-        .insert({
-            grn_number: grnNumber,
-            po_id: grn.po_id,
-            vendor_id: grn.vendor_id,
-            received_date: grn.received_date,
-            received_by: grn.received_by,
-            notes: grn.notes,
-        })
-        .select()
-        .single();
+    const grnData = await pb.collection('goods_received_notes').create({
+        grn_number: grnNumber,
+        purchase_order: grn.po_id || '',
+        vendor: grn.vendor_id || '',
+        received_date: grn.received_date,
+        received_by: grn.received_by || '',
+        notes: grn.notes || '',
+    });
 
-    if (grnError) {
-        console.error('Error creating GRN:', grnError);
-        throw grnError;
-    }
-
-    // Insert GRN items (triggers will handle stock updates)
-    const itemsWithGRNId = grn.items
-        .filter(item => item.quantity_received > 0)
-        .map(item => ({
-            grn_id: grnData.id,
-            po_item_id: item.po_item_id,
-            variant_id: item.variant_id,
+    // Insert GRN items and update stock
+    const createdItems: GRNItem[] = [];
+    for (const item of grn.items.filter(i => i.quantity_received > 0)) {
+        const itemRecord = await pb.collection('grn_items').create({
+            grn: grnData.id,
+            po_item: item.po_item_id || '',
+            variant: item.variant_id || '',
             quantity_received: item.quantity_received,
             quantity_rejected: item.quantity_rejected || 0,
-            rejection_reason: item.rejection_reason,
-        }));
+            rejection_reason: item.rejection_reason || '',
+        });
 
-    if (itemsWithGRNId.length > 0) {
-        const { error: itemsError } = await supabase
-            .from('grn_items')
-            .insert(itemsWithGRNId);
+        // Update stock level for the variant
+        if (item.variant_id) {
+            try {
+                const variant = await pb.collection('product_variants').getOne(item.variant_id);
+                await pb.collection('product_variants').update(item.variant_id, {
+                    stock_level: (variant.stock_level || 0) + item.quantity_received,
+                });
 
-        if (itemsError) {
-            console.error('Error creating GRN items:', itemsError);
-            // Cleanup GRN
-            await supabase.from('goods_received_notes').delete().eq('id', grnData.id);
-            throw itemsError;
+                // Log stock movement
+                await pb.collection('stock_movements').create({
+                    variant: item.variant_id,
+                    movement_type: 'purchase',
+                    quantity: item.quantity_received,
+                    reference_id: grnData.id,
+                    source: 'grn',
+                    notes: `Goods received via GRN ${grnNumber}`,
+                });
+            } catch (err) {
+                console.error('Error updating stock for variant:', item.variant_id, err);
+            }
+        }
+
+        // Update PO item received quantity
+        if (item.po_item_id) {
+            try {
+                const poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
+                await pb.collection('purchase_order_items').update(item.po_item_id, {
+                    quantity_received: (poItem.quantity_received || 0) + item.quantity_received,
+                });
+            } catch (err) {
+                console.error('Error updating PO item:', item.po_item_id, err);
+            }
+        }
+
+        createdItems.push({
+            ...item,
+            id: itemRecord.id,
+            grn_id: grnData.id,
+        });
+    }
+
+    // Update PO status based on received quantities
+    if (grn.po_id) {
+        try {
+            const poItems = await pb.collection('purchase_order_items').getFullList({
+                filter: `purchase_order="${grn.po_id}"`,
+            });
+
+            const totalOrdered = poItems.reduce((sum: number, i: any) => sum + i.quantity_ordered, 0);
+            const totalReceived = poItems.reduce((sum: number, i: any) => sum + (i.quantity_received || 0), 0);
+
+            if (totalReceived >= totalOrdered) {
+                await pb.collection('purchase_orders').update(grn.po_id, {
+                    status: 'received',
+                    received_date: grn.received_date,
+                });
+            } else if (totalReceived > 0) {
+                await pb.collection('purchase_orders').update(grn.po_id, {
+                    status: 'partial',
+                });
+            }
+        } catch (err) {
+            console.error('Error updating PO status:', err);
         }
     }
 
     return {
-        ...grnData,
-        items: itemsWithGRNId,
+        id: grnData.id,
+        grn_number: grnNumber,
+        po_id: grn.po_id,
+        vendor_id: grn.vendor_id,
+        received_date: grn.received_date,
+        received_by: grn.received_by,
+        notes: grn.notes,
+        items: createdItems,
+        created_at: grnData.created,
     };
 }
 
 export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
-    const { data, error } = await supabase
-        .from('goods_received_notes')
-        .select(`
-            *,
-            items:grn_items(*)
-        `)
-        .eq('po_id', poId)
-        .order('received_date', { ascending: false });
+    try {
+        const grns = await pb.collection('goods_received_notes').getFullList({
+            filter: `purchase_order="${poId}"`,
+            sort: '-received_date',
+        });
 
-    if (error) {
+        // Fetch items for all GRNs
+        const grnIds = grns.map(g => g.id);
+        let allItems: any[] = [];
+        if (grnIds.length > 0) {
+            const itemFilter = grnIds.map(id => `grn="${id}"`).join(' || ');
+            allItems = await pb.collection('grn_items').getFullList({
+                filter: itemFilter,
+            });
+        }
+
+        // Group items by GRN
+        const itemsByGRN = new Map<string, any[]>();
+        allItems.forEach(item => {
+            if (!itemsByGRN.has(item.grn)) {
+                itemsByGRN.set(item.grn, []);
+            }
+            itemsByGRN.get(item.grn)!.push(item);
+        });
+
+        return grns.map((grn: any) => ({
+            id: grn.id,
+            grn_number: grn.grn_number,
+            po_id: grn.purchase_order,
+            vendor_id: grn.vendor,
+            received_date: grn.received_date,
+            received_by: grn.received_by,
+            notes: grn.notes,
+            items: (itemsByGRN.get(grn.id) || []).map((item: any) => ({
+                id: item.id,
+                grn_id: item.grn,
+                po_item_id: item.po_item,
+                variant_id: item.variant,
+                quantity_received: item.quantity_received,
+                quantity_rejected: item.quantity_rejected || 0,
+                rejection_reason: item.rejection_reason,
+            })),
+            created_at: grn.created,
+        }));
+    } catch (error) {
         console.error('Error fetching GRNs:', error);
         return [];
     }
-
-    return data as unknown as GoodsReceivedNote[];
 }
 
 // ===========================================

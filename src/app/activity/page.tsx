@@ -169,9 +169,9 @@ export default function ActivityPage() {
                         />
                     </div>
 
-                    <Select value={actionFilter} onValueChange={setActionFilter}>
+                    <Select value={actionFilter} onValueChange={(v) => v && setActionFilter(v)}>
                         <SelectTrigger className="w-40 bg-card">
-                            <SelectValue placeholder="Action" />
+                            <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="all">All Actions</SelectItem>
@@ -183,9 +183,9 @@ export default function ActivityPage() {
                         </SelectContent>
                     </Select>
 
-                    <Select value={entityFilter} onValueChange={setEntityFilter}>
+                    <Select value={entityFilter} onValueChange={(v) => v && setEntityFilter(v)}>
                         <SelectTrigger className="w-40 bg-card">
-                            <SelectValue placeholder="Entity" />
+                            <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="all">All Entities</SelectItem>

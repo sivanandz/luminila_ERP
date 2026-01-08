@@ -1,8 +1,8 @@
 /**
- * Customer Lookup - Links WhatsApp chats to customers table
+ * Customer Lookup - Links WhatsApp chats to customers table using PocketBase
  */
 
-import { supabase } from './supabase';
+import { pb } from './pocketbase';
 
 // Customer type from database
 export interface Customer {
@@ -76,19 +76,37 @@ export async function findCustomerByPhone(phone: string): Promise<Customer | nul
         return null;
     }
 
-    // Search with LIKE for flexibility (handles various stored formats)
-    const { data, error } = await supabase
-        .from('customers')
-        .select('*')
-        .or(`phone.ilike.%${normalized},phone.ilike.%${normalized.slice(-10)}`)
-        .limit(1)
-        .single();
+    try {
+        // Search with LIKE for flexibility
+        const result = await pb.collection('customers').getFirstListItem(
+            `phone~"${normalized}"`
+        );
 
-    if (error || !data) {
+        return {
+            id: result.id,
+            name: result.name,
+            phone: result.phone,
+            email: result.email,
+            address: result.address,
+            city: result.city,
+            state: result.state,
+            pincode: result.pincode,
+            company_name: result.company_name,
+            gstin: result.gstin,
+            customer_type: result.customer_type || 'retail',
+            loyalty_points: result.loyalty_points || 0,
+            total_spent: result.total_spent || 0,
+            total_orders: result.total_orders || 0,
+            preferred_contact: result.preferred_contact || 'phone',
+            notes: result.notes,
+            tags: result.tags,
+            source: result.source || 'manual',
+            created_at: result.created,
+            updated_at: result.updated,
+        };
+    } catch (error) {
         return null;
     }
-
-    return data as Customer;
 }
 
 /**
@@ -101,56 +119,64 @@ export async function createCustomerFromChat(
 ): Promise<Customer | null> {
     const phoneNumber = phone || phoneFromChatId(chatId);
 
-    const { data, error } = await supabase
-        .from('customers')
-        .insert({
+    try {
+        const result = await pb.collection('customers').create({
             name: chatName,
-            phone: phoneNumber ? `+91${phoneNumber}` : null,
+            phone: phoneNumber ? `+91${phoneNumber}` : '',
             source: 'whatsapp',
             preferred_contact: 'whatsapp',
             customer_type: 'retail',
-        })
-        .select()
-        .single();
+        });
 
-    if (error) {
+        return {
+            id: result.id,
+            name: result.name,
+            phone: result.phone,
+            email: result.email,
+            address: result.address,
+            city: result.city,
+            state: result.state,
+            pincode: result.pincode,
+            company_name: result.company_name,
+            gstin: result.gstin,
+            customer_type: result.customer_type || 'retail',
+            loyalty_points: result.loyalty_points || 0,
+            total_spent: result.total_spent || 0,
+            total_orders: result.total_orders || 0,
+            preferred_contact: result.preferred_contact || 'whatsapp',
+            notes: result.notes,
+            tags: result.tags,
+            source: result.source || 'whatsapp',
+            created_at: result.created,
+            updated_at: result.updated,
+        };
+    } catch (error) {
         console.error('Failed to create customer:', error);
         return null;
     }
-
-    return data as Customer;
 }
 
 /**
  * Get orders for a customer
  */
 export async function getCustomerOrders(customerId: string): Promise<CustomerOrder[]> {
-    const { data, error } = await supabase
-        .from('sales')
-        .select(`
-            id,
-            channel,
-            total,
-            status,
-            created_at,
-            sale_items(count)
-        `)
-        .eq('customer_id', customerId)
-        .order('created_at', { ascending: false })
-        .limit(10);
+    try {
+        const sales = await pb.collection('sales').getList(1, 10, {
+            filter: `customer="${customerId}"`,
+            sort: '-created',
+        });
 
-    if (error || !data) {
+        return sales.items.map((order: any) => ({
+            id: order.id,
+            channel: order.channel,
+            total: order.total,
+            status: order.status,
+            created_at: order.created,
+            items_count: 0, // Would need separate query for items count
+        }));
+    } catch (error) {
         return [];
     }
-
-    return data.map(order => ({
-        id: order.id,
-        channel: order.channel,
-        total: order.total,
-        status: order.status,
-        created_at: order.created_at,
-        items_count: (order.sale_items as any)?.[0]?.count || 0,
-    }));
 }
 
 /**
@@ -162,41 +188,43 @@ export async function logCustomerInteraction(
     description: string,
     saleId?: string
 ): Promise<void> {
-    await supabase
-        .from('customer_interactions')
-        .insert({
-            customer_id: customerId,
+    try {
+        await pb.collection('customer_interactions').create({
+            customer: customerId,
             interaction_type: type,
             description,
-            sale_id: saleId || null,
+            sale: saleId || '',
         });
+    } catch (error) {
+        console.error('Failed to log interaction:', error);
+    }
 }
 
 /**
  * Update customer notes
  */
 export async function updateCustomerNotes(customerId: string, notes: string): Promise<void> {
-    await supabase
-        .from('customers')
-        .update({ notes })
-        .eq('id', customerId);
+    try {
+        await pb.collection('customers').update(customerId, { notes });
+    } catch (error) {
+        console.error('Failed to update notes:', error);
+    }
 }
 
 /**
  * Add tag to customer
  */
 export async function addCustomerTag(customerId: string, tag: string): Promise<void> {
-    const { data: customer } = await supabase
-        .from('customers')
-        .select('tags')
-        .eq('id', customerId)
-        .single();
+    try {
+        const customer = await pb.collection('customers').getOne(customerId);
+        const currentTags = customer.tags || [];
 
-    const currentTags = customer?.tags || [];
-    if (!currentTags.includes(tag)) {
-        await supabase
-            .from('customers')
-            .update({ tags: [...currentTags, tag] })
-            .eq('id', customerId);
+        if (!currentTags.includes(tag)) {
+            await pb.collection('customers').update(customerId, {
+                tags: [...currentTags, tag],
+            });
+        }
+    } catch (error) {
+        console.error('Failed to add tag:', error);
     }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Header } from "@/components/layout";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -83,7 +83,7 @@ function BarcodeLabel({ data }: { data: LabelData }) {
     );
 }
 
-export default function LabelsPage() {
+function LabelsContent() {
     const searchParams = useSearchParams();
     const [selectedProducts, setSelectedProducts] = useState<LabelData[]>([]);
     const [quantity, setQuantity] = useState(1);
@@ -447,6 +447,7 @@ export default function LabelsPage() {
                         }
                         .barcode-label * {
                             color: black !important;
+                            border-color: black !important;
                         }
                     }
                 `}</style>
@@ -459,6 +460,14 @@ export default function LabelsPage() {
                 </div>
             </div>
         </div>
+    );
+}
+
+export default function LabelsPage() {
+    return (
+        <Suspense fallback={<div className="p-8 text-center text-moonstone">Loading label printing...</div>}>
+            <LabelsContent />
+        </Suspense>
     );
 }
 

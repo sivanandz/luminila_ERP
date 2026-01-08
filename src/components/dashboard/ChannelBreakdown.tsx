@@ -9,6 +9,7 @@ interface ChannelData {
     orders: number;
     revenue: number;
     percentage: number;
+    [key: string]: any;
 }
 
 interface ChannelBreakdownProps {

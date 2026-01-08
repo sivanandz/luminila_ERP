@@ -1,16 +1,14 @@
 /**
  * Invoice Service Layer
- * Handles invoice CRUD operations, generation from sales, and printing
+ * Handles invoice CRUD operations, generation from sales, and printing using PocketBase
  */
 
-import { supabase } from './supabase';
+import { pb } from './pocketbase';
 import {
     calculateGST,
     amountToWords,
-    formatINR,
     getHSNForProduct,
     GST_RATES,
-    type GSTCalculation
 } from './gst';
 
 // ===========================================
@@ -93,6 +91,50 @@ export interface Invoice {
     // Metadata
     created_at?: string;
     updated_at?: string;
+
+    // UI/Legacy Compatibility
+    invoice_status?: 'paid' | 'pending' | 'overdue' | 'partially_paid' | 'cancelled';
+    customer_phone?: string;
+    customer_email?: string;
+    round_off?: number;
+    payments?: {
+        id: string;
+        amount: number;
+        date: string;
+        payment_date?: string;
+        method: string;
+        reference?: string;
+        recorded_by?: string;
+    }[];
+}
+
+export async function recordPayment(paymentDetails: {
+    invoice_id: string;
+    amount: number;
+    payment_method: string;
+    reference?: string;
+    payment_date: string;
+    recorded_by: string;
+}): Promise<void> {
+    // Record payment in invoice_payments collection
+    await pb.collection('invoice_payments').create({
+        invoice: paymentDetails.invoice_id,
+        amount: paymentDetails.amount,
+        payment_date: paymentDetails.payment_date,
+        payment_method: paymentDetails.payment_method,
+        reference: paymentDetails.reference || '',
+        recorded_by: paymentDetails.recorded_by,
+    });
+
+    // Update invoice paid amount
+    const invoice = await pb.collection('invoices').getOne(paymentDetails.invoice_id);
+    const newPaidAmount = (invoice.paid_amount || 0) + paymentDetails.amount;
+    const isPaid = newPaidAmount >= invoice.grand_total;
+
+    await pb.collection('invoices').update(paymentDetails.invoice_id, {
+        paid_amount: newPaidAmount,
+        is_paid: isPaid,
+    });
 }
 
 export interface StoreSettings {
@@ -121,35 +163,101 @@ export interface StoreSettings {
 // STORE SETTINGS
 // ===========================================
 export async function getStoreSettings(): Promise<StoreSettings> {
-    const { data, error } = await supabase
-        .from('store_settings')
-        .select('key, value');
+    try {
+        const records = await pb.collection('store_settings').getFullList<{ key: string; value: string }>();
 
-    if (error) {
+        const settings: Record<string, string> = {};
+        records.forEach((row) => {
+            settings[row.key] = row.value || '';
+        });
+
+        return settings as unknown as StoreSettings;
+    } catch (error) {
         console.error('Error fetching store settings:', error);
-        throw error;
+        // Return defaults
+        return {
+            store_name: 'Luminila Jewelry',
+            store_gstin: '',
+            store_address: '',
+            store_city: '',
+            store_state: '',
+            store_state_code: '',
+            store_pincode: '',
+            store_phone: '',
+            store_email: '',
+            store_pan: '',
+            bank_name: '',
+            bank_account_no: '',
+            bank_ifsc: '',
+            bank_branch: '',
+            invoice_prefix: 'INV',
+            invoice_terms: 'Payment due within 30 days',
+            invoice_footer: 'Thank you for your business!',
+            store_logo: '',
+            default_print_mode: 'regular',
+        };
     }
-
-    const settings: Record<string, string> = {};
-    data?.forEach(row => {
-        settings[row.key] = row.value || '';
-    });
-
-    return settings as unknown as StoreSettings;
 }
 
 export async function updateStoreSettings(updates: Partial<StoreSettings>): Promise<void> {
     const entries = Object.entries(updates);
 
     for (const [key, value] of entries) {
-        const { error } = await supabase
-            .from('store_settings')
-            .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+        try {
+            // Try to find existing setting
+            const existing = await pb.collection('store_settings').getFirstListItem(`key="${key}"`).catch(() => null);
 
-        if (error) {
+            if (existing) {
+                await pb.collection('store_settings').update(existing.id, { value });
+            } else {
+                await pb.collection('store_settings').create({ key, value });
+            }
+        } catch (error) {
             console.error(`Error updating setting ${key}:`, error);
             throw error;
         }
+    }
+}
+
+// ===========================================
+// NUMBER GENERATION (Replaces Supabase RPC)
+// ===========================================
+async function generateInvoiceNumber(): Promise<string> {
+    const today = new Date();
+    const month = today.getMonth() + 1;
+    const year = today.getFullYear();
+
+    // Determine financial year
+    let fyStart = year;
+    if (month < 4) fyStart = year - 1;
+    const fyEnd = fyStart + 1;
+    const fyPrefix = `${fyStart.toString().slice(-2)}${fyEnd.toString().slice(-2)}`;
+
+    const seqName = `invoice_${fyPrefix}`;
+
+    try {
+        // Get or create sequence
+        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
+
+        let nextValue: number;
+        if (seq) {
+            nextValue = (seq.current_value || 0) + 1;
+            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
+        } else {
+            nextValue = 1;
+            await pb.collection('number_sequences').create({
+                name: seqName,
+                prefix: 'INV',
+                current_value: nextValue,
+                padding: 5,
+            });
+        }
+
+        return `INV/${fyPrefix.slice(0, 2)}-${fyPrefix.slice(2)}/${nextValue.toString().padStart(5, '0')}`;
+    } catch (error) {
+        // Fallback: use timestamp-based number
+        console.error('Error generating invoice number:', error);
+        return `INV/${Date.now()}`;
     }
 }
 
@@ -159,123 +267,167 @@ export async function updateStoreSettings(updates: Partial<StoreSettings>): Prom
 
 export async function createInvoice(invoice: Omit<Invoice, 'id' | 'invoice_number' | 'created_at' | 'updated_at'>): Promise<Invoice> {
     // Generate invoice number
-    const { data: numberData, error: numberError } = await supabase
-        .rpc('generate_invoice_number');
-
-    if (numberError) {
-        console.error('Error generating invoice number:', numberError);
-        throw numberError;
-    }
-
-    const invoiceNumber = numberData;
+    const invoiceNumber = await generateInvoiceNumber();
 
     // Calculate amount in words
     const amountWords = amountToWords(invoice.grand_total);
 
     // Insert invoice
-    const { data: invoiceData, error: invoiceError } = await supabase
-        .from('invoices')
-        .insert({
-            invoice_number: invoiceNumber,
-            invoice_date: invoice.invoice_date,
-            invoice_type: invoice.invoice_type,
-            seller_gstin: invoice.seller_gstin,
-            seller_name: invoice.seller_name,
-            seller_address: invoice.seller_address,
-            seller_state_code: invoice.seller_state_code,
-            buyer_name: invoice.buyer_name,
-            buyer_gstin: invoice.buyer_gstin,
-            buyer_phone: invoice.buyer_phone,
-            buyer_email: invoice.buyer_email,
-            buyer_address: invoice.buyer_address,
-            buyer_state_code: invoice.buyer_state_code,
-            place_of_supply: invoice.place_of_supply || invoice.buyer_state_code,
-            sale_id: invoice.sale_id,
-            taxable_value: invoice.taxable_value,
-            cgst_amount: invoice.cgst_amount,
-            sgst_amount: invoice.sgst_amount,
-            igst_amount: invoice.igst_amount,
-            cess_amount: invoice.cess_amount,
-            total_tax: invoice.total_tax,
-            discount_amount: invoice.discount_amount,
-            shipping_charges: invoice.shipping_charges,
-            grand_total: invoice.grand_total,
-            amount_in_words: amountWords,
-            is_reverse_charge: invoice.is_reverse_charge,
-            transport_mode: invoice.transport_mode,
-            vehicle_number: invoice.vehicle_number,
-            payment_terms: invoice.payment_terms,
-            due_date: invoice.due_date,
-            is_paid: invoice.is_paid,
-            paid_amount: invoice.paid_amount,
-            notes: invoice.notes,
-        })
-        .select()
-        .single();
-
-    if (invoiceError) {
-        console.error('Error creating invoice:', invoiceError);
-        throw invoiceError;
-    }
+    const invoiceData = await pb.collection('invoices').create({
+        invoice_number: invoiceNumber,
+        invoice_date: invoice.invoice_date,
+        invoice_type: invoice.invoice_type,
+        seller_gstin: invoice.seller_gstin,
+        seller_name: invoice.seller_name,
+        seller_address: invoice.seller_address,
+        seller_state_code: invoice.seller_state_code,
+        buyer_name: invoice.buyer_name,
+        buyer_gstin: invoice.buyer_gstin,
+        buyer_phone: invoice.buyer_phone,
+        buyer_email: invoice.buyer_email,
+        buyer_address: invoice.buyer_address,
+        buyer_state_code: invoice.buyer_state_code,
+        place_of_supply: invoice.place_of_supply || invoice.buyer_state_code,
+        sale: invoice.sale_id,
+        taxable_value: invoice.taxable_value,
+        cgst_amount: invoice.cgst_amount,
+        sgst_amount: invoice.sgst_amount,
+        igst_amount: invoice.igst_amount,
+        cess_amount: invoice.cess_amount,
+        total_tax: invoice.total_tax,
+        discount_amount: invoice.discount_amount,
+        shipping_charges: invoice.shipping_charges,
+        grand_total: invoice.grand_total,
+        amount_in_words: amountWords,
+        is_reverse_charge: invoice.is_reverse_charge,
+        transport_mode: invoice.transport_mode || '',
+        vehicle_number: invoice.vehicle_number || '',
+        payment_terms: invoice.payment_terms || '',
+        due_date: invoice.due_date || '',
+        is_paid: invoice.is_paid,
+        paid_amount: invoice.paid_amount,
+        notes: invoice.notes || '',
+    });
 
     // Insert invoice items
-    const itemsWithInvoiceId = invoice.items.map((item, index) => ({
-        invoice_id: invoiceData.id,
-        variant_id: item.variant_id,
-        sr_no: index + 1,
-        description: item.description,
-        hsn_code: item.hsn_code,
-        quantity: item.quantity,
-        unit: item.unit,
-        unit_price: item.unit_price,
-        discount_percent: item.discount_percent,
-        discount_amount: item.discount_amount,
-        taxable_amount: item.taxable_amount,
-        gst_rate: item.gst_rate,
-        cgst_rate: item.cgst_rate,
-        cgst_amount: item.cgst_amount,
-        sgst_rate: item.sgst_rate,
-        sgst_amount: item.sgst_amount,
-        igst_rate: item.igst_rate,
-        igst_amount: item.igst_amount,
-        cess_rate: item.cess_rate,
-        cess_amount: item.cess_amount,
-        total_amount: item.total_amount,
-    }));
-
-    const { error: itemsError } = await supabase
-        .from('invoice_items')
-        .insert(itemsWithInvoiceId);
-
-    if (itemsError) {
-        console.error('Error creating invoice items:', itemsError);
-        // Rollback invoice
-        await supabase.from('invoices').delete().eq('id', invoiceData.id);
-        throw itemsError;
+    const itemsWithInvoiceId: InvoiceItem[] = [];
+    for (let index = 0; index < invoice.items.length; index++) {
+        const item = invoice.items[index];
+        const itemRecord = await pb.collection('invoice_items').create({
+            invoice: invoiceData.id,
+            variant: item.variant_id || '',
+            sr_no: index + 1,
+            description: item.description,
+            hsn_code: item.hsn_code,
+            quantity: item.quantity,
+            unit: item.unit,
+            unit_price: item.unit_price,
+            discount_percent: item.discount_percent,
+            discount_amount: item.discount_amount,
+            taxable_amount: item.taxable_amount,
+            gst_rate: item.gst_rate,
+            cgst_rate: item.cgst_rate,
+            cgst_amount: item.cgst_amount,
+            sgst_rate: item.sgst_rate,
+            sgst_amount: item.sgst_amount,
+            igst_rate: item.igst_rate,
+            igst_amount: item.igst_amount,
+            cess_rate: item.cess_rate,
+            cess_amount: item.cess_amount,
+            total_amount: item.total_amount,
+        });
+        itemsWithInvoiceId.push({
+            ...item,
+            id: itemRecord.id,
+            invoice_id: invoiceData.id,
+            sr_no: index + 1,
+        });
     }
 
     return {
-        ...invoiceData,
+        ...invoice,
+        id: invoiceData.id,
+        invoice_number: invoiceNumber,
         items: itemsWithInvoiceId,
+        created_at: invoiceData.created,
+        updated_at: invoiceData.updated,
     };
 }
 
 export async function getInvoice(id: string): Promise<Invoice | null> {
-    const { data: invoice, error } = await supabase
-        .from('invoices')
-        .select(`
-            *,
-            items:invoice_items(*)
-        `)
-        .eq('id', id)
-        .single();
+    try {
+        const invoice = await pb.collection('invoices').getOne(id);
+        const items = await pb.collection('invoice_items').getFullList({
+            filter: `invoice="${id}"`,
+            sort: 'sr_no',
+        });
 
-    if (error) {
+        return {
+            id: invoice.id,
+            invoice_number: invoice.invoice_number,
+            invoice_date: invoice.invoice_date,
+            invoice_type: invoice.invoice_type,
+            seller_gstin: invoice.seller_gstin || '',
+            seller_name: invoice.seller_name || '',
+            seller_address: invoice.seller_address || '',
+            seller_state_code: invoice.seller_state_code || '',
+            buyer_name: invoice.buyer_name,
+            buyer_gstin: invoice.buyer_gstin || '',
+            buyer_phone: invoice.buyer_phone || '',
+            buyer_email: invoice.buyer_email || '',
+            buyer_address: invoice.buyer_address || '',
+            buyer_state_code: invoice.buyer_state_code || '',
+            place_of_supply: invoice.place_of_supply || '',
+            sale_id: invoice.sale,
+            taxable_value: invoice.taxable_value,
+            cgst_amount: invoice.cgst_amount || 0,
+            sgst_amount: invoice.sgst_amount || 0,
+            igst_amount: invoice.igst_amount || 0,
+            cess_amount: invoice.cess_amount || 0,
+            total_tax: invoice.total_tax,
+            discount_amount: invoice.discount_amount || 0,
+            shipping_charges: invoice.shipping_charges || 0,
+            grand_total: invoice.grand_total,
+            amount_in_words: invoice.amount_in_words || '',
+            is_reverse_charge: invoice.is_reverse_charge || false,
+            transport_mode: invoice.transport_mode,
+            vehicle_number: invoice.vehicle_number,
+            payment_terms: invoice.payment_terms,
+            due_date: invoice.due_date,
+            is_paid: invoice.is_paid || false,
+            paid_amount: invoice.paid_amount || 0,
+            notes: invoice.notes,
+            items: items.map((item: any) => ({
+                id: item.id,
+                invoice_id: item.invoice,
+                variant_id: item.variant,
+                sr_no: item.sr_no,
+                description: item.description,
+                hsn_code: item.hsn_code || '',
+                quantity: item.quantity,
+                unit: item.unit || 'PCS',
+                unit_price: item.unit_price,
+                discount_percent: item.discount_percent || 0,
+                discount_amount: item.discount_amount || 0,
+                taxable_amount: item.taxable_amount,
+                gst_rate: item.gst_rate || 0,
+                cgst_rate: item.cgst_rate || 0,
+                cgst_amount: item.cgst_amount || 0,
+                sgst_rate: item.sgst_rate || 0,
+                sgst_amount: item.sgst_amount || 0,
+                igst_rate: item.igst_rate || 0,
+                igst_amount: item.igst_amount || 0,
+                cess_rate: item.cess_rate || 0,
+                cess_amount: item.cess_amount || 0,
+                total_amount: item.total_amount,
+            })),
+            created_at: invoice.created,
+            updated_at: invoice.updated,
+        };
+    } catch (error) {
         console.error('Error fetching invoice:', error);
         return null;
     }
-
-    return invoice;
 }
 
 export async function getInvoices(filters?: {
@@ -285,53 +437,125 @@ export async function getInvoices(filters?: {
     invoiceType?: string;
     isPaid?: boolean;
 }): Promise<Invoice[]> {
-    let query = supabase
-        .from('invoices')
-        .select(`
-            *,
-            items:invoice_items(*)
-        `)
-        .order('invoice_date', { ascending: false });
+    try {
+        const filterParts: string[] = [];
 
-    if (filters?.startDate) {
-        query = query.gte('invoice_date', filters.startDate);
-    }
-    if (filters?.endDate) {
-        query = query.lte('invoice_date', filters.endDate);
-    }
-    if (filters?.buyerName) {
-        query = query.ilike('buyer_name', `%${filters.buyerName}%`);
-    }
-    if (filters?.invoiceType) {
-        query = query.eq('invoice_type', filters.invoiceType);
-    }
-    if (filters?.isPaid !== undefined) {
-        query = query.eq('is_paid', filters.isPaid);
-    }
+        if (filters?.startDate) {
+            filterParts.push(`invoice_date >= "${filters.startDate}"`);
+        }
+        if (filters?.endDate) {
+            filterParts.push(`invoice_date <= "${filters.endDate}"`);
+        }
+        if (filters?.buyerName) {
+            filterParts.push(`buyer_name ~ "${filters.buyerName}"`);
+        }
+        if (filters?.invoiceType) {
+            filterParts.push(`invoice_type = "${filters.invoiceType}"`);
+        }
+        if (filters?.isPaid !== undefined) {
+            filterParts.push(`is_paid = ${filters.isPaid}`);
+        }
 
-    const { data, error } = await query;
+        const invoices = await pb.collection('invoices').getFullList({
+            filter: filterParts.join(' && ') || '',
+            sort: '-invoice_date',
+        });
 
-    if (error) {
+        // Fetch items for all invoices (batch)
+        const invoiceIds = invoices.map(inv => inv.id);
+        let allItems: any[] = [];
+        if (invoiceIds.length > 0) {
+            const itemFilter = invoiceIds.map(id => `invoice="${id}"`).join(' || ');
+            allItems = await pb.collection('invoice_items').getFullList({
+                filter: itemFilter,
+            });
+        }
+
+        // Group items by invoice
+        const itemsByInvoice = new Map<string, any[]>();
+        allItems.forEach(item => {
+            if (!itemsByInvoice.has(item.invoice)) {
+                itemsByInvoice.set(item.invoice, []);
+            }
+            itemsByInvoice.get(item.invoice)!.push(item);
+        });
+
+        return invoices.map((inv: any) => ({
+            id: inv.id,
+            invoice_number: inv.invoice_number,
+            invoice_date: inv.invoice_date,
+            invoice_type: inv.invoice_type,
+            seller_gstin: inv.seller_gstin || '',
+            seller_name: inv.seller_name || '',
+            seller_address: inv.seller_address || '',
+            seller_state_code: inv.seller_state_code || '',
+            buyer_name: inv.buyer_name,
+            buyer_gstin: inv.buyer_gstin || '',
+            buyer_phone: inv.buyer_phone || '',
+            buyer_email: inv.buyer_email || '',
+            buyer_address: inv.buyer_address || '',
+            buyer_state_code: inv.buyer_state_code || '',
+            place_of_supply: inv.place_of_supply || '',
+            sale_id: inv.sale,
+            taxable_value: inv.taxable_value,
+            cgst_amount: inv.cgst_amount || 0,
+            sgst_amount: inv.sgst_amount || 0,
+            igst_amount: inv.igst_amount || 0,
+            cess_amount: inv.cess_amount || 0,
+            total_tax: inv.total_tax,
+            discount_amount: inv.discount_amount || 0,
+            shipping_charges: inv.shipping_charges || 0,
+            grand_total: inv.grand_total,
+            amount_in_words: inv.amount_in_words || '',
+            is_reverse_charge: inv.is_reverse_charge || false,
+            transport_mode: inv.transport_mode,
+            vehicle_number: inv.vehicle_number,
+            payment_terms: inv.payment_terms,
+            due_date: inv.due_date,
+            is_paid: inv.is_paid || false,
+            paid_amount: inv.paid_amount || 0,
+            notes: inv.notes,
+            items: (itemsByInvoice.get(inv.id) || []).map((item: any) => ({
+                id: item.id,
+                invoice_id: item.invoice,
+                variant_id: item.variant,
+                sr_no: item.sr_no,
+                description: item.description,
+                hsn_code: item.hsn_code || '',
+                quantity: item.quantity,
+                unit: item.unit || 'PCS',
+                unit_price: item.unit_price,
+                discount_percent: item.discount_percent || 0,
+                discount_amount: item.discount_amount || 0,
+                taxable_amount: item.taxable_amount,
+                gst_rate: item.gst_rate || 0,
+                cgst_rate: item.cgst_rate || 0,
+                cgst_amount: item.cgst_amount || 0,
+                sgst_rate: item.sgst_rate || 0,
+                sgst_amount: item.sgst_amount || 0,
+                igst_rate: item.igst_rate || 0,
+                igst_amount: item.igst_amount || 0,
+                cess_rate: item.cess_rate || 0,
+                cess_amount: item.cess_amount || 0,
+                total_amount: item.total_amount,
+            })),
+            created_at: inv.created,
+            updated_at: inv.updated,
+        }));
+    } catch (error) {
         console.error('Error fetching invoices:', error);
         return [];
     }
-
-    return data || [];
 }
 
 export async function markInvoicePaid(id: string, paidAmount?: number): Promise<void> {
     const invoice = await getInvoice(id);
     if (!invoice) throw new Error('Invoice not found');
 
-    const { error } = await supabase
-        .from('invoices')
-        .update({
-            is_paid: true,
-            paid_amount: paidAmount ?? invoice.grand_total,
-        })
-        .eq('id', id);
-
-    if (error) throw error;
+    await pb.collection('invoices').update(id, {
+        is_paid: true,
+        paid_amount: paidAmount ?? invoice.grand_total,
+    });
 }
 
 // ===========================================
@@ -340,32 +564,19 @@ export async function markInvoicePaid(id: string, paidAmount?: number): Promise<
 
 export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
     // Fetch sale with items
-    const { data: sale, error: saleError } = await supabase
-        .from('sales')
-        .select(`
-            *,
-            items:sale_items(
-                *,
-                variant:product_variants(
-                    *,
-                    product:products(*)
-                )
-            )
-        `)
-        .eq('id', saleId)
-        .single();
-
-    if (saleError || !sale) {
-        throw new Error('Sale not found');
-    }
+    const sale = await pb.collection('sales').getOne(saleId);
+    const saleItems = await pb.collection('sale_items').getFullList({
+        filter: `sale="${saleId}"`,
+        expand: 'variant,variant.product',
+    });
 
     // Get store settings
     const storeSettings = await getStoreSettings();
 
     // Build invoice items with GST
-    const invoiceItems: InvoiceItem[] = sale.items.map((item: any, index: number) => {
-        const variant = item.variant;
-        const product = variant?.product;
+    const invoiceItems: InvoiceItem[] = saleItems.map((item: any, index: number) => {
+        const variant = item.expand?.variant;
+        const product = variant?.expand?.product;
 
         const quantity = item.quantity;
         const unitPrice = item.unit_price;
@@ -380,9 +591,9 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
         );
 
         return {
-            variant_id: item.variant_id,
+            variant_id: item.variant,
             sr_no: index + 1,
-            description: product?.name + (variant?.variant_name ? ` - ${variant.variant_name}` : ''),
+            description: (product?.name || 'Product') + (variant?.variant_name ? ` - ${variant.variant_name}` : ''),
             hsn_code: getHSNForProduct(product?.category, variant?.material),
             quantity,
             unit: 'PCS',
@@ -427,7 +638,7 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
         buyer_phone: sale.customer_phone || '',
         buyer_email: '',
         buyer_address: sale.customer_address || '',
-        buyer_state_code: storeSettings.store_state_code, // Same state for walk-in
+        buyer_state_code: storeSettings.store_state_code,
         place_of_supply: storeSettings.store_state_code,
 
         sale_id: saleId,
@@ -445,7 +656,7 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
 
         is_reverse_charge: false,
         payment_terms: storeSettings.invoice_terms,
-        is_paid: true, // POS sales are usually paid immediately
+        is_paid: true,
         paid_amount: sale.total,
         notes: sale.notes,
 

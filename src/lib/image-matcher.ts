@@ -1,9 +1,9 @@
 /**
  * Image Matcher Utility
- * Uses perceptual hashing for reverse image search
+ * Uses perceptual hashing for reverse image search with PocketBase
  */
 
-import { supabase } from './supabase';
+import { pb } from './pocketbase';
 
 interface MatchResult {
     product: {
@@ -97,23 +97,15 @@ export async function findMatchingProducts(imageDataUrl: string, threshold = 0.6
         console.log('[ImageMatcher] Input hash:', inputHash);
 
         // Fetch all products with images
-        const { data: products, error } = await supabase
-            .from('products')
-            .select('id, name, sku, base_price, image_url, image_hash')
-            .not('image_url', 'is', null);
-
-        if (error || !products) {
-            console.error('[ImageMatcher] Failed to fetch products:', error);
-            return [];
-        }
+        const products = await pb.collection('products').getFullList({
+            filter: 'image_url != ""',
+        });
 
         const results: MatchResult[] = [];
 
         for (const product of products) {
             // Skip products without image hash
             if (!product.image_hash) {
-                // If product has image but no hash, we could generate one
-                // For now, skip
                 continue;
             }
 
@@ -151,15 +143,7 @@ export async function storeProductImageHash(productId: string, imageUrl: string)
     try {
         const hash = await generateImageHash(imageUrl);
 
-        const { error } = await (supabase
-            .from('products')
-            .update({ image_hash: hash })
-            .eq('id', productId) as any);
-
-        if (error) {
-            console.error('[ImageMatcher] Failed to store hash:', error);
-            return false;
-        }
+        await pb.collection('products').update(productId, { image_hash: hash });
 
         return true;
     } catch (e) {

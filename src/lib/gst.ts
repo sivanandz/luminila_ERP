@@ -4,6 +4,8 @@
  * Making Charges: 5% GST (if billed separately)
  */
 
+import { type DeliveryChallan } from './challan';
+
 // ===========================================
 // GST RATES
 // ===========================================
@@ -194,6 +196,8 @@ export function amountToWords(amount: number, currency: string = 'Rupees'): stri
     return result + ' Only';
 }
 
+export const toWords = amountToWords;
+
 // ===========================================
 // GSTIN VALIDATION
 // ===========================================
@@ -273,5 +277,123 @@ export function getHSNForProduct(category?: string, material?: string): string {
 export function getGSTRateForHSN(hsn: string): number {
     if (hsn.startsWith('7117')) return GST_RATES.IMITATION;
     if (hsn.startsWith('7113')) return GST_RATES.JEWELRY;
+    if (hsn.startsWith('7113')) return GST_RATES.JEWELRY;
     return GST_RATES.JEWELRY;
+}
+
+// ===========================================
+// E-WAY BILL JSON EXPORT
+// ===========================================
+
+export interface EWayBillDetails {
+    transporterId?: string;
+    transporterName?: string;
+    transDocNo?: string;
+    transDocDate?: string;
+    vehicleNo?: string;
+    vehicleType?: 'R' | 'O'; // Regular / Over Dimensional
+    distance: number;
+}
+
+export type EWayBillDocument = any | DeliveryChallan;
+
+export function generateEWayBillJSON(
+    document: EWayBillDocument,
+    supplierGstin: string,
+    ewbDetails: EWayBillDetails
+): any {
+    // Determine if it's an invoice or challan
+    const isChallan = 'challan_number' in document;
+
+    // Common fields
+    const docNumber = isChallan ? document.challan_number : document.invoice_number;
+    const docDateRaw = isChallan ? document.challan_date : document.invoice_date;
+    const supplyType = isChallan ? 'O' : 'O'; // Outward
+    const subSupplyType = isChallan ? '8' : '1'; // 8 for 'Others' (Challan), 1 for Supply (Invoice)
+    const docType = isChallan ? 'CHL' : 'INV';
+
+    // Mapping Names
+    const fromTradeName = isChallan
+        ? (document.consignor_name || 'Luminila Jewelry')
+        : 'Luminila Jewelry';
+
+    const toTradeName = isChallan
+        ? document.consignee_name
+        : document.buyer_name;
+
+    const toGstin = (isChallan ? document.consignee_gstin : document.buyer_gstin) || 'URP';
+    const toAddr1 = (isChallan ? document.consignee_address : document.buyer_address) || '';
+    const toPlace = (isChallan ? document.place_of_supply : document.place_of_supply) || '';
+    const toPincode = Number((isChallan ? 0 : document.buyer_pincode) || 0) || 100000;
+    const toStateCode = Number((isChallan ? document.consignee_state_code : document.buyer_state_code) || 0);
+
+    const docDate = new Date(docDateRaw).toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+    }); // dd/mm/yyyy
+
+    // Items
+    const itemList = (document.items || []).map((item: any) => {
+        const taxable = item.taxable_value || item.taxable_amount || 0;
+        const totalTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0);
+
+        let rate = 0;
+        if (taxable > 0) rate = Math.round((totalTax / taxable) * 100);
+
+        return {
+            productName: item.description || 'Jewelry',
+            productDesc: item.description || 'Jewelry',
+            hsnCode: Number(item.hsn_code || '7113'),
+            quantity: item.quantity,
+            qtyUnit: item.unit || 'GMS',
+            taxableAmount: taxable,
+            sgstRate: (item.sgst_amount || 0) > 0 ? rate / 2 : 0,
+            cgstRate: (item.cgst_amount || 0) > 0 ? rate / 2 : 0,
+            igstRate: (item.igst_amount || 0) > 0 ? rate : 0,
+            cessRate: 0,
+        };
+    });
+
+    const totalTaxable = itemList.reduce((sum: number, item: any) => sum + item.taxableAmount, 0);
+    const totalCGST = document.cgst_amount || 0;
+    const totalSGST = document.sgst_amount || 0;
+    const totalIGST = document.igst_amount || 0;
+
+    return {
+        supplyType,
+        subSupplyType,
+        docType,
+        docNo: docNumber,
+        docDate,
+        fromGstin: supplierGstin,
+        fromTrdName: fromTradeName,
+        fromAddr1: 'Main Street', // Ideally from settings
+        fromAddr2: '',
+        fromPlace: 'City', // Ideally from settings
+        fromPincode: 560001, // Ideally from settings
+        fromStateCode: Number(supplierGstin.substring(0, 2)),
+
+        toGstin,
+        toTrdName: toTradeName,
+        toAddr1: toAddr1,
+        toAddr2: '',
+        toPlace: toPlace,
+        toPincode,
+        toStateCode,
+
+        totalValue: totalTaxable,
+        cgstValue: totalCGST,
+        sgstValue: totalSGST,
+        igstValue: totalIGST,
+        cessValue: 0,
+        transDistance: ewbDetails.distance,
+        transporterId: ewbDetails.transporterId || '',
+        transporterName: ewbDetails.transporterName || '',
+        transDocNo: ewbDetails.transDocNo || '',
+        transDocDate: ewbDetails.transDocDate || '',
+        vehicleNo: ewbDetails.vehicleNo || '',
+        vehicleType: ewbDetails.vehicleType || 'R',
+        itemList: itemList,
+    };
 }

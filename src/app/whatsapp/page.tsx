@@ -9,7 +9,7 @@ import {
     generateAutoReply,
 } from "@/lib/whatsapp";
 import type { WPPMessage, WPPChat } from "@/lib/whatsapp";
-import { supabase } from "@/lib/supabase";
+import { pb } from "@/lib/pocketbase";
 import { findMatchingProducts, generateImageHash } from "@/lib/image-matcher";
 import {
     MessageCircle,
@@ -513,17 +513,18 @@ export default function WhatsAppPage() {
     // Load Products for Search
     useEffect(() => {
         const fetchProducts = async () => {
-            const { data } = await supabase
-                .from('products')
-                .select('id, name, sku, base_price, image_url')
-                .limit(100);
-
-            if (data) {
-                setProducts((data as any[]).map(p => ({
-                    ...p,
+            try {
+                const data = await pb.collection('products').getList(1, 100);
+                setProducts(data.items.map((p: any) => ({
+                    id: p.id,
+                    name: p.name,
+                    sku: p.sku,
+                    base_price: p.base_price,
                     stock: 0,
                     image_url: p.image_url || null
                 } as Product)));
+            } catch (e) {
+                console.error('Failed to fetch products:', e);
             }
         };
         fetchProducts();
@@ -743,21 +744,15 @@ export default function WhatsAppPage() {
 
             // 1. Create Sale (was orders)
             // Using 'any' cast for insert to avoid strict type checks on partial matches if types are outdated
-            const { data: saleData, error } = await supabase
-                .from('sales')
-                .insert({
-                    customer_name: customerName,
-                    customer_phone: customerPhone,
-                    status: 'pending',
-                    total: cartTotal,
-                    subtotal: cartTotal,
-                    discount: 0,
-                    channel: 'whatsapp'
-                } as any)
-                .select()
-                .single();
-
-            if (error) throw error;
+            const saleData = await pb.collection('sales').create({
+                customer_name: customerName,
+                customer_phone: customerPhone,
+                status: 'pending',
+                total: cartTotal,
+                subtotal: cartTotal,
+                discount: 0,
+                channel: 'whatsapp'
+            });
 
             const sale = saleData as any;
 
@@ -770,13 +765,8 @@ export default function WhatsAppPage() {
                 const saleItems = [];
                 for (const item of cart) {
                     // Fetch variant for this product
-                    const { data: variants } = await supabase
-                        .from('product_variants')
-                        .select('id')
-                        .eq('product_id', item.id)
-                        .limit(1);
-
-                    const variantId = variants?.[0]?.id;
+                    const variants = await pb.collection('product_variants').getList(1, 1, { filter: `product="${item.id}"` });
+                    const variantId = variants.items[0]?.id;
 
                     if (variantId) {
                         saleItems.push({
@@ -788,8 +778,8 @@ export default function WhatsAppPage() {
                     }
                 }
 
-                if (saleItems.length > 0) {
-                    await supabase.from('sale_items').insert(saleItems as any);
+                for (const item of saleItems) {
+                    await pb.collection('sale_items').create(item);
                 }
             }
 
@@ -1108,14 +1098,12 @@ export default function WhatsAppPage() {
                 try {
                     const imgHash = await generateImageHash(imageUrl);
                     // Check if this image hash already exists in DB
-                    const { data: existingProducts } = await supabase
-                        .from('products')
-                        .select('id, sku, name, image_hash')
-                        .eq('image_hash', imgHash)
-                        .limit(1);
+                    const existingProducts = await pb.collection('products').getList(1, 1, {
+                        filter: `image_hash="${imgHash}"`
+                    });
 
-                    if (existingProducts && existingProducts.length > 0) {
-                        const existing = existingProducts[0] as any;
+                    if (existingProducts.items.length > 0) {
+                        const existing = existingProducts.items[0] as any;
                         const confirmNew = confirm(
                             `⚠️ Similar product already exists!\n\n` +
                             `Existing: ${existing.name} (${existing.sku})\n\n` +
@@ -1136,13 +1124,13 @@ export default function WhatsAppPage() {
                                 image_url: imageUrl
                             };
                             setCart(prev => {
-                                const existingItem = prev.find(i => i.product.id === matchedProduct.id);
+                                const existingItem = prev.find(i => i.id === matchedProduct.id);
                                 if (existingItem) {
-                                    return prev.map(i => i.product.id === matchedProduct.id
+                                    return prev.map(i => i.id === matchedProduct.id
                                         ? { ...i, quantity: i.quantity + (addProductForm.initial_stock || 1) }
                                         : i);
                                 }
-                                return [...prev, { product: matchedProduct, quantity: addProductForm.initial_stock || 1 }];
+                                return [...prev, { ...matchedProduct, quantity: addProductForm.initial_stock || 1 }];
                             });
                             setAddedToast(`Added ${addProductForm.initial_stock || 1} to: ${existing.name}`);
                             setTimeout(() => setAddedToast(null), 3000);
@@ -1165,31 +1153,23 @@ export default function WhatsAppPage() {
             }
 
             // Insert product
-            const { data: productData, error: productError } = await supabase
-                .from('products')
-                .insert({
-                    sku: addProductForm.sku.trim(),
-                    name: addProductForm.name.trim(),
-                    description: addProductForm.description.trim() || null,
-                    category: addProductForm.category.trim() || null,
-                    base_price: addProductForm.base_price || 0,
-                    cost_price: addProductForm.cost_price || null,
-                    image_url: imageUrl || null,
-                    image_hash: imageHash || null,
-                    parent_sku: isVariant && selectedParentProduct ? selectedParentProduct.sku : null,
-                    is_active: true
-                })
-                .select()
-                .single();
-
-            if (productError) {
-                throw productError;
-            }
+            const productData = await pb.collection('products').create({
+                sku: addProductForm.sku.trim(),
+                name: addProductForm.name.trim(),
+                description: addProductForm.description.trim() || null,
+                category: addProductForm.category.trim() || null,
+                base_price: addProductForm.base_price || 0,
+                cost_price: addProductForm.cost_price || null,
+                image_url: imageUrl || null,
+                image_hash: imageHash || null,
+                parent_sku: isVariant && selectedParentProduct ? selectedParentProduct.sku : null,
+                is_active: true
+            });
 
             // If initial stock provided, create a variant with that stock
             if (addProductForm.initial_stock > 0 && productData) {
-                await supabase.from('product_variants').insert({
-                    product_id: productData.id,
+                await pb.collection('product_variants').create({
+                    product: (productData as any).id,
                     sku_suffix: 'DEFAULT',
                     variant_name: 'Default',
                     price_adjustment: 0,
@@ -1210,12 +1190,11 @@ export default function WhatsAppPage() {
             setTimeout(() => setAddedToast(null), 3000);
 
             // Refresh products list
-            const { data } = await supabase
-                .from("products")
-                .select("id, sku, name, base_price, image_url")
-                .eq("is_active", true)
-                .order("name");
-            if (data) setProducts(data.map(p => ({ ...p, stock: 0 })));
+            const productsList = await pb.collection('products').getFullList({
+                filter: 'is_active=true',
+                sort: 'name'
+            });
+            setProducts(productsList.map((p: any) => ({ id: p.id, sku: p.sku, name: p.name, base_price: p.base_price, image_url: p.image_url, stock: 0 })));
 
         } catch (err: any) {
             console.error('Failed to add product:', err);
@@ -1823,7 +1802,7 @@ export default function WhatsAppPage() {
                                                         </div>
                                                     )}
 
-                                                    <button className="w-full border border-border hover:bg-muted text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2 transition-colors">
+                                                    <button onClick={() => window.open(`/customers/detail?id=${customer.id}`, '_blank')} className="w-full border border-border hover:bg-muted text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2 transition-colors">
                                                         <ExternalLink size={14} /> View Full Profile
                                                     </button>
                                                 </div>
@@ -2091,6 +2070,7 @@ export default function WhatsAppPage() {
                                     <Select
                                         value={selectedParentProduct?.id || ''}
                                         onValueChange={(id) => {
+                                            if (!id) return;
                                             const parent = products.find(p => p.id === id) || null;
                                             setSelectedParentProduct(parent);
                                             if (parent) {
@@ -2110,7 +2090,7 @@ export default function WhatsAppPage() {
                                         }}
                                     >
                                         <SelectTrigger className="w-full bg-muted border-0">
-                                            <SelectValue placeholder="Select parent product" />
+                                            <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
                                             {products.map(p => (
@@ -2170,12 +2150,13 @@ export default function WhatsAppPage() {
                                     <Select
                                         value={addProductForm.category}
                                         onValueChange={(v) => {
+                                            if (!v) return;
                                             setAddProductForm(f => ({ ...f, category: v }));
                                             generateSKU(v, attributeValues);
                                         }}
                                     >
                                         <SelectTrigger className="w-full bg-muted border-0">
-                                            <SelectValue placeholder="Select category" />
+                                            <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
                                             {productCategories.length === 0 ? (
@@ -2249,13 +2230,14 @@ export default function WhatsAppPage() {
                                                     <Select
                                                         value={attributeValues[attr.id || ''] || ''}
                                                         onValueChange={(v) => {
+                                                            if (!v) return;
                                                             const newVals = { ...attributeValues, [attr.id || '']: v };
                                                             setAttributeValues(newVals);
                                                             generateSKU(addProductForm.category, newVals);
                                                         }}
                                                     >
                                                         <SelectTrigger className="w-full bg-muted border-0">
-                                                            <SelectValue placeholder={`Select ${attr.name.toLowerCase()}`} />
+                                                            <SelectValue />
                                                         </SelectTrigger>
                                                         <SelectContent>
                                                             {attr.options.map((opt: string) => (

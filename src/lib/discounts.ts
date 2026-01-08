@@ -1,9 +1,9 @@
 /**
  * Discounts & Offers Service
- * Coupon validation, discount calculations, and management
+ * Coupon validation, discount calculations, and management using PocketBase
  */
 
-import { supabase } from './supabase';
+import { pb } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -45,87 +45,159 @@ export interface DiscountValidation {
 // ===========================================
 
 export async function getDiscounts(activeOnly: boolean = false): Promise<Discount[]> {
-    let query = supabase
-        .from('discounts')
-        .select('*')
-        .order('created_at', { ascending: false });
+    try {
+        const filter = activeOnly ? 'is_active=true' : '';
+        const records = await pb.collection('discounts').getFullList({
+            filter,
+            sort: '-created',
+        });
 
-    if (activeOnly) {
-        query = query.eq('is_active', true);
-    }
-
-    const { data, error } = await query;
-    if (error) {
+        return records.map((d: any) => ({
+            id: d.id,
+            code: d.code,
+            name: d.name,
+            description: d.description,
+            discount_type: d.discount_type,
+            value: d.value,
+            max_discount: d.max_discount,
+            min_purchase: d.min_purchase || 0,
+            min_items: d.min_items || 0,
+            applies_to: d.applies_to || 'all',
+            applies_to_ids: d.applies_to_ids,
+            usage_limit: d.usage_limit,
+            per_customer_limit: d.per_customer_limit || 1,
+            used_count: d.used_count || 0,
+            start_date: d.start_date,
+            end_date: d.end_date,
+            is_active: d.is_active,
+            created_at: d.created,
+        }));
+    } catch (error) {
         console.error('Error fetching discounts:', error);
         return [];
     }
-    return data || [];
 }
 
 export async function getDiscount(id: string): Promise<Discount | null> {
-    const { data, error } = await supabase
-        .from('discounts')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-    if (error) return null;
-    return data;
+    try {
+        const d = await pb.collection('discounts').getOne(id);
+        return {
+            id: d.id,
+            code: d.code,
+            name: d.name,
+            description: d.description,
+            discount_type: d.discount_type,
+            value: d.value,
+            max_discount: d.max_discount,
+            min_purchase: d.min_purchase || 0,
+            min_items: d.min_items || 0,
+            applies_to: d.applies_to || 'all',
+            applies_to_ids: d.applies_to_ids,
+            usage_limit: d.usage_limit,
+            per_customer_limit: d.per_customer_limit || 1,
+            used_count: d.used_count || 0,
+            start_date: d.start_date,
+            end_date: d.end_date,
+            is_active: d.is_active,
+            created_at: d.created,
+        };
+    } catch (error) {
+        return null;
+    }
 }
 
 export async function getDiscountByCode(code: string): Promise<Discount | null> {
-    const { data, error } = await supabase
-        .from('discounts')
-        .select('*')
-        .eq('code', code.toUpperCase())
-        .single();
-
-    if (error) return null;
-    return data;
+    try {
+        const d = await pb.collection('discounts').getFirstListItem(`code="${code.toUpperCase()}"`);
+        return {
+            id: d.id,
+            code: d.code,
+            name: d.name,
+            description: d.description,
+            discount_type: d.discount_type,
+            value: d.value,
+            max_discount: d.max_discount,
+            min_purchase: d.min_purchase || 0,
+            min_items: d.min_items || 0,
+            applies_to: d.applies_to || 'all',
+            applies_to_ids: d.applies_to_ids,
+            usage_limit: d.usage_limit,
+            per_customer_limit: d.per_customer_limit || 1,
+            used_count: d.used_count || 0,
+            start_date: d.start_date,
+            end_date: d.end_date,
+            is_active: d.is_active,
+            created_at: d.created,
+        };
+    } catch (error) {
+        return null;
+    }
 }
 
 export async function createDiscount(discount: Omit<Discount, 'id' | 'used_count' | 'created_at'>): Promise<Discount> {
-    const { data, error } = await supabase
-        .from('discounts')
-        .insert({
-            ...discount,
-            code: discount.code.toUpperCase(),
-        })
-        .select()
-        .single();
+    const d = await pb.collection('discounts').create({
+        code: discount.code.toUpperCase(),
+        name: discount.name,
+        description: discount.description || '',
+        discount_type: discount.discount_type,
+        value: discount.value,
+        max_discount: discount.max_discount,
+        min_purchase: discount.min_purchase,
+        min_items: discount.min_items,
+        applies_to: discount.applies_to,
+        applies_to_ids: discount.applies_to_ids,
+        usage_limit: discount.usage_limit,
+        per_customer_limit: discount.per_customer_limit,
+        used_count: 0,
+        start_date: discount.start_date || '',
+        end_date: discount.end_date || '',
+        is_active: discount.is_active,
+    });
 
-    if (error) throw error;
-    return data;
+    return {
+        ...discount,
+        id: d.id,
+        code: discount.code.toUpperCase(),
+        used_count: 0,
+        created_at: d.created,
+    };
 }
 
 export async function updateDiscount(id: string, updates: Partial<Discount>): Promise<Discount> {
-    const { data, error } = await supabase
-        .from('discounts')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
+    const { id: _, created_at, ...cleanUpdates } = updates as any;
+    if (cleanUpdates.code) {
+        cleanUpdates.code = cleanUpdates.code.toUpperCase();
+    }
 
-    if (error) throw error;
-    return data;
+    const d = await pb.collection('discounts').update(id, cleanUpdates);
+    return {
+        id: d.id,
+        code: d.code,
+        name: d.name,
+        description: d.description,
+        discount_type: d.discount_type,
+        value: d.value,
+        max_discount: d.max_discount,
+        min_purchase: d.min_purchase || 0,
+        min_items: d.min_items || 0,
+        applies_to: d.applies_to || 'all',
+        applies_to_ids: d.applies_to_ids,
+        usage_limit: d.usage_limit,
+        per_customer_limit: d.per_customer_limit || 1,
+        used_count: d.used_count || 0,
+        start_date: d.start_date,
+        end_date: d.end_date,
+        is_active: d.is_active,
+        created_at: d.created,
+    };
 }
 
 export async function deleteDiscount(id: string): Promise<void> {
-    const { error } = await supabase
-        .from('discounts')
-        .delete()
-        .eq('id', id);
-
-    if (error) throw error;
+    await pb.collection('discounts').delete(id);
 }
 
 export async function toggleDiscountActive(id: string, isActive: boolean): Promise<void> {
-    const { error } = await supabase
-        .from('discounts')
-        .update({ is_active: isActive })
-        .eq('id', id);
-
-    if (error) throw error;
+    await pb.collection('discounts').update(id, { is_active: isActive });
 }
 
 // ===========================================
@@ -166,14 +238,16 @@ export async function validateDiscount(
 
     // Check per-customer limit
     if (customerId && discount.per_customer_limit > 0) {
-        const { count } = await supabase
-            .from('discount_usage')
-            .select('*', { count: 'exact', head: true })
-            .eq('discount_id', discount.id)
-            .eq('customer_id', customerId);
+        try {
+            const usages = await pb.collection('discount_usage').getFullList({
+                filter: `discount="${discount.id}" && customer="${customerId}"`,
+            });
 
-        if ((count || 0) >= discount.per_customer_limit) {
-            return { valid: false, error: 'You have already used this discount', discountAmount: 0 };
+            if (usages.length >= discount.per_customer_limit) {
+                return { valid: false, error: 'You have already used this discount', discountAmount: 0 };
+            }
+        } catch (error) {
+            // Ignore error, continue validation
         }
     }
 
@@ -238,16 +312,22 @@ export async function recordDiscountUsage(
         invoiceId?: string;
     }
 ): Promise<void> {
-    const { error } = await supabase.from('discount_usage').insert({
-        discount_id: discountId,
-        customer_id: options?.customerId,
-        sale_id: options?.saleId,
-        invoice_id: options?.invoiceId,
-        discount_amount: discountAmount,
-        order_value: orderValue,
-    });
+    try {
+        await pb.collection('discount_usage').create({
+            discount: discountId,
+            customer: options?.customerId || '',
+            sale: options?.saleId || '',
+            invoice: options?.invoiceId || '',
+            discount_amount: discountAmount,
+            order_value: orderValue,
+        });
 
-    if (error) {
+        // Increment used_count
+        const discount = await pb.collection('discounts').getOne(discountId);
+        await pb.collection('discounts').update(discountId, {
+            used_count: (discount.used_count || 0) + 1,
+        });
+    } catch (error) {
         console.error('Error recording discount usage:', error);
     }
 }
@@ -262,26 +342,23 @@ export async function getDiscountStats(): Promise<{
     totalSavings: number;
     usageCount: number;
 }> {
-    const { count: totalDiscounts } = await supabase
-        .from('discounts')
-        .select('*', { count: 'exact', head: true });
+    try {
+        const allDiscounts = await pb.collection('discounts').getFullList();
+        const totalDiscounts = allDiscounts.length;
+        const activeCount = allDiscounts.filter((d: any) => d.is_active).length;
 
-    const { count: activeCount } = await supabase
-        .from('discounts')
-        .select('*', { count: 'exact', head: true })
-        .eq('is_active', true);
+        const usageRecords = await pb.collection('discount_usage').getFullList();
+        const totalSavings = usageRecords.reduce((sum: number, u: any) => sum + (u.discount_amount || 0), 0);
+        const usageCount = usageRecords.length;
 
-    const { data: usageData } = await supabase
-        .from('discount_usage')
-        .select('discount_amount');
-
-    const totalSavings = usageData?.reduce((sum: number, u: any) => sum + (u.discount_amount || 0), 0) || 0;
-    const usageCount = usageData?.length || 0;
-
-    return {
-        totalDiscounts: totalDiscounts || 0,
-        activeCount: activeCount || 0,
-        totalSavings,
-        usageCount,
-    };
+        return {
+            totalDiscounts,
+            activeCount,
+            totalSavings,
+            usageCount,
+        };
+    } catch (error) {
+        console.error('Error fetching discount stats:', error);
+        return { totalDiscounts: 0, activeCount: 0, totalSavings: 0, usageCount: 0 };
+    }
 }

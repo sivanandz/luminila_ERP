@@ -52,7 +52,7 @@ import {
     GST_RATES,
     HSN_CODES,
 } from "@/lib/gst";
-import { supabase } from "@/lib/supabase";
+import { pb } from "@/lib/pocketbase";
 
 interface ProductVariant {
     id: string;
@@ -117,21 +117,29 @@ export default function CreateInvoicePage() {
             setPaymentTerms(settings.invoice_terms || "");
 
             // Load products for search
-            const { data } = await supabase
-                .from("product_variants")
-                .select(`
-                    id,
-                    variant_name,
-                    sku_suffix,
-                    material,
-                    stock_level,
-                    product:products(id, name, sku, base_price, category)
-                `)
-                .gt("stock_level", 0)
-                .order("variant_name");
-
-            if (data) {
-                setProducts(data as unknown as ProductVariant[]);
+            try {
+                const variants = await pb.collection('product_variants').getFullList({
+                    filter: 'stock_level>0',
+                    sort: 'variant_name',
+                    expand: 'product',
+                });
+                const productList: ProductVariant[] = variants.map((v: any) => ({
+                    id: v.id,
+                    variant_name: v.variant_name,
+                    sku_suffix: v.sku_suffix,
+                    material: v.material,
+                    stock_level: v.stock_level,
+                    product: v.expand?.product ? {
+                        id: v.expand.product.id,
+                        name: v.expand.product.name,
+                        sku: v.expand.product.sku,
+                        base_price: v.expand.product.base_price,
+                        category: v.expand.product.category,
+                    } : { id: '', name: '', sku: '', base_price: 0 },
+                }));
+                setProducts(productList);
+            } catch (e) {
+                console.error('Failed to load products:', e);
             }
         }
         loadData();
@@ -354,7 +362,7 @@ export default function CreateInvoicePage() {
                         <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <div className="space-y-2">
                                 <Label>Invoice Type</Label>
-                                <Select value={invoiceType} onValueChange={(v: any) => setInvoiceType(v)}>
+                                <Select value={invoiceType} onValueChange={(v) => v && setInvoiceType(v as "regular" | "credit_note" | "debit_note")}>
                                     <SelectTrigger>
                                         <SelectValue />
                                     </SelectTrigger>
@@ -383,9 +391,9 @@ export default function CreateInvoicePage() {
                             </div>
                             <div className="space-y-2">
                                 <Label>Place of Supply</Label>
-                                <Select value={placeOfSupply} onValueChange={setPlaceOfSupply}>
+                                <Select value={placeOfSupply} onValueChange={(v) => v && setPlaceOfSupply(v)}>
                                     <SelectTrigger>
-                                        <SelectValue placeholder="Select state" />
+                                        <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {Object.entries(STATE_CODES).map(([name, code]) => (
@@ -450,9 +458,9 @@ export default function CreateInvoicePage() {
                             </div>
                             <div className="space-y-2">
                                 <Label>State</Label>
-                                <Select value={buyerState} onValueChange={setBuyerState}>
+                                <Select value={buyerState} onValueChange={(v) => v && setBuyerState(v)}>
                                     <SelectTrigger>
-                                        <SelectValue placeholder="Select state" />
+                                        <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {Object.keys(STATE_CODES).map((name) => (

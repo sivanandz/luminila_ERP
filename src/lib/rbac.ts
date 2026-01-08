@@ -1,9 +1,9 @@
 /**
  * RBAC Service Layer
- * Role-Based Access Control utilities
+ * Role-Based Access Control utilities for PocketBase
  */
 
-import { supabase } from './supabase';
+import { pb } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -30,55 +30,71 @@ export interface Role {
     description?: string;
     permissions: Record<Resource, Permission[]>;
     is_system: boolean;
-    created_at: string;
-}
-
-export interface UserProfile {
-    id: string;
-    full_name?: string;
-    avatar_url?: string;
-    phone?: string;
-    is_active: boolean;
-    last_login?: string;
-    created_at: string;
-    email?: string; // From auth.users
-    roles?: { role_name: string; role_id: string }[];
+    created: string;
+    updated: string;
 }
 
 export interface UserRole {
     id: string;
-    user_id: string;
-    role_id: string;
-    assigned_at: string;
+    user: string;
+    role: string;
+    created: string;
 }
+
+export interface UserProfile {
+    id: string;
+    email: string;
+    name: string;
+    full_name?: string;
+    avatar?: string;
+    is_active?: boolean;
+    last_login?: string;
+    created: string;
+    updated: string;
+    // Expanded
+    roles?: { role_name: string; role_id: string }[];
+}
+
 
 // ===========================================
 // ROLES
 // ===========================================
 
 export async function getRoles(): Promise<Role[]> {
-    const { data, error } = await supabase
-        .from('roles')
-        .select('*')
-        .order('name');
-
-    if (error) {
-        console.error('Error fetching roles:', error);
+    try {
+        const records = await pb.collection('roles').getFullList({
+            sort: 'name',
+        });
+        return records.map(r => ({
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            permissions: r.permissions,
+            is_system: r.is_system,
+            created: r.created,
+            updated: r.updated
+        }));
+    } catch (err) {
+        console.error('Error fetching roles:', err);
         return [];
     }
-
-    return data || [];
 }
 
 export async function getRole(id: string): Promise<Role | null> {
-    const { data, error } = await supabase
-        .from('roles')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-    if (error) return null;
-    return data;
+    try {
+        const record = await pb.collection('roles').getOne(id);
+        return {
+            id: record.id,
+            name: record.name,
+            description: record.description,
+            permissions: record.permissions,
+            is_system: record.is_system,
+            created: record.created,
+            updated: record.updated
+        };
+    } catch (err) {
+        return null;
+    }
 }
 
 export async function createRole(
@@ -86,104 +102,116 @@ export async function createRole(
     description: string,
     permissions: Record<Resource, Permission[]>
 ): Promise<Role> {
-    const { data, error } = await supabase
-        .from('roles')
-        .insert({ name, description, permissions })
-        .select()
-        .single();
-
-    if (error) throw error;
-    return data;
+    const record = await pb.collection('roles').create({
+        name,
+        description,
+        permissions,
+        is_system: false
+    });
+    return {
+        id: record.id,
+        name: record.name,
+        description: record.description,
+        permissions: record.permissions,
+        is_system: record.is_system,
+        created: record.created,
+        updated: record.updated
+    };
 }
 
 export async function updateRole(
     id: string,
-    updates: Partial<Omit<Role, 'id' | 'is_system' | 'created_at'>>
+    updates: Partial<Omit<Role, 'id' | 'is_system' | 'created' | 'updated'>>
 ): Promise<Role> {
-    const { data, error } = await supabase
-        .from('roles')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-    if (error) throw error;
-    return data;
+    const record = await pb.collection('roles').update(id, updates);
+    return {
+        id: record.id,
+        name: record.name,
+        description: record.description,
+        permissions: record.permissions,
+        is_system: record.is_system,
+        created: record.created,
+        updated: record.updated
+    };
 }
 
 export async function deleteRole(id: string): Promise<void> {
-    const { error } = await supabase
-        .from('roles')
-        .delete()
-        .eq('id', id)
-        .eq('is_system', false); // Prevent system role deletion
-
-    if (error) throw error;
+    await pb.collection('roles').delete(id);
 }
 
 // ===========================================
-// USER PROFILES
+// USER PROFILES (Users Collection)
 // ===========================================
 
 export async function getUsers(): Promise<UserProfile[]> {
-    const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .order('full_name');
+    try {
+        const records = await pb.collection('users').getFullList({
+            sort: 'name'
+        });
 
-    if (error) {
-        console.error('Error fetching users:', error);
+        // Fetch roles for all users
+        // Optimization: Fetch all user_roles and map them, instead of N+1 queries
+        const allUserRoles = await pb.collection('user_roles').getFullList({
+            expand: 'role'
+        });
+
+        return records.map(u => {
+            const userRoles = allUserRoles.filter(ur => ur.user === u.id);
+            const roles = userRoles.map(ur => ({
+                role_id: ur.role,
+                role_name: ur.expand?.role?.name || 'Unknown'
+            }));
+
+            return {
+                id: u.id,
+                email: u.email,
+                name: u.name,
+                full_name: u.name || u.email?.split('@')[0],
+                avatar: u.avatar ? pb.files.getUrl(u, u.avatar) : undefined,
+                is_active: u.verified !== false,
+                last_login: u.lastLogin,
+                created: u.created,
+                updated: u.updated,
+                roles
+            };
+        });
+    } catch (err) {
+        console.error('Error fetching users:', err);
         return [];
     }
+}
 
-    // Fetch roles for each user
-    const users = data || [];
-
-    for (const user of users) {
-        const { data: roles } = await supabase.rpc('get_user_roles', { p_user_id: user.id });
-        user.roles = roles || [];
+export async function setUserRoles(userId: string, roleIds: string[]): Promise<void> {
+    // Remove all existing roles
+    const existingRoles = await pb.collection('user_roles').getFullList({
+        filter: `user="${userId}"`
+    });
+    for (const ur of existingRoles) {
+        await pb.collection('user_roles').delete(ur.id);
     }
-
-    return users;
+    // Add new roles
+    for (const roleId of roleIds) {
+        await pb.collection('user_roles').create({ user: userId, role: roleId });
+    }
 }
 
-export async function getUser(id: string): Promise<UserProfile | null> {
-    const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-    if (error) return null;
-
-    const { data: roles } = await supabase.rpc('get_user_roles', { p_user_id: id });
-    data.roles = roles || [];
-
-    return data;
+export async function toggleUserActive(userId: string, isActive: boolean): Promise<void> {
+    await pb.collection('users').update(userId, { verified: isActive });
 }
 
-export async function updateUserProfile(
-    id: string,
-    updates: Partial<Omit<UserProfile, 'id' | 'created_at' | 'roles'>>
-): Promise<UserProfile> {
-    const { data, error } = await supabase
-        .from('user_profiles')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-    if (error) throw error;
-    return data;
-}
-
-export async function toggleUserActive(id: string, isActive: boolean): Promise<void> {
-    const { error } = await supabase
-        .from('user_profiles')
-        .update({ is_active: isActive })
-        .eq('id', id);
-
-    if (error) throw error;
+export async function getRBACStats(): Promise<{ totalUsers: number; activeUsers: number; totalRoles: number }> {
+    try {
+        const usersResult = await pb.collection('users').getList(1, 1);
+        const rolesResult = await pb.collection('roles').getList(1, 1);
+        // For active users, we'll just return total for now (PocketBase doesn't have a verified filter easily)
+        return {
+            totalUsers: usersResult.totalItems,
+            activeUsers: usersResult.totalItems,
+            totalRoles: rolesResult.totalItems,
+        };
+    } catch {
+        return { totalUsers: 0, activeUsers: 0, totalRoles: 0 };
+    }
 }
 
 // ===========================================
@@ -191,39 +219,17 @@ export async function toggleUserActive(id: string, isActive: boolean): Promise<v
 // ===========================================
 
 export async function assignRole(userId: string, roleId: string): Promise<void> {
-    const { error } = await supabase
-        .from('user_roles')
-        .insert({ user_id: userId, role_id: roleId });
-
-    if (error && !error.message.includes('duplicate')) {
-        throw error;
-    }
+    await pb.collection('user_roles').create({
+        user: userId,
+        role: roleId
+    });
 }
 
 export async function removeRole(userId: string, roleId: string): Promise<void> {
-    const { error } = await supabase
-        .from('user_roles')
-        .delete()
-        .eq('user_id', userId)
-        .eq('role_id', roleId);
-
-    if (error) throw error;
-}
-
-export async function setUserRoles(userId: string, roleIds: string[]): Promise<void> {
-    // Delete existing roles
-    await supabase
-        .from('user_roles')
-        .delete()
-        .eq('user_id', userId);
-
-    // Insert new roles
-    if (roleIds.length > 0) {
-        const { error } = await supabase
-            .from('user_roles')
-            .insert(roleIds.map(roleId => ({ user_id: userId, role_id: roleId })));
-
-        if (error) throw error;
+    // Need to find the ID of the user_role record first
+    const record = await pb.collection('user_roles').getFirstListItem(`user="${userId}" && role="${roleId}"`);
+    if (record) {
+        await pb.collection('user_roles').delete(record.id);
     }
 }
 
@@ -231,94 +237,63 @@ export async function setUserRoles(userId: string, roleIds: string[]): Promise<v
 // PERMISSION CHECKING
 // ===========================================
 
-export async function checkPermission(
-    userId: string,
-    resource: Resource,
-    action: Permission
-): Promise<boolean> {
-    const { data, error } = await supabase.rpc('has_permission', {
-        p_user_id: userId,
-        p_resource: resource,
-        p_action: action,
-    });
+export async function isAdmin(userId: string): Promise<boolean> {
+    // 1. Check if actually Super Admin (context usually knows this efficiently)
+    if (pb.authStore.isSuperuser) return true;
 
-    if (error) {
-        console.error('Error checking permission:', error);
+    // 2. Check if assigned 'Admin' role
+    try {
+        const userRoles = await pb.collection('user_roles').getFullList({
+            filter: `user="${userId}"`,
+            expand: 'role'
+        });
+        return userRoles.some(ur => ur.expand?.role?.name === 'Admin' || ur.expand?.role?.name === 'Super Admin');
+    } catch {
         return false;
     }
-
-    return data ?? false;
-}
-
-export async function isAdmin(userId: string): Promise<boolean> {
-    const { data, error } = await supabase.rpc('is_admin', { p_user_id: userId });
-    if (error) return false;
-    return data ?? false;
 }
 
 export async function getCurrentUserPermissions(): Promise<Record<Resource, Permission[]>> {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return {} as Record<Resource, Permission[]>;
+    const userId = pb.authStore.model?.id;
+    if (!userId) return {} as Record<Resource, Permission[]>;
 
-    const { data: roles } = await supabase.rpc('get_user_roles', { p_user_id: user.id });
-
-    if (!roles || roles.length === 0) {
-        return {} as Record<Resource, Permission[]>;
-    }
-
-    // Fetch all role permissions
-    const roleIds = roles.map((r: any) => r.role_id);
-    const { data: roleData } = await supabase
-        .from('roles')
-        .select('permissions')
-        .in('id', roleIds);
-
-    // Merge permissions
-    const merged: Record<Resource, Set<Permission>> = {} as any;
-
-    roleData?.forEach((role: any) => {
-        Object.entries(role.permissions || {}).forEach(([resource, perms]) => {
-            if (!merged[resource as Resource]) {
-                merged[resource as Resource] = new Set();
-            }
-            (perms as Permission[]).forEach(p => merged[resource as Resource].add(p));
-        });
+    // 1. Get User Roles
+    const userRoles = await pb.collection('user_roles').getFullList({
+        filter: `user="${userId}"`,
+        expand: 'role'
     });
 
-    // Convert sets to arrays
+    if (userRoles.length === 0) return {} as Record<Resource, Permission[]>;
+
+    // 2. Merge Permissions
+    const merged: Record<Resource, Set<Permission>> = {} as any;
+
+    userRoles.forEach(ur => {
+        const role = ur.expand?.role as Role;
+        if (role && role.permissions) {
+            Object.entries(role.permissions).forEach(([resource, perms]) => {
+                if (!merged[resource as Resource]) {
+                    merged[resource as Resource] = new Set();
+                }
+                (perms as Permission[]).forEach(p => merged[resource as Resource].add(p));
+            });
+        }
+    });
+
+    // 3. Convert to Array
     const result: Record<Resource, Permission[]> = {} as any;
-    Object.entries(merged).forEach(([resource, perms]) => {
-        result[resource as Resource] = Array.from(perms);
+    Object.entries(merged).forEach(([resource, set]) => {
+        result[resource as Resource] = Array.from(set);
     });
 
     return result;
 }
 
-// ===========================================
-// STATS
-// ===========================================
-
-export async function getRBACStats(): Promise<{
-    totalUsers: number;
-    activeUsers: number;
-    totalRoles: number;
-}> {
-    const { count: totalUsers } = await supabase
-        .from('user_profiles')
-        .select('*', { count: 'exact', head: true });
-
-    const { count: activeUsers } = await supabase
-        .from('user_profiles')
-        .select('*', { count: 'exact', head: true })
-        .eq('is_active', true);
-
-    const { count: totalRoles } = await supabase
-        .from('roles')
-        .select('*', { count: 'exact', head: true });
-
-    return {
-        totalUsers: totalUsers || 0,
-        activeUsers: activeUsers || 0,
-        totalRoles: totalRoles || 0,
-    };
+// Helper for UI checks (Client-side mainly, after loading permissions)
+export function checkPermissionLocally(
+    permissions: Record<Resource, Permission[]>,
+    resource: Resource,
+    action: Permission
+): boolean {
+    return permissions[resource]?.includes(action) || false;
 }

@@ -97,6 +97,15 @@ export default function VendorsPage() {
             <Header
                 title="Vendors"
                 subtitle={`${vendors.length} suppliers`}
+                action={
+                    <Button
+                        onClick={() => setShowForm(true)}
+                        className="bg-primary text-midnight hover:bg-primary/90"
+                    >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Vendor
+                    </Button>
+                }
             />
 
             <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
@@ -111,14 +120,6 @@ export default function VendorsPage() {
                             className="pl-10 bg-card border-border"
                         />
                     </div>
-
-                    <Button
-                        onClick={() => setShowForm(true)}
-                        className="bg-primary text-midnight hover:bg-primary/90"
-                    >
-                        <Plus className="w-4 h-4 mr-2" />
-                        Add Vendor
-                    </Button>
                 </div>
 
                 {/* Vendor Grid */}
@@ -146,7 +147,7 @@ export default function VendorsPage() {
                             <Card
                                 key={vendor.id}
                                 className="bg-card border-border hover:bg-card/70 transition-colors cursor-pointer"
-                                onClick={() => router.push(`/vendors/${vendor.id}`)}
+                                onClick={() => router.push(`/vendors/detail?id=${vendor.id}`)}
                             >
                                 <CardContent className="pt-6">
                                     <div className="flex items-start justify-between">
@@ -167,10 +168,10 @@ export default function VendorsPage() {
                                         </div>
 
                                         <DropdownMenu>
-                                            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                                                <Button variant="ghost" size="icon">
+                                            <DropdownMenuTrigger onClick={(e) => e.stopPropagation()}>
+                                                <div className="h-9 w-9 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground">
                                                     <MoreVertical className="w-4 h-4" />
-                                                </Button>
+                                                </div>
                                             </DropdownMenuTrigger>
                                             <DropdownMenuContent align="end">
                                                 <DropdownMenuItem

@@ -180,9 +180,9 @@ export default function InvoicesPage() {
                             />
                         </div>
 
-                        <Select value={typeFilter} onValueChange={setTypeFilter}>
+                        <Select value={typeFilter} onValueChange={(v) => v && setTypeFilter(v)}>
                             <SelectTrigger className="w-40 bg-card border-border">
-                                <SelectValue placeholder="Type" />
+                                <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="all">All Types</SelectItem>
@@ -192,9 +192,9 @@ export default function InvoicesPage() {
                             </SelectContent>
                         </Select>
 
-                        <Select value={paidFilter} onValueChange={setPaidFilter}>
+                        <Select value={paidFilter} onValueChange={(v) => v && setPaidFilter(v)}>
                             <SelectTrigger className="w-32 bg-card border-border">
-                                <SelectValue placeholder="Status" />
+                                <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="all">All Status</SelectItem>
@@ -279,7 +279,7 @@ export default function InvoicesPage() {
                                         <TableRow
                                             key={invoice.id}
                                             className="border-border hover:bg-muted/50 cursor-pointer"
-                                            onClick={() => router.push(`/invoices/${invoice.id}`)}
+                                            onClick={() => router.push(`/invoices/detail?id=${invoice.id}`)}
                                         >
                                             <TableCell className="font-mono text-primary">
                                                 {invoice.invoice_number}
@@ -313,7 +313,7 @@ export default function InvoicesPage() {
                                                         size="icon"
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            router.push(`/invoices/${invoice.id}`);
+                                                            router.push(`/invoices/detail?id=${invoice.id}`);
                                                         }}
                                                     >
                                                         <Eye className="w-4 h-4" />
@@ -323,7 +323,7 @@ export default function InvoicesPage() {
                                                         size="icon"
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            router.push(`/invoices/${invoice.id}?print=true`);
+                                                            router.push(`/invoices/detail?id=${invoice.id}&print=true`);
                                                         }}
                                                     >
                                                         <Printer className="w-4 h-4" />

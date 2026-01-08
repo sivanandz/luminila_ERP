@@ -1,14 +1,62 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { supabase, subscribeToTable } from "@/lib/supabase";
+import { pb } from "@/lib/pocketbase";
 import type {
     Product,
     ProductVariant,
     ProductWithVariants,
     Sale,
-    SaleWithItems,
 } from "@/types/database";
+
+// PocketBase record types
+interface PBProduct {
+    id: string;
+    sku: string;
+    name: string;
+    description?: string;
+    category?: string;
+    base_price: number;
+    cost_price?: number;
+    image_url?: string;
+    barcode?: string;
+    is_active: boolean;
+    created: string;
+    updated: string;
+}
+
+interface PBVariant {
+    id: string;
+    product: string;
+    variant_name: string;
+    sku_suffix?: string;
+    price_adjustment?: number;
+    stock_level: number;
+    low_stock_threshold?: number;
+    size?: string;
+    color?: string;
+    material?: string;
+    created: string;
+    updated: string;
+    expand?: {
+        product?: PBProduct;
+    };
+}
+
+/**
+ * Subscribe helper for PocketBase collections
+ */
+function subscribeToCollection<T>(
+    collectionName: string,
+    callback: (data: { action: string; record: T }) => void
+): () => void {
+    pb.collection(collectionName).subscribe('*', (e) => {
+        callback({ action: e.action, record: e.record as T });
+    });
+    return () => {
+        pb.collection(collectionName).unsubscribe('*');
+    };
+}
 
 /**
  * Hook to fetch all products with their variants
@@ -23,18 +71,59 @@ export function useProducts() {
         setError(null);
 
         try {
-            const { data, error: fetchError } = await supabase
-                .from("products")
-                .select(`
-          *,
-          variants:product_variants(*)
-        `)
-                .eq("is_active", true)
-                .order("name");
+            // Fetch products
+            const productRecords = await pb.collection('products').getFullList<PBProduct>({
+                filter: 'is_active=true',
+                sort: 'name',
+            });
 
-            if (fetchError) throw fetchError;
+            // Fetch all variants with product expansion
+            const variantRecords = await pb.collection('product_variants').getFullList<PBVariant>({
+                expand: 'product',
+            });
 
-            setProducts(data as ProductWithVariants[]);
+            // Group variants by product
+            const variantsByProduct = new Map<string, ProductVariant[]>();
+            for (const v of variantRecords) {
+                const productId = v.product;
+                if (!variantsByProduct.has(productId)) {
+                    variantsByProduct.set(productId, []);
+                }
+                variantsByProduct.get(productId)!.push({
+                    id: v.id,
+                    product_id: v.product,
+                    sku_suffix: v.sku_suffix || '',
+                    variant_name: v.variant_name,
+                    material: v.material || null,
+                    size: v.size || null,
+                    color: v.color || null,
+                    price_adjustment: v.price_adjustment || 0,
+                    stock_level: v.stock_level,
+                    low_stock_threshold: v.low_stock_threshold || 5,
+                    shopify_inventory_id: null,
+                    woocommerce_product_id: null,
+                    created_at: v.created,
+                } as ProductVariant);
+            }
+
+            // Map to expected type
+            const mappedProducts: ProductWithVariants[] = productRecords.map(p => ({
+                id: p.id,
+                sku: p.sku,
+                name: p.name,
+                description: p.description || null,
+                category: p.category || null,
+                base_price: p.base_price,
+                cost_price: p.cost_price || null,
+                image_url: p.image_url || null,
+                barcode_data: p.barcode || null,
+                is_active: p.is_active,
+                created_at: p.created,
+                updated_at: p.updated,
+                variants: variantsByProduct.get(p.id) || [],
+            }));
+
+            setProducts(mappedProducts);
         } catch (err) {
             console.error("Error fetching products:", err);
             setError("Failed to load products");
@@ -47,18 +136,12 @@ export function useProducts() {
         fetchProducts();
 
         // Subscribe to realtime updates
-        const channel = subscribeToTable("products", (payload) => {
-            if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-                fetchProducts(); // Refetch to get full data with variants
-            } else if (payload.eventType === "DELETE") {
-                setProducts((prev) =>
-                    prev.filter((p) => p.id !== payload.old.id)
-                );
-            }
+        const unsub = subscribeToCollection('products', () => {
+            fetchProducts();
         });
 
         return () => {
-            supabase.removeChannel(channel);
+            unsub();
         };
     }, [fetchProducts]);
 
@@ -81,19 +164,61 @@ export function useProductSearch() {
         setIsSearching(true);
 
         try {
-            const { data, error } = await supabase
-                .from("products")
-                .select(`
-          *,
-          variants:product_variants(*)
-        `)
-                .eq("is_active", true)
-                .or(`name.ilike.%${query}%,sku.ilike.%${query}%`)
-                .limit(10);
+            const productRecords = await pb.collection('products').getList<PBProduct>(1, 10, {
+                filter: `is_active=true && (name~"${query}" || sku~"${query}")`,
+            });
 
-            if (error) throw error;
+            // Fetch variants for found products
+            const productIds = productRecords.items.map(p => p.id);
+            let variantRecords: PBVariant[] = [];
+            if (productIds.length > 0) {
+                const variantFilter = productIds.map(id => `product="${id}"`).join(' || ');
+                variantRecords = await pb.collection('product_variants').getFullList<PBVariant>({
+                    filter: variantFilter,
+                });
+            }
 
-            setResults(data as ProductWithVariants[]);
+            // Group variants by product
+            const variantsByProduct = new Map<string, ProductVariant[]>();
+            for (const v of variantRecords) {
+                const productId = v.product;
+                if (!variantsByProduct.has(productId)) {
+                    variantsByProduct.set(productId, []);
+                }
+                variantsByProduct.get(productId)!.push({
+                    id: v.id,
+                    product_id: v.product,
+                    sku_suffix: v.sku_suffix || '',
+                    variant_name: v.variant_name,
+                    material: v.material || null,
+                    size: v.size || null,
+                    color: v.color || null,
+                    price_adjustment: v.price_adjustment || 0,
+                    stock_level: v.stock_level,
+                    low_stock_threshold: v.low_stock_threshold || 5,
+                    shopify_inventory_id: null,
+                    woocommerce_product_id: null,
+                    created_at: v.created,
+                } as ProductVariant);
+            }
+
+            const mappedProducts: ProductWithVariants[] = productRecords.items.map(p => ({
+                id: p.id,
+                sku: p.sku,
+                name: p.name,
+                description: p.description || null,
+                category: p.category || null,
+                base_price: p.base_price,
+                cost_price: p.cost_price || null,
+                image_url: p.image_url || null,
+                barcode_data: p.barcode || null,
+                is_active: p.is_active,
+                created_at: p.created,
+                updated_at: p.updated,
+                variants: variantsByProduct.get(p.id) || [],
+            }));
+
+            setResults(mappedProducts);
         } catch (err) {
             console.error("Search error:", err);
             setResults([]);
@@ -104,38 +229,59 @@ export function useProductSearch() {
 
     const searchBySku = useCallback(async (sku: string): Promise<ProductVariant | null> => {
         try {
-            // First try exact match on variant SKU (product_sku + sku_suffix)
-            const { data: variants, error } = await supabase
-                .from("product_variants")
-                .select(`
-          *,
-          product:products(*)
-        `)
-                .or(`sku_suffix.eq.${sku}`)
-                .limit(1);
+            // First try exact match on variant SKU suffix
+            const variants = await pb.collection('product_variants').getList<PBVariant>(1, 1, {
+                filter: `sku_suffix="${sku}"`,
+                expand: 'product',
+            });
 
-            if (error) throw error;
-
-            if (variants && variants.length > 0) {
-                return variants[0] as ProductVariant;
+            if (variants.items.length > 0) {
+                const v = variants.items[0];
+                return {
+                    id: v.id,
+                    product_id: v.product,
+                    sku_suffix: v.sku_suffix || '',
+                    variant_name: v.variant_name,
+                    material: v.material || null,
+                    size: v.size || null,
+                    color: v.color || null,
+                    price_adjustment: v.price_adjustment || 0,
+                    stock_level: v.stock_level,
+                    low_stock_threshold: v.low_stock_threshold || 5,
+                    shopify_inventory_id: null,
+                    woocommerce_product_id: null,
+                    created_at: v.created,
+                } as ProductVariant;
             }
 
             // Try matching against product SKU
-            const { data: products, error: prodError } = await supabase
-                .from("products")
-                .select(`
-          *,
-          variants:product_variants(*)
-        `)
-                .ilike("sku", `%${sku}%`)
-                .limit(1);
+            const products = await pb.collection('products').getList<PBProduct>(1, 1, {
+                filter: `sku~"${sku}"`,
+            });
 
-            if (prodError) throw prodError;
+            if (products.items.length > 0) {
+                const p = products.items[0];
+                const pVariants = await pb.collection('product_variants').getList<PBVariant>(1, 1, {
+                    filter: `product="${p.id}"`,
+                });
 
-            if (products && products.length > 0) {
-                const product = products[0] as ProductWithVariants;
-                if (product.variants.length > 0) {
-                    return { ...product.variants[0], product } as unknown as ProductVariant;
+                if (pVariants.items.length > 0) {
+                    const v = pVariants.items[0];
+                    return {
+                        id: v.id,
+                        product_id: v.product,
+                        sku_suffix: v.sku_suffix || '',
+                        variant_name: v.variant_name,
+                        material: v.material || null,
+                        size: v.size || null,
+                        color: v.color || null,
+                        price_adjustment: v.price_adjustment || 0,
+                        stock_level: v.stock_level,
+                        low_stock_threshold: v.low_stock_threshold || 5,
+                        shopify_inventory_id: null,
+                        woocommerce_product_id: null,
+                        created_at: v.created,
+                    } as ProductVariant;
                 }
             }
 
@@ -160,15 +306,28 @@ export function useSales() {
         setIsLoading(true);
 
         try {
-            const { data, error } = await supabase
-                .from("sales")
-                .select("*")
-                .order("created_at", { ascending: false })
-                .limit(limit);
+            const records = await pb.collection('sales').getList(1, limit, {
+                sort: '-created',
+            });
 
-            if (error) throw error;
+            const mappedSales: Sale[] = records.items.map((s: any) => ({
+                id: s.id,
+                channel: s.channel,
+                channel_order_id: s.channel_order_id || null,
+                customer_name: s.customer_name || null,
+                customer_phone: s.customer_phone || null,
+                customer_address: s.customer_address || null,
+                subtotal: s.subtotal,
+                discount: s.discount || 0,
+                total: s.total,
+                payment_method: s.payment_method || null,
+                status: s.status,
+                notes: s.notes || null,
+                created_at: s.created,
+                updated_at: s.updated,
+            }));
 
-            setSales(data as Sale[]);
+            setSales(mappedSales);
         } catch (err) {
             console.error("Error fetching sales:", err);
         } finally {
@@ -195,44 +354,61 @@ export function useSales() {
         ): Promise<Sale | null> => {
             try {
                 // Create sale
-                const { data: sale, error: saleError } = await supabase
-                    .from("sales")
-                    .insert(saleData as never)
-                    .select()
-                    .single();
-
-                if (saleError) throw saleError;
-
-                // Type assertion for sale data
-                const saleRecord = sale as unknown as Sale;
+                const saleRecord = await pb.collection('sales').create({
+                    channel: saleData.channel,
+                    channel_order_id: saleData.channel_order_id || '',
+                    customer_name: saleData.customer_name || '',
+                    customer_phone: saleData.customer_phone || '',
+                    subtotal: saleData.subtotal,
+                    discount: saleData.discount,
+                    total: saleData.total,
+                    payment_method: saleData.payment_method || 'cash',
+                    status: saleData.status || 'confirmed',
+                    notes: saleData.notes || '',
+                });
 
                 // Create sale items
-                const saleItems = items.map((item) => ({
-                    sale_id: saleRecord.id,
-                    variant_id: item.variant_id,
-                    quantity: item.quantity,
-                    unit_price: item.unit_price,
-                }));
-
-                const { error: itemsError } = await supabase
-                    .from("sale_items")
-                    .insert(saleItems as never);
-
-                if (itemsError) throw itemsError;
-
-                // Update stock levels and log movements
                 for (const item of items) {
-                    // Log stock movement (RPC would be better but we'll skip for now)
-                    await supabase.from("stock_movements").insert({
-                        variant_id: item.variant_id,
-                        movement_type: "sale",
+                    await pb.collection('sale_items').create({
+                        sale: saleRecord.id,
+                        variant: item.variant_id,
+                        quantity: item.quantity,
+                        unit_price: item.unit_price,
+                        total_price: item.quantity * item.unit_price,
+                    });
+
+                    // Update stock level
+                    const variant = await pb.collection('product_variants').getOne(item.variant_id);
+                    await pb.collection('product_variants').update(item.variant_id, {
+                        stock_level: (variant.stock_level || 0) - item.quantity,
+                    });
+
+                    // Log stock movement
+                    await pb.collection('stock_movements').create({
+                        variant: item.variant_id,
+                        movement_type: 'sale',
                         quantity: -item.quantity,
                         reference_id: saleRecord.id,
                         source: saleData.channel,
-                    } as never);
+                    });
                 }
 
-                return saleRecord;
+                return {
+                    id: saleRecord.id,
+                    channel: saleData.channel,
+                    channel_order_id: saleData.channel_order_id || null,
+                    customer_name: saleData.customer_name || null,
+                    customer_phone: saleData.customer_phone || null,
+                    customer_address: saleData.customer_address || null,
+                    subtotal: saleData.subtotal,
+                    discount: saleData.discount,
+                    total: saleData.total,
+                    payment_method: saleData.payment_method || null,
+                    status: saleData.status || 'confirmed',
+                    notes: saleData.notes || null,
+                    created_at: saleRecord.created,
+                    updated_at: saleRecord.updated,
+                };
             } catch (err) {
                 console.error("Error creating sale:", err);
                 return null;
@@ -244,12 +420,12 @@ export function useSales() {
     useEffect(() => {
         fetchSales();
 
-        const channel = subscribeToTable("sales", () => {
+        const unsub = subscribeToCollection('sales', () => {
             fetchSales();
         });
 
         return () => {
-            supabase.removeChannel(channel);
+            unsub();
         };
     }, [fetchSales]);
 
@@ -269,18 +445,46 @@ export function useLowStockAlerts() {
         setIsLoading(true);
 
         try {
-            const { data, error } = await supabase
-                .from("product_variants")
-                .select(`
-          *,
-          product:products(*)
-        `)
-                .lte("stock_level", 5) // Or use low_stock_threshold column
-                .order("stock_level");
+            const records = await pb.collection('product_variants').getFullList<PBVariant>({
+                filter: 'stock_level <= 5',
+                sort: 'stock_level',
+                expand: 'product',
+            });
 
-            if (error) throw error;
+            const mappedItems = records.map(v => {
+                const p = v.expand?.product;
+                return {
+                    id: v.id,
+                    product_id: v.product,
+                    sku_suffix: v.sku_suffix || '',
+                    variant_name: v.variant_name,
+                    material: v.material || null,
+                    size: v.size || null,
+                    color: v.color || null,
+                    price_adjustment: v.price_adjustment || 0,
+                    stock_level: v.stock_level,
+                    low_stock_threshold: v.low_stock_threshold || 5,
+                    shopify_inventory_id: null,
+                    woocommerce_product_id: null,
+                    created_at: v.created,
+                    product: p ? {
+                        id: p.id,
+                        sku: p.sku,
+                        name: p.name,
+                        description: p.description || null,
+                        category: p.category || null,
+                        base_price: p.base_price,
+                        cost_price: p.cost_price || null,
+                        image_url: p.image_url || null,
+                        barcode_data: p.barcode || null,
+                        is_active: p.is_active,
+                        created_at: p.created,
+                        updated_at: p.updated,
+                    } : undefined,
+                } as (ProductVariant & { product: Product });
+            });
 
-            setLowStockItems(data as (ProductVariant & { product: Product })[]);
+            setLowStockItems(mappedItems);
         } catch (err) {
             console.error("Error fetching low stock:", err);
         } finally {
@@ -291,12 +495,12 @@ export function useLowStockAlerts() {
     useEffect(() => {
         fetchLowStock();
 
-        const channel = subscribeToTable("product_variants", () => {
+        const unsub = subscribeToCollection('product_variants', () => {
             fetchLowStock();
         });
 
         return () => {
-            supabase.removeChannel(channel);
+            unsub();
         };
     }, [fetchLowStock]);
 
@@ -321,42 +525,36 @@ export function useDashboardStats() {
 
         try {
             // Get product count
-            const { count: productCount } = await supabase
-                .from("products")
-                .select("*", { count: "exact", head: true })
-                .eq("is_active", true);
+            const products = await pb.collection('products').getList(1, 1, {
+                filter: 'is_active=true',
+            });
+            const productCount = products.totalItems;
 
             // Get total stock
-            const { data: stockData } = await supabase
-                .from("product_variants")
-                .select("stock_level");
-            const stockDataTyped = stockData as { stock_level: number }[] | null;
-            const totalStock = stockDataTyped?.reduce((sum, v) => sum + (v.stock_level || 0), 0) || 0;
+            const variants = await pb.collection('product_variants').getFullList<{ stock_level: number }>();
+            const totalStock = variants.reduce((sum, v) => sum + (v.stock_level || 0), 0);
 
             // Get today's sales
             const today = new Date().toISOString().split("T")[0];
-            const { data: todaySalesData } = await supabase
-                .from("sales")
-                .select("total")
-                .gte("created_at", `${today}T00:00:00`)
-                .neq("status", "cancelled");
+            const todaySalesRecords = await pb.collection('sales').getFullList<{ total: number; status: string }>({
+                filter: `created >= "${today} 00:00:00" && status != "cancelled"`,
+            });
 
-            const salesDataTyped = todaySalesData as { total: number }[] | null;
-            const todaySales = salesDataTyped?.length || 0;
-            const todayRevenue = salesDataTyped?.reduce((sum, s) => sum + (s.total || 0), 0) || 0;
+            const todaySales = todaySalesRecords.length;
+            const todayRevenue = todaySalesRecords.reduce((sum, s) => sum + (s.total || 0), 0);
 
             // Get low stock count
-            const { count: lowStockCount } = await supabase
-                .from("product_variants")
-                .select("*", { count: "exact", head: true })
-                .lte("stock_level", 5);
+            const lowStockVariants = await pb.collection('product_variants').getList(1, 1, {
+                filter: 'stock_level <= 5',
+            });
+            const lowStockCount = lowStockVariants.totalItems;
 
             setStats({
-                totalProducts: productCount || 0,
+                totalProducts: productCount,
                 totalStock,
                 todaySales,
                 todayRevenue,
-                lowStockCount: lowStockCount || 0,
+                lowStockCount,
             });
         } catch (err) {
             console.error("Error fetching stats:", err);

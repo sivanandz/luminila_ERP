@@ -22,8 +22,6 @@ import {
     Plus,
     Trash2,
     Edit,
-    Trash2,
-    Edit,
     Loader2,
 } from "lucide-react";
 import { LogoUpload } from "@/components/settings/LogoUpload";
@@ -90,6 +88,11 @@ export default function SettingsPage() {
         // Integrations
         shopifyStore: "",
         shopifyToken: "",
+        // PhonePe
+        phonepeMerchantId: "",
+        phonepeSaltKey: "",
+        phonepeSaltIndex: "1",
+        phonepeEnv: "UAT",
     });
 
     // Categories state
@@ -132,6 +135,7 @@ export default function SettingsPage() {
         shopify: false,
         woocommerce: false,
         whatsapp: false,
+        phonepe: !!(settings.phonepeMerchantId && settings.phonepeSaltKey),
     };
 
     const handleSave = async () => {
@@ -163,7 +167,7 @@ export default function SettingsPage() {
         try {
             await createCategory({
                 name: newCategory.name,
-                parent_id: newCategory.parent_id || null,
+                parent: newCategory.parent_id || undefined,
             });
             setNewCategory({ name: "", parent_id: "" });
             setShowCategoryDialog(false);
@@ -769,6 +773,88 @@ export default function SettingsPage() {
                                             </div>
                                         </div>
                                     </div>
+
+
+                                    {/* PhonePe */}
+                                    <div className="p-6 bg-bg-navy border border-surface-hover rounded-xl hover:border-primary/30 transition-colors">
+                                        <div className="flex items-center justify-between mb-6">
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-12 h-12 bg-[#5f259f]/10 rounded-xl flex items-center justify-center text-[#5f259f] font-bold border border-[#5f259f]/20">
+                                                    <CreditCard size={24} />
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold text-white text-lg">PhonePe</h3>
+                                                    <p className="text-sm text-moonstone">
+                                                        Payment Gateway Integration
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                {connections.phonepe ? (
+                                                    <span className="badge badge-success flex items-center gap-1.5 py-1 px-3">
+                                                        <CheckCircle size={14} />
+                                                        Connected
+                                                    </span>
+                                                ) : (
+                                                    <span className="badge badge-warning flex items-center gap-1.5 py-1 px-3">
+                                                        <XCircle size={14} />
+                                                        Not Connected
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                                    Merchant ID
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    placeholder="MERC123"
+                                                    value={settings.phonepeMerchantId}
+                                                    onChange={(e) => setSettings({ ...settings, phonepeMerchantId: e.target.value })}
+                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                                    Salt Key
+                                                </label>
+                                                <input
+                                                    type="password"
+                                                    placeholder="xxxx-xxxx-xxxx"
+                                                    value={settings.phonepeSaltKey}
+                                                    onChange={(e) => setSettings({ ...settings, phonepeSaltKey: e.target.value })}
+                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                                    Salt Index
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    placeholder="1"
+                                                    value={settings.phonepeSaltIndex}
+                                                    onChange={(e) => setSettings({ ...settings, phonepeSaltIndex: e.target.value })}
+                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                                    Environment
+                                                </label>
+                                                <select
+                                                    value={settings.phonepeEnv}
+                                                    onChange={(e) => setSettings({ ...settings, phonepeEnv: e.target.value })}
+                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
+                                                >
+                                                    <option value="UAT">Sandbox / UAT</option>
+                                                    <option value="PROD">Production</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
@@ -868,7 +954,7 @@ export default function SettingsPage() {
                             <Label>Parent Category (Optional)</Label>
                             <Select
                                 value={newCategory.parent_id}
-                                onValueChange={(v) => setNewCategory({ ...newCategory, parent_id: v })}
+                                onValueChange={(v) => v && setNewCategory({ ...newCategory, parent_id: v })}
                             >
                                 <SelectTrigger>
                                     <SelectValue />
@@ -959,7 +1045,7 @@ export default function SettingsPage() {
                     </div>
                 </DialogContent>
             </Dialog>
-        </div>
+        </div >
     );
 }
 

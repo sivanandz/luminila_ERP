@@ -17,9 +17,10 @@ interface HeaderProps {
     title: string;
     subtitle?: string;
     action?: React.ReactNode;
+    children?: React.ReactNode;
 }
 
-export function Header({ title, subtitle, action }: HeaderProps) {
+export function Header({ title, subtitle, action, children }: HeaderProps) {
     const [searchQuery, setSearchQuery] = useState("");
     const router = useRouter();
 
@@ -69,6 +70,8 @@ export function Header({ title, subtitle, action }: HeaderProps) {
                     <RefreshCw size={22} className="animate-spin-slow" style={{ animationDuration: '3s' }} />
                     <span className="text-xs font-bold text-muted-foreground uppercase tracking-wide hidden xl:block">Synced</span>
                 </button>
+
+                {children}
 
                 {action || (
                     <button

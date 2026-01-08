@@ -1,10 +1,9 @@
 /**
  * Activity Logging Service
- * Audit trail for all system operations
+ * Audit trail for all system operations using PocketBase
  */
 
-import { supabase } from './supabase';
-import { format } from 'date-fns';
+import { pb } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -65,52 +64,59 @@ export async function getActivityLogs(
     limit: number = 50,
     offset: number = 0
 ): Promise<{ logs: ActivityLog[]; total: number }> {
-    let query = supabase
-        .from('activity_logs')
-        .select('*', { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
+    try {
+        const filterParts: string[] = [];
 
-    if (filters?.action) {
-        query = query.eq('action', filters.action);
-    }
+        if (filters?.action) {
+            filterParts.push(`action="${filters.action}"`);
+        }
+        if (filters?.entity_type) {
+            filterParts.push(`entity_type="${filters.entity_type}"`);
+        }
+        if (filters?.entity_id) {
+            filterParts.push(`entity_id="${filters.entity_id}"`);
+        }
+        if (filters?.startDate) {
+            filterParts.push(`created>="${filters.startDate}"`);
+        }
+        if (filters?.endDate) {
+            filterParts.push(`created<="${filters.endDate}"`);
+        }
 
-    if (filters?.entity_type) {
-        query = query.eq('entity_type', filters.entity_type);
-    }
+        const page = Math.floor(offset / limit) + 1;
+        const result = await pb.collection('activity_logs').getList(page, limit, {
+            filter: filterParts.join(' && ') || '',
+            sort: '-created',
+        });
 
-    if (filters?.entity_id) {
-        query = query.eq('entity_id', filters.entity_id);
-    }
+        let logs = result.items.map((log: any) => ({
+            id: log.id,
+            action: log.action,
+            entity_type: log.entity_type,
+            entity_id: log.entity_id,
+            description: log.description,
+            old_values: log.old_values,
+            new_values: log.new_values,
+            user_id: log.user_id,
+            user_name: log.user_name,
+            created_at: log.created,
+        }));
 
-    if (filters?.startDate) {
-        query = query.gte('created_at', filters.startDate);
-    }
+        // Client-side search
+        if (filters?.search) {
+            const search = filters.search.toLowerCase();
+            logs = logs.filter((log: ActivityLog) =>
+                log.description?.toLowerCase().includes(search) ||
+                log.entity_type?.toLowerCase().includes(search) ||
+                log.action?.toLowerCase().includes(search)
+            );
+        }
 
-    if (filters?.endDate) {
-        query = query.lte('created_at', filters.endDate);
-    }
-
-    const { data, count, error } = await query;
-
-    if (error) {
+        return { logs, total: result.totalItems };
+    } catch (error) {
         console.error('Error fetching activity logs:', error);
         return { logs: [], total: 0 };
     }
-
-    let logs = data || [];
-
-    // Client-side search
-    if (filters?.search) {
-        const search = filters.search.toLowerCase();
-        logs = logs.filter((log: any) =>
-            log.description?.toLowerCase().includes(search) ||
-            log.entity_type?.toLowerCase().includes(search) ||
-            log.action?.toLowerCase().includes(search)
-        );
-    }
-
-    return { logs, total: count || 0 };
 }
 
 // ===========================================
@@ -128,17 +134,17 @@ export async function logActivity(
         userName?: string;
     }
 ): Promise<void> {
-    const { error } = await supabase.from('activity_logs').insert({
-        action,
-        entity_type: entityType,
-        entity_id: options?.entityId,
-        description,
-        old_values: options?.oldValues,
-        new_values: options?.newValues,
-        user_name: options?.userName,
-    });
-
-    if (error) {
+    try {
+        await pb.collection('activity_logs').create({
+            action,
+            entity_type: entityType,
+            entity_id: options?.entityId || '',
+            description,
+            old_values: options?.oldValues,
+            new_values: options?.newValues,
+            user_name: options?.userName || '',
+        });
+    } catch (error) {
         console.error('Error logging activity:', error);
     }
 }
@@ -185,35 +191,37 @@ export async function getActivityStats(): Promise<{
     weekCount: number;
     byAction: Record<ActivityAction, number>;
 }> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
 
-    const { count: todayCount } = await supabase
-        .from('activity_logs')
-        .select('*', { count: 'exact', head: true })
-        .gte('created_at', today.toISOString());
+        const todayLogs = await pb.collection('activity_logs').getList(1, 1, {
+            filter: `created>="${today.toISOString()}"`,
+        });
 
-    const { count: weekCount } = await supabase
-        .from('activity_logs')
-        .select('*', { count: 'exact', head: true })
-        .gte('created_at', weekAgo.toISOString());
+        const weekLogs = await pb.collection('activity_logs').getFullList({
+            filter: `created>="${weekAgo.toISOString()}"`,
+        });
 
-    const { data: actionData } = await supabase
-        .from('activity_logs')
-        .select('action')
-        .gte('created_at', weekAgo.toISOString());
+        const byAction: Record<string, number> = {};
+        weekLogs.forEach((log: any) => {
+            byAction[log.action] = (byAction[log.action] || 0) + 1;
+        });
 
-    const byAction: Record<string, number> = {};
-    actionData?.forEach((log: any) => {
-        byAction[log.action] = (byAction[log.action] || 0) + 1;
-    });
-
-    return {
-        todayCount: todayCount || 0,
-        weekCount: weekCount || 0,
-        byAction: byAction as Record<ActivityAction, number>,
-    };
+        return {
+            todayCount: todayLogs.totalItems,
+            weekCount: weekLogs.length,
+            byAction: byAction as Record<ActivityAction, number>,
+        };
+    } catch (error) {
+        console.error('Error fetching activity stats:', error);
+        return {
+            todayCount: 0,
+            weekCount: 0,
+            byAction: {} as Record<ActivityAction, number>,
+        };
+    }
 }

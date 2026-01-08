@@ -1,14 +1,15 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
 import {
     getCurrentUserPermissions,
-    checkPermission,
-    isAdmin,
+    isAdmin as checkIsAdmin,
     type Resource,
     type Permission,
 } from "@/lib/rbac";
+
+export type { Resource, Permission };
 
 interface UsePermissionsResult {
     permissions: Record<Resource, Permission[]>;
@@ -24,6 +25,7 @@ interface UsePermissionsResult {
 }
 
 export function usePermissions(): UsePermissionsResult {
+    const { user, isValid } = useAuth();
     const [permissions, setPermissions] = useState<Record<Resource, Permission[]>>(
         {} as Record<Resource, Permission[]>
     );
@@ -31,37 +33,30 @@ export function usePermissions(): UsePermissionsResult {
     const [admin, setAdmin] = useState(false);
 
     const loadPermissions = useCallback(async () => {
+        if (!user || !isValid) {
+            setPermissions({} as Record<Resource, Permission[]>);
+            setAdmin(false);
+            setLoading(false);
+            return;
+        }
+
         setLoading(true);
         try {
-            const { data: { user } } = await supabase.auth.getUser();
-
-            if (user) {
-                const [perms, adminStatus] = await Promise.all([
-                    getCurrentUserPermissions(),
-                    isAdmin(user.id),
-                ]);
-                setPermissions(perms);
-                setAdmin(adminStatus);
-            } else {
-                setPermissions({} as Record<Resource, Permission[]>);
-                setAdmin(false);
-            }
+            const [perms, adminStatus] = await Promise.all([
+                getCurrentUserPermissions(),
+                checkIsAdmin(user.id),
+            ]);
+            setPermissions(perms);
+            setAdmin(adminStatus);
         } catch (error) {
             console.error("Error loading permissions:", error);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [user, isValid]);
 
     useEffect(() => {
         loadPermissions();
-
-        // Refresh on auth change
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
-            loadPermissions();
-        });
-
-        return () => subscription.unsubscribe();
     }, [loadPermissions]);
 
     const hasPermission = useCallback(

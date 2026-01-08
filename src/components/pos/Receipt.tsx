@@ -8,6 +8,7 @@ interface ReceiptItem {
     variant: string;
     quantity: number;
     unitPrice: number;
+    remarks?: string;
 }
 
 interface ReceiptProps {
@@ -80,6 +81,11 @@ export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
                             <div className="text-[10px] text-gray-600 pl-2">
                                 {item.variant} × {item.quantity} @ {formatPrice(item.unitPrice)}
                             </div>
+                            {item.remarks && (
+                                <div className="text-[10px] text-gray-500 pl-2 italic">
+                                    Note: {item.remarks}
+                                </div>
+                            )}
                         </div>
                     ))}
                 </div>

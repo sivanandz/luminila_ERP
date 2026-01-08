@@ -122,6 +122,15 @@ export default function PurchaseOrdersPage() {
             <Header
                 title="Purchase Orders"
                 subtitle={`${totalOrders} orders`}
+                action={
+                    <Button
+                        onClick={() => router.push("/purchase/create")}
+                        className="bg-primary text-midnight hover:bg-primary/90"
+                    >
+                        <Plus className="w-4 h-4 mr-2" />
+                        New Purchase Order
+                    </Button>
+                }
             />
 
             <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
@@ -183,9 +192,9 @@ export default function PurchaseOrdersPage() {
                             />
                         </div>
 
-                        <Select value={statusFilter} onValueChange={setStatusFilter}>
+                        <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
                             <SelectTrigger className="w-40 bg-card border-border">
-                                <SelectValue placeholder="Status" />
+                                <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="all">All Status</SelectItem>
@@ -197,14 +206,6 @@ export default function PurchaseOrdersPage() {
                             </SelectContent>
                         </Select>
                     </div>
-
-                    <Button
-                        onClick={() => router.push("/purchase/create")}
-                        className="bg-primary text-midnight hover:bg-primary/90"
-                    >
-                        <Plus className="w-4 h-4 mr-2" />
-                        New Purchase Order
-                    </Button>
                 </div>
 
                 {/* Table */}
@@ -248,7 +249,7 @@ export default function PurchaseOrdersPage() {
                                         <TableRow
                                             key={order.id}
                                             className="border-border hover:bg-muted/50 cursor-pointer"
-                                            onClick={() => router.push(`/purchase/${order.id}`)}
+                                            onClick={() => router.push(`/purchase/detail?id=${order.id}`)}
                                         >
                                             <TableCell className="font-mono text-primary">
                                                 {order.po_number}

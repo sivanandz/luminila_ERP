@@ -1,9 +1,9 @@
 /**
  * Backup & Restore Utilities
- * Handles data export and import for disaster recovery
+ * Handles data export and import for disaster recovery using PocketBase
  */
 
-import { supabase } from "./supabase";
+import { pb } from "./pocketbase";
 import { downloadAsFile, readFileAsText } from "./csv";
 
 interface BackupData {
@@ -26,31 +26,25 @@ const BACKUP_VERSION = "1.0.0";
  */
 export async function createBackup(): Promise<BackupData | null> {
     try {
-        // Fetch all tables
         const [products, variants, vendors, sales, saleItems, movements] = await Promise.all([
-            supabase.from("products").select("*"),
-            supabase.from("product_variants").select("*"),
-            supabase.from("vendors").select("*"),
-            supabase.from("sales").select("*"),
-            supabase.from("sale_items").select("*"),
-            supabase.from("stock_movements").select("*"),
+            pb.collection("products").getFullList(),
+            pb.collection("product_variants").getFullList(),
+            pb.collection("vendors").getFullList(),
+            pb.collection("sales").getFullList(),
+            pb.collection("sale_items").getFullList(),
+            pb.collection("stock_movements").getFullList(),
         ]);
-
-        if (products.error || variants.error || vendors.error ||
-            sales.error || saleItems.error || movements.error) {
-            throw new Error("Failed to fetch data from one or more tables");
-        }
 
         const backup: BackupData = {
             version: BACKUP_VERSION,
             createdAt: new Date().toISOString(),
             tables: {
-                products: products.data || [],
-                product_variants: variants.data || [],
-                vendors: vendors.data || [],
-                sales: sales.data || [],
-                sale_items: saleItems.data || [],
-                stock_movements: movements.data || [],
+                products: products || [],
+                product_variants: variants || [],
+                vendors: vendors || [],
+                sales: sales || [],
+                sale_items: saleItems || [],
+                stock_movements: movements || [],
             },
         };
 
@@ -121,58 +115,93 @@ export async function restoreFromBackup(file: File): Promise<{
             return { success: false, message: "Invalid backup file format" };
         }
 
-        // Check version compatibility
         if (data.version !== BACKUP_VERSION) {
             console.warn(`Backup version mismatch: ${data.version} vs ${BACKUP_VERSION}`);
         }
 
         // Restore in order (respecting foreign keys)
-        // 1. Vendors first (no dependencies)
-        if (data.tables.vendors.length > 0) {
-            const { error } = await supabase
-                .from("vendors")
-                .upsert(data.tables.vendors as never, { onConflict: "id" });
-            if (error) throw new Error(`Vendors restore failed: ${error.message}`);
+        // 1. Vendors first
+        for (const vendor of data.tables.vendors as any[]) {
+            try {
+                const existing = await pb.collection("vendors").getOne(vendor.id).catch(() => null);
+                if (existing) {
+                    await pb.collection("vendors").update(vendor.id, vendor);
+                } else {
+                    await pb.collection("vendors").create(vendor);
+                }
+            } catch (e) {
+                console.warn(`Failed to restore vendor ${vendor.id}:`, e);
+            }
         }
 
         // 2. Products
-        if (data.tables.products.length > 0) {
-            const { error } = await supabase
-                .from("products")
-                .upsert(data.tables.products as never, { onConflict: "id" });
-            if (error) throw new Error(`Products restore failed: ${error.message}`);
+        for (const product of data.tables.products as any[]) {
+            try {
+                const existing = await pb.collection("products").getOne(product.id).catch(() => null);
+                if (existing) {
+                    await pb.collection("products").update(product.id, product);
+                } else {
+                    await pb.collection("products").create(product);
+                }
+            } catch (e) {
+                console.warn(`Failed to restore product ${product.id}:`, e);
+            }
         }
 
         // 3. Product variants
-        if (data.tables.product_variants.length > 0) {
-            const { error } = await supabase
-                .from("product_variants")
-                .upsert(data.tables.product_variants as never, { onConflict: "id" });
-            if (error) throw new Error(`Variants restore failed: ${error.message}`);
+        for (const variant of data.tables.product_variants as any[]) {
+            try {
+                const existing = await pb.collection("product_variants").getOne(variant.id).catch(() => null);
+                if (existing) {
+                    await pb.collection("product_variants").update(variant.id, variant);
+                } else {
+                    await pb.collection("product_variants").create(variant);
+                }
+            } catch (e) {
+                console.warn(`Failed to restore variant ${variant.id}:`, e);
+            }
         }
 
         // 4. Sales
-        if (data.tables.sales.length > 0) {
-            const { error } = await supabase
-                .from("sales")
-                .upsert(data.tables.sales as never, { onConflict: "id" });
-            if (error) throw new Error(`Sales restore failed: ${error.message}`);
+        for (const sale of data.tables.sales as any[]) {
+            try {
+                const existing = await pb.collection("sales").getOne(sale.id).catch(() => null);
+                if (existing) {
+                    await pb.collection("sales").update(sale.id, sale);
+                } else {
+                    await pb.collection("sales").create(sale);
+                }
+            } catch (e) {
+                console.warn(`Failed to restore sale ${sale.id}:`, e);
+            }
         }
 
         // 5. Sale items
-        if (data.tables.sale_items.length > 0) {
-            const { error } = await supabase
-                .from("sale_items")
-                .upsert(data.tables.sale_items as never, { onConflict: "id" });
-            if (error) throw new Error(`Sale items restore failed: ${error.message}`);
+        for (const item of data.tables.sale_items as any[]) {
+            try {
+                const existing = await pb.collection("sale_items").getOne(item.id).catch(() => null);
+                if (existing) {
+                    await pb.collection("sale_items").update(item.id, item);
+                } else {
+                    await pb.collection("sale_items").create(item);
+                }
+            } catch (e) {
+                console.warn(`Failed to restore sale item ${item.id}:`, e);
+            }
         }
 
         // 6. Stock movements
-        if (data.tables.stock_movements.length > 0) {
-            const { error } = await supabase
-                .from("stock_movements")
-                .upsert(data.tables.stock_movements as never, { onConflict: "id" });
-            if (error) throw new Error(`Stock movements restore failed: ${error.message}`);
+        for (const movement of data.tables.stock_movements as any[]) {
+            try {
+                const existing = await pb.collection("stock_movements").getOne(movement.id).catch(() => null);
+                if (existing) {
+                    await pb.collection("stock_movements").update(movement.id, movement);
+                } else {
+                    await pb.collection("stock_movements").create(movement);
+                }
+            } catch (e) {
+                console.warn(`Failed to restore movement ${movement.id}:`, e);
+            }
         }
 
         return {
@@ -200,7 +229,6 @@ export async function restoreFromBackup(file: File): Promise<{
 export function scheduleAutoBackup(
     onBackupComplete?: (success: boolean) => void
 ): () => void {
-    // Calculate time until next midnight
     const now = new Date();
     const midnight = new Date(now);
     midnight.setDate(midnight.getDate() + 1);
@@ -209,12 +237,10 @@ export function scheduleAutoBackup(
 
     let dailyInterval: NodeJS.Timeout;
 
-    // First backup at midnight
     const initialTimeout = setTimeout(async () => {
         const backup = await createBackup();
         const success = backup !== null;
 
-        // Store backup in localStorage as fallback
         if (backup && typeof window !== "undefined") {
             try {
                 localStorage.setItem("luminila_auto_backup", JSON.stringify(backup));
@@ -226,7 +252,6 @@ export function scheduleAutoBackup(
 
         onBackupComplete?.(success);
 
-        // Then every 24 hours
         dailyInterval = setInterval(async () => {
             const dailyBackup = await createBackup();
             if (dailyBackup && typeof window !== "undefined") {
@@ -241,7 +266,6 @@ export function scheduleAutoBackup(
         }, 24 * 60 * 60 * 1000);
     }, msUntilMidnight);
 
-    // Return cleanup function
     return () => {
         clearTimeout(initialTimeout);
         if (dailyInterval) clearInterval(dailyInterval);
@@ -278,7 +302,6 @@ export async function restoreFromAutoBackup(): Promise<boolean> {
         const data = JSON.parse(backupData);
         if (!validateBackup(data)) return false;
 
-        // Create a fake File object
         const file = new File([backupData], "auto_backup.json", { type: "application/json" });
         const result = await restoreFromBackup(file);
         return result.success;

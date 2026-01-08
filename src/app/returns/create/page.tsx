@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
     ArrowLeft,
@@ -53,7 +53,7 @@ const reasons: { value: ReturnReason; label: string }[] = [
     { value: "other", label: "Other" },
 ];
 
-export default function CreateReturnPage() {
+function CreateReturnContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const invoiceId = searchParams.get("invoice");
@@ -339,6 +339,14 @@ export default function CreateReturnPage() {
                 </div>
             </div>
         </div>
+    );
+}
+
+export default function CreateReturnPage() {
+    return (
+        <Suspense fallback={<div className="p-8 text-center text-muted-foreground">Loading return form...</div>}>
+            <CreateReturnContent />
+        </Suspense>
     );
 }
 
