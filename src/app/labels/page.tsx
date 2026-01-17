@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Header } from "@/components/layout";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Printer, Download, RefreshCw, Plus, Trash2, Tag, CheckCircle } from "lucide-react";
 import JsBarcode from "jsbarcode";
@@ -404,14 +405,14 @@ function LabelsContent() {
                                         {selectedProducts.reduce((acc, p) => acc + p.quantity, 0)}
                                     </p>
                                 </div>
-                                <button
+                                <Button
                                     onClick={handlePrint}
                                     disabled={selectedProducts.length === 0}
-                                    className="btn btn-primary w-full py-3 text-base shadow-[0_4px_15px_rgba(238,189,43,0.3)] disabled:opacity-50 disabled:shadow-none"
+                                    className="w-full py-3 text-base"
                                 >
-                                    <Printer size={20} />
+                                    <Printer size={20} className="mr-2" />
                                     Print Labels
-                                </button>
+                                </Button>
                             </div>
                         </div>
                     </div>

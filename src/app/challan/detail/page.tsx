@@ -139,27 +139,27 @@ function ChallanDetailContent() {
                 subtitle={CHALLAN_TYPE_LABELS[challan.challan_type]}
                 action={
                     <div className="flex items-center gap-3">
-                        <button
+                        <Button
+                            variant="ghost"
                             onClick={() => router.back()}
-                            className="h-11 px-4 text-moonstone hover:text-white font-bold text-sm flex items-center gap-2 transition-colors"
                         >
-                            <ChevronLeft size={18} />
+                            <ChevronLeft size={18} className="mr-2" />
                             Back
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                            variant="outline"
                             onClick={() => setShowEwayDialog(true)}
-                            className="h-11 px-4 bg-surface-navy hover:bg-surface-hover text-white rounded-lg font-bold text-sm flex items-center gap-2 border border-surface-hover"
                         >
-                            <Truck size={16} />
+                            <Truck size={16} className="mr-2" />
                             E-Way Bill
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                            variant="outline"
                             onClick={() => window.print()}
-                            className="h-11 px-4 bg-surface-navy hover:bg-surface-hover text-white rounded-lg font-bold text-sm flex items-center gap-2 border border-surface-hover"
                         >
-                            <Printer size={16} />
+                            <Printer size={16} className="mr-2" />
                             Print
-                        </button>
+                        </Button>
                     </div>
                 }
             />
@@ -185,54 +185,55 @@ function ChallanDetailContent() {
                             {/* Action Buttons */}
                             <div className="space-y-2">
                                 {canIssue && (
-                                    <button
+                                    <Button
                                         onClick={() => handleStatusUpdate('issued')}
                                         disabled={updating}
-                                        className="w-full h-10 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                                        className="w-full bg-blue-600 hover:bg-blue-500"
                                     >
-                                        <Clock size={16} />
+                                        <Clock size={16} className="mr-2" />
                                         Issue Challan
-                                    </button>
+                                    </Button>
                                 )}
                                 {canMarkInTransit && (
-                                    <button
+                                    <Button
                                         onClick={() => handleStatusUpdate('in_transit')}
                                         disabled={updating}
-                                        className="w-full h-10 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                                        className="w-full bg-orange-600 hover:bg-orange-500"
                                     >
-                                        <Truck size={16} />
+                                        <Truck size={16} className="mr-2" />
                                         Mark In Transit
-                                    </button>
+                                    </Button>
                                 )}
                                 {canMarkDelivered && (
-                                    <button
+                                    <Button
                                         onClick={() => handleStatusUpdate('delivered')}
                                         disabled={updating}
-                                        className="w-full h-10 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                                        className="w-full bg-green-600 hover:bg-green-500"
                                     >
-                                        <CheckCircle2 size={16} />
+                                        <CheckCircle2 size={16} className="mr-2" />
                                         Mark Delivered
-                                    </button>
+                                    </Button>
                                 )}
                                 {canMarkReturned && (
-                                    <button
+                                    <Button
                                         onClick={() => handleStatusUpdate('returned')}
                                         disabled={updating}
-                                        className="w-full h-10 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                                        className="w-full bg-purple-600 hover:bg-purple-500"
                                     >
-                                        <ArrowRightLeft size={16} />
+                                        <ArrowRightLeft size={16} className="mr-2" />
                                         Mark Returned
-                                    </button>
+                                    </Button>
                                 )}
                                 {canCancel && (
-                                    <button
+                                    <Button
+                                        variant="destructive"
                                         onClick={() => handleStatusUpdate('cancelled')}
                                         disabled={updating}
-                                        className="w-full h-10 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded-lg font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                                        className="w-full"
                                     >
-                                        <XCircle size={16} />
+                                        <XCircle size={16} className="mr-2" />
                                         Cancel
-                                    </button>
+                                    </Button>
                                 )}
                             </div>
                         </div>
@@ -453,7 +454,7 @@ function ChallanDetailContent() {
                             </Button>
                             <Button
                                 onClick={handleGenerateEWayBill}
-                                className="bg-primary text-midnight hover:bg-primary/90"
+                                className=""
                             >
                                 <FileText className="w-4 h-4 mr-2" />
                                 Download JSON

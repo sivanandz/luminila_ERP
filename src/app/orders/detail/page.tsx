@@ -1,6 +1,7 @@
 "use client";
 
 import { Header } from "@/components/layout";
+import { Button } from "@/components/ui/button";
 import { formatPrice, formatDate } from "@/lib/utils";
 import {
     ArrowLeft,
@@ -84,43 +85,42 @@ function OrderDetailContent() {
                 subtitle={`Created on ${formatDate(order.created_at)}`}
                 action={
                     <div className="flex items-center gap-3">
-                        <button
+                        <Button
+                            variant="outline"
                             onClick={() => router.back()}
-                            className="bg-surface-navy hover:bg-surface-hover text-white h-11 px-4 rounded-lg flex items-center gap-2 transition-colors border border-surface-hover"
                         >
-                            <ArrowLeft size={18} />
+                            <ArrowLeft size={18} className="mr-2" />
                             Back
-                        </button>
-                        <button onClick={() => window.print()} className="bg-surface-navy hover:bg-surface-hover text-white h-11 px-4 rounded-lg flex items-center gap-2 transition-colors border border-surface-hover">
-                            <Printer size={18} />
+                        </Button>
+                        <Button variant="outline" onClick={() => window.print()}>
+                            <Printer size={18} className="mr-2" />
                             Print
-                        </button>
-                        <button onClick={() => window.open(`mailto:${order.customer_email}?subject=${encodeURIComponent(`Order #${order.order_number}`)}`)} className="bg-surface-navy hover:bg-surface-hover text-white h-11 px-4 rounded-lg flex items-center gap-2 transition-colors border border-surface-hover">
-                            <Mail size={18} />
+                        </Button>
+                        <Button variant="outline" onClick={() => window.open(`mailto:${order.customer_email}?subject=${encodeURIComponent(`Order #${order.order_number}`)}`)}>
+                            <Mail size={18} className="mr-2" />
                             Email
-                        </button>
+                        </Button>
 
                         {/* Actions based on Status */}
                         {isEstimate && order.status === 'draft' && (
-                            <button
+                            <Button
                                 onClick={handleConvert}
                                 disabled={actionLoading}
-                                className="bg-green-600 hover:bg-green-700 text-white h-11 px-5 rounded-lg font-bold flex items-center gap-2 transition-colors shadow-lg shadow-green-900/20"
+                                className="bg-green-600 hover:bg-green-700"
                             >
-                                <CheckCircle size={18} />
+                                <CheckCircle size={18} className="mr-2" />
                                 Convert to Order
-                            </button>
+                            </Button>
                         )}
 
                         {!isEstimate && order.status === 'confirmed' && (
-                            <button
+                            <Button
                                 onClick={handleInvoice}
                                 disabled={actionLoading}
-                                className="bg-primary hover:bg-primary/90 text-bg-navy h-11 px-5 rounded-lg font-bold flex items-center gap-2 transition-colors shadow-lg shadow-primary/20"
                             >
-                                <FileText size={18} />
+                                <FileText size={18} className="mr-2" />
                                 Generate Invoice
-                            </button>
+                            </Button>
                         )}
                     </div>
                 }

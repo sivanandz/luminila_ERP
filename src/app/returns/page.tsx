@@ -175,7 +175,7 @@ export default function ReturnsPage() {
 
                     <Button
                         onClick={() => router.push("/returns/create")}
-                        className="bg-primary text-midnight hover:bg-primary/90"
+                        className=""
                     >
                         <Plus className="w-4 h-4 mr-2" />
                         New Return

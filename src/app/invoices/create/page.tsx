@@ -689,7 +689,7 @@ export default function CreateInvoicePage() {
                         <Button
                             onClick={handleSubmit}
                             disabled={loading || items.length === 0}
-                            className="bg-primary text-midnight hover:bg-primary/90"
+                            className=""
                         >
                             {loading ? (
                                 "Creating..."

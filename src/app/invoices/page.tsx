@@ -228,7 +228,7 @@ export default function InvoicesPage() {
 
                         <Button
                             onClick={() => router.push("/invoices/create")}
-                            className="bg-primary text-midnight hover:bg-primary/90"
+                            className=""
                         >
                             <Plus className="w-4 h-4 mr-2" />
                             New Invoice

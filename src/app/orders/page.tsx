@@ -2,6 +2,7 @@
 "use client";
 
 import { Header } from "@/components/layout";
+import { Button } from "@/components/ui/button";
 import { formatPrice, formatDate } from "@/lib/utils";
 import {
     Filter,
@@ -91,13 +92,12 @@ export default function OrdersPage() {
                 subtitle="Manage customer orders and quotations"
             >
                 <div className="flex items-center gap-3">
-                    <button
+                    <Button
                         onClick={() => router.push('/orders/create')}
-                        className="h-9 px-4 bg-primary hover:bg-primary/90 text-bg-navy rounded-lg font-bold text-sm flex items-center gap-2 transition-colors"
                     >
-                        <Plus size={16} />
+                        <Plus size={16} className="mr-2" />
                         New Order / Estimate
-                    </button>
+                    </Button>
                 </div>
             </Header>
 
@@ -110,7 +110,7 @@ export default function OrdersPage() {
                                 key={tab}
                                 onClick={() => setActiveTab(tab as any)}
                                 className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${activeTab === tab
-                                    ? 'bg-primary text-bg-navy shadow-lg'
+                                    ? 'bg-primary text-primary-foreground shadow-lg'
                                     : 'text-moonstone hover:text-white hover:bg-white/5'
                                     }`}
                             >

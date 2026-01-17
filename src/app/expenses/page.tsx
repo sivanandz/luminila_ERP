@@ -177,9 +177,11 @@ export default function ExpensesPage() {
 
                     <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover flex flex-col justify-center">
                         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-                            <DialogTrigger className="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 w-full h-12 text-base font-bold bg-primary hover:bg-primary/90 text-bg-navy">
-                                <Plus className="mr-2" size={20} />
-                                Record New Expense
+                            <DialogTrigger asChild>
+                                <Button className="w-full h-12 text-base font-bold">
+                                    <Plus className="mr-2" size={20} />
+                                    Record New Expense
+                                </Button>
                             </DialogTrigger>
                             <DialogContent className="bg-surface-navy border-surface-hover text-white sm:max-w-[425px]">
                                 <DialogHeader>
@@ -277,8 +279,8 @@ export default function ExpensesPage() {
                                     </div>
                                 </div>
                                 <DialogFooter>
-                                    <Button variant="outline" onClick={() => setIsCreateOpen(false)} className="border-surface-hover text-moonstone">Cancel</Button>
-                                    <Button onClick={handleCreate} className="bg-primary hover:bg-primary/90 text-bg-navy font-bold">Save Expense</Button>
+                                    <Button variant="outline" onClick={() => setIsCreateOpen(false)}>Cancel</Button>
+                                    <Button onClick={handleCreate}>Save Expense</Button>
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>

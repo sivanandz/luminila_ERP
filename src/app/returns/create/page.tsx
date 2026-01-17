@@ -326,7 +326,7 @@ function CreateReturnContent() {
                                 </div>
 
                                 <Button
-                                    className="w-full bg-primary text-midnight hover:bg-primary/90"
+                                    className="w-full"
                                     disabled={selectedItems.length === 0 || submitting}
                                     onClick={handleSubmit}
                                 >

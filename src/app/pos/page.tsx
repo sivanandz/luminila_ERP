@@ -53,6 +53,9 @@ import {
     redeemPoints,
     type LoyaltyAccount,
 } from "@/lib/loyalty";
+import { createPOSSale } from "@/lib/pos-sales";
+import { getTypeAheadProducts, getProducts, type ProductWithVariant, type Product } from "@/lib/products";
+import { pb } from "@/lib/pocketbase";
 
 
 // Dynamically import BarcodeScanner to avoid SSR issues with html5-qrcode
@@ -78,16 +81,20 @@ interface CartItem {
     price: number;
     quantity: number;
     remarks?: string;
+    productId?: string;  // PocketBase product ID
+    variantId?: string;  // PocketBase variant ID
 }
 
-// Mock product data for quick search (will be replaced with Supabase)
-const mockProducts = [
-    { id: "1", sku: "LUM-EAR-001-S", name: "Pearl Drop Earrings", variant: "Small", price: 1290 },
-    { id: "2", sku: "LUM-EAR-001-M", name: "Pearl Drop Earrings", variant: "Medium", price: 1490 },
-    { id: "3", sku: "LUM-NEC-023-16", name: "Layered Chain Necklace", variant: "16 inch", price: 2450 },
-    { id: "4", sku: "LUM-BRC-015-7", name: "Crystal Tennis Bracelet", variant: "7 inch", price: 1890 },
-    { id: "5", sku: "LUM-RNG-008-6", name: "Solitaire Statement Ring", variant: "Size 6", price: 990 },
-];
+// Product type for POS (simpler than ProductWithVariant for cart)
+interface POSProduct {
+    id: string;        // variant ID
+    productId: string; // product ID
+    sku: string;
+    name: string;
+    variant: string;
+    price: number;
+    stock: number;
+}
 
 export default function POSPage() {
     const [cart, setCart] = useState<CartItem[]>([]);
@@ -97,8 +104,15 @@ export default function POSPage() {
     const [discount, setDiscount] = useState(0);
     const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
+
+    // Products state
+    const [products, setProducts] = useState<POSProduct[]>([]);
+    const [searchResults, setSearchResults] = useState<POSProduct[]>([]);
+    const [quickAddProducts, setQuickAddProducts] = useState<POSProduct[]>([]);
+    const [isLoadingProducts, setIsLoadingProducts] = useState(false);
     const [lastTransaction, setLastTransaction] = useState<{
         id: string;
+        invoiceNumber?: string;
         items: CartItem[];
         subtotal: number;
         discount: number;
@@ -156,16 +170,31 @@ export default function POSPage() {
 
     // Handle opening a new shift
     const handleOpenShift = async () => {
-        if (!userId || !openingBalance) return;
+        const balance = parseFloat(openingBalance);
+        console.log("handleOpenShift called with:", { userId, openingBalance, parsedBalance: balance, user: user?.id });
+
+        if (!userId) {
+            console.error("Missing user ID");
+            alert("User not logged in");
+            return;
+        }
+
+        if (!openingBalance || isNaN(balance) || balance < 0) {
+            console.error("Invalid opening balance:", { openingBalance, balance });
+            alert("Please enter a valid opening balance (0 or greater)");
+            return;
+        }
+
         setShiftLoading(true);
         try {
-            const shift = await openShift(userId, parseFloat(openingBalance));
+            const shift = await openShift(userId, balance);
             setCurrentShift(shift);
             setShowOpenShiftDialog(false);
             setOpeningBalance("");
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error opening shift:", error);
-            alert("Failed to open shift");
+            const errorMsg = error?.response?.data?.opening_balance?.message || error?.message || "Failed to open shift";
+            alert(errorMsg);
         } finally {
             setShiftLoading(false);
         }
@@ -191,34 +220,99 @@ export default function POSPage() {
         }
     };
 
-    // Filter products based on search
-    const searchResults = searchQuery
-        ? mockProducts.filter(
-            (p) =>
-                p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                p.sku.toLowerCase().includes(searchQuery.toLowerCase())
-        )
-        : [];
+    // Load quick-add products on mount
+    useEffect(() => {
+        const loadQuickAddProducts = async () => {
+            try {
+                const variants = await pb.collection('product_variants').getList(1, 8, {
+                    expand: 'product',
+                    sort: '-created',
+                });
+                const posProducts: POSProduct[] = variants.items.map((v: any) => {
+                    const p = v.expand?.product;
+                    return {
+                        id: v.id,
+                        productId: v.product,
+                        sku: p?.sku ? `${p.sku}${v.sku_suffix ? '-' + v.sku_suffix : ''}` : v.id,
+                        name: p?.name || 'Unknown Product',
+                        variant: v.variant_name || 'Default',
+                        price: (p?.base_price || 0) + (v.price_adjustment || 0),
+                        stock: v.stock_level || 0,
+                    };
+                }).filter((p: POSProduct) => p.name !== 'Unknown Product');
+                setQuickAddProducts(posProducts);
+            } catch (err) {
+                console.error('Error loading quick-add products:', err);
+            }
+        };
+        loadQuickAddProducts();
+    }, []);
+
+    // Search products when query changes
+    useEffect(() => {
+        const searchProducts = async () => {
+            if (!searchQuery || searchQuery.length < 2) {
+                setSearchResults([]);
+                return;
+            }
+            setIsLoadingProducts(true);
+            try {
+                const results = await getTypeAheadProducts(searchQuery);
+                const posProducts: POSProduct[] = results.map(p => ({
+                    id: p.variant_id,
+                    productId: p.id,
+                    sku: p.full_sku,
+                    name: p.name,
+                    variant: p.variant_name,
+                    price: p.price,
+                    stock: p.stock,
+                }));
+                setSearchResults(posProducts);
+            } catch (err) {
+                console.error('Error searching products:', err);
+            } finally {
+                setIsLoadingProducts(false);
+            }
+        };
+        const debounce = setTimeout(searchProducts, 300);
+        return () => clearTimeout(debounce);
+    }, [searchQuery]);
 
     // Handle barcode scan
-    const handleBarcodeScan = useCallback((code: string) => {
+    const handleBarcodeScan = useCallback(async (code: string) => {
         console.log("Scanned barcode:", code);
 
-        // Find product by SKU
-        const product = mockProducts.find(
-            (p) => p.sku.toLowerCase() === code.toLowerCase()
-        );
+        try {
+            // Search by SKU or barcode
+            const variants = await pb.collection('product_variants').getList(1, 1, {
+                filter: `product.sku~"${code}" || sku_suffix~"${code}" || product.barcode="${code}"`,
+                expand: 'product',
+            });
 
-        if (product) {
-            addToCart(product);
-        } else {
-            // TODO: Search in Supabase
-            console.log("Product not found for SKU:", code);
+            if (variants.items.length > 0) {
+                const v = variants.items[0] as any;
+                const p = v.expand?.product;
+                const posProduct: POSProduct = {
+                    id: v.id,
+                    productId: v.product,
+                    sku: p?.sku ? `${p.sku}${v.sku_suffix ? '-' + v.sku_suffix : ''}` : v.id,
+                    name: p?.name || 'Unknown Product',
+                    variant: v.variant_name || 'Default',
+                    price: (p?.base_price || 0) + (v.price_adjustment || 0),
+                    stock: v.stock_level || 0,
+                };
+                addToCart(posProduct);
+            } else {
+                console.log("Product not found for code:", code);
+                alert(`Product not found: ${code}`);
+            }
+        } catch (err) {
+            console.error('Barcode scan error:', err);
         }
     }, []);
 
     // Add item to cart
-    const addToCart = useCallback((product: typeof mockProducts[0]) => {
+    const addToCart = useCallback((product: POSProduct) => {
         setCart((prev) => {
             const existing = prev.find((item) => item.sku === product.sku);
             if (existing) {
@@ -237,6 +331,8 @@ export default function POSPage() {
                     variant: product.variant,
                     price: product.price,
                     quantity: 1,
+                    productId: product.productId,
+                    variantId: product.id,
                 },
             ];
         });
@@ -346,7 +442,7 @@ export default function POSPage() {
 
     // Process sale
     const processSale = async () => {
-        if (!paymentMethod || cart.length === 0) return;
+        if (!paymentMethod || cart.length === 0 || !currentShift || !userId) return;
 
         // If PhonePe is selected, show the PhonePe modal
         if (paymentMethod === 'phonepe') {
@@ -356,57 +452,127 @@ export default function POSPage() {
 
         setIsProcessing(true);
 
-        // Simulate API call (TODO: Replace with Supabase)
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+            // Save sale to PocketBase and generate invoice
+            const result = await createPOSSale({
+                items: cart.map(item => ({
+                    ...item,
+                    productId: item.productId,
+                    variantId: item.variantId,
+                })),
+                subtotal,
+                discountPercent: discount,
+                discountAmount,
+                loyaltyDiscount: redemptionValue,
+                total,
+                paymentMethod: paymentMethod as 'cash' | 'card' | 'upi' | 'phonepe',
+                cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) || 0 : undefined,
+                changeGiven: paymentMethod === 'cash' ? changeAmount : undefined,
+                customerId: selectedCustomerId || undefined,
+                shiftId: currentShift.id,
+                userId,
+                pointsRedeemed: pointsToRedeem,
+                pointsEarned: pointsToEarn,
+            });
 
-        const transactionId = `TXN-${Date.now().toString(36).toUpperCase()}`;
+            // Handle loyalty points
+            if (selectedCustomerId && pointsToRedeem > 0) {
+                await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
+            }
+            if (selectedCustomerId && pointsToEarn > 0) {
+                await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+            }
 
-        // Save transaction for receipt
-        setLastTransaction({
-            id: transactionId,
-            items: [...cart],
-            subtotal,
-            discount: discountAmount,
-            total,
-            paymentMethod,
-        });
+            // Save transaction for receipt
+            setLastTransaction({
+                id: result.transactionId,
+                invoiceNumber: result.invoiceNumber,
+                items: [...cart],
+                subtotal,
+                discount: discountAmount + redemptionValue,
+                total,
+                paymentMethod,
+                cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) || 0 : undefined,
+                changeGiven: paymentMethod === 'cash' ? changeAmount : undefined,
+            });
 
-        console.log("Sale processed:", {
-            transactionId,
-            items: cart,
-            subtotal,
-            discount: discountAmount,
-            total,
-            paymentMethod,
-        });
+            // Reload shift to get updated totals
+            const updatedShift = await getCurrentShift(userId);
+            setCurrentShift(updatedShift);
 
-        setIsProcessing(false);
-        setShowReceipt(true);
-        clearCart();
+            setShowReceipt(true);
+            clearCart();
+        } catch (error) {
+            console.error('Error processing sale:', error);
+            alert('Failed to process sale. Please try again.');
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     // Handle PhonePe payment success
-    const handlePhonePeSuccess = (transactionId: string, phonePeTransactionId?: string) => {
+    const handlePhonePeSuccess = async (transactionId: string, phonePeTransactionId?: string) => {
         setShowPhonePeModal(false);
 
-        setLastTransaction({
-            id: transactionId,
-            items: [...cart],
-            subtotal,
-            discount: discountAmount,
-            total,
-            paymentMethod: 'phonepe',
-        });
+        if (!currentShift || !userId) {
+            console.error('No active shift or user');
+            return;
+        }
 
-        console.log("PhonePe payment successful:", {
-            transactionId,
-            phonePeTransactionId,
-            items: cart,
-            total,
-        });
+        setIsProcessing(true);
 
-        setShowReceipt(true);
-        clearCart();
+        try {
+            // Save sale to PocketBase and generate invoice
+            const result = await createPOSSale({
+                items: cart.map(item => ({
+                    ...item,
+                    productId: item.productId,
+                    variantId: item.variantId,
+                })),
+                subtotal,
+                discountPercent: discount,
+                discountAmount,
+                loyaltyDiscount: redemptionValue,
+                total,
+                paymentMethod: 'phonepe',
+                customerId: selectedCustomerId || undefined,
+                shiftId: currentShift.id,
+                userId,
+                notes: phonePeTransactionId ? `PhonePe: ${phonePeTransactionId}` : undefined,
+                pointsRedeemed: pointsToRedeem,
+                pointsEarned: pointsToEarn,
+            });
+
+            // Handle loyalty points
+            if (selectedCustomerId && pointsToRedeem > 0) {
+                await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
+            }
+            if (selectedCustomerId && pointsToEarn > 0) {
+                await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+            }
+
+            setLastTransaction({
+                id: result.transactionId,
+                invoiceNumber: result.invoiceNumber,
+                items: [...cart],
+                subtotal,
+                discount: discountAmount + redemptionValue,
+                total,
+                paymentMethod: 'phonepe',
+            });
+
+            // Reload shift to get updated totals
+            const updatedShift = await getCurrentShift(userId);
+            setCurrentShift(updatedShift);
+
+            setShowReceipt(true);
+            clearCart();
+        } catch (error) {
+            console.error('Error processing PhonePe sale:', error);
+            alert('Payment received but failed to record sale. Please contact support.');
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     // Handle PhonePe payment failure
@@ -420,30 +586,52 @@ export default function POSPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="Point of Sale" subtitle="Quick checkout for walk-in customers" />
 
-            {/* Shift Status Bar */}
-            {currentShift && (
-                <div className="mx-6 mt-2 mb-0 bg-surface-navy border border-surface-hover rounded-lg px-4 py-2 flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                            <span className="text-sm text-moonstone">Shift Active</span>
+            {/* Shift Status Bar - Always visible */}
+            <div className="mx-6 mt-2 mb-0 bg-surface-navy border border-surface-hover rounded-lg px-4 py-2 flex items-center justify-between">
+                {currentShift ? (
+                    <>
+                        <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2">
+                                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                                <span className="text-sm text-moonstone">Shift Active</span>
+                            </div>
+                            <span className="text-xs text-white font-medium">
+                                {user?.name || user?.email || 'Unknown User'}
+                            </span>
+                            <span className="text-xs text-moonstone">
+                                Started {new Date(currentShift.opened_at).toLocaleTimeString()}
+                            </span>
+                            <span className="text-xs text-primary font-mono">
+                                Cash Sales: {formatPrice(currentShift.total_cash_sales)}
+                            </span>
                         </div>
-                        <span className="text-xs text-moonstone">
-                            Started {new Date(currentShift.opened_at).toLocaleTimeString()}
-                        </span>
-                        <span className="text-xs text-primary font-mono">
-                            Cash Sales: {formatPrice(currentShift.total_cash_sales)}
-                        </span>
-                    </div>
-                    <button
-                        onClick={() => setShowCloseShiftDialog(true)}
-                        className="flex items-center gap-2 text-xs text-moonstone hover:text-red-400 transition-colors"
-                    >
-                        <LogOut className="w-4 h-4" />
-                        End Shift
-                    </button>
-                </div>
-            )}
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowCloseShiftDialog(true)}
+                            className="text-moonstone hover:text-red-400"
+                        >
+                            <LogOut className="w-4 h-4 mr-2" />
+                            End Shift
+                        </Button>
+                    </>
+                ) : (
+                    <>
+                        <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-yellow-400 rounded-full" />
+                            <span className="text-sm text-moonstone">No Active Shift</span>
+                            <span className="text-xs text-muted-foreground">Start a shift to begin making sales</span>
+                        </div>
+                        <Button
+                            size="sm"
+                            onClick={() => setShowOpenShiftDialog(true)}
+                        >
+                            <Clock className="w-4 h-4 mr-2" />
+                            Start Shift
+                        </Button>
+                    </>
+                )}
+            </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 h-full overflow-hidden">
                 {/* Left Panel - Product Search & Scanner */}
@@ -456,7 +644,7 @@ export default function POSPage() {
                                 <button
                                     onClick={() => setScannerEnabled(!scannerEnabled)}
                                     className={`px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 transition-colors ${scannerEnabled
-                                        ? "bg-primary text-bg-navy hover:bg-primary/90"
+                                        ? "bg-primary text-primary-foreground hover:bg-primary/90"
                                         : "bg-bg-navy text-moonstone hover:text-white border border-surface-hover"
                                         }`}
                                 >
@@ -547,21 +735,27 @@ export default function POSPage() {
 
                         {/* Quick Add Buttons */}
                         <div className="mt-4 grid grid-cols-4 gap-3">
-                            {mockProducts.slice(0, 4).map((product) => (
-                                <button
-                                    key={product.id}
-                                    onClick={() => addToCart(product)}
-                                    className="p-3 bg-bg-navy border border-surface-hover hover:border-primary/50 hover:bg-bg-navy/80 rounded-lg transition-all text-left group"
-                                >
-                                    <p className="text-[10px] text-moonstone truncate font-mono">
-                                        {product.sku}
-                                    </p>
-                                    <p className="font-bold text-white text-sm truncate mt-0.5 group-hover:text-primary transition-colors">{product.name}</p>
-                                    <p className="text-xs text-white mt-1">
-                                        {formatPrice(product.price)}
-                                    </p>
-                                </button>
-                            ))}
+                            {quickAddProducts.length === 0 ? (
+                                <p className="col-span-4 text-center text-moonstone text-sm py-4">
+                                    No products found. Add products in Inventory.
+                                </p>
+                            ) : (
+                                quickAddProducts.slice(0, 4).map((product) => (
+                                    <button
+                                        key={product.id}
+                                        onClick={() => addToCart(product)}
+                                        className="p-3 bg-bg-navy border border-surface-hover hover:border-primary/50 hover:bg-bg-navy/80 rounded-lg transition-all text-left group"
+                                    >
+                                        <p className="text-[10px] text-moonstone truncate font-mono">
+                                            {product.sku}
+                                        </p>
+                                        <p className="font-bold text-white text-sm truncate mt-0.5 group-hover:text-primary transition-colors">{product.name}</p>
+                                        <p className="text-xs text-white mt-1">
+                                            {formatPrice(product.price)}
+                                        </p>
+                                    </button>
+                                ))
+                            )}
                         </div>
                     </div>
                 </div>
@@ -750,7 +944,7 @@ export default function POSPage() {
                                             className={`p-2 rounded-lg border flex flex-col items-center gap-1 transition-all ${isSelected
                                                 ? method.isPhonePe
                                                     ? "border-[#5f259f] bg-[#5f259f] text-white shadow-[0_0_10px_rgba(95,37,159,0.3)]"
-                                                    : "border-primary bg-primary text-bg-navy shadow-[0_0_10px_rgba(196,166,97,0.3)]"
+                                                    : "border-primary bg-primary text-primary-foreground shadow-[0_0_10px_rgba(196,166,97,0.3)]"
                                                 : "border-surface-hover bg-bg-navy text-moonstone hover:border-moonstone/50 hover:text-white"
                                                 }`}
                                         >
@@ -806,7 +1000,7 @@ export default function POSPage() {
                     <button
                         onClick={processSale}
                         disabled={cart.length === 0 || !paymentMethod || isProcessing}
-                        className="w-full mt-4 py-3 rounded-lg font-bold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-primary hover:bg-primary/90 text-bg-navy shadow-[0_4px_15px_rgba(196,166,97,0.3)]"
+                        className="w-full mt-4 py-3 rounded-lg font-bold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_4px_15px_rgba(196,166,97,0.3)]"
                     >
                         {isProcessing ? (
                             <span className="flex items-center justify-center gap-2">
@@ -825,20 +1019,22 @@ export default function POSPage() {
             {/* Receipt Modal */}
             {showReceipt && lastTransaction && (
                 <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden">
-                        <div className="bg-bg-navy p-4 flex items-center justify-between">
+                    <div className="bg-surface-navy rounded-xl shadow-2xl max-w-md w-full overflow-hidden border border-surface-hover">
+                        <div className="bg-bg-navy p-4 flex items-center justify-between border-b border-surface-hover">
                             <h3 className="text-lg font-bold text-white">Sale Completed!</h3>
-                            <button
+                            <Button
+                                variant="ghost"
+                                size="icon"
                                 onClick={() => setShowReceipt(false)}
-                                className="p-1 hover:bg-white/10 rounded text-white transition-colors"
+                                className="text-moonstone hover:text-white hover:bg-white/10"
                             >
                                 <X size={20} />
-                            </button>
+                            </Button>
                         </div>
 
                         <div className="p-6">
                             {/* Receipt Preview */}
-                            <div className="border border-gray-200 rounded-lg p-4 mb-6 bg-gray-50 max-h-[50vh] overflow-y-auto shadow-inner">
+                            <div className="border border-surface-hover rounded-lg p-4 mb-6 bg-white max-h-[50vh] overflow-y-auto shadow-inner">
                                 <Receipt
                                     ref={receiptRef}
                                     transactionId={lastTransaction.id}
@@ -858,19 +1054,20 @@ export default function POSPage() {
 
                             {/* Actions */}
                             <div className="flex gap-3">
-                                <button
+                                <Button
                                     onClick={printReceipt}
-                                    className="flex-1 bg-primary text-bg-navy font-bold py-3 rounded-lg hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
+                                    className="flex-1"
                                 >
-                                    <Printer size={18} />
+                                    <Printer size={18} className="mr-2" />
                                     Print
-                                </button>
-                                <button
+                                </Button>
+                                <Button
+                                    variant="outline"
                                     onClick={() => setShowReceipt(false)}
-                                    className="flex-1 bg-bg-navy text-white font-bold py-3 rounded-lg hover:bg-bg-navy/90 transition-colors"
+                                    className="flex-1"
                                 >
                                     New Sale
-                                </button>
+                                </Button>
                             </div>
                         </div>
                     </div>
@@ -908,7 +1105,7 @@ export default function POSPage() {
                         <Button
                             onClick={handleOpenShift}
                             disabled={shiftLoading || !openingBalance}
-                            className="bg-primary text-bg-navy hover:bg-primary/90"
+                            className="bg-primary text-primary-foreground hover:bg-primary/90"
                         >
                             {shiftLoading ? "Opening..." : "Start Shift"}
                         </Button>

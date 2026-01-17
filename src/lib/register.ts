@@ -103,8 +103,12 @@ export async function openShift(
         await addCashToDrawer(record.id, openingBalance, "Opening Balance", userId);
 
         return record as unknown as CashRegisterShift;
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error opening shift:', error);
+        // Log detailed PocketBase error info
+        if (error?.response?.data) {
+            console.error('PocketBase validation errors:', JSON.stringify(error.response.data, null, 2));
+        }
         throw error;
     }
 }

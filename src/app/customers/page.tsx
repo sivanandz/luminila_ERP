@@ -132,7 +132,6 @@ export default function CustomersPage() {
                 action={
                     <Button
                         onClick={() => setShowAddDialog(true)}
-                        className="bg-primary text-midnight hover:bg-primary/90"
                     >
                         <Plus className="w-4 h-4 mr-2" />
                         Add Customer
@@ -353,7 +352,6 @@ export default function CustomersPage() {
                             <Button
                                 onClick={handleAddCustomer}
                                 disabled={saving}
-                                className="bg-primary text-midnight"
                             >
                                 {saving ? "Adding..." : "Add Customer"}
                             </Button>

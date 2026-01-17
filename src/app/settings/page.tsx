@@ -23,6 +23,7 @@ import {
     Trash2,
     Edit,
     Loader2,
+    Truck,
 } from "lucide-react";
 import { LogoUpload } from "@/components/settings/LogoUpload";
 import { Button } from "@/components/ui/button";
@@ -42,8 +43,11 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { getCategories, createCategory, deleteCategory, type Category } from "@/lib/categories";
 import { getAttributes, createAttribute, deleteAttribute, type ProductAttribute, type AttributeType } from "@/lib/attributes";
+import { EwayBillSettings } from "@/components/settings/EwayBillSettings";
 
 interface SettingSection {
     id: string;
@@ -54,6 +58,7 @@ interface SettingSection {
 const sections: SettingSection[] = [
     { id: "store", title: "Store Settings", icon: <Store size={20} /> },
     { id: "invoice", title: "Invoice & GST", icon: <FileText size={20} /> },
+    { id: "ewaybill", title: "E-way Bill", icon: <Truck size={20} /> },
     { id: "categories", title: "Categories", icon: <FolderTree size={20} /> },
     { id: "attributes", title: "Product Attributes", icon: <Tags size={20} /> },
     { id: "integrations", title: "Integrations", icon: <Database size={20} /> },
@@ -150,7 +155,7 @@ export default function SettingsPage() {
             // Show toast (native for now)
             const el = document.createElement('div');
             el.textContent = `Settings Saved`;
-            el.className = 'fixed bottom-4 right-4 bg-emerald-500 text-white px-4 py-2 rounded shadow-lg z-[100] animate-fade-in-up font-bold flex items-center gap-2';
+            el.className = 'fixed bottom-4 right-4 bg-emerald-500 text-foreground px-4 py-2 rounded shadow-lg z-[100] animate-fade-in-up font-bold flex items-center gap-2';
             el.innerHTML = '<span class="text-xl">✓</span> Settings Saved Successfully';
             document.body.appendChild(el);
             setTimeout(() => el.remove(), 2000);
@@ -224,7 +229,7 @@ export default function SettingsPage() {
                     <Button
                         onClick={handleSave}
                         disabled={isSaving}
-                        className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold min-w-[140px]"
+                        className="min-w-[140px]"
                     >
                         {isSaving ? (
                             <>
@@ -245,18 +250,18 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
                     {/* Sidebar */}
                     <div className="lg:col-span-1">
-                        <div className="card sticky top-0 p-2 bg-surface-navy border-surface-hover">
+                        <div className="card sticky top-0 p-4 bg-card border border-border rounded-xl">
                             <nav className="space-y-1">
                                 {sections.map((section) => (
                                     <button
                                         key={section.id}
                                         onClick={() => setActiveSection(section.id)}
                                         className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-left transition-all ${activeSection === section.id
-                                            ? "bg-primary text-bg-navy font-bold shadow-[0_0_10px_rgba(238,189,43,0.2)]"
-                                            : "text-moonstone hover:bg-bg-navy hover:text-white"
+                                            ? "bg-primary text-primary-foreground font-bold shadow-[0_0_10px_rgba(238,189,43,0.2)]"
+                                            : "text-muted-foreground hover:bg-background hover:text-foreground"
                                             }`}
                                     >
-                                        <span className={activeSection === section.id ? "text-bg-navy" : "text-moonstone group-hover:text-white"}>
+                                        <span className={activeSection === section.id ? "text-primary-foreground" : "text-muted-foreground group-hover:text-foreground"}>
                                             {section.icon}
                                         </span>
                                         <span className="font-medium text-sm">{section.title}</span>
@@ -268,90 +273,90 @@ export default function SettingsPage() {
 
                     {/* Content */}
                     <div className="lg:col-span-3">
-                        <div className="card bg-surface-navy border-surface-hover min-h-[500px]">
+                        <div className="card bg-card border border-border rounded-xl min-h-[500px] p-6">
                             {activeSection === "store" && (
                                 <div className="space-y-8 animate-fade-in">
-                                    <div className="border-b border-surface-hover pb-4">
-                                        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                    <div className="border-b border-border pb-4">
+                                        <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
                                             <Store className="text-primary" size={24} />
                                             Store Settings
                                         </h2>
-                                        <p className="text-moonstone text-sm mt-1">Manage your store details and preferences</p>
+                                        <p className="text-muted-foreground text-sm mt-1">Manage your store details and preferences</p>
                                     </div>
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                        <div>
-                                            <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                 Store Name
-                                            </label>
-                                            <input
+                                            </Label>
+                                            <Input
                                                 type="text"
                                                 value={settings.storeName}
                                                 onChange={(e) => setSettings({ ...settings, storeName: e.target.value })}
-                                                className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                             />
                                         </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                 Currency
-                                            </label>
-                                            <select
+                                            </Label>
+                                            <Select
                                                 value={settings.currency}
-                                                onChange={(e) => setSettings({ ...settings, currency: e.target.value })}
-                                                className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
+                                                onValueChange={(val) => setSettings({ ...settings, currency: val })}
                                             >
-                                                <option value="INR">₹ INR - Indian Rupee</option>
-                                                <option value="USD">$ USD - US Dollar</option>
-                                            </select>
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Select currency" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="INR">₹ INR - Indian Rupee</SelectItem>
+                                                    <SelectItem value="USD">$ USD - US Dollar</SelectItem>
+                                                </SelectContent>
+                                            </Select>
                                         </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                 Contact Email
-                                            </label>
-                                            <input
+                                            </Label>
+                                            <Input
                                                 type="email"
                                                 value={settings.email}
                                                 onChange={(e) => setSettings({ ...settings, email: e.target.value })}
-                                                className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                             />
                                         </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                 Contact Phone
-                                            </label>
-                                            <input
+                                            </Label>
+                                            <Input
                                                 type="tel"
                                                 value={settings.phone}
                                                 onChange={(e) => setSettings({ ...settings, phone: e.target.value })}
-                                                className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                             />
                                         </div>
                                     </div>
 
-                                    <div>
-                                        <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                    <div className="space-y-2">
+                                        <Label className="text-xs font-bold text-muted-foreground uppercase">
                                             Store Address
-                                        </label>
-                                        <textarea
+                                        </Label>
+                                        <Textarea
                                             rows={3}
                                             value={settings.address}
                                             onChange={(e) => setSettings({ ...settings, address: e.target.value })}
-                                            className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                         />
                                     </div>
 
-                                    <div>
-                                        <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                    <div className="space-y-2">
+                                        <Label className="text-xs font-bold text-muted-foreground uppercase">
                                             Low Stock Threshold
-                                        </label>
-                                        <input
+                                        </Label>
+                                        <Input
                                             type="number"
                                             value={settings.lowStockThreshold}
                                             onChange={(e) => setSettings({ ...settings, lowStockThreshold: parseInt(e.target.value) || 0 })}
                                             min={1}
-                                            className="input w-32 bg-bg-navy border-surface-hover text-white focus:border-primary"
+                                            className="w-32"
                                         />
-                                        <p className="text-xs text-moonstone mt-2 italic">
+                                        <p className="text-xs text-muted-foreground italic">
                                             Alert when product stock falls below this number
                                         </p>
                                     </div>
@@ -360,158 +365,164 @@ export default function SettingsPage() {
 
                             {activeSection === "invoice" && (
                                 <div className="space-y-8 animate-fade-in">
-                                    <div className="border-b border-surface-hover pb-4">
-                                        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                    <div className="border-b border-border pb-4">
+                                        <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
                                             <FileText className="text-primary" size={24} />
                                             Invoice & GST Settings
                                         </h2>
-                                        <p className="text-moonstone text-sm mt-1">Configure invoice appearance and GST details</p>
+                                        <p className="text-muted-foreground text-sm mt-1">Configure invoice appearance and GST details</p>
                                     </div>
 
                                     {/* Company Logo */}
-                                    <div>
-                                        <label className="block text-xs font-bold text-moonstone uppercase mb-3">
+                                    <div className="space-y-2">
+                                        <Label className="text-xs font-bold text-muted-foreground uppercase">
                                             Company Logo
-                                        </label>
+                                        </Label>
                                         <LogoUpload
                                             currentLogo={settings.companyLogo || undefined}
                                             onLogoChange={(logo) => setSettings({ ...settings, companyLogo: logo })}
                                         />
-                                        <p className="text-xs text-moonstone mt-2 italic">
+                                        <p className="text-xs text-muted-foreground italic">
                                             Appears on invoices and receipts
                                         </p>
                                     </div>
 
                                     {/* Print Mode */}
-                                    <div>
-                                        <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                    <div className="space-y-2">
+                                        <Label className="text-xs font-bold text-muted-foreground uppercase">
                                             Default Print Mode
-                                        </label>
-                                        <select
+                                        </Label>
+                                        <Select
                                             value={settings.defaultPrintMode}
-                                            onChange={(e) => setSettings({ ...settings, defaultPrintMode: e.target.value })}
-                                            className="input w-48 bg-bg-navy border-surface-hover text-white focus:border-primary"
+                                            onValueChange={(val) => setSettings({ ...settings, defaultPrintMode: val })}
                                         >
-                                            <option value="regular">A4 (Regular)</option>
-                                            <option value="thermal58">Thermal 58mm</option>
-                                            <option value="thermal80">Thermal 80mm</option>
-                                        </select>
-                                        <p className="text-xs text-moonstone mt-2 italic">
+                                            <SelectTrigger className="w-48">
+                                                <SelectValue placeholder="Select print mode" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="regular">A4 (Regular)</SelectItem>
+                                                <SelectItem value="thermal58">Thermal 58mm</SelectItem>
+                                                <SelectItem value="thermal80">Thermal 80mm</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-xs text-muted-foreground italic">
                                             Select your preferred invoice print format
                                         </p>
                                     </div>
 
                                     {/* GST Details */}
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                        <div>
-                                            <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                 GSTIN
-                                            </label>
-                                            <input
+                                            </Label>
+                                            <Input
                                                 type="text"
                                                 placeholder="22AAAAA0000A1Z5"
                                                 maxLength={15}
                                                 value={settings.gstin}
                                                 onChange={(e) => setSettings({ ...settings, gstin: e.target.value })}
-                                                className="input bg-bg-navy border-surface-hover text-white focus:border-primary uppercase"
+                                                className="uppercase"
                                             />
                                         </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                 PAN
-                                            </label>
-                                            <input
+                                            </Label>
+                                            <Input
                                                 type="text"
                                                 placeholder="AAAAA0000A"
                                                 maxLength={10}
                                                 value={settings.pan}
                                                 onChange={(e) => setSettings({ ...settings, pan: e.target.value })}
-                                                className="input bg-bg-navy border-surface-hover text-white focus:border-primary uppercase"
+                                                className="uppercase"
                                             />
                                         </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                 State Code
-                                            </label>
-                                            <input
+                                            </Label>
+                                            <Input
                                                 type="text"
                                                 placeholder="27 (Maharashtra)"
                                                 maxLength={2}
                                                 value={settings.stateCode}
                                                 onChange={(e) => setSettings({ ...settings, stateCode: e.target.value })}
-                                                className="input w-32 bg-bg-navy border-surface-hover text-white focus:border-primary"
+                                                className="w-32"
                                             />
                                         </div>
                                     </div>
 
                                     {/* Bank Details */}
-                                    {/* Bank Details */}
-                                    <div className="border-t border-surface-hover pt-6">
-                                        <h3 className="text-sm font-bold text-white mb-4">Bank Details (for invoices)</h3>
+                                    <div className="border-t border-border pt-6">
+                                        <h3 className="text-sm font-bold text-foreground mb-4">Bank Details (for invoices)</h3>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Bank Name
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="State Bank of India"
                                                     value={settings.bankName}
                                                     onChange={(e) => setSettings({ ...settings, bankName: e.target.value })}
-                                                    className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Account Number
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="1234567890"
                                                     value={settings.accountNumber}
                                                     onChange={(e) => setSettings({ ...settings, accountNumber: e.target.value })}
-                                                    className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     IFSC Code
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="SBIN0001234"
                                                     value={settings.ifsc}
                                                     onChange={(e) => setSettings({ ...settings, ifsc: e.target.value })}
-                                                    className="input bg-bg-navy border-surface-hover text-white focus:border-primary uppercase"
+                                                    className="uppercase"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Branch
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="Mumbai Main"
                                                     value={settings.branch}
                                                     onChange={(e) => setSettings({ ...settings, branch: e.target.value })}
-                                                    className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                                 />
                                             </div>
                                         </div>
                                     </div>
 
                                     {/* Invoice Footer */}
-                                    <div>
-                                        <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                    <div className="space-y-2">
+                                        <Label className="text-xs font-bold text-muted-foreground uppercase">
                                             Invoice Footer Text
-                                        </label>
-                                        <textarea
+                                        </Label>
+                                        <Textarea
                                             rows={2}
                                             value={settings.invoiceFooter}
                                             onChange={(e) => setSettings({ ...settings, invoiceFooter: e.target.value })}
-                                            className="input bg-bg-navy border-surface-hover text-white focus:border-primary"
                                         />
                                     </div>
+                                </div>
+                            )}
+
+                            {/* E-way Bill Section */}
+                            {activeSection === "ewaybill" && (
+                                <div className="animate-fade-in">
+                                    <EwayBillSettings />
                                 </div>
                             )}
 
@@ -655,24 +666,24 @@ export default function SettingsPage() {
 
                             {activeSection === "integrations" && (
                                 <div className="space-y-8 animate-fade-in">
-                                    <div className="border-b border-surface-hover pb-4">
-                                        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                    <div className="border-b border-border pb-4">
+                                        <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
                                             <Database className="text-primary" size={24} />
                                             Integrations
                                         </h2>
-                                        <p className="text-moonstone text-sm mt-1">Connect with external services and platforms</p>
+                                        <p className="text-muted-foreground text-sm mt-1">Connect with external services and platforms</p>
                                     </div>
 
                                     {/* Supabase */}
-                                    <div className="p-6 bg-bg-navy border border-surface-hover rounded-xl hover:border-primary/30 transition-colors">
+                                    <div className="p-6 bg-background border border-border rounded-xl hover:border-primary/30 transition-colors">
                                         <div className="flex items-center justify-between mb-6">
                                             <div className="flex items-center gap-4">
                                                 <div className="w-12 h-12 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-500 font-bold border border-emerald-500/20">
                                                     <Database size={24} />
                                                 </div>
                                                 <div>
-                                                    <h3 className="font-bold text-white text-lg">Supabase</h3>
-                                                    <p className="text-sm text-moonstone">
+                                                    <h3 className="font-bold text-foreground text-lg">Supabase</h3>
+                                                    <p className="text-sm text-muted-foreground">
                                                         Database & Authentication Provider
                                                     </p>
                                                 </div>
@@ -692,26 +703,24 @@ export default function SettingsPage() {
                                             </div>
                                         </div>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Project URL
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="https://xxx.supabase.co"
-                                                    className="input bg-surface-navy border-surface-hover text-white"
                                                     readOnly={connections.supabase}
                                                     value={connections.supabase ? "https://zennila-db.supabase.co" : ""}
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Anon Key
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="password"
                                                     placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
-                                                    className="input bg-surface-navy border-surface-hover text-white"
                                                     readOnly={connections.supabase}
                                                     value={connections.supabase ? "************************" : ""}
                                                 />
@@ -720,15 +729,15 @@ export default function SettingsPage() {
                                     </div>
 
                                     {/* Shopify */}
-                                    <div className="p-6 bg-bg-navy border border-surface-hover rounded-xl hover:border-primary/30 transition-colors">
+                                    <div className="p-6 bg-background border border-border rounded-xl hover:border-primary/30 transition-colors">
                                         <div className="flex items-center justify-between mb-6">
                                             <div className="flex items-center gap-4">
                                                 <div className="w-12 h-12 bg-[#96BF48]/10 rounded-xl flex items-center justify-center text-[#96BF48] font-bold border border-[#96BF48]/20">
                                                     <Globe size={24} />
                                                 </div>
                                                 <div>
-                                                    <h3 className="font-bold text-white text-lg">Shopify</h3>
-                                                    <p className="text-sm text-moonstone">
+                                                    <h3 className="font-bold text-foreground text-lg">Shopify</h3>
+                                                    <p className="text-sm text-muted-foreground">
                                                         E-commerce Store Sync
                                                     </p>
                                                 </div>
@@ -740,35 +749,34 @@ export default function SettingsPage() {
                                                         Connected
                                                     </span>
                                                 ) : (
-                                                    <button
-                                                        className="btn btn-outline py-1.5 px-4 text-xs"
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
                                                         onClick={() => alert("Shopify Integration: Coming Soon!")}
                                                     >
-                                                        <ExternalLink size={14} />
+                                                        <ExternalLink size={14} className="mr-1" />
                                                         Connect
-                                                    </button>
+                                                    </Button>
                                                 )}
                                             </div>
                                         </div>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Store Domain
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="zennila.myshopify.com"
-                                                    className="input bg-surface-navy border-surface-hover text-white"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Access Token
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="password"
                                                     placeholder="shpat_xxxxx"
-                                                    className="input bg-surface-navy border-surface-hover text-white"
                                                 />
                                             </div>
                                         </div>
@@ -776,15 +784,15 @@ export default function SettingsPage() {
 
 
                                     {/* PhonePe */}
-                                    <div className="p-6 bg-bg-navy border border-surface-hover rounded-xl hover:border-primary/30 transition-colors">
+                                    <div className="p-6 bg-background border border-border rounded-xl hover:border-primary/30 transition-colors">
                                         <div className="flex items-center justify-between mb-6">
                                             <div className="flex items-center gap-4">
                                                 <div className="w-12 h-12 bg-[#5f259f]/10 rounded-xl flex items-center justify-center text-[#5f259f] font-bold border border-[#5f259f]/20">
                                                     <CreditCard size={24} />
                                                 </div>
                                                 <div>
-                                                    <h3 className="font-bold text-white text-lg">PhonePe</h3>
-                                                    <p className="text-sm text-moonstone">
+                                                    <h3 className="font-bold text-foreground text-lg">PhonePe</h3>
+                                                    <p className="text-sm text-muted-foreground">
                                                         Payment Gateway Integration
                                                     </p>
                                                 </div>
@@ -804,54 +812,55 @@ export default function SettingsPage() {
                                             </div>
                                         </div>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Merchant ID
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="MERC123"
                                                     value={settings.phonepeMerchantId}
                                                     onChange={(e) => setSettings({ ...settings, phonepeMerchantId: e.target.value })}
-                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Salt Key
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="password"
                                                     placeholder="xxxx-xxxx-xxxx"
                                                     value={settings.phonepeSaltKey}
                                                     onChange={(e) => setSettings({ ...settings, phonepeSaltKey: e.target.value })}
-                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Salt Index
-                                                </label>
-                                                <input
+                                                </Label>
+                                                <Input
                                                     type="text"
                                                     placeholder="1"
                                                     value={settings.phonepeSaltIndex}
                                                     onChange={(e) => setSettings({ ...settings, phonepeSaltIndex: e.target.value })}
-                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-moonstone uppercase mb-2">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
                                                     Environment
-                                                </label>
-                                                <select
+                                                </Label>
+                                                <Select
                                                     value={settings.phonepeEnv}
-                                                    onChange={(e) => setSettings({ ...settings, phonepeEnv: e.target.value })}
-                                                    className="input bg-surface-navy border-surface-hover text-white focus:border-primary"
+                                                    onValueChange={(val) => setSettings({ ...settings, phonepeEnv: val })}
                                                 >
-                                                    <option value="UAT">Sandbox / UAT</option>
-                                                    <option value="PROD">Production</option>
-                                                </select>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Select environment" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="UAT">Sandbox / UAT</SelectItem>
+                                                        <SelectItem value="PROD">Production</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
                                             </div>
                                         </div>
                                     </div>
@@ -860,42 +869,41 @@ export default function SettingsPage() {
 
                             {activeSection === "whatsapp" && (
                                 <div className="space-y-8 animate-fade-in">
-                                    <div className="border-b border-surface-hover pb-4">
-                                        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                    <div className="border-b border-border pb-4">
+                                        <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
                                             <MessageCircle className="text-primary" size={24} />
                                             WhatsApp Automation
                                         </h2>
-                                        <p className="text-moonstone text-sm mt-1">Configure automated messaging and sidecar connection</p>
+                                        <p className="text-muted-foreground text-sm mt-1">Configure automated messaging and sidecar connection</p>
                                     </div>
 
-                                    <div className="p-8 border border-dashed border-surface-hover bg-bg-navy/50 rounded-xl text-center">
+                                    <div className="p-8 border border-dashed border-border bg-background/50 rounded-xl text-center">
                                         <div className="w-16 h-16 bg-[#25D366]/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-[#25D366]/20">
                                             <MessageCircle size={32} className="text-[#25D366]" />
                                         </div>
-                                        <h3 className="font-bold text-lg text-white">
+                                        <h3 className="font-bold text-lg text-foreground">
                                             Connect WhatsApp Web
                                         </h3>
-                                        <p className="text-moonstone mt-2 mb-6 max-w-sm mx-auto">
+                                        <p className="text-muted-foreground mt-2 mb-6 max-w-sm mx-auto">
                                             Scan QR code with your mobile to enable order notifications and customer support integration.
                                         </p>
-                                        <button
-                                            className="btn btn-primary"
+                                        <Button
                                             onClick={() => router.push('/whatsapp')}
                                         >
                                             Open WhatsApp Dashboard
-                                        </button>
+                                        </Button>
                                     </div>
                                 </div>
                             )}
 
                             {activeSection === "notifications" && (
                                 <div className="space-y-8 animate-fade-in">
-                                    <div className="border-b border-surface-hover pb-4">
-                                        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                    <div className="border-b border-border pb-4">
+                                        <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
                                             <Bell className="text-primary" size={24} />
                                             Notifications
                                         </h2>
-                                        <p className="text-moonstone text-sm mt-1">Control system alerts and triggers</p>
+                                        <p className="text-muted-foreground text-sm mt-1">Control system alerts and triggers</p>
                                     </div>
 
                                     <div className="space-y-4">
@@ -904,15 +912,12 @@ export default function SettingsPage() {
                                             { key: "newOrder", label: "New Order", desc: "When a new order is received from Shopify" },
                                             { key: "syncError", label: "Sync Errors", desc: "When synchronization with external services fails" },
                                         ].map((item) => (
-                                            <div key={item.key} className="flex items-center justify-between p-4 bg-bg-navy border border-surface-hover rounded-xl">
+                                            <div key={item.key} className="flex items-center justify-between p-4 bg-background border border-border rounded-xl">
                                                 <div>
-                                                    <p className="font-bold text-white text-sm">{item.label}</p>
-                                                    <p className="text-xs text-moonstone mt-1">{item.desc}</p>
+                                                    <p className="font-bold text-foreground text-sm">{item.label}</p>
+                                                    <p className="text-xs text-muted-foreground mt-1">{item.desc}</p>
                                                 </div>
-                                                <label className="relative inline-flex items-center cursor-pointer">
-                                                    <input type="checkbox" defaultChecked className="sr-only peer" />
-                                                    <div className="w-11 h-6 bg-surface-hover peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                                                </label>
+                                                <Switch defaultChecked />
                                             </div>
                                         ))}
                                     </div>
@@ -920,15 +925,14 @@ export default function SettingsPage() {
                             )}
 
                             {/* Save Button */}
-                            <div className="mt-8 pt-6 border-t border-surface-hover flex justify-end">
-                                <button
+                            <div className="mt-8 pt-6 border-t border-border flex justify-end">
+                                <Button
                                     onClick={handleSave}
                                     disabled={isSaving}
-                                    className="btn btn-primary px-8"
                                 >
-                                    <Save size={18} />
+                                    <Save className="mr-2 h-4 w-4" />
                                     {isSaving ? "Saving..." : "Save Changes"}
-                                </button>
+                                </Button>
                             </div>
                         </div>
                     </div>
@@ -1025,12 +1029,10 @@ export default function SettingsPage() {
                             </div>
                         )}
                         <div className="flex items-center gap-2">
-                            <input
-                                type="checkbox"
+                            <Switch
                                 id="is_required"
                                 checked={newAttribute.is_required}
-                                onChange={(e) => setNewAttribute({ ...newAttribute, is_required: e.target.checked })}
-                                className="w-4 h-4"
+                                onCheckedChange={(checked) => setNewAttribute({ ...newAttribute, is_required: checked })}
                             />
                             <Label htmlFor="is_required">Required field</Label>
                         </div>

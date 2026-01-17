@@ -125,7 +125,6 @@ export default function PurchaseOrdersPage() {
                 action={
                     <Button
                         onClick={() => router.push("/purchase/create")}
-                        className="bg-primary text-midnight hover:bg-primary/90"
                     >
                         <Plus className="w-4 h-4 mr-2" />
                         New Purchase Order

@@ -59,6 +59,11 @@ try {
         $wppJob = Start-Job -ScriptBlock {
             param($dir, $server)
             Set-Location $dir
+            
+            # Auto-update wppconnect to prevent "r is not a function" errors
+            Write-Host "  ↻ Checking for sidecar updates..." -ForegroundColor Gray
+            npm update @wppconnect-team/wppconnect 2>&1 | Out-Null
+            
             node $server
         } -ArgumentList $wppPath, $wppServer
         $jobs += $wppJob

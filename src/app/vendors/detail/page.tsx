@@ -339,7 +339,7 @@ function VendorDetailContent() {
                                 <Button
                                     size="sm"
                                     onClick={() => setShowAddProduct(true)}
-                                    className="bg-champagne text-midnight hover:bg-champagne/90"
+                                    className=""
                                 >
                                     <Plus className="w-4 h-4 mr-2" />
                                     Add Product
@@ -472,7 +472,7 @@ function VendorDetailContent() {
                             <Button
                                 onClick={handleAddProduct}
                                 disabled={addingProduct || !selectedVariant}
-                                className="bg-champagne text-midnight hover:bg-champagne/90"
+                                className=""
                             >
                                 {addingProduct ? "Adding..." : "Add Product"}
                             </Button>
@@ -581,7 +581,7 @@ function VendorDetailContent() {
                             <Button
                                 onClick={handleUpdateVendor}
                                 disabled={saving || !editForm.name.trim()}
-                                className="bg-champagne text-midnight hover:bg-champagne/90"
+                                className=""
                             >
                                 {saving ? "Saving..." : "Save Changes"}
                             </Button>

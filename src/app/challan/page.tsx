@@ -17,6 +17,7 @@ import {
     FileText
 } from "lucide-react";
 import { formatDate, formatPrice } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import {
     getChallans,
     type DeliveryChallan,
@@ -112,13 +113,12 @@ export default function ChallansPage() {
                 title="Delivery Challans"
                 subtitle="Track material outward movements"
                 action={
-                    <button
+                    <Button
                         onClick={() => router.push("/challan/create")}
-                        className="h-11 px-6 bg-primary hover:bg-primary/90 text-bg-navy rounded-lg font-bold text-sm flex items-center gap-2 transition-colors"
                     >
-                        <Plus size={18} />
+                        <Plus size={18} className="mr-2" />
                         New Challan
-                    </button>
+                    </Button>
                 }
             />
 
@@ -174,13 +174,13 @@ export default function ChallansPage() {
                         <p className="text-moonstone text-sm mt-1">
                             Create your first delivery challan to track material movements
                         </p>
-                        <button
+                        <Button
                             onClick={() => router.push("/challan/create")}
-                            className="mt-6 h-10 px-6 bg-primary hover:bg-primary/90 text-bg-navy rounded-lg font-bold text-sm flex items-center gap-2"
+                            className="mt-6"
                         >
-                            <Plus size={16} />
+                            <Plus size={16} className="mr-2" />
                             New Challan
-                        </button>
+                        </Button>
                     </div>
                 ) : (
                     <div className="bg-surface-navy rounded-xl border border-surface-hover overflow-hidden">

@@ -595,7 +595,7 @@ function InvoiceDetailContent() {
                             </Button>
                             <Button
                                 onClick={handleGenerateEWayBill}
-                                className="bg-primary text-midnight hover:bg-primary/90"
+                                className=""
                             >
                                 <FileText className="w-4 h-4 mr-2" />
                                 Download JSON

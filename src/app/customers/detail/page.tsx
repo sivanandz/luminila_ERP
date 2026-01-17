@@ -402,7 +402,7 @@ function CustomerDetailContent() {
                             <Button variant="outline" onClick={() => setShowEditDialog(false)}>
                                 Cancel
                             </Button>
-                            <Button onClick={handleUpdate} disabled={saving} className="bg-primary text-midnight">
+                            <Button onClick={handleUpdate} disabled={saving}>
                                 {saving ? "Saving..." : "Save Changes"}
                             </Button>
                         </div>

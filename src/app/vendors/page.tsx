@@ -100,7 +100,7 @@ export default function VendorsPage() {
                 action={
                     <Button
                         onClick={() => setShowForm(true)}
-                        className="bg-primary text-midnight hover:bg-primary/90"
+                        className=""
                     >
                         <Plus className="w-4 h-4 mr-2" />
                         Add Vendor

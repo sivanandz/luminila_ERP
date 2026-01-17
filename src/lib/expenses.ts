@@ -88,10 +88,10 @@ export async function getExpenses(filters?: {
         const filterParts: string[] = [];
 
         if (filters?.startDate) {
-            filterParts.push(`date>="${filters.startDate}"`);
+            filterParts.push(`expense_date>="${filters.startDate}"`);
         }
         if (filters?.endDate) {
-            filterParts.push(`date<="${filters.endDate}"`);
+            filterParts.push(`expense_date<="${filters.endDate}"`);
         }
         if (filters?.categoryId && filters.categoryId !== 'all') {
             filterParts.push(`category="${filters.categoryId}"`);
@@ -107,14 +107,14 @@ export async function getExpenses(filters?: {
 
         const records = await pb.collection('expenses').getFullList({
             filter: filterParts.join(' && ') || '',
-            sort: '-date,-created',
+            sort: '-expense_date,-created',
             expand: 'category',
         });
 
         return records.map((e: any) => ({
             id: e.id,
             expense_number: e.expense_number,
-            date: e.date,
+            date: e.expense_date,
             category_id: e.category,
             category: e.expand?.category ? {
                 id: e.expand.category.id,
@@ -146,7 +146,7 @@ export async function getExpense(id: string): Promise<Expense | null> {
         return {
             id: e.id,
             expense_number: e.expense_number,
-            date: e.date,
+            date: e.expense_date,
             category_id: e.category,
             category: e.expand?.category ? {
                 id: e.expand.category.id,
@@ -175,7 +175,7 @@ export async function createExpense(expense: Omit<Expense, 'id' | 'expense_numbe
 
         const e = await pb.collection('expenses').create({
             expense_number: expenseNumber,
-            date: expense.date,
+            expense_date: expense.date,
             category: expense.category_id,
             amount: expense.amount,
             payment_mode: expense.payment_mode,
@@ -221,7 +221,7 @@ export async function updateExpense(id: string, updates: Partial<Expense>): Prom
         return {
             id: e.id,
             expense_number: e.expense_number,
-            date: e.date,
+            date: e.expense_date,
             category_id: e.category,
             amount: e.amount,
             payment_mode: e.payment_mode,
@@ -313,8 +313,8 @@ export async function toggleCategoryStatus(id: string, currentlyActive: boolean)
 export async function getExpenseStats(startDate?: string, endDate?: string): Promise<ExpenseStats> {
     try {
         const filterParts: string[] = [];
-        if (startDate) filterParts.push(`date>="${startDate}"`);
-        if (endDate) filterParts.push(`date<="${endDate}"`);
+        if (startDate) filterParts.push(`expense_date>="${startDate}"`);
+        if (endDate) filterParts.push(`expense_date<="${endDate}"`);
 
         const expenses = await pb.collection('expenses').getFullList({
             filter: filterParts.join(' && ') || '',

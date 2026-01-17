@@ -177,7 +177,7 @@ export default function BankingPage() {
                                     onClick={() => router.push(`/banking/transactions?accountId=${acc.id}`)}
                                 >
                                     <div className="flex justify-between items-start mb-6">
-                                        <div className="p-3 bg-bg-navy rounded-lg text-white group-hover:bg-primary group-hover:text-bg-navy transition-colors">
+                                        <div className="p-3 bg-bg-navy rounded-lg text-white group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
                                             <Landmark size={24} />
                                         </div>
                                         <span className={`px-2 py-1 rounded text-xs font-bold ${acc.is_active ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'

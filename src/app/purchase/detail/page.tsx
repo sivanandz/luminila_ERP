@@ -231,7 +231,7 @@ function PurchaseOrderDetailContent() {
                             {canReceive && (
                                 <Button
                                     onClick={() => setShowReceiveModal(true)}
-                                    className="bg-champagne text-midnight hover:bg-champagne/90"
+                                    className=""
                                 >
                                     <PackageCheck className="w-4 h-4 mr-2" />
                                     Receive Goods
@@ -484,7 +484,7 @@ function PurchaseOrderDetailContent() {
                             <Button
                                 onClick={handleReceiveGoods}
                                 disabled={processing}
-                                className="bg-champagne text-midnight"
+                                className=""
                             >
                                 {processing ? "Processing..." : "Confirm Receipt"}
                             </Button>

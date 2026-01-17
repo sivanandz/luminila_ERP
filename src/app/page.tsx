@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { RefreshCw } from "lucide-react";
+import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
@@ -84,53 +85,55 @@ export default function DashboardPage() {
     }
 
     return (
-        <div className="flex flex-col h-full overflow-hidden">
-            <Header
-                title="Dashboard"
-                subtitle="Real-time business overview"
-            />
+        <ProtectedRoute resource="reports" action="read">
+            <div className="flex flex-col h-full overflow-hidden">
+                <Header
+                    title="Dashboard"
+                    subtitle="Real-time business overview"
+                />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
-                <div className="max-w-7xl mx-auto space-y-6">
-                    {/* Actions Bar */}
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm text-muted-foreground">
-                                Last 30 days performance
-                            </p>
+                <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+                    <div className="max-w-7xl mx-auto space-y-6">
+                        {/* Actions Bar */}
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm text-muted-foreground">
+                                    Last 30 days performance
+                                </p>
+                            </div>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleRefresh}
+                                disabled={refreshing}
+                            >
+                                <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+                                {refreshing ? "Refreshing..." : "Refresh"}
+                            </Button>
                         </div>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleRefresh}
-                            disabled={refreshing}
-                        >
-                            <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-                            {refreshing ? "Refreshing..." : "Refresh"}
-                        </Button>
-                    </div>
 
-                    {/* KPI Cards */}
-                    {stats && <KPICards stats={stats} />}
+                        {/* KPI Cards */}
+                        {stats && <KPICards stats={stats} />}
 
-                    {/* Charts Row */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        <div className="lg:col-span-2">
-                            <SalesChart data={salesTrend} title="Revenue Trend (30 Days)" />
+                        {/* Charts Row */}
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div className="lg:col-span-2">
+                                <SalesChart data={salesTrend} title="Revenue Trend (30 Days)" />
+                            </div>
+                            <div>
+                                <ChannelBreakdown data={channelData} />
+                            </div>
                         </div>
-                        <div>
-                            <ChannelBreakdown data={channelData} />
-                        </div>
-                    </div>
 
-                    {/* Bottom Row */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <TopProducts products={topProducts} />
-                        <RecentActivity activities={activities} />
+                        {/* Bottom Row */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <TopProducts products={topProducts} />
+                            <RecentActivity activities={activities} />
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
+        </ProtectedRoute>
     );
 }
 

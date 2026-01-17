@@ -265,7 +265,7 @@ export default function CreatePurchaseOrderPage() {
                                 <Button
                                     size="sm"
                                     onClick={() => setShowProductSearch(!showProductSearch)}
-                                    className="bg-primary text-midnight hover:bg-primary/90"
+                                    className=""
                                 >
                                     <Plus className="w-4 h-4 mr-2" />
                                     Add Item
@@ -466,7 +466,7 @@ export default function CreatePurchaseOrderPage() {
                         <Button
                             onClick={() => handleSubmit('sent')}
                             disabled={loading || items.length === 0}
-                            className="bg-primary text-midnight hover:bg-primary/90"
+                            className=""
                         >
                             <Send className="w-4 h-4 mr-2" />
                             {loading ? "Creating..." : "Create & Send"}

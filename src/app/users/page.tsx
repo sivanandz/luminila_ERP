@@ -53,10 +53,11 @@ import {
 } from "@/lib/rbac";
 
 const roleColors: Record<string, string> = {
-    admin: "bg-red-500/20 text-red-400 border-red-500/30",
-    manager: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-    cashier: "bg-green-500/20 text-green-400 border-green-500/30",
-    viewer: "bg-gray-500/20 text-gray-400 border-gray-500/30",
+    Admin: "bg-red-500/20 text-red-400 border-red-500/30",
+    Manager: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+    Staff: "bg-purple-500/20 text-purple-400 border-purple-500/30",
+    Cashier: "bg-green-500/20 text-green-400 border-green-500/30",
+    Viewer: "bg-gray-500/20 text-gray-400 border-gray-500/30",
 };
 
 function UsersContent() {
@@ -70,6 +71,16 @@ function UsersContent() {
     const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
     const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
     const [saving, setSaving] = useState(false);
+
+    // Add User State
+    const [showAddUser, setShowAddUser] = useState(false);
+    const [newUser, setNewUser] = useState({
+        name: "",
+        email: "",
+        password: "",
+        role: "Viewer" // Default role
+    });
+    const [creating, setCreating] = useState(false);
 
     const loadData = async () => {
         setLoading(true);
@@ -127,9 +138,60 @@ function UsersContent() {
         }
     };
 
+    const handleAddUser = async () => {
+        if (!newUser.email || !newUser.password || !newUser.name) {
+            alert("Please fill in all fields");
+            return;
+        }
+        if (newUser.password.length < 8) {
+            alert("Password must be at least 8 characters");
+            return;
+        }
+
+        setCreating(true);
+        try {
+            // 1. Create User
+            const { pb } = await import("@/lib/pocketbase");
+            const user = await pb.collection("users").create({
+                email: newUser.email,
+                password: newUser.password,
+                passwordConfirm: newUser.password,
+                name: newUser.name,
+                emailVisibility: true,
+                verified: true,
+            });
+
+            // 2. Assign Role (default Viewer is assigned by AuthContext on signup, but here we are admin creating)
+            // We need to explicitly set the selected role.
+            // First find role ID
+            const roleObj = roles.find(r => r.name === newUser.role);
+            if (roleObj) {
+                await setUserRoles(user.id, [roleObj.id]);
+            }
+
+            setShowAddUser(false);
+            setNewUser({ name: "", email: "", password: "", role: "Viewer" });
+            loadData();
+        } catch (error: any) {
+            console.error("Error creating user:", error);
+            alert("Failed to create user: " + error.message);
+        } finally {
+            setCreating(false);
+        }
+    };
+
     return (
         <div className="flex flex-col h-full overflow-hidden">
-            <Header title="User Management" subtitle="Manage users and roles" />
+            <Header
+                title="User Management"
+                subtitle="Manage users and roles"
+                action={
+                    <Button onClick={() => setShowAddUser(true)} className="gap-2">
+                        <Plus size={20} />
+                        Add User
+                    </Button>
+                }
+            />
 
             <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
                 {/* Stats */}
@@ -328,9 +390,73 @@ function UsersContent() {
                             <Button
                                 onClick={handleSaveRoles}
                                 disabled={saving}
-                                className="bg-primary text-midnight"
+                                className=""
                             >
                                 {saving ? "Saving..." : "Save Roles"}
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+            {/* Add User Dialog */}
+            <Dialog open={showAddUser} onOpenChange={setShowAddUser}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Add New User</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                        <div className="space-y-2">
+                            <Label>Full Name</Label>
+                            <Input
+                                placeholder="John Doe"
+                                value={newUser.name}
+                                onChange={e => setNewUser({ ...newUser, name: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Email</Label>
+                            <Input
+                                type="email"
+                                placeholder="user@example.com"
+                                value={newUser.email}
+                                onChange={e => setNewUser({ ...newUser, email: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Password (min 8 chars)</Label>
+                            <Input
+                                type="password"
+                                value={newUser.password}
+                                onChange={e => setNewUser({ ...newUser, password: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Role</Label>
+                            <Select
+                                value={newUser.role}
+                                onValueChange={val => setNewUser({ ...newUser, role: val })}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select role" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {roles.map(r => (
+                                        <SelectItem key={r.id} value={r.name}>
+                                            {r.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="flex justify-end gap-3 pt-4">
+                            <Button variant="outline" onClick={() => setShowAddUser(false)}>
+                                Cancel
+                            </Button>
+                            <Button
+                                onClick={handleAddUser}
+                                disabled={creating}
+                            >
+                                {creating ? "Creating..." : "Create User"}
                             </Button>
                         </div>
                     </div>

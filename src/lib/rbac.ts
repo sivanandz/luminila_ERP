@@ -168,8 +168,8 @@ export async function getUsers(): Promise<UserProfile[]> {
                 name: u.name,
                 full_name: u.name || u.email?.split('@')[0],
                 avatar: u.avatar ? pb.files.getUrl(u, u.avatar) : undefined,
-                is_active: u.verified !== false,
-                last_login: u.lastLogin,
+                is_active: u.is_active !== false, // Default true if missing/undefined
+                last_login: u.last_login ? u.last_login : undefined,
                 created: u.created,
                 updated: u.updated,
                 roles
@@ -196,17 +196,18 @@ export async function setUserRoles(userId: string, roleIds: string[]): Promise<v
 }
 
 export async function toggleUserActive(userId: string, isActive: boolean): Promise<void> {
-    await pb.collection('users').update(userId, { verified: isActive });
+    await pb.collection('users').update(userId, { is_active: isActive });
 }
 
 export async function getRBACStats(): Promise<{ totalUsers: number; activeUsers: number; totalRoles: number }> {
     try {
         const usersResult = await pb.collection('users').getList(1, 1);
+        const activeUsersResult = await pb.collection('users').getList(1, 1, { filter: 'is_active=true' });
         const rolesResult = await pb.collection('roles').getList(1, 1);
-        // For active users, we'll just return total for now (PocketBase doesn't have a verified filter easily)
+
         return {
             totalUsers: usersResult.totalItems,
-            activeUsers: usersResult.totalItems,
+            activeUsers: activeUsersResult.totalItems,
             totalRoles: rolesResult.totalItems,
         };
     } catch {

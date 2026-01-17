@@ -4,11 +4,13 @@ import { useState, useEffect } from "react";
 import { Bell, Search, RefreshCw, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuLabel,
+    DropdownMenuGroup,
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -22,6 +24,7 @@ interface HeaderProps {
 
 export function Header({ title, subtitle, action, children }: HeaderProps) {
     const [searchQuery, setSearchQuery] = useState("");
+    const [hasNotifications, setHasNotifications] = useState(false); // Default to false for now
     const router = useRouter();
 
     return (
@@ -50,10 +53,14 @@ export function Header({ title, subtitle, action, children }: HeaderProps) {
                 <DropdownMenu>
                     <DropdownMenuTrigger className="bg-card hover:bg-muted text-foreground size-11 rounded-lg transition-colors relative flex items-center justify-center border border-border cursor-pointer">
                         <Bell size={22} />
-                        <span className="absolute top-2.5 right-3 size-2 bg-destructive rounded-full border border-background"></span>
+                        {hasNotifications && (
+                            <span className="absolute top-2.5 right-3 size-2 bg-destructive rounded-full border border-background"></span>
+                        )}
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-80 bg-card border-border">
-                        <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+                        <DropdownMenuGroup>
+                            <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+                        </DropdownMenuGroup>
                         <DropdownMenuSeparator />
                         <div className="py-8 text-center text-muted-foreground text-sm">
                             <Bell className="mx-auto mb-2 opacity-20" size={32} />
@@ -62,25 +69,25 @@ export function Header({ title, subtitle, action, children }: HeaderProps) {
                     </DropdownMenuContent>
                 </DropdownMenu>
 
-                <button
+                <Button
+                    variant="outline"
+                    size="icon"
                     onClick={() => window.location.reload()}
-                    className="bg-card hover:bg-muted text-foreground h-11 px-4 rounded-lg transition-colors flex items-center gap-2.5 border border-border"
                     title="Click to Refresh Data"
+                    className="h-11 w-11"
                 >
-                    <RefreshCw size={22} className="animate-spin-slow" style={{ animationDuration: '3s' }} />
-                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wide hidden xl:block">Synced</span>
-                </button>
+                    <RefreshCw size={20} className="animate-spin-slow" style={{ animationDuration: '3s' }} />
+                </Button>
 
                 {children}
 
                 {action || (
-                    <button
+                    <Button
                         onClick={() => router.push('/pos')}
-                        className="bg-primary hover:bg-primary/90 text-primary-foreground h-11 px-5 rounded-lg text-sm font-bold flex items-center gap-2 transition-colors ml-1"
                     >
-                        <Plus size={20} />
-                        <span>New Sale</span>
-                    </button>
+                        <Plus size={18} className="mr-2" />
+                        New Sale
+                    </Button>
                 )}
             </div>
         </header>

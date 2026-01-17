@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
+import { Button } from "@/components/ui/button";
 import {
     Calendar as CalendarIcon,
     Search,
@@ -217,26 +218,25 @@ export default function CreateOrderPage() {
                 subtitle="Create a quotation or sales order"
                 action={
                     <div className="flex items-center gap-3">
-                        <button
+                        <Button
+                            variant="ghost"
                             onClick={() => router.back()}
-                            className="h-11 px-4 text-moonstone hover:text-white font-bold text-sm transition-colors"
                         >
                             Cancel
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                             onClick={handleSave}
                             disabled={loading}
-                            className="h-11 px-6 bg-primary hover:bg-primary/90 text-bg-navy rounded-lg font-bold text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
                         >
                             {loading ? (
                                 <span className="animate-pulse">Saving...</span>
                             ) : (
                                 <>
-                                    <Save size={18} />
+                                    <Save size={18} className="mr-2" />
                                     Save
                                 </>
                             )}
-                        </button>
+                        </Button>
                     </div>
                 }
             />

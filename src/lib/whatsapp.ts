@@ -666,18 +666,30 @@ export async function getAllChats(sessionId: string): Promise<WPPChat[]> {
         if (!response.ok) return [];
 
         const data = await response.json();
-        return (data.chats || []).map((chat: any) => ({
-            id: chat.id?._serialized || chat.id,
-            name: chat.name || chat.contact?.pushname || chat.contact?.name || "Unknown",
-            isGroup: chat.isGroup || false,
-            timestamp: chat.t || chat.timestamp || 0,
-            unreadCount: chat.unreadCount || 0,
-            profilePic: chat.profilePicThumbObj?.eurl || chat.contact?.profilePicThumbObj?.eurl || null,
-            lastMessage: chat.lastMessage ? {
-                body: chat.lastMessage.body || "",
-                timestamp: chat.lastMessage.t || chat.lastMessage.timestamp || 0
-            } : undefined
-        }));
+        return (data.chats || []).map((chat: any) => {
+            let lastMsgBody = "";
+            if (chat.lastMessage) {
+                if (chat.lastMessage.type === 'image') lastMsgBody = "📷 Photo";
+                else if (chat.lastMessage.type === 'video') lastMsgBody = "🎥 Video";
+                else if (chat.lastMessage.type === 'ptt' || chat.lastMessage.type === 'audio') lastMsgBody = "🎤 Voice message";
+                else if (chat.lastMessage.type === 'document') lastMsgBody = "📄 Document";
+                else if (chat.lastMessage.type === 'sticker') lastMsgBody = "💟 Sticker";
+                else lastMsgBody = chat.lastMessage.body || "";
+            }
+
+            return {
+                id: chat.id?._serialized || chat.id,
+                name: chat.name || chat.contact?.pushname || chat.contact?.name || "Unknown",
+                isGroup: chat.isGroup || false,
+                timestamp: chat.t || chat.timestamp || 0,
+                unreadCount: chat.unreadCount || 0,
+                profilePic: chat.profilePicThumbObj?.eurl || chat.contact?.profilePicThumbObj?.eurl || null,
+                lastMessage: chat.lastMessage ? {
+                    body: lastMsgBody,
+                    timestamp: chat.lastMessage.t || chat.lastMessage.timestamp || 0
+                } : undefined
+            };
+        });
     } catch {
         return [];
     }

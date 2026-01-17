@@ -523,7 +523,7 @@ export default function InventoryPage() {
                                                 setIsEditMode(true);
                                                 setEditingProductId(product.id);
                                                 setShowAddDialog(true);
-                                            }} className="bg-primary text-bg-navy p-2 rounded-lg hover:scale-110"><Edit size={18} /></button>
+                                            }} className="bg-primary text-primary-foreground p-2 rounded-lg hover:scale-110"><Edit size={18} /></button>
                                             <button onClick={() => handleDeleteProduct(product.id)} className="bg-red-500 text-white p-2 rounded-lg hover:scale-110"><Trash2 size={18} /></button>
                                         </div>
                                     </div>

@@ -3,11 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ScrollArea } from "@/components/ui/scroll-area";
+// import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/contexts/AuthContext";
 import {
     LayoutDashboard,
     Package,
@@ -33,7 +35,11 @@ import {
     Headphones,
     UserCog,
     Landmark,
-    CreditCard
+    CreditCard,
+    LogOut,
+    LogIn,
+    ChevronsDown,
+    ChevronsUp,
 } from "lucide-react";
 
 interface NavItem {
@@ -123,17 +129,26 @@ function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
     );
 }
 
-function CollapsibleGroup({ group, pathname }: { group: NavItem; pathname: string }) {
-    // Auto-expand if any child is active
+// function CollapsibleGroup ... modified to receive props
+function CollapsibleGroup({
+    group,
+    pathname,
+    isOpen,
+    onToggle,
+}: {
+    group: NavItem;
+    pathname: string;
+    isOpen: boolean;
+    onToggle: () => void;
+}) {
     const isChildActive = group.children?.some(
         (child) => child.href && (pathname === child.href || pathname.startsWith(child.href + "/"))
     );
-    const [open, setOpen] = useState(isChildActive || false);
 
     return (
         <div className="space-y-0.5">
             <button
-                onClick={() => setOpen(!open)}
+                onClick={onToggle}
                 className={cn(
                     buttonVariants({ variant: "ghost" }),
                     "w-full justify-between gap-3 h-11 text-sm font-medium",
@@ -144,12 +159,12 @@ function CollapsibleGroup({ group, pathname }: { group: NavItem; pathname: strin
                     {group.icon}
                     {group.label}
                 </span>
-                {open ? <ChevronDown size={16} className="text-muted-foreground" /> : <ChevronRight size={16} className="text-muted-foreground" />}
+                {isOpen ? <ChevronDown size={16} className="text-muted-foreground" /> : <ChevronRight size={16} className="text-muted-foreground" />}
             </button>
             <div
                 className={cn(
                     "overflow-hidden transition-all duration-200 ease-in-out",
-                    open ? "max-h-96 opacity-100" : "max-h-0 opacity-0"
+                    isOpen ? "max-h-96 opacity-100" : "max-h-0 opacity-0"
                 )}
             >
                 <div className="pl-4 border-l border-border/50 ml-3 space-y-0.5 py-1">
@@ -165,6 +180,58 @@ function CollapsibleGroup({ group, pathname }: { group: NavItem; pathname: strin
 export function Sidebar() {
     const pathname = usePathname();
     const router = useRouter();
+    const { user, isValid, logout } = useAuth();
+
+    // Lifted state with initialization function to auto-open active group
+    const [openGroups, setOpenGroups] = useState<string[]>(() => {
+        return navGroups
+            .filter(group => group.children?.some(
+                child => child.href && (pathname === child.href || pathname.startsWith(child.href + "/"))
+            ))
+            .map(group => group.label);
+    });
+
+    // Initialize open groups based on active route (run once or effect?)
+    // Using effect to ensure it opens on navigation? Or just initial state.
+    // Better to use useEffect to auto-open relevant group on mount/nav
+    // But user might want to close it.
+    // Let's stick to initial state or manual control? 
+    // "Expand/Collapse All" implies manual control overwrites.
+    // I'll keep it simple: Expand All = add all titles to array. Collapse All = empty array.
+
+    const handleExpandAll = () => {
+        const allTitles = navGroups.filter(g => g.children).map(g => g.label);
+        setOpenGroups(allTitles);
+    };
+
+    const handleCollapseAll = () => {
+        setOpenGroups([]);
+    };
+
+    const toggleGroup = (label: string) => {
+        setOpenGroups(prev =>
+            prev.includes(label)
+                ? prev.filter(l => l !== label)
+                : [...prev, label]
+        );
+    };
+
+    const handleLogout = () => {
+        logout();
+        router.push("/login");
+    };
+
+    // Get user initials
+    const getInitials = (name?: string, email?: string) => {
+        if (name) {
+            const parts = name.split(" ");
+            return parts.map(p => p[0]).slice(0, 2).join("").toUpperCase();
+        }
+        if (email) {
+            return email.slice(0, 2).toUpperCase();
+        }
+        return "??";
+    };
 
     return (
         <aside className="w-72 bg-card border-r flex flex-col h-full shrink-0 z-30">
@@ -179,11 +246,35 @@ export function Sidebar() {
                 </div>
             </div>
 
-            <ScrollArea className="flex-1 px-4">
+            {/* Expand/Collapse Controls */}
+            <div className="px-4 pb-2 flex items-center justify-end gap-1">
+                <button
+                    onClick={handleExpandAll}
+                    className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                    title="Expand All"
+                >
+                    <ChevronsDown size={14} className="stroke-[3]" />
+                </button>
+                <button
+                    onClick={handleCollapseAll}
+                    className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                    title="Collapse All"
+                >
+                    <ChevronsUp size={14} className="stroke-[3]" />
+                </button>
+            </div>
+
+            <div className="flex-1 px-4 min-h-0 overflow-y-auto">
                 <div className="space-y-1 py-2">
                     {navGroups.map((group) =>
                         group.children ? (
-                            <CollapsibleGroup key={group.label} group={group} pathname={pathname} />
+                            <CollapsibleGroup
+                                key={group.label}
+                                group={group}
+                                pathname={pathname}
+                                isOpen={openGroups.includes(group.label)}
+                                onToggle={() => toggleGroup(group.label)}
+                            />
                         ) : (
                             <NavLink key={group.href} item={group} pathname={pathname} />
                         )
@@ -200,26 +291,56 @@ export function Sidebar() {
                         ))}
                     </div>
                 </div>
-            </ScrollArea>
+            </div>
 
             {/* User Profile */}
             <div className="p-4 border-t bg-muted/20">
-                <div
-                    className="flex items-center gap-3 text-left px-2 py-3 rounded-lg hover:bg-accent cursor-pointer group transition-colors"
-                    onClick={() => router.push('/settings')}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => e.key === 'Enter' && router.push('/settings')}
-                >
-                    <Avatar className="size-9 border border-border">
-                        <AvatarImage src="" />
-                        <AvatarFallback className="bg-primary/10 text-primary font-bold text-xs">SR</AvatarFallback>
-                    </Avatar>
-                    <div className="grid gap-0.5">
-                        <p className="text-sm font-bold leading-none group-hover:text-primary transition-colors">Sophia R.</p>
-                        <p className="text-xs text-muted-foreground font-medium">Store Manager</p>
+                {isValid && user ? (
+                    <div className="space-y-3">
+                        <div
+                            className="flex items-center gap-3 text-left px-2 py-2 rounded-lg hover:bg-accent cursor-pointer group transition-colors"
+                            onClick={() => router.push('/settings')}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => e.key === 'Enter' && router.push('/settings')}
+                        >
+                            <Avatar className="size-9 border border-border">
+                                <AvatarImage src={user.avatar || ""} />
+                                <AvatarFallback className="bg-primary/10 text-primary font-bold text-xs">
+                                    {getInitials(user.name, user.email)}
+                                </AvatarFallback>
+                            </Avatar>
+                            <div className="grid gap-0.5 flex-1 min-w-0">
+                                <p className="text-sm font-bold leading-none group-hover:text-primary transition-colors truncate">
+                                    {user.name || user.email?.split("@")[0] || "User"}
+                                </p>
+                                <p className="text-xs text-muted-foreground font-medium truncate">
+                                    {user.email || ""}
+                                </p>
+                            </div>
+                        </div>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="w-full justify-start gap-2 text-muted-foreground hover:text-red-400"
+                            onClick={handleLogout}
+                        >
+                            <LogOut size={16} />
+                            Sign Out
+                        </Button>
                     </div>
-                </div>
+                ) : (
+                    <Link
+                        href="/login"
+                        className={cn(
+                            buttonVariants({ variant: "default" }),
+                            "w-full gap-2"
+                        )}
+                    >
+                        <LogIn size={16} />
+                        Sign In
+                    </Link>
+                )}
             </div>
         </aside>
     );

@@ -21,8 +21,20 @@ const io = new Server(server, {
     cors: { origin: '*', methods: ['GET', 'POST'] }
 });
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+    origin: '*', // Allow all origins for local sidecar
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    credentials: true
+}));
+
+// Add Private Network Access header for Chrome
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Private-Network', 'true');
+    next();
+});
+
+app.use(express.json({ limit: '50mb' })); // Increase limit for media uploads
 
 // Session storage
 const sessions = new Map();
@@ -80,6 +92,7 @@ app.post('/api/:session/start', async (req, res) => {
 
         wpp.create({
             session: session,
+            folderNameToken: 'tokens', // Persist session tokens to local folder
             catchQR: async (base64Qr, asciiQR, attempts) => {
                 console.log(`[${session}] QR Code generated (attempt ${attempts})`);
                 console.log(`[${session}] QR Length: ${base64Qr ? base64Qr.length : 0}`);
@@ -439,10 +452,52 @@ app.get('/api/:session/chats', async (req, res) => {
     }
 
     try {
-        const chats = await sessionData.client.listChats();
-        res.json({ success: true, chats: chats.slice(0, 50) }); // Limit to 50
+        console.log(`[${session}] Fetching chats...`);
+
+        let chats;
+        if (typeof sessionData.client.getAllChats === 'function') {
+            console.log(`[${session}] Using getAllChats...`);
+            chats = await sessionData.client.getAllChats();
+        } else {
+            // Fallback
+            if (typeof sessionData.client.listChats !== 'function') {
+                throw new Error('client.listChats is not a function');
+            }
+            console.log(`[${session}] Using listChats...`);
+            chats = await sessionData.client.listChats({ onlyUsers: false });
+        }
+
+        console.log(`[${session}] listChats/getAllChats returned type: ${typeof chats}, isArray: ${Array.isArray(chats)}`);
+
+        if (!Array.isArray(chats)) {
+            console.log(`[${session}] Unexpected chats result:`, chats);
+            res.json({ success: true, chats: [] });
+            return;
+        }
+
+        // Enrich the top 20 chats with lastMessage if missing
+        // This is a workaround because getAllChats/listChats isn't returning lastMessage in this version
+        const slicedChats = chats.slice(0, 20); // Limit processing to top 20 for speed
+
+        const enrichedChats = await Promise.all(slicedChats.map(async (chat) => {
+            try {
+                if (!chat.lastMessage || !chat.lastMessage.body) {
+                    const chatId = chat.id._serialized || chat.id;
+                    const msgs = await sessionData.client.getMessages(chatId, { count: 1 });
+                    if (msgs && msgs.length > 0) {
+                        chat.lastMessage = msgs[msgs.length - 1];
+                    }
+                }
+            } catch (err) {
+                console.warn(`[${session}] Failed to enrich chat ${chat.id?._serialized}: ${err.message}`);
+            }
+            return chat;
+        }));
+
+        res.json({ success: true, chats: enrichedChats });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        console.error(`[${session}] listChats Error Details:`, error);
+        res.status(500).json({ success: false, error: error.message, stack: error.stack });
     }
 });
 

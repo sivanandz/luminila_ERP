@@ -308,42 +308,49 @@ export async function getChallans(filters?: {
     try {
         const filterParts: string[] = [];
 
+        // Use delivery_date instead of challan_date (actual field name in collection)
         if (filters?.startDate) {
-            filterParts.push(`challan_date>="${filters.startDate}"`);
+            filterParts.push(`delivery_date>="${filters.startDate}"`);
         }
         if (filters?.endDate) {
-            filterParts.push(`challan_date<="${filters.endDate}"`);
-        }
-        if (filters?.challanType) {
-            filterParts.push(`challan_type="${filters.challanType}"`);
+            filterParts.push(`delivery_date<="${filters.endDate}"`);
         }
         if (filters?.status) {
             filterParts.push(`status="${filters.status}"`);
         }
-        if (filters?.consigneeName) {
-            filterParts.push(`consignee_name~"${filters.consigneeName}"`);
-        }
+        // Note: challan_type and consignee_name may not exist in this collection schema
 
         const data = await pb.collection('delivery_challans').getFullList({
-            filter: filterParts.join(' && ') || '',
-            sort: '-challan_date',
+            filter: filterParts.length > 0 ? filterParts.join(' && ') : undefined,
+            sort: '-created', // Use created instead of challan_date which doesn't exist
         });
 
         return data.map((ch: any) => ({
             id: ch.id,
             challan_number: ch.challan_number,
-            challan_date: ch.challan_date,
-            challan_type: ch.challan_type,
-            status: ch.status,
-            consignor_name: ch.consignor_name,
-            consignee_name: ch.consignee_name,
-            consignee_address: ch.consignee_address,
-            total_quantity: ch.total_quantity,
-            total_value: ch.total_value,
+            challan_date: ch.delivery_date, // Map delivery_date to challan_date
+            challan_type: ch.challan_type || 'other',
+            status: ch.status || 'draft',
+            consignor_name: ch.consignor_name || '',
+            consignee_name: ch.consignee_name || '',
+            consignee_address: ch.consignee_address || '',
+            total_quantity: ch.total_quantity || 0,
+            total_value: ch.total_value || 0,
             created_at: ch.created,
+            // Include actual fields from collection
+            vehicle_number: ch.vehicle_number,
+            driver_name: ch.driver_name,
+            driver_phone: ch.driver_phone,
+            notes: ch.notes,
         })) as DeliveryChallan[];
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error fetching challans:', error);
+        if (error?.response?.data) {
+            console.error('PocketBase error details:', JSON.stringify(error.response.data, null, 2));
+        }
+        if (error?.status === 400) {
+            console.error('This may indicate the delivery_challans collection does not exist or has incorrect API rules');
+        }
         return [];
     }
 }
