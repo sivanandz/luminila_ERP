@@ -79,7 +79,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
                 filter: `created>="${sixtyDaysAgoISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
         } catch (e) {
-            // Collection might not exist yet
+            console.error('Failed to fetch sales_orders for stats:', e);
         }
 
         const sumRevenue = (items: any[]) => items.reduce((sum, item) => sum + (item.total || 0), 0);
@@ -119,7 +119,9 @@ export async function getDashboardStats(): Promise<DashboardStats> {
                 filter: 'status="draft" || status="sent" || status="confirmed" || status="shipped"',
             });
             pendingOrders = pending.totalItems;
-        } catch (e) { }
+        } catch (e) {
+            console.error('Failed to fetch pending orders:', e);
+        }
 
         return {
             totalRevenue,
@@ -160,7 +162,9 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
             orders = await pb.collection('sales_orders').getFullList({
                 filter: `created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
-        } catch (e) { }
+        } catch (e) {
+            console.error('Failed to fetch sales_orders for trend:', e);
+        }
 
         const byDate = new Map<string, { revenue: number; orders: number }>();
 
@@ -274,7 +278,9 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
                     revenue: existing.revenue + (order.total || 0),
                 });
             });
-        } catch (e) { }
+        } catch (e) {
+            console.error('Failed to fetch sales_orders for channel breakdown:', e);
+        }
 
         // POS Sales
         const posData = await pb.collection('sales').getFullList({
@@ -340,7 +346,9 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
                     timestamp: order.created,
                 });
             });
-        } catch (e) { }
+        } catch (e) {
+            console.error('Failed to fetch sales_orders for recent activity:', e);
+        }
 
         // Recent purchase orders
         try {
@@ -358,7 +366,9 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
                     timestamp: po.created,
                 });
             });
-        } catch (e) { }
+        } catch (e) {
+            console.error('Failed to fetch purchase_orders for recent activity:', e);
+        }
 
         // Recent stock movements
         try {
@@ -376,7 +386,9 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
                     timestamp: mov.created,
                 });
             });
-        } catch (e) { }
+        } catch (e) {
+            console.error('Failed to fetch stock_movements for recent activity:', e);
+        }
     } catch (error) {
         console.error('Error fetching recent activity:', error);
     }
@@ -428,7 +440,9 @@ export async function getRevenueSummary(period: 'today' | 'week' | 'month' | 'ye
             orders = await pb.collection('sales_orders').getFullList({
                 filter: `created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
-        } catch (e) { }
+        } catch (e) {
+            console.error('Failed to fetch sales_orders for revenue summary:', e);
+        }
 
         const revenue = sales.reduce((sum: number, s: any) => sum + (s.total || 0), 0) +
             orders.reduce((sum: number, o: any) => sum + (o.total || 0), 0);

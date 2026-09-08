@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { pb } from "@/lib/pocketbase";
+import { pb, sanitizeFilter } from './pocketbase';
 import type {
     Product,
     ProductVariant,
@@ -91,35 +91,34 @@ export function useProducts() {
                 }
                 variantsByProduct.get(productId)!.push({
                     id: v.id,
-                    product_id: v.product,
+                    created: v.created,
+                    updated: v.updated,
+                    product: v.product,
                     sku_suffix: v.sku_suffix || '',
                     variant_name: v.variant_name,
-                    material: v.material || null,
-                    size: v.size || null,
-                    color: v.color || null,
+                    material: v.material || undefined,
+                    size: v.size || undefined,
+                    color: v.color || undefined,
                     price_adjustment: v.price_adjustment || 0,
                     stock_level: v.stock_level,
                     low_stock_threshold: v.low_stock_threshold || 5,
-                    shopify_inventory_id: null,
-                    woocommerce_product_id: null,
-                    created_at: v.created,
                 } as ProductVariant);
             }
 
             // Map to expected type
             const mappedProducts: ProductWithVariants[] = productRecords.map(p => ({
                 id: p.id,
+                created: p.created,
+                updated: p.updated,
                 sku: p.sku,
                 name: p.name,
-                description: p.description || null,
-                category: p.category || null,
+                description: p.description,
+                category: p.category,
                 base_price: p.base_price,
-                cost_price: p.cost_price || null,
-                image_url: p.image_url || null,
-                barcode_data: p.barcode || null,
+                cost_price: p.cost_price,
+                image_url: p.image_url,
+                barcode: p.barcode,
                 is_active: p.is_active,
-                created_at: p.created,
-                updated_at: p.updated,
                 variants: variantsByProduct.get(p.id) || [],
             }));
 
@@ -165,7 +164,7 @@ export function useProductSearch() {
 
         try {
             const productRecords = await pb.collection('products').getList<PBProduct>(1, 10, {
-                filter: `is_active=true && (name~"${query}" || sku~"${query}")`,
+                filter: `is_active=true && (name~"${sanitizeFilter(query)}" || sku~"${sanitizeFilter(query)}")`,
             });
 
             // Fetch variants for found products
@@ -187,34 +186,33 @@ export function useProductSearch() {
                 }
                 variantsByProduct.get(productId)!.push({
                     id: v.id,
-                    product_id: v.product,
+                    created: v.created,
+                    updated: v.updated,
+                    product: v.product,
                     sku_suffix: v.sku_suffix || '',
                     variant_name: v.variant_name,
-                    material: v.material || null,
-                    size: v.size || null,
-                    color: v.color || null,
+                    material: v.material || undefined,
+                    size: v.size || undefined,
+                    color: v.color || undefined,
                     price_adjustment: v.price_adjustment || 0,
                     stock_level: v.stock_level,
                     low_stock_threshold: v.low_stock_threshold || 5,
-                    shopify_inventory_id: null,
-                    woocommerce_product_id: null,
-                    created_at: v.created,
                 } as ProductVariant);
             }
 
             const mappedProducts: ProductWithVariants[] = productRecords.items.map(p => ({
                 id: p.id,
+                created: p.created,
+                updated: p.updated,
                 sku: p.sku,
                 name: p.name,
-                description: p.description || null,
-                category: p.category || null,
+                description: p.description,
+                category: p.category,
                 base_price: p.base_price,
-                cost_price: p.cost_price || null,
-                image_url: p.image_url || null,
-                barcode_data: p.barcode || null,
+                cost_price: p.cost_price,
+                image_url: p.image_url,
+                barcode: p.barcode,
                 is_active: p.is_active,
-                created_at: p.created,
-                updated_at: p.updated,
                 variants: variantsByProduct.get(p.id) || [],
             }));
 
@@ -231,7 +229,7 @@ export function useProductSearch() {
         try {
             // First try exact match on variant SKU suffix
             const variants = await pb.collection('product_variants').getList<PBVariant>(1, 1, {
-                filter: `sku_suffix="${sku}"`,
+                filter: `sku_suffix="${sanitizeFilter(sku)}"`,
                 expand: 'product',
             });
 
@@ -239,24 +237,23 @@ export function useProductSearch() {
                 const v = variants.items[0];
                 return {
                     id: v.id,
-                    product_id: v.product,
+                    created: v.created,
+                    updated: v.updated,
+                    product: v.product,
                     sku_suffix: v.sku_suffix || '',
                     variant_name: v.variant_name,
-                    material: v.material || null,
-                    size: v.size || null,
-                    color: v.color || null,
+                    material: v.material || undefined,
+                    size: v.size || undefined,
+                    color: v.color || undefined,
                     price_adjustment: v.price_adjustment || 0,
                     stock_level: v.stock_level,
                     low_stock_threshold: v.low_stock_threshold || 5,
-                    shopify_inventory_id: null,
-                    woocommerce_product_id: null,
-                    created_at: v.created,
                 } as ProductVariant;
             }
 
             // Try matching against product SKU
             const products = await pb.collection('products').getList<PBProduct>(1, 1, {
-                filter: `sku~"${sku}"`,
+                filter: `sku~"${sanitizeFilter(sku)}"`,
             });
 
             if (products.items.length > 0) {
@@ -269,18 +266,17 @@ export function useProductSearch() {
                     const v = pVariants.items[0];
                     return {
                         id: v.id,
-                        product_id: v.product,
+                        created: v.created,
+                        updated: v.updated,
+                        product: v.product,
                         sku_suffix: v.sku_suffix || '',
                         variant_name: v.variant_name,
-                        material: v.material || null,
-                        size: v.size || null,
-                        color: v.color || null,
+                        material: v.material || undefined,
+                        size: v.size || undefined,
+                        color: v.color || undefined,
                         price_adjustment: v.price_adjustment || 0,
                         stock_level: v.stock_level,
                         low_stock_threshold: v.low_stock_threshold || 5,
-                        shopify_inventory_id: null,
-                        woocommerce_product_id: null,
-                        created_at: v.created,
                     } as ProductVariant;
                 }
             }
@@ -312,19 +308,19 @@ export function useSales() {
 
             const mappedSales: Sale[] = records.items.map((s: any) => ({
                 id: s.id,
+                created: s.created,
+                updated: s.updated,
                 channel: s.channel,
-                channel_order_id: s.channel_order_id || null,
-                customer_name: s.customer_name || null,
-                customer_phone: s.customer_phone || null,
-                customer_address: s.customer_address || null,
+                channel_order_id: s.channel_order_id || undefined,
+                customer_name: s.customer_name || undefined,
+                customer_phone: s.customer_phone || undefined,
+                customer_address: s.customer_address || undefined,
                 subtotal: s.subtotal,
                 discount: s.discount || 0,
                 total: s.total,
-                payment_method: s.payment_method || null,
+                payment_method: s.payment_method || undefined,
                 status: s.status,
-                notes: s.notes || null,
-                created_at: s.created,
-                updated_at: s.updated,
+                notes: s.notes || undefined,
             }));
 
             setSales(mappedSales);
@@ -395,19 +391,19 @@ export function useSales() {
 
                 return {
                     id: saleRecord.id,
+                    created: saleRecord.created,
+                    updated: saleRecord.updated,
                     channel: saleData.channel,
-                    channel_order_id: saleData.channel_order_id || null,
-                    customer_name: saleData.customer_name || null,
-                    customer_phone: saleData.customer_phone || null,
-                    customer_address: saleData.customer_address || null,
+                    channel_order_id: saleData.channel_order_id || undefined,
+                    customer_name: saleData.customer_name || undefined,
+                    customer_phone: saleData.customer_phone || undefined,
+                    customer_address: saleData.customer_address || undefined,
                     subtotal: saleData.subtotal,
                     discount: saleData.discount,
                     total: saleData.total,
-                    payment_method: saleData.payment_method || null,
+                    payment_method: saleData.payment_method || undefined,
                     status: saleData.status || 'confirmed',
-                    notes: saleData.notes || null,
-                    created_at: saleRecord.created,
-                    updated_at: saleRecord.updated,
+                    notes: saleData.notes || undefined,
                 };
             } catch (err) {
                 console.error("Error creating sale:", err);
@@ -455,32 +451,18 @@ export function useLowStockAlerts() {
                 const p = v.expand?.product;
                 return {
                     id: v.id,
-                    product_id: v.product,
+                    created: v.created,
+                    updated: v.updated,
+                    product: v.product,
                     sku_suffix: v.sku_suffix || '',
                     variant_name: v.variant_name,
-                    material: v.material || null,
-                    size: v.size || null,
-                    color: v.color || null,
+                    material: v.material || undefined,
+                    size: v.size || undefined,
+                    color: v.color || undefined,
                     price_adjustment: v.price_adjustment || 0,
                     stock_level: v.stock_level,
                     low_stock_threshold: v.low_stock_threshold || 5,
-                    shopify_inventory_id: null,
-                    woocommerce_product_id: null,
-                    created_at: v.created,
-                    product: p ? {
-                        id: p.id,
-                        sku: p.sku,
-                        name: p.name,
-                        description: p.description || null,
-                        category: p.category || null,
-                        base_price: p.base_price,
-                        cost_price: p.cost_price || null,
-                        image_url: p.image_url || null,
-                        barcode_data: p.barcode || null,
-                        is_active: p.is_active,
-                        created_at: p.created,
-                        updated_at: p.updated,
-                    } : undefined,
+                    expand: p ? { product: p } : undefined,
                 } as (ProductVariant & { product: Product });
             });
 

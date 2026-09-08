@@ -181,11 +181,11 @@ export async function syncProductsFromWoo(
                 const variations = await fetchWooVariations(product.id);
                 for (const variant of variations) {
                     console.log(`  - Variant ${variant.sku}: ${variant.stock_quantity} units`);
-                    // TODO: Upsert to Supabase
+                    // TODO: Upsert to PocketBase
                 }
             } else {
                 console.log(`  - Stock: ${product.stock_quantity} units`);
-                // TODO: Upsert to Supabase
+                // TODO: Upsert to PocketBase
             }
 
             updated++;

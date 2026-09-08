@@ -144,8 +144,8 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
     try {
         const record = await pb.collection('bank_transactions').create(transaction);
 
-        // Note: In Supabase we had triggers to update balance.
-        // In PocketBase, we don't have triggers yet unless we use Go hooks.
+        // PocketBase doesn't have DB triggers — update balance manually.
+        // Consider Go hooks if this becomes a bottleneck.
         // So we MUST update the balance manually here or in a helper.
 
         await updateAccountBalance(transaction.account, transaction.type, transaction.amount);

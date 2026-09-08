@@ -71,7 +71,7 @@ export default function ExpenseCategoriesPage() {
             <div className="p-6 max-w-4xl mx-auto w-full">
                 <div className="flex justify-end mb-6">
                     <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-                        <DialogTrigger asChild>
+                        <DialogTrigger>
                             <Button>
                                 <Plus className="mr-2" size={18} />
                                 Add Category

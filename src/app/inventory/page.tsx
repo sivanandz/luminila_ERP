@@ -11,7 +11,6 @@ const BarcodeScanner = dynamic(
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
 import { formatPrice } from "@/lib/utils";
-// Supabase removed
 import {
     Search,
     Plus,

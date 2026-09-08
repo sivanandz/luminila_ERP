@@ -1,15 +1,15 @@
 /**
- * Sync PocketBase Schema to Match Supabase EXACTLY
+ * Sync PocketBase Schema
  * Based on src/types/database.ts
  * 
- * This script ensures all collections have the exact fields from Supabase
+ * This script ensures all collections have the exact fields from the schema definition
  */
 import PocketBase from 'pocketbase';
 
 const pb = new PocketBase('http://127.0.0.1:8090');
 
-// Exact schema from Supabase - types/database.ts
-const SUPABASE_SCHEMA: Record<string, Array<{ name: string, type: string, required?: boolean, options?: any }>> = {
+// Canonical schema definition — mirrors types/database.ts
+const PB_SCHEMA: Record<string, Array<{ name: string, type: string, required?: boolean, options?: any }>> = {
     products: [
         { name: 'sku', type: 'text', required: true },
         { name: 'name', type: 'text', required: true },
@@ -350,7 +350,7 @@ async function getCollectionId(name: string): Promise<string | null> {
 async function main() {
     try {
         console.log("=".repeat(60));
-        console.log("  PocketBase Schema Sync (Supabase-Compatible)");
+        console.log("  PocketBase Schema Sync");
         console.log("=".repeat(60));
         console.log("\nAuthenticating as Admin...");
         await pb.admins.authWithPassword('admin@luminila.com', 'password123456');
@@ -368,7 +368,7 @@ async function main() {
         let created = 0;
         let errors = 0;
 
-        for (const [collectionName, expectedFields] of Object.entries(SUPABASE_SCHEMA)) {
+        for (const [collectionName, expectedFields] of Object.entries(PB_SCHEMA)) {
             try {
                 const collectionId = await getCollectionId(collectionName);
 

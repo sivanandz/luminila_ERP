@@ -27,18 +27,21 @@ const AuthContext = createContext<AuthContextType>({
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<AuthModel | null>(null);
     const [isValid, setIsValid] = useState(false);
+    const [isAdmin, setIsAdmin] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
         // Initialize from stored auth
         setUser(pb.authStore.model);
         setIsValid(pb.authStore.isValid);
+        setIsAdmin(pb.authStore.isSuperuser);
         setIsLoading(false);
 
         // Subscribe to auth changes
         const unsubscribe = pb.authStore.onChange((token, model) => {
             setUser(model);
             setIsValid(pb.authStore.isValid);
+            setIsAdmin(pb.authStore.isSuperuser);
         });
 
         return () => {
@@ -95,7 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         pb.authStore.clear();
     };
 
-    const isAdmin = pb.authStore.isSuperuser;
+
 
     return (
         <AuthContext.Provider value={{ user, isValid, isAdmin, isLoading, login, register, logout }}>

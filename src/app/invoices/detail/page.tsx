@@ -57,10 +57,12 @@ import {
 import { getInvoice, recordPayment, type Invoice } from "@/lib/invoice";
 import { printInvoice, downloadInvoicePDF, exportToJSON } from "@/lib/reports";
 import { formatINR, toWords, generateEWayBillJSON, type EWayBillDetails } from "@/lib/gst";
+import { useAuth } from "@/contexts/AuthContext";
 
 function InvoiceDetailContent() {
     const searchParams = useSearchParams();
     const router = useRouter();
+    const { user } = useAuth();
     const id = searchParams.get("id");
     const autoPrint = searchParams.get("print") === "true";
 
@@ -128,7 +130,7 @@ function InvoiceDetailContent() {
                 payment_method: paymentMethod,
                 reference: paymentReference || undefined,
                 payment_date: new Date().toISOString(),
-                recorded_by: "Admin", // TODO: Get from auth
+                recorded_by: user?.name || user?.email || "Admin",
             });
 
             setShowPaymentDialog(false);

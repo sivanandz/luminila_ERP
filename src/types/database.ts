@@ -1,290 +1,219 @@
 /**
- * Database Types - Auto-generated from Supabase schema
- * 
- * To regenerate, run:
- * npx supabase gen types typescript --project-id YOUR_PROJECT_ID > src/types/database.ts
+ * PocketBase Collection Types
+ * Native types for Luminila Inventory Management
  */
 
-export interface Database {
-    public: {
-        Tables: {
-            products: {
-                Row: {
-                    id: string;
-                    sku: string;
-                    name: string;
-                    description: string | null;
-                    category: string | null;
-                    base_price: number;
-                    cost_price: number | null;
-                    image_url: string | null;
-                    barcode_data: string | null;
-                    is_active: boolean;
-                    created_at: string;
-                    updated_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["products"]["Row"], "id" | "created_at" | "updated_at">;
-                Update: Partial<Database["public"]["Tables"]["products"]["Insert"]>;
-            };
-            product_variants: {
-                Row: {
-                    id: string;
-                    product_id: string;
-                    sku_suffix: string;
-                    variant_name: string;
-                    material: string | null;
-                    size: string | null;
-                    color: string | null;
-                    price_adjustment: number;
-                    stock_level: number;
-                    low_stock_threshold: number;
-                    shopify_inventory_id: string | null;
-                    woocommerce_product_id: number | null;
-                    created_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["product_variants"]["Row"], "id" | "created_at">;
-                Update: Partial<Database["public"]["Tables"]["product_variants"]["Insert"]>;
-            };
-            vendors: {
-                Row: {
-                    id: string;
-                    name: string;
-                    contact_name: string | null;
-                    phone: string | null;
-                    email: string | null;
-                    address: string | null;
-                    created_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["vendors"]["Row"], "id" | "created_at">;
-                Update: Partial<Database["public"]["Tables"]["vendors"]["Insert"]>;
-            };
-            vendor_products: {
-                Row: {
-                    id: string;
-                    vendor_id: string;
-                    variant_id: string;
-                    vendor_sku: string | null;
-                    vendor_price: number | null;
-                    lead_time_days: number;
-                };
-                Insert: Omit<Database["public"]["Tables"]["vendor_products"]["Row"], "id">;
-                Update: Partial<Database["public"]["Tables"]["vendor_products"]["Insert"]>;
-            };
-            sales: {
-                Row: {
-                    id: string;
-                    channel: "pos" | "shopify" | "woocommerce" | "whatsapp";
-                    channel_order_id: string | null;
-                    customer_name: string | null;
-                    customer_phone: string | null;
-                    customer_address: string | null;
-                    subtotal: number;
-                    discount: number;
-                    total: number;
-                    payment_method: string | null;
-                    status: "pending" | "confirmed" | "shipped" | "delivered" | "cancelled";
-                    notes: string | null;
-                    created_at: string;
-                    updated_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["sales"]["Row"], "id" | "created_at" | "updated_at">;
-                Update: Partial<Database["public"]["Tables"]["sales"]["Insert"]>;
-            };
-            sale_items: {
-                Row: {
-                    id: string;
-                    sale_id: string;
-                    variant_id: string;
-                    quantity: number;
-                    unit_price: number;
-                    created_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["sale_items"]["Row"], "id" | "created_at">;
-                Update: Partial<Database["public"]["Tables"]["sale_items"]["Insert"]>;
-            };
-            stock_movements: {
-                Row: {
-                    id: string;
-                    variant_id: string;
-                    movement_type: "sale" | "purchase" | "adjustment" | "return" | "sync";
-                    quantity: number;
-                    reference_id: string | null;
-                    source: string | null;
-                    notes: string | null;
-                    created_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["stock_movements"]["Row"], "id" | "created_at">;
-                Update: Partial<Database["public"]["Tables"]["stock_movements"]["Insert"]>;
-            };
-            sales_orders: {
-                Row: {
-                    id: string;
-                    order_number: string;
-                    order_type: "estimate" | "sales_order";
-                    customer_id: string | null;
-                    customer_name: string | null;
-                    customer_phone: string | null;
-                    customer_email: string | null;
-                    billing_address: string | null;
-                    shipping_address: string | null;
-                    order_date: string;
-                    valid_until: string | null;
-                    expected_delivery_date: string | null;
-                    status: "draft" | "sent" | "confirmed" | "shipped" | "delivered" | "cancelled" | "invoiced";
-                    subtotal: number;
-                    tax_total: number;
-                    discount_total: number;
-                    shipping_charges: number;
-                    total: number;
-                    notes: string | null;
-                    internal_notes: string | null;
-                    created_by: string | null;
-                    created_at: string;
-                    updated_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["sales_orders"]["Row"], "id" | "order_number" | "created_at" | "updated_at">;
-                Update: Partial<Database["public"]["Tables"]["sales_orders"]["Insert"]>;
-            };
-            sales_order_items: {
-                Row: {
-                    id: string;
-                    order_id: string;
-                    product_id: string | null;
-                    variant_id: string | null;
-                    description: string | null;
-                    quantity: number;
-                    unit_price: number;
-                    tax_rate: number;
-                    discount_amount: number;
-                    total: number;
-                };
-                Insert: Omit<Database["public"]["Tables"]["sales_order_items"]["Row"], "id">;
-                Update: Partial<Database["public"]["Tables"]["sales_order_items"]["Insert"]>;
-            };
-            purchase_orders: {
-                Row: {
-                    id: string;
-                    po_number: string;
-                    vendor_id: string | null;
-                    order_date: string;
-                    expected_date: string | null;
-                    received_date: string | null;
-                    status: "draft" | "sent" | "partial" | "received" | "cancelled";
-                    subtotal: number;
-                    gst_amount: number;
-                    shipping_cost: number;
-                    discount_amount: number;
-                    total: number;
-                    shipping_address: string | null;
-                    notes: string | null;
-                    created_at: string;
-                    updated_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["purchase_orders"]["Row"], "id" | "created_at" | "updated_at">;
-                Update: Partial<Database["public"]["Tables"]["purchase_orders"]["Insert"]>;
-            };
-            purchase_order_items: {
-                Row: {
-                    id: string;
-                    po_id: string;
-                    variant_id: string | null;
-                    description: string | null;
-                    hsn_code: string | null;
-                    quantity_ordered: number;
-                    quantity_received: number;
-                    unit: string | null;
-                    unit_price: number;
-                    gst_rate: number;
-                    gst_amount: number;
-                    total_price: number;
-                };
-                Insert: Omit<Database["public"]["Tables"]["purchase_order_items"]["Row"], "id">;
-                Update: Partial<Database["public"]["Tables"]["purchase_order_items"]["Insert"]>;
-            };
-            goods_received_notes: {
-                Row: {
-                    id: string;
-                    grn_number: string;
-                    po_id: string | null;
-                    vendor_id: string | null;
-                    received_date: string;
-                    received_by: string | null;
-                    notes: string | null;
-                    created_at: string;
-                };
-                Insert: Omit<Database["public"]["Tables"]["goods_received_notes"]["Row"], "id" | "created_at">;
-                Update: Partial<Database["public"]["Tables"]["goods_received_notes"]["Insert"]>;
-            };
-            grn_items: {
-                Row: {
-                    id: string;
-                    grn_id: string;
-                    po_item_id: string | null;
-                    variant_id: string | null;
-                    quantity_received: number;
-                    quantity_rejected: number;
-                    rejection_reason: string | null;
-                };
-                Insert: Omit<Database["public"]["Tables"]["grn_items"]["Row"], "id">;
-                Update: Partial<Database["public"]["Tables"]["grn_items"]["Insert"]>;
-            },
-            bank_accounts: {
-                Row: {
-                    id: string;
-                    account_name: string;
-                    account_number: string | null;
-                    bank_name: string | null;
-                    ifsc_code: string | null;
-                    currency: string;
-                    opening_balance: number;
-                    current_balance: number;
-                    is_active: boolean;
-                    created_at: string;
-                    updated_at: string;
-                };
-                Insert: any;
-                Update: any;
-            },
-            bank_transactions: {
-                Row: {
-                    id: string;
-                    account_id: string;
-                    transaction_date: string;
-                    type: "deposit" | "withdrawal" | "transfer";
-                    amount: number;
-                    description: string | null;
-                    reference_number: string | null;
-                    related_entity_type: string | null;
-                    related_entity_id: string | null;
-                    created_at: string;
-                    created_by: string | null;
-                    updated_at: string;
-                };
-                Insert: any;
-                Update: any;
-            }
-        };
-        Views: Record<string, never>;
-        Functions: Record<string, never>;
-        Enums: {
-            sales_channel: "pos" | "shopify" | "woocommerce" | "whatsapp";
-            order_status: "pending" | "confirmed" | "shipped" | "delivered" | "cancelled" | "draft" | "sent" | "invoiced";
-            movement_type: "sale" | "purchase" | "adjustment" | "return" | "sync";
-            order_type: "estimate" | "sales_order";
-            po_status: "draft" | "sent" | "partial" | "received" | "cancelled";
-        };
+// ===========================================
+// BASE RECORD TYPE
+// ===========================================
+
+/** Base fields present on every PocketBase record */
+export interface PBRecord {
+    id: string;
+    created: string;
+    updated: string;
+    collectionId?: string;
+    collectionName?: string;
+}
+
+// ===========================================
+// PRODUCT COLLECTIONS
+// ===========================================
+
+export interface Product extends PBRecord {
+    sku: string;
+    name: string;
+    description?: string;
+    category?: string;
+    base_price: number;
+    cost_price?: number;
+    image_url?: string;
+    barcode?: string;
+    is_active: boolean;
+}
+
+export interface ProductVariant extends PBRecord {
+    product: string; // Relation → products
+    variant_name: string;
+    sku_suffix?: string;
+    price_adjustment: number;
+    stock_level: number;
+    low_stock_threshold: number;
+    size?: string;
+    color?: string;
+    material?: string;
+    shopify_inventory_id?: string;
+    woocommerce_product_id?: number;
+    expand?: {
+        product?: Product;
     };
 }
 
-// Convenience types for common use cases
-export type Product = Database["public"]["Tables"]["products"]["Row"];
-export type ProductVariant = Database["public"]["Tables"]["product_variants"]["Row"];
-export type Vendor = Database["public"]["Tables"]["vendors"]["Row"];
-export type Sale = Database["public"]["Tables"]["sales"]["Row"];
-export type SaleItem = Database["public"]["Tables"]["sale_items"]["Row"];
-export type StockMovement = Database["public"]["Tables"]["stock_movements"]["Row"];
+// ===========================================
+// SALES COLLECTIONS
+// ===========================================
 
-// Extended types with relations
+export type SalesChannel = 'pos' | 'shopify' | 'woocommerce' | 'whatsapp';
+export type OrderStatus = 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
+
+export interface Sale extends PBRecord {
+    channel: SalesChannel;
+    channel_order_id?: string;
+    customer_name?: string;
+    customer_phone?: string;
+    customer_address?: string;
+    customer?: string; // Relation → customers
+    subtotal: number;
+    discount: number;
+    total: number;
+    payment_method?: string;
+    status: OrderStatus;
+    notes?: string;
+}
+
+export interface SaleItem extends PBRecord {
+    sale: string; // Relation → sales
+    variant: string; // Relation → product_variants
+    quantity: number;
+    unit_price: number;
+    total_price: number;
+}
+
+// ===========================================
+// STOCK
+// ===========================================
+
+export type MovementType = 'sale' | 'purchase' | 'adjustment' | 'return' | 'sync';
+
+export interface StockMovement extends PBRecord {
+    variant: string; // Relation → product_variants
+    movement_type: MovementType;
+    quantity: number;
+    reference_id?: string;
+    source?: string;
+    notes?: string;
+}
+
+// ===========================================
+// VENDOR COLLECTIONS
+// ===========================================
+
+export interface Vendor extends PBRecord {
+    name: string;
+    contact_name?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+}
+
+export interface VendorProduct extends PBRecord {
+    vendor: string; // Relation → vendors
+    variant: string; // Relation → product_variants
+    vendor_sku?: string;
+    vendor_price?: number;
+    lead_time_days: number;
+}
+
+// ===========================================
+// ORDERS
+// ===========================================
+
+export type SalesOrderType = 'estimate' | 'sales_order';
+export type SalesOrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
+
+export interface SalesOrder extends PBRecord {
+    order_number: string;
+    order_type: SalesOrderType;
+    customer?: string; // Relation → customers
+    customer_name?: string;
+    customer_phone?: string;
+    customer_email?: string;
+    billing_address?: string;
+    shipping_address?: string;
+    order_date: string;
+    valid_until?: string;
+    expected_delivery_date?: string;
+    status: SalesOrderStatus;
+    subtotal: number;
+    tax_total: number;
+    discount_total: number;
+    shipping_charges: number;
+    total: number;
+    notes?: string;
+    internal_notes?: string;
+    created_by?: string;
+}
+
+export interface SalesOrderItem extends PBRecord {
+    order: string; // Relation → sales_orders
+    product?: string; // Relation → products
+    variant?: string; // Relation → product_variants
+    description?: string;
+    quantity: number;
+    unit_price: number;
+    tax_rate: number;
+    discount_amount: number;
+    total: number;
+}
+
+// ===========================================
+// PURCHASE ORDERS
+// ===========================================
+
+export type POStatus = 'draft' | 'sent' | 'partial' | 'received' | 'cancelled';
+
+export interface PurchaseOrder extends PBRecord {
+    po_number: string;
+    vendor?: string; // Relation → vendors
+    order_date: string;
+    expected_date?: string;
+    received_date?: string;
+    status: POStatus;
+    subtotal: number;
+    gst_amount: number;
+    shipping_cost: number;
+    discount_amount: number;
+    total: number;
+    shipping_address?: string;
+    notes?: string;
+}
+
+export interface PurchaseOrderItem extends PBRecord {
+    po: string; // Relation → purchase_orders
+    variant?: string; // Relation → product_variants
+    description?: string;
+    hsn_code?: string;
+    quantity_ordered: number;
+    quantity_received: number;
+    unit?: string;
+    unit_price: number;
+    gst_rate: number;
+    gst_amount: number;
+    total_price: number;
+}
+
+export interface GoodsReceivedNote extends PBRecord {
+    grn_number: string;
+    po?: string; // Relation → purchase_orders
+    vendor?: string; // Relation → vendors
+    received_date: string;
+    received_by?: string;
+    notes?: string;
+}
+
+export interface GRNItem extends PBRecord {
+    grn: string; // Relation → goods_received_notes
+    po_item?: string; // Relation → purchase_order_items
+    variant?: string; // Relation → product_variants
+    quantity_received: number;
+    quantity_rejected: number;
+    rejection_reason?: string;
+}
+
+// ===========================================
+// COMPOSITE / UI TYPES
+// ===========================================
+
 export interface ProductWithVariants extends Product {
     variants: ProductVariant[];
 }
@@ -295,7 +224,7 @@ export interface SaleWithItems extends Sale {
 
 // Cart types for PoS
 export interface CartItem {
-    variant: ProductVariant & { product: Product };
+    variant: ProductVariant & { expand?: { product?: Product } };
     quantity: number;
     unit_price: number;
 }

@@ -9,6 +9,17 @@ export const pb = new PocketBase(PB_URL);
 pb.autoCancellation(false);
 
 /**
+ * Escape user-supplied strings before interpolating them into
+ * PocketBase filter expressions. Prevents filter injection by
+ * escaping double-quotes and backslashes.
+ *
+ * Usage: `filter: \`name~"${sanitizeFilter(query)}"\``
+ */
+export function sanitizeFilter(input: string): string {
+    return input.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
  * Check if PocketBase is reachable
  */
 export async function checkServerStatus(): Promise<boolean> {

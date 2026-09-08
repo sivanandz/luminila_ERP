@@ -177,7 +177,7 @@ export default function ExpensesPage() {
 
                     <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover flex flex-col justify-center">
                         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-                            <DialogTrigger asChild>
+                            <DialogTrigger>
                                 <Button className="w-full h-12 text-base font-bold">
                                     <Plus className="mr-2" size={20} />
                                     Record New Expense

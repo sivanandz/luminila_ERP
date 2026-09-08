@@ -1,15 +1,29 @@
 # Luminila - Fashion Jewelry Inventory Manager
 
 <div align="center">
-  <img src="docs/logo-placeholder.png" alt="Luminila Logo" width="120" />
-  
+
   **Premium inventory management for fashion jewelry brands**
-  
+
   [![Tauri](https://img.shields.io/badge/Tauri-v2-blue?logo=tauri)](https://tauri.app)
-  [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org)
-  [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-green?logo=supabase)](https://supabase.com)
+  [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org)
+  [![PocketBase](https://img.shields.io/badge/PocketBase-Local_DB-violet)](https://pocketbase.io)
   [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 </div>
+
+---
+
+## 📚 Documentation Suite
+
+For detailed technical and operational documentation, consult the dedicated guides:
+
+| Guide | Description | Link |
+|---|---|---|
+| **System Architecture** | Technical topology, Tauri v2, Next.js 16, PocketBase 38-collection data tier, services & RBAC | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| **State of the Project** | Current release status, module maturity matrix, audit findings & technical debt | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) |
+| **Features Specification** | Complete functional specification across 15 domains (POS, Shifts, GST Invoicing, CRM, etc.) | [docs/FEATURES.md](docs/FEATURES.md) |
+| **Workflows & Operations** | Service startup orchestration (`dev:all`), daily cashier flows, GRN, B2B, and maintenance | [docs/APP_WORKING.md](docs/APP_WORKING.md) |
+| **Documentation Hub** | Master index and audience guide | [docs/README.md](docs/README.md) |
+| **User Guide** | End-user showroom manual | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) |
 
 ---
 
@@ -42,9 +56,9 @@
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) v18+
-- [Rust](https://rustup.rs/) (for Tauri)
-- [Supabase Account](https://supabase.com) (free tier)
+- [Node.js](https://nodejs.org/) v18.17+
+- [Rust](https://rustup.rs/) (for Tauri desktop builds)
+- [PocketBase](https://pocketbase.io/docs/) v0.26+ (included in `pocketbase/` directory)
 
 ### Installation
 
@@ -65,19 +79,29 @@
 
    ```bash
    cp env.example.txt .env.local
-   # Edit .env.local with your Supabase credentials
+   # Edit .env.local — PocketBase URL defaults to http://127.0.0.1:8090
    ```
 
-4. **Run in development mode**
+4. **Start PocketBase + Next.js together**
 
    ```bash
-   npm run tauri dev
+   npm run dev:all
    ```
 
-5. **Build for production**
+   Or separately:
 
    ```bash
-   npm run tauri build
+   # Terminal 1 — PocketBase
+   ./pocketbase/pocketbase serve
+
+   # Terminal 2 — Next.js
+   npm run dev
+   ```
+
+5. **Build for desktop (Tauri)**
+
+   ```bash
+   npm run tauri:build
    ```
 
 ---
@@ -87,63 +111,89 @@
 ```
 luminila_inv_mgmt/
 ├── src/
-│   ├── app/                    # Next.js 15 App Router pages
+│   ├── app/                    # Next.js 16 App Router pages
 │   │   ├── page.tsx           # Dashboard
 │   │   ├── inventory/         # Product management
 │   │   ├── pos/               # Point of Sale
 │   │   ├── orders/            # Order tracking
-│   │   ├── whatsapp/          # WhatsApp integration
+│   │   ├── invoices/          # GST invoices
+│   │   ├── purchase/          # Purchase orders
+│   │   ├── customers/         # Customer management
+│   │   ├── vendors/           # Vendor management
+│   │   ├── returns/           # Returns & credit notes
+│   │   ├── challan/           # Delivery challans
 │   │   ├── labels/            # Barcode printing
-│   │   └── settings/          # Configuration
+│   │   ├── reports/           # Analytics & reports
+│   │   ├── settings/          # Configuration
+│   │   └── login/             # Authentication
 │   ├── components/
-│   │   ├── layout/            # Sidebar, Header
-│   │   ├── pos/               # Cart, Scanner (coming)
-│   │   └── ui/                # Reusable components
+│   │   ├── layout/            # Sidebar, Header, ProtectedRoute
+│   │   ├── dashboard/         # KPI Cards, Charts
+│   │   └── ui/                # Reusable shadcn/base-ui components
+│   ├── contexts/
+│   │   └── AuthContext.tsx     # Auth state (PocketBase authStore)
 │   ├── lib/
-│   │   ├── supabase.ts        # Database client
-│   │   ├── utils.ts           # Helper functions
-│   │   └── sync/              # E-commerce sync (coming)
+│   │   ├── pocketbase.ts      # PocketBase client singleton
+│   │   ├── analytics.ts       # Dashboard KPIs & queries
+│   │   ├── products.ts        # Product CRUD
+│   │   ├── customers.ts       # Customer CRUD
+│   │   ├── pos-sales.ts       # POS transactions
+│   │   ├── invoice.ts         # GST invoicing
+│   │   ├── sync/              # Shopify & WooCommerce sync
+│   │   └── ...                # Other service modules
 │   └── types/
 │       └── database.ts        # TypeScript types
-├── src-tauri/
-│   ├── src/main.rs            # Tauri entry point
-│   ├── tauri.conf.json        # Tauri configuration
-│   └── binaries/              # WPPConnect sidecar (coming)
-├── supabase/
-│   └── migrations/            # Database schema
+├── pocketbase/
+│   ├── pocketbase(.exe)       # PocketBase binary
+│   ├── pb_data/               # SQLite database (auto-created)
+│   └── pb_migrations/         # Schema migrations
+├── src-tauri/                 # Tauri desktop wrapper
+├── scripts/                   # Utility scripts
 ├── next.config.ts
-├── tailwind.config.ts
 └── package.json
 ```
 
 ---
 
-## 🗄️ Database Schema
+## 🗄️ Database
 
-Run the following SQL in your Supabase SQL Editor:
+Luminila uses **PocketBase** as an embedded local database (SQLite under the hood). The schema is defined via collections and managed through migration scripts.
 
-```sql
--- See supabase/migrations/001_initial_schema.sql
+Key collections:
+
+| Collection | Purpose |
+| --- | --- |
+| `products` | Base product catalog |
+| `product_variants` | Size/color/material variants with stock levels |
+| `customers` | Customer information |
+| `vendors` | Supplier management |
+| `sales` | POS transaction records |
+| `sales_orders` | B2B / online sales orders |
+| `invoices` | GST-compliant invoices |
+| `purchase_orders` | Purchase order tracking |
+| `stock_movements` | Inventory audit trail |
+
+### Schema Setup
+
+```bash
+# Initialize all collections (requires PocketBase running)
+npx tsx src/scripts/init-pocketbase.ts
+
+# Or sync schema to latest definition
+npx tsx src/scripts/sync-pb-schema.ts
 ```
-
-Key tables:
-
-- `products` - Base product information
-- `product_variants` - Size/color/material variants
-- `vendors` - Supplier management
-- `sales` - Transaction records
-- `sale_items` - Line items per sale
-- `stock_movements` - Audit trail
 
 ---
 
 ## 🔧 Configuration
 
-### Supabase Setup
+### PocketBase Setup
 
-1. Create a new project at [supabase.com](https://supabase.com)
-2. Run the SQL migration in the SQL Editor
-3. Copy your project URL and anon key to `.env.local`
+PocketBase runs locally and requires no account or cloud service.
+
+1. The binary is included in the `pocketbase/` directory
+2. On first run, visit `http://127.0.0.1:8090/_/` to create an admin account
+3. Run the schema initialization script (see above)
 
 ### Shopify Setup (Optional)
 
@@ -169,13 +219,15 @@ The Luminila theme is defined in `src/app/globals.css`:
 
 ## 📖 Roadmap
 
-- [x] Project setup with Tauri v2 + Next.js 15
+- [x] Project setup with Tauri v2 + Next.js 16
 - [x] Luminila brand theme
 - [x] Dashboard with analytics
 - [x] Inventory management UI
 - [x] Point of Sale interface
 - [x] Barcode label generation
-- [ ] Supabase integration
+- [x] PocketBase integration
+- [x] GST invoicing
+- [x] Purchase orders & GRN
 - [ ] Shopify sync engine
 - [ ] WhatsApp automation (WPPConnect)
 - [ ] Offline mode with sync
@@ -186,12 +238,6 @@ The Luminila theme is defined in `src/app/globals.css`:
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! Please read our [Contributing Guide](CONTRIBUTING.md) first.
 
 ---
 

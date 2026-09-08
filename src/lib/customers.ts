@@ -3,7 +3,7 @@
  * CRUD operations, search, purchase history using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -84,7 +84,7 @@ export async function getCustomers(filters?: {
 
         // Search in PB can be done via filter too
         if (filters?.search) {
-            const s = filters.search;
+            const s = sanitizeFilter(filters.search);
             filterParts.push(`(name~"${s}" || phone~"${s}" || email~"${s}" || company_name~"${s}")`);
         }
 
@@ -150,7 +150,7 @@ export async function searchCustomers(query: string, limit: number = 10): Promis
 
     try {
         const records = await pb.collection('customers').getList<Customer>(1, limit, {
-            filter: `name~"${query}" || phone~"${query}" || email~"${query}"`,
+            filter: `name~"${sanitizeFilter(query)}" || phone~"${sanitizeFilter(query)}" || email~"${sanitizeFilter(query)}"`,
             sort: 'name',
             fields: 'id,name,phone,email,customer_type,total_spent'
         });
@@ -173,9 +173,8 @@ export async function getCustomerPurchases(customerId: string): Promise<Customer
             expand: 'sale_items(sale)' // Logic for count might be complex if items are separate collection
         });
 
-        // Fetch items for each sale or just map basic info? 
-        // In Supabase version: items:sale_items(id)
-        // In PB, sale_items has 'sale' relation. We can't reverse expand easily in list unless configured.
+        // PocketBase doesn't support reverse-expand in list queries easily.
+        // Return basic sale info; items_count is stored on sale or fetched separately.
         // Assuming we rely on total/items_count if we add it to sales, OR we fetch items.
         // To be safe and fast, let's just return sales info. If items count is needed, we ideally store it on sale.
         // The previous code used a join. 

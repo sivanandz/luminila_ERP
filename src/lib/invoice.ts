@@ -220,7 +220,7 @@ export async function updateStoreSettings(updates: Partial<StoreSettings>): Prom
 }
 
 // ===========================================
-// NUMBER GENERATION (Replaces Supabase RPC)
+// NUMBER GENERATION (PocketBase sequence)
 // ===========================================
 async function generateInvoiceNumber(): Promise<string> {
     const today = new Date();

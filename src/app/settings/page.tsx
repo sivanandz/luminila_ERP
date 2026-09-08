@@ -134,9 +134,9 @@ export default function SettingsPage() {
         }
     }, [activeSection]);
 
-    // Mock connection statuses
+    // Connection statuses
     const connections = {
-        supabase: true,
+        pocketbase: true,
         shopify: false,
         woocommerce: false,
         whatsapp: false,
@@ -674,7 +674,7 @@ export default function SettingsPage() {
                                         <p className="text-muted-foreground text-sm mt-1">Connect with external services and platforms</p>
                                     </div>
 
-                                    {/* Supabase */}
+                                    {/* PocketBase */}
                                     <div className="p-6 bg-background border border-border rounded-xl hover:border-primary/30 transition-colors">
                                         <div className="flex items-center justify-between mb-6">
                                             <div className="flex items-center gap-4">
@@ -682,14 +682,14 @@ export default function SettingsPage() {
                                                     <Database size={24} />
                                                 </div>
                                                 <div>
-                                                    <h3 className="font-bold text-foreground text-lg">Supabase</h3>
+                                                    <h3 className="font-bold text-foreground text-lg">PocketBase</h3>
                                                     <p className="text-sm text-muted-foreground">
-                                                        Database & Authentication Provider
+                                                        Database & Authentication Backend
                                                     </p>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-3">
-                                                {connections.supabase ? (
+                                                {connections.pocketbase ? (
                                                     <span className="badge badge-success flex items-center gap-1.5 py-1 px-3">
                                                         <CheckCircle size={14} />
                                                         Connected
@@ -705,25 +705,27 @@ export default function SettingsPage() {
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <div className="space-y-2">
                                                 <Label className="text-xs font-bold text-muted-foreground uppercase">
-                                                    Project URL
+                                                    Server URL
                                                 </Label>
                                                 <Input
                                                     type="text"
-                                                    placeholder="https://xxx.supabase.co"
-                                                    readOnly={connections.supabase}
-                                                    value={connections.supabase ? "https://zennila-db.supabase.co" : ""}
+                                                    placeholder="http://127.0.0.1:8090"
+                                                    readOnly
+                                                    value={process.env.NEXT_PUBLIC_POCKETBASE_URL || "http://127.0.0.1:8090"}
                                                 />
                                             </div>
                                             <div className="space-y-2">
                                                 <Label className="text-xs font-bold text-muted-foreground uppercase">
-                                                    Anon Key
+                                                    Admin Panel
                                                 </Label>
-                                                <Input
-                                                    type="password"
-                                                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
-                                                    readOnly={connections.supabase}
-                                                    value={connections.supabase ? "************************" : ""}
-                                                />
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => window.open((process.env.NEXT_PUBLIC_POCKETBASE_URL || "http://127.0.0.1:8090") + "/_/", "_blank")}
+                                                >
+                                                    <ExternalLink size={14} className="mr-1" />
+                                                    Open Admin UI
+                                                </Button>
                                             </div>
                                         </div>
                                     </div>

@@ -1880,7 +1880,7 @@ export default function WhatsAppPage() {
                                                 </div>
                                                 <h2 className="font-bold text-lg">Catalog Sync</h2>
                                                 <p className="text-xs text-muted-foreground max-w-[250px]">
-                                                    Sync your Supabase inventory with WhatsApp Business Catalog automatically.
+                                                    Sync your PocketBase inventory with WhatsApp Business Catalog automatically.
                                                 </p>
                                             </div>
 
