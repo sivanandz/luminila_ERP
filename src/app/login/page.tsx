@@ -69,7 +69,13 @@ export default function LoginPage() {
             }
         } catch (err: any) {
             console.error("Auth error:", err);
-            const message = err?.response?.message || err?.message || "Authentication failed";
+            let message = err?.response?.message || err?.message || "Authentication failed";
+            if (err?.response?.data && Object.keys(err.response.data).length > 0) {
+                const fieldErrors = Object.entries(err.response.data)
+                    .map(([field, errObj]: [string, any]) => `${field}: ${errObj?.message || 'invalid'}`)
+                    .join(", ");
+                if (fieldErrors) message = fieldErrors;
+            }
             toast.error(message);
         } finally {
             setLoading(false);

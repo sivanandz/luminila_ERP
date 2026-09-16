@@ -20,7 +20,7 @@
         "outputPath": "dist"
     },
     "dependencies": {
-        "@wppconnect-team/wppconnect": "^1.37.9",
+        "@wppconnect-team/wppconnect": "^2.3.3",
         "cors": "^2.8.5",
         "express": "^4.18.2",
         "qrcode": "^1.5.3",

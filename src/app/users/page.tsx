@@ -434,7 +434,7 @@ function UsersContent() {
                             <Label>Role</Label>
                             <Select
                                 value={newUser.role}
-                                onValueChange={val => setNewUser({ ...newUser, role: val })}
+                                onValueChange={val => val && setNewUser({ ...newUser, role: val })}
                             >
                                 <SelectTrigger>
                                     <SelectValue placeholder="Select role" />

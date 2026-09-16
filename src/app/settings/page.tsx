@@ -98,6 +98,11 @@ export default function SettingsPage() {
         phonepeSaltKey: "",
         phonepeSaltIndex: "1",
         phonepeEnv: "UAT",
+        // Razorpay
+        razorpayKeyId: "",
+        razorpayKeySecret: "",
+        razorpayWebhookSecret: "",
+        razorpayEnv: "TEST",
     });
 
     // Categories state
@@ -141,6 +146,7 @@ export default function SettingsPage() {
         woocommerce: false,
         whatsapp: false,
         phonepe: !!(settings.phonepeMerchantId && settings.phonepeSaltKey),
+        razorpay: !!(settings.razorpayKeyId && settings.razorpayKeySecret),
     };
 
     const handleSave = async () => {
@@ -301,7 +307,7 @@ export default function SettingsPage() {
                                             </Label>
                                             <Select
                                                 value={settings.currency}
-                                                onValueChange={(val) => setSettings({ ...settings, currency: val })}
+                                                onValueChange={(val) => val && setSettings({ ...settings, currency: val })}
                                             >
                                                 <SelectTrigger>
                                                     <SelectValue placeholder="Select currency" />
@@ -394,7 +400,7 @@ export default function SettingsPage() {
                                         </Label>
                                         <Select
                                             value={settings.defaultPrintMode}
-                                            onValueChange={(val) => setSettings({ ...settings, defaultPrintMode: val })}
+                                            onValueChange={(val) => val && setSettings({ ...settings, defaultPrintMode: val })}
                                         >
                                             <SelectTrigger className="w-48">
                                                 <SelectValue placeholder="Select print mode" />
@@ -853,7 +859,7 @@ export default function SettingsPage() {
                                                 </Label>
                                                 <Select
                                                     value={settings.phonepeEnv}
-                                                    onValueChange={(val) => setSettings({ ...settings, phonepeEnv: val })}
+                                                    onValueChange={(val) => val && setSettings({ ...settings, phonepeEnv: val })}
                                                 >
                                                     <SelectTrigger>
                                                         <SelectValue placeholder="Select environment" />
@@ -861,6 +867,88 @@ export default function SettingsPage() {
                                                     <SelectContent>
                                                         <SelectItem value="UAT">Sandbox / UAT</SelectItem>
                                                         <SelectItem value="PROD">Production</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Razorpay */}
+                                    <div className="card p-6 border border-border space-y-4">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 rounded-lg bg-blue-600/10 flex items-center justify-center text-blue-600 font-bold text-lg">
+                                                    ₹
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold text-foreground text-lg">Razorpay</h3>
+                                                    <p className="text-sm text-muted-foreground">
+                                                        WhatsApp Payment Links & In-Chat Settlement
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                {connections.razorpay ? (
+                                                    <span className="badge badge-success flex items-center gap-1.5 py-1 px-3">
+                                                        <CheckCircle size={14} />
+                                                        Connected
+                                                    </span>
+                                                ) : (
+                                                    <span className="badge badge-warning flex items-center gap-1.5 py-1 px-3">
+                                                        <XCircle size={14} />
+                                                        Not Connected
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    Key ID
+                                                </Label>
+                                                <Input
+                                                    type="text"
+                                                    placeholder="rzp_test_..."
+                                                    value={settings.razorpayKeyId}
+                                                    onChange={(e) => setSettings({ ...settings, razorpayKeyId: e.target.value })}
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    Key Secret
+                                                </Label>
+                                                <Input
+                                                    type="password"
+                                                    placeholder="••••••••••••••••"
+                                                    value={settings.razorpayKeySecret}
+                                                    onChange={(e) => setSettings({ ...settings, razorpayKeySecret: e.target.value })}
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    Webhook Secret
+                                                </Label>
+                                                <Input
+                                                    type="password"
+                                                    placeholder="Optional HMAC secret"
+                                                    value={settings.razorpayWebhookSecret}
+                                                    onChange={(e) => setSettings({ ...settings, razorpayWebhookSecret: e.target.value })}
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    Environment Mode
+                                                </Label>
+                                                <Select
+                                                    value={settings.razorpayEnv}
+                                                    onValueChange={(val) => val && setSettings({ ...settings, razorpayEnv: val })}
+                                                >
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Select environment" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="TEST">Test / Sandbox Mode</SelectItem>
+                                                        <SelectItem value="PROD">Live Production Mode</SelectItem>
                                                     </SelectContent>
                                                 </Select>
                                             </div>

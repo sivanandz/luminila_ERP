@@ -24,6 +24,14 @@ export interface Customer {
     notes: string | null;
     tags: string[] | null;
     source: string;
+    // 360° Jewelry CRM Attributes
+    ring_size?: string | null;
+    bangle_size?: string | null;
+    preferred_metal?: string | null;
+    anniversary_date?: string | null;
+    birthday_date?: string | null;
+    lead_status?: 'new_lead' | 'contacted' | 'quoted' | 'awaiting_payment' | 'won' | 'vip' | null;
+    assigned_staff?: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -228,3 +236,79 @@ export async function addCustomerTag(customerId: string, tag: string): Promise<v
         console.error('Failed to add tag:', error);
     }
 }
+
+/**
+ * Update 360° Jewelry CRM Profile attributes
+ */
+export async function updateCustomerCRMProfile(
+    customerId: string,
+    data: {
+        name?: string;
+        email?: string | null;
+        address?: string | null;
+        city?: string | null;
+        state?: string | null;
+        pincode?: string | null;
+        gstin?: string | null;
+        customer_type?: 'retail' | 'wholesale' | 'vip';
+        ring_size?: string | null;
+        bangle_size?: string | null;
+        preferred_metal?: string | null;
+        anniversary_date?: string | null;
+        birthday_date?: string | null;
+        lead_status?: 'new_lead' | 'contacted' | 'quoted' | 'awaiting_payment' | 'won' | 'vip' | null;
+        assigned_staff?: string | null;
+        notes?: string | null;
+    }
+): Promise<Customer | null> {
+    try {
+        const updated = await pb.collection('customers').update(customerId, data);
+        return {
+            id: updated.id,
+            name: updated.name,
+            phone: updated.phone,
+            email: updated.email,
+            address: updated.address,
+            city: updated.city,
+            state: updated.state,
+            pincode: updated.pincode,
+            company_name: updated.company_name,
+            gstin: updated.gstin,
+            customer_type: updated.customer_type || 'retail',
+            loyalty_points: updated.loyalty_points || 0,
+            total_spent: updated.total_spent || 0,
+            total_orders: updated.total_orders || 0,
+            preferred_contact: updated.preferred_contact || 'phone',
+            notes: updated.notes,
+            tags: updated.tags,
+            source: updated.source || 'whatsapp',
+            ring_size: updated.ring_size,
+            bangle_size: updated.bangle_size,
+            preferred_metal: updated.preferred_metal,
+            anniversary_date: updated.anniversary_date,
+            birthday_date: updated.birthday_date,
+            lead_status: updated.lead_status,
+            assigned_staff: updated.assigned_staff,
+            created_at: updated.created,
+            updated_at: updated.updated,
+        };
+    } catch (err) {
+        console.error('Failed to update customer CRM profile:', err);
+        return null;
+    }
+}
+
+/**
+ * Set customer lead status
+ */
+export async function setCustomerLeadStatus(
+    customerId: string,
+    status: 'new_lead' | 'contacted' | 'quoted' | 'awaiting_payment' | 'won' | 'vip'
+): Promise<void> {
+    try {
+        await pb.collection('customers').update(customerId, { lead_status: status });
+    } catch (err) {
+        console.error('Failed to update lead status:', err);
+    }
+}
+

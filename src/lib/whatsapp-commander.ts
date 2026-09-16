@@ -46,10 +46,38 @@ export async function processAdminCommand(body: string, sender: string): Promise
                 return `🚫 Order #${shortId} has been **CANCELLED**.`;
 
             case "status":
-                return `ℹ️ Order #${shortId}\nStatus: ${order.status}\nPayment: ${order.payment_status}\nTotal: ${formatPrice(order.total_amount || order.total)}`;
+                return `ℹ️ Order #${shortId}\nStatus: ${order.status}\nPayment: ${order.payment_status || 'PENDING'}\nTotal: ${formatPrice(order.total_amount || order.total)}`;
+
+            case "paylink": {
+                const { createPaymentLink } = await import('@/lib/razorpay');
+                const totalAmount = order.total || order.subtotal || 0;
+                const linkRes = await createPaymentLink({
+                    orderId: order.id,
+                    amount: totalAmount,
+                    customerName: order.customer_name,
+                    customerPhone: order.customer_phone,
+                    description: `Luminila Jewels Order #${shortId}`,
+                });
+
+                if (linkRes.success && linkRes.data?.short_url) {
+                    await pb.collection('sales_orders').update(order.id, {
+                        razorpay_link_id: linkRes.data.id,
+                    });
+                    return `💳 *Payment Link for Order #${shortId}*\nAmount: ${formatPrice(totalAmount)}\n🔗 Pay Here: ${linkRes.data.short_url}`;
+                }
+                return `❌ Failed to create Razorpay link: ${linkRes.error || 'Unknown error'}`;
+            }
+
+            case "invoice": {
+                const { sendPaidOrderInvoice } = await import('@/lib/whatsapp-notifications');
+                const res = await sendPaidOrderInvoice(order.id);
+                return res.success
+                    ? `🧾 GST Invoice sent to customer for Order #${shortId}.`
+                    : `⚠️ Failed to send invoice: ${res.error}`;
+            }
 
             case "help":
-                return `🤖 *Admin Commands:*\n!paid <id>\n!ship <id>\n!cancel <id>\n!status <id>`;
+                return `🤖 *Admin Commands:*\n!paid <id> — Mark paid\n!paylink <id> — Send Razorpay link\n!ship <id> — Mark shipped\n!invoice <id> — Send GST invoice\n!cancel <id> — Cancel order\n!status <id> — View order status`;
 
             default:
                 return null;

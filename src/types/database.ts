@@ -139,6 +139,11 @@ export interface SalesOrder extends PBRecord {
     discount_total: number;
     shipping_charges: number;
     total: number;
+    payment_status?: string;
+    payment_method?: string;
+    razorpay_link_id?: string;
+    razorpay_payment_id?: string;
+    whatsapp_order_id?: string;
     notes?: string;
     internal_notes?: string;
     created_by?: string;

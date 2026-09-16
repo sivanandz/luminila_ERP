@@ -65,6 +65,13 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
+import { ChatContextMenu } from "@/components/whatsapp/ChatContextMenu";
+import { SlashCommandPalette } from "@/components/whatsapp/SlashCommandPalette";
+import { RazorpayPaymentModal } from "@/components/whatsapp/RazorpayPaymentModal";
+import { WhatsAppCatalogSyncModal } from "@/components/whatsapp/WhatsAppCatalogSyncModal";
+import { updateCustomerCRMProfile, setCustomerLeadStatus } from "@/lib/customer-lookup";
+import { sendPaidOrderInvoice } from "@/lib/whatsapp-notifications";
+import { ingestWhatsAppCatalogOrder } from "@/lib/whatsapp-order-ingestion";
 
 // --- Types ---
 
@@ -479,6 +486,31 @@ export default function WhatsAppPage() {
     const [isVariant, setIsVariant] = useState(false);
     const [selectedParentProduct, setSelectedParentProduct] = useState<Product | null>(null);
 
+    // Context Menu & Enhancements State
+    const [contextMenu, setContextMenu] = useState<{
+        isOpen: boolean;
+        message: WPPMessage | null;
+        position: { x: number; y: number } | null;
+    }>({ isOpen: false, message: null, position: null });
+
+    const [showRazorpayModal, setShowRazorpayModal] = useState(false);
+    const [razorpayModalAmount, setRazorpayModalAmount] = useState<number>(0);
+    const [showCatalogSyncModal, setShowCatalogSyncModal] = useState(false);
+    const [slashPaletteOpen, setSlashPaletteOpen] = useState(false);
+    const [slashQuery, setSlashQuery] = useState("");
+
+    // 360 CRM Editing State
+    const [editingCRM, setEditingCRM] = useState(false);
+    const [crmForm, setCrmForm] = useState({
+        ring_size: "",
+        bangle_size: "",
+        preferred_metal: "Rose Gold",
+        anniversary_date: "",
+        birthday_date: "",
+        lead_status: "new_lead" as any,
+    });
+    const [savingCRM, setSavingCRM] = useState(false);
+
     // Initial Load
     const loadExistingChats = useCallback(async () => {
         setLoadingChats(true);
@@ -544,11 +576,15 @@ export default function WhatsAppPage() {
                 if (status === "CONNECTED") {
                     setSessionStatus("connected");
                     loadExistingChats();
+                } else if (status === "QR_CODE") {
+                    setSessionStatus("qr");
+                    const qr = await whatsappManager.getQR();
+                    if (qr) setQrCode(qr);
                 }
             }
         };
         checkServer();
-        const interval = setInterval(checkServer, 30000);
+        const interval = setInterval(checkServer, 10000);
         return () => clearInterval(interval);
     }, [loadExistingChats]);
 
@@ -802,6 +838,9 @@ export default function WhatsAppPage() {
 
     const handleConnect = async () => {
         setSessionStatus("connecting");
+        whatsappManager.setSessionId("luminila");
+        setQrCode(null);
+        setPairingCode(null);
         const started = await whatsappManager.connect();
         if (started) {
             const pollInterval = setInterval(async () => {
@@ -815,25 +854,50 @@ export default function WhatsAppPage() {
                 } else if (status === "QR_CODE") {
                     setSessionStatus("qr");
                     const qr = await whatsappManager.getQR();
-                    if (qr) setQrCode(qr);
+                    if (qr) {
+                        setQrCode(qr);
+                    }
                 }
             }, 1000);
         }
     };
+
+    const handleDisconnect = async () => {
+        try {
+            await whatsappManager.disconnect();
+        } catch (e) {
+            console.error("Disconnect error:", e);
+        }
+        setSessionStatus("disconnected");
+        setQrCode(null);
+        setPairingCode(null);
+    };
+
 
     const handleRequestPairingCode = async () => {
         if (!phoneNumber) {
             setPairingCode(null); // Clear any old code
             return;
         }
+        const cleanPhone = phoneNumber.replace(/\D/g, "");
         setPairingLoading(true);
         setPairingCode(null); // Clear previous code while loading
         try {
-            const response = await whatsappManager.requestPairingCode(phoneNumber);
+            const response = await whatsappManager.requestPairingCode(cleanPhone);
             if (response && response.code) {
                 setPairingCode(response.code);
-                // IMPORTANT: Switch manager to the phone-specific session for proper polling
+                // Switch manager to the phone-specific session for proper status polling
                 whatsappManager.setSessionId(response.session);
+                const phonePoll = setInterval(async () => {
+                    const status = await whatsappManager.getStatus();
+                    if (status === "CONNECTED") {
+                        setSessionStatus("connected");
+                        setPairingCode(null);
+                        setQrCode(null);
+                        clearInterval(phonePoll);
+                        loadExistingChats();
+                    }
+                }, 1500);
             } else {
                 setPairingCode(null);
             }
@@ -845,9 +909,155 @@ export default function WhatsAppPage() {
         }
     };
 
-    const handleDisconnect = async () => {
-        await whatsappManager.disconnect();
-        setSessionStatus("disconnected");
+    // Handlers for WhatsApp Context Menu & Enhancements
+    const handleSendPaymentLinkToChat = async (url: string, amount: number) => {
+        const text = `💳 *Luminila Jewels — Payment Link*
+
+Amount: *₹${amount.toLocaleString('en-IN')}*
+Secure checkout via UPI, Credit/Debit Cards, or NetBanking:
+
+🔗 *Pay Now:* ${url}
+
+_Your order will be confirmed and processed immediately upon successful payment._ ✨`;
+        if (selectedChat) {
+            const success = await whatsappManager.sendMessage(selectedChat, text);
+            if (success) {
+                setSelectedChatMessages(prev => [...prev, {
+                    id: `sent-${Date.now()}`,
+                    from: "me",
+                    fromName: "You",
+                    body: text,
+                    timestamp: new Date(),
+                    isOrder: false,
+                    fromMe: true,
+                    type: "chat"
+                }]);
+            }
+        }
+    };
+
+    const handleContextAddToCart = (skuOrName: string) => {
+        const match = products.find(p =>
+            p.sku?.toUpperCase() === skuOrName.toUpperCase() ||
+            p.name.toLowerCase().includes(skuOrName.toLowerCase())
+        );
+        if (match) {
+            addToCart(match);
+            setAddedToast(`Added ${match.name} to cart!`);
+        } else {
+            setSearchQuery(skuOrName);
+            setActivePanel('concierge');
+            setAddedToast(`Searching catalog for "${skuOrName}"`);
+        }
+        setTimeout(() => setAddedToast(null), 3000);
+    };
+
+    const handleContextGeneratePayLink = (detectedAmount?: number) => {
+        const cartTotal = cart.reduce((acc, item) => acc + item.base_price * (item.quantity || 1), 0);
+        setRazorpayModalAmount(detectedAmount || cartTotal || 0);
+        setShowRazorpayModal(true);
+    };
+
+    const handleContextConvertToOrder = async (msg: WPPMessage) => {
+        if (!selectedChat) return;
+        const phone = phoneFromChatId(selectedChat);
+        if (!phone) return;
+
+        const items = cart.length > 0
+            ? cart.map(c => ({
+                sku: c.sku,
+                name: c.name,
+                quantity: c.quantity || 1,
+                unitPrice: c.base_price,
+                totalPrice: c.base_price * (c.quantity || 1),
+                productId: c.id
+            }))
+            : [{
+                name: `Item inquiry: "${msg.body?.slice(0, 35) || 'Jewelry piece'}"`,
+                quantity: 1,
+                unitPrice: 1000,
+                totalPrice: 1000,
+            }];
+
+        const res = await ingestWhatsAppCatalogOrder(
+            msg,
+            {
+                name: customer?.name || `Customer (${phone.slice(-4)})`,
+                phone,
+                address: customer?.address || '',
+                city: customer?.city || '',
+                pincode: customer?.pincode || '',
+            },
+            items
+        );
+
+        if (res.success) {
+            setAddedToast(`Draft Order #${res.orderNumber} created!`);
+            getCustomerOrders(customer?.id || phone).then(setCustomerOrders);
+            setActivePanel('orders');
+        } else {
+            setAddedToast(`Order creation failed: ${res.error}`);
+        }
+        setTimeout(() => setAddedToast(null), 3500);
+    };
+
+    const handleContextSetLeadStatus = async (status: any) => {
+        if (!customer) {
+            setAddedToast("Please create a customer profile first");
+            setTimeout(() => setAddedToast(null), 3000);
+            return;
+        }
+        await setCustomerLeadStatus(customer.id, status);
+        setCustomer(prev => prev ? { ...prev, lead_status: status } : null);
+        setAddedToast(`Lead status updated: ${status.replace('_', ' ').toUpperCase()}`);
+        setTimeout(() => setAddedToast(null), 3000);
+    };
+
+    const handleSaveCRMProfile = async () => {
+        if (!customer) return;
+        setSavingCRM(true);
+        try {
+            const updated = await updateCustomerCRMProfile(customer.id, crmForm);
+            if (updated) {
+                setCustomer(updated);
+                setEditingCRM(false);
+                setAddedToast("360° Jewelry Profile Saved!");
+            }
+        } catch (err) {
+            console.error("Failed to save CRM profile:", err);
+        } finally {
+            setSavingCRM(false);
+            setTimeout(() => setAddedToast(null), 3000);
+        }
+    };
+
+    const handleSelectSlashSnippet = (snippet: string) => {
+        setReplyText(snippet);
+        setSlashPaletteOpen(false);
+    };
+
+    const handleTriggerSlashAction = (actionId: string) => {
+        setSlashPaletteOpen(false);
+        setReplyText("");
+        if (actionId === 'pay') {
+            const cartTotal = cart.reduce((acc, item) => acc + item.base_price * (item.quantity || 1), 0);
+            setRazorpayModalAmount(cartTotal || 0);
+            setShowRazorpayModal(true);
+        } else if (actionId === 'product') {
+            setActivePanel('concierge');
+        } else if (actionId === 'invoice') {
+            if (customerOrders.length > 0) {
+                sendPaidOrderInvoice(customerOrders[0].id).then(res => {
+                    setAddedToast(res.success ? "GST Invoice PDF sent to customer!" : `Invoice error: ${res.error}`);
+                    setTimeout(() => setAddedToast(null), 3500);
+                });
+            } else {
+                setAddedToast("No active order found for this customer");
+                setTimeout(() => setAddedToast(null), 3000);
+            }
+        } else if (actionId === 'tracking') {
+            setReplyText("🚚 *Tracking Update:* Your Luminila order has been dispatched via BlueDart. Live AWB: BD102938475. Track at https://bluedart.com");
+        }
     };
 
     const sendReply = async () => {
@@ -1487,8 +1697,33 @@ export default function WhatsAppPage() {
                                             key={msg.id}
                                             id={`msg-${msg.id}`}
                                             data-msg-id={msg.id}
-                                            className={`flex transition-all duration-300 ${msg.fromMe ? 'justify-end' : 'justify-start'}`}
+                                            onContextMenu={(e) => {
+                                                e.preventDefault();
+                                                setContextMenu({
+                                                    isOpen: true,
+                                                    message: msg as any,
+                                                    position: { x: e.clientX, y: e.clientY }
+                                                });
+                                            }}
+                                            className={`flex items-center gap-1 transition-all duration-300 group relative ${msg.fromMe ? 'justify-end' : 'justify-start'}`}
                                         >
+                                            {!msg.fromMe && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        const rect = e.currentTarget.getBoundingClientRect();
+                                                        setContextMenu({
+                                                            isOpen: true,
+                                                            message: msg as any,
+                                                            position: { x: rect.left, y: rect.bottom + 4 }
+                                                        });
+                                                    }}
+                                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground"
+                                                    title="Message Actions"
+                                                >
+                                                    <MoreVertical size={13} />
+                                                </button>
+                                            )}
                                             <div className={`max-w-[80%] p-3 rounded-xl text-sm ${msg.fromMe ? 'bg-primary text-primary-foreground rounded-br-none' : 'bg-card border border-border rounded-tl-none'}`}>
                                                 <MessageContent
                                                     msg={msg}
@@ -1496,6 +1731,23 @@ export default function WhatsAppPage() {
                                                     onFindSimilar={handleFindSimilar}
                                                 />
                                             </div>
+                                            {msg.fromMe && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        const rect = e.currentTarget.getBoundingClientRect();
+                                                        setContextMenu({
+                                                            isOpen: true,
+                                                            message: msg as any,
+                                                            position: { x: rect.left, y: rect.bottom + 4 }
+                                                        });
+                                                    }}
+                                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground"
+                                                    title="Message Actions"
+                                                >
+                                                    <MoreVertical size={13} />
+                                                </button>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
@@ -1521,7 +1773,16 @@ export default function WhatsAppPage() {
                                 )}
 
                                 {/* Message Input */}
-                                <div className="p-3 bg-card border-t border-border flex gap-2 items-center">
+                                <div className="p-3 bg-card border-t border-border flex gap-2 items-center relative">
+                                    {/* Slash Command Palette */}
+                                    <SlashCommandPalette
+                                        isOpen={slashPaletteOpen}
+                                        query={slashQuery}
+                                        onClose={() => setSlashPaletteOpen(false)}
+                                        onSelectSnippet={handleSelectSlashSnippet}
+                                        onTriggerAction={handleTriggerSlashAction}
+                                    />
+
                                     {/* Hidden File Input */}
                                     <input
                                         type="file"
@@ -1540,6 +1801,31 @@ export default function WhatsAppPage() {
                                         <ImageIcon size={18} />
                                     </button>
 
+                                    {/* Quick Razorpay Link Button */}
+                                    <button
+                                        onClick={() => {
+                                            const cartTotal = cart.reduce((acc, item) => acc + item.base_price * (item.quantity || 1), 0);
+                                            setRazorpayModalAmount(cartTotal || 0);
+                                            setShowRazorpayModal(true);
+                                        }}
+                                        className="p-2 text-blue-500 hover:text-blue-600 hover:bg-blue-500/10 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"
+                                        title="Create Razorpay Payment Link"
+                                    >
+                                        <CreditCard size={18} />
+                                    </button>
+
+                                    {/* Slash Helper Button */}
+                                    <button
+                                        onClick={() => {
+                                            setSlashQuery("/");
+                                            setSlashPaletteOpen(prev => !prev);
+                                        }}
+                                        className={`w-8 h-8 rounded-lg transition-colors font-mono text-xs font-bold flex items-center justify-center ${slashPaletteOpen ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+                                        title="Canned Templates & Commands (/)"
+                                    >
+                                        /
+                                    </button>
+
                                     {/* Recording Indicator or Text Input */}
                                     {isRecording ? (
                                         <div className="flex-1 flex items-center gap-2 bg-red-500/10 rounded-lg px-3 py-2">
@@ -1553,10 +1839,23 @@ export default function WhatsAppPage() {
                                     ) : (
                                         <input
                                             className="flex-1 bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                            placeholder={attachmentFile ? "Add a caption..." : "Type a message..."}
+                                            placeholder={attachmentFile ? "Add a caption..." : "Type a message or / for templates..."}
                                             value={replyText}
-                                            onChange={e => setReplyText(e.target.value)}
-                                            onKeyDown={e => e.key === 'Enter' && (attachmentFile ? handleSendAttachment() : sendReply())}
+                                            onChange={e => {
+                                                const val = e.target.value;
+                                                setReplyText(val);
+                                                if (val.startsWith('/')) {
+                                                    setSlashQuery(val);
+                                                    setSlashPaletteOpen(true);
+                                                } else if (slashPaletteOpen) {
+                                                    setSlashPaletteOpen(false);
+                                                }
+                                            }}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter' && !slashPaletteOpen) {
+                                                    attachmentFile ? handleSendAttachment() : sendReply();
+                                                }
+                                            }}
                                         />
                                     )}
 
@@ -1762,37 +2061,175 @@ export default function WhatsAppPage() {
                                         </div>
                                     )}
 
-                                    {/* CUSTOMER PANEL */}
+                                    {/* CUSTOMER PANEL - 360° Jewelry CRM */}
                                     {activePanel === 'customer' && (
-                                        <div className="flex-1 flex flex-col overflow-hidden p-4">
+                                        <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-4">
                                             {loadingCustomer ? (
-                                                <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+                                                <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground py-12">
                                                     <Loader2 size={24} className="animate-spin mb-2" />
                                                     <p className="text-xs">Loading profile...</p>
                                                 </div>
                                             ) : customer ? (
-                                                <div className="space-y-6">
+                                                <div className="space-y-4">
                                                     <div className="text-center">
-                                                        <div className="w-16 h-16 bg-primary/20 rounded-full flex items-center justify-center mx-auto mb-3 text-primary">
-                                                            <User size={32} />
+                                                        <div className="w-14 h-14 bg-primary/20 rounded-full flex items-center justify-center mx-auto mb-2 text-primary">
+                                                            <User size={28} />
                                                         </div>
-                                                        <h2 className="text-lg font-bold">{customer.name}</h2>
-                                                        <p className="text-sm text-muted-foreground">{customer.phone}</p>
-                                                        <div className="flex justify-center gap-2 mt-2">
-                                                            <span className="text-[10px] bg-blue-500/20 text-blue-500 px-2 py-1 rounded-full uppercase font-bold tracking-wider">{customer.customer_type}</span>
-                                                            <span className="text-[10px] bg-green-500/20 text-green-500 px-2 py-1 rounded-full uppercase font-bold tracking-wider">{customer.source}</span>
+                                                        <h2 className="text-base font-bold">{customer.name}</h2>
+                                                        <p className="text-xs text-muted-foreground">{customer.phone}</p>
+                                                        <div className="flex justify-center items-center gap-1.5 mt-2 flex-wrap">
+                                                            <span className="text-[10px] bg-blue-500/20 text-blue-500 px-2 py-0.5 rounded-full uppercase font-bold tracking-wider">
+                                                                {customer.customer_type}
+                                                            </span>
+                                                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                                                                customer.lead_status === 'won' || customer.lead_status === 'vip' ? 'bg-emerald-500/20 text-emerald-500' :
+                                                                customer.lead_status === 'awaiting_payment' ? 'bg-orange-500/20 text-orange-500' :
+                                                                customer.lead_status === 'quoted' ? 'bg-amber-500/20 text-amber-500' :
+                                                                'bg-purple-500/20 text-purple-500'
+                                                            }`}>
+                                                                ● {(customer.lead_status || 'new_lead').replace('_', ' ')}
+                                                            </span>
                                                         </div>
                                                     </div>
 
-                                                    <div className="grid grid-cols-2 gap-3">
-                                                        <div className="bg-muted/30 p-3 rounded-lg text-center">
-                                                            <p className="text-xs text-muted-foreground mb-1">Total Spent</p>
-                                                            <p className="font-bold text-primary">{formatPrice(customer.total_spent)}</p>
+                                                    {/* Financial Stats */}
+                                                    <div className="grid grid-cols-3 gap-2">
+                                                        <div className="bg-muted/30 p-2.5 rounded-xl text-center">
+                                                            <p className="text-[10px] text-muted-foreground mb-0.5">Total Spent</p>
+                                                            <p className="font-bold text-xs text-primary">{formatPrice(customer.total_spent)}</p>
                                                         </div>
-                                                        <div className="bg-muted/30 p-3 rounded-lg text-center">
-                                                            <p className="text-xs text-muted-foreground mb-1">Orders</p>
-                                                            <p className="font-bold">{customer.total_orders}</p>
+                                                        <div className="bg-muted/30 p-2.5 rounded-xl text-center">
+                                                            <p className="text-[10px] text-muted-foreground mb-0.5">Orders</p>
+                                                            <p className="font-bold text-xs">{customer.total_orders}</p>
                                                         </div>
+                                                        <div className="bg-muted/30 p-2.5 rounded-xl text-center">
+                                                            <p className="text-[10px] text-muted-foreground mb-0.5">Loyalty Pts</p>
+                                                            <p className="font-bold text-xs text-emerald-500">{customer.loyalty_points || 0}</p>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* 360° Jewelry Sizing & Preferences */}
+                                                    <div className="bg-card border border-border rounded-xl p-3.5 space-y-3">
+                                                        <div className="flex items-center justify-between">
+                                                            <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                                                                <Sparkles size={13} className="text-primary" />
+                                                                Jewelry Preferences
+                                                            </span>
+                                                            <button
+                                                                onClick={() => setEditingCRM(prev => !prev)}
+                                                                className="text-[10px] text-primary hover:underline font-bold"
+                                                            >
+                                                                {editingCRM ? "Cancel" : "Edit"}
+                                                            </button>
+                                                        </div>
+
+                                                        {editingCRM ? (
+                                                            <div className="space-y-2.5">
+                                                                <div className="grid grid-cols-2 gap-2">
+                                                                    <div>
+                                                                        <label className="text-[10px] text-muted-foreground">Ring Size</label>
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="e.g. 12, 14"
+                                                                            value={crmForm.ring_size}
+                                                                            onChange={e => setCrmForm({ ...crmForm, ring_size: e.target.value })}
+                                                                            className="w-full bg-muted rounded px-2 py-1 text-xs border border-border"
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="text-[10px] text-muted-foreground">Bangle Size</label>
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="e.g. 2-4, 2-6"
+                                                                            value={crmForm.bangle_size}
+                                                                            onChange={e => setCrmForm({ ...crmForm, bangle_size: e.target.value })}
+                                                                            className="w-full bg-muted rounded px-2 py-1 text-xs border border-border"
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                <div>
+                                                                    <label className="text-[10px] text-muted-foreground">Preferred Metal Style</label>
+                                                                    <select
+                                                                        value={crmForm.preferred_metal}
+                                                                        onChange={e => setCrmForm({ ...crmForm, preferred_metal: e.target.value })}
+                                                                        className="w-full bg-muted rounded px-2 py-1 text-xs border border-border"
+                                                                    >
+                                                                        <option value="Rose Gold">Rose Gold</option>
+                                                                        <option value="Yellow Gold">Yellow Gold</option>
+                                                                        <option value="Silver">Silver / Platinum Finish</option>
+                                                                        <option value="Antique">Antique / Oxidized</option>
+                                                                        <option value="Kundan">Kundan / Polki</option>
+                                                                    </select>
+                                                                </div>
+
+                                                                <div className="grid grid-cols-2 gap-2">
+                                                                    <div>
+                                                                        <label className="text-[10px] text-muted-foreground">Anniversary</label>
+                                                                        <input
+                                                                            type="date"
+                                                                            value={crmForm.anniversary_date}
+                                                                            onChange={e => setCrmForm({ ...crmForm, anniversary_date: e.target.value })}
+                                                                            className="w-full bg-muted rounded px-1.5 py-1 text-xs border border-border"
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="text-[10px] text-muted-foreground">Birthday</label>
+                                                                        <input
+                                                                            type="date"
+                                                                            value={crmForm.birthday_date}
+                                                                            onChange={e => setCrmForm({ ...crmForm, birthday_date: e.target.value })}
+                                                                            className="w-full bg-muted rounded px-1.5 py-1 text-xs border border-border"
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                <div>
+                                                                    <label className="text-[10px] text-muted-foreground">Lead Pipeline Stage</label>
+                                                                    <select
+                                                                        value={crmForm.lead_status}
+                                                                        onChange={e => setCrmForm({ ...crmForm, lead_status: e.target.value as any })}
+                                                                        className="w-full bg-muted rounded px-2 py-1 text-xs border border-border"
+                                                                    >
+                                                                        <option value="new_lead">New Lead</option>
+                                                                        <option value="contacted">Contacted</option>
+                                                                        <option value="quoted">Quoted</option>
+                                                                        <option value="awaiting_payment">Awaiting Payment</option>
+                                                                        <option value="won">Deal Won</option>
+                                                                        <option value="vip">VIP Member</option>
+                                                                    </select>
+                                                                </div>
+
+                                                                <button
+                                                                    onClick={handleSaveCRMProfile}
+                                                                    disabled={savingCRM}
+                                                                    className="w-full bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold py-2 rounded-lg transition-all flex items-center justify-center gap-1.5"
+                                                                >
+                                                                    {savingCRM ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                                                                    Save 360° Profile
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="grid grid-cols-2 gap-2 text-xs">
+                                                                <div className="bg-muted/20 p-2 rounded-lg">
+                                                                    <span className="text-[10px] text-muted-foreground block">Ring Size</span>
+                                                                    <span className="font-bold">{customer.ring_size || "Not set"}</span>
+                                                                </div>
+                                                                <div className="bg-muted/20 p-2 rounded-lg">
+                                                                    <span className="text-[10px] text-muted-foreground block">Bangle Size</span>
+                                                                    <span className="font-bold">{customer.bangle_size || "Not set"}</span>
+                                                                </div>
+                                                                <div className="bg-muted/20 p-2 rounded-lg col-span-2">
+                                                                    <span className="text-[10px] text-muted-foreground block">Preferred Metal</span>
+                                                                    <span className="font-bold">{customer.preferred_metal || "Rose Gold / Fashion"}</span>
+                                                                </div>
+                                                                {customer.anniversary_date && (
+                                                                    <div className="bg-pink-500/10 p-2 rounded-lg col-span-2 text-pink-600 font-medium">
+                                                                        💍 Anniversary: {customer.anniversary_date}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </div>
 
                                                     {customer.notes && (
@@ -1803,7 +2240,7 @@ export default function WhatsAppPage() {
                                                     )}
 
                                                     <button onClick={() => window.open(`/customers/detail?id=${customer.id}`, '_blank')} className="w-full border border-border hover:bg-muted text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2 transition-colors">
-                                                        <ExternalLink size={14} /> View Full Profile
+                                                        <ExternalLink size={14} /> View Full Profile in CRM
                                                     </button>
                                                 </div>
                                             ) : (
@@ -1906,14 +2343,10 @@ export default function WhatsAppPage() {
                                                 </div>
 
                                                 <button
-                                                    onClick={async () => {
-                                                        const res = await fetch('/api/catalog-sync', { method: 'POST' });
-                                                        const data = await res.json();
-                                                        alert(JSON.stringify(data, null, 2));
-                                                    }}
+                                                    onClick={() => setShowCatalogSyncModal(true)}
                                                     className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-xs py-3 rounded-lg flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95"
                                                 >
-                                                    <RefreshCw size={14} /> Trigger Manual Sync
+                                                    <Store size={14} /> Open Catalog Publisher
                                                 </button>
                                             </div>
 
@@ -2323,6 +2756,36 @@ export default function WhatsAppPage() {
                     </div>
                 </div>
             )}
+
+            {/* Message Context Menu */}
+            <ChatContextMenu
+                isOpen={contextMenu.isOpen}
+                message={contextMenu.message}
+                position={contextMenu.position}
+                onClose={() => setContextMenu({ isOpen: false, message: null, position: null })}
+                onAddToCart={handleContextAddToCart}
+                onGeneratePayLink={handleContextGeneratePayLink}
+                onConvertToOrder={handleContextConvertToOrder}
+                onSetLeadStatus={handleContextSetLeadStatus}
+                onOpenCustomerCRM={() => setActivePanel('customer')}
+                onQuoteReply={msg => setReplyText(`> ${msg.body || ''}\n\n`)}
+            />
+
+            {/* Razorpay Payment Link Modal */}
+            <RazorpayPaymentModal
+                isOpen={showRazorpayModal}
+                onClose={() => setShowRazorpayModal(false)}
+                customerName={customer?.name || ''}
+                customerPhone={customer?.phone || (selectedChat ? phoneFromChatId(selectedChat) || '' : '')}
+                defaultAmount={razorpayModalAmount}
+                onSendPaymentLinkToChat={handleSendPaymentLinkToChat}
+            />
+
+            {/* WhatsApp Catalog Sync Modal */}
+            <WhatsAppCatalogSyncModal
+                isOpen={showCatalogSyncModal}
+                onClose={() => setShowCatalogSyncModal(false)}
+            />
         </div>
     );
 }

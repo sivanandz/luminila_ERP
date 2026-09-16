@@ -38,6 +38,7 @@
   ],
   "exclude": [
     "node_modules",
-    "backup_*"
+    "backup_*",
+    "src/scripts"
   ]
 }

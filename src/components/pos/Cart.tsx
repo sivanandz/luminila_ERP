@@ -53,7 +53,7 @@ export function Cart({ items, onUpdateQuantity, onRemoveItem, onClear }: CartPro
                     >
                         <div className="flex-1 min-w-0">
                             <p className="font-medium text-sm truncate">
-                                {item.variant.product.name}
+                                {item.variant.expand?.product?.name || (item.variant as any).product?.name || item.variant.variant_name}
                             </p>
                             <p className="text-xs text-foreground-muted truncate">
                                 {item.variant.variant_name} • {formatPrice(item.unit_price)}

@@ -76,7 +76,13 @@ app.post('/api/:session/start', async (req, res) => {
     const { session } = req.params;
 
     if (sessions.has(session)) {
-        return res.json({ success: true, message: 'Session already exists' });
+        const existing = sessions.get(session);
+        if (existing && existing.connected && existing.client) {
+            return res.json({ success: true, message: 'Session already exists and is connected' });
+        }
+        // If previous session failed or disconnected, delete it to allow re-initialization
+        console.log(`[${session}] Resetting unready/stale session before restart`);
+        sessions.delete(session);
     }
 
     try {
@@ -119,8 +125,12 @@ app.post('/api/:session/start', async (req, res) => {
                     sessionData.qrReady = false;
                     io.emit('connected', { session });
                 }
-                if (statusSession === 'notLogged' || statusSession === 'browserClose') {
+                if (statusSession === 'notLogged') {
                     sessionData.connected = false;
+                }
+                if (statusSession === 'browserClose' || statusSession === 'autocloseCalled') {
+                    sessionData.connected = false;
+                    sessions.delete(session);
                     io.emit('disconnected', { session });
                 }
             },
@@ -138,7 +148,9 @@ app.post('/api/:session/start', async (req, res) => {
                 '--no-first-run',
                 '--disable-gpu'
             ],
-            autoClose: 0, // Disable auto close
+            autoClose: 180000, // 3 minutes to scan QR code
+            deviceSyncTimeout: 180000,
+            waitForLogin: true,
             puppeteerOptions: {
                 headless: 'new',
                 defaultViewport: {
@@ -280,7 +292,8 @@ app.post('/api/:session/pair-phone', async (req, res) => {
     const { phone } = req.body;
     const phoneSession = `${session}_phone`; // Use separate session for phone login
 
-    console.log(`[${phoneSession}] Link Phone Request: ${phone}`);
+    const cleanPhone = String(phone || '').replace(/\D/g, '');
+    console.log(`[${phoneSession}] Link Phone Request: ${cleanPhone} (raw: ${phone})`);
 
     // Clean up existing phone session if it exists (not the main session!)
     const existingPhoneSession = sessions.get(phoneSession);
@@ -315,7 +328,8 @@ app.post('/api/:session/pair-phone', async (req, res) => {
 
             wpp.create({
                 session: phoneSession,
-                phoneNumber: phone,
+                phoneNumber: cleanPhone,
+                folderNameToken: 'tokens',
                 catchLinkCode: (code) => {
                     console.log(`[${phoneSession}] Pairing Code Received: ${code}`);
                     clearTimeout(timeout);
@@ -325,12 +339,15 @@ app.post('/api/:session/pair-phone', async (req, res) => {
                     console.log(`[${phoneSession}] Status: ${statusSession}`);
                     if (statusSession === 'inChat' || statusSession === 'isLogged') {
                         sessionData.connected = true;
+                        sessions.set(session, sessionData); // Alias to main session
                         io.emit('connected', { session: phoneSession });
+                        io.emit('connected', { session });
                     }
                 },
                 headless: true,
                 useChrome: true,
-                autoClose: 0,
+                autoClose: 180000,
+                deviceSyncTimeout: 180000,
                 browserArgs: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
@@ -341,8 +358,10 @@ app.post('/api/:session/pair-phone', async (req, res) => {
             }).then((client) => {
                 sessionData.client = client;
                 sessionData.connected = true;
+                sessions.set(session, sessionData); // Alias to main session
                 client.onMessage((message) => {
                     io.emit('message', { session: phoneSession, message });
+                    io.emit('message', { session, message });
                 });
             }).catch(err => {
                 console.error(`[${phoneSession}] Create Error:`, err);

@@ -18,8 +18,7 @@ async function main() {
             listRule: rule,
             viewRule: rule,
             updateRule: rule,
-            // createRule is usually public for signup, likely "" or null for admin-only if self-signup disabled
-            // We'll leave createRule as is (null or "")
+            createRule: "", // Public self-registration allowed
         });
 
         console.log("✓ Users rules updated successfully!");
