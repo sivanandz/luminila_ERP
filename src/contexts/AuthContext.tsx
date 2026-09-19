@@ -30,18 +30,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [isAdmin, setIsAdmin] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
-    useEffect(() => {
-        // Initialize from stored auth
-        setUser(pb.authStore.model);
-        setIsValid(pb.authStore.isValid);
-        setIsAdmin(pb.authStore.isSuperuser);
-        setIsLoading(false);
+    const checkUserIsAdmin = async (model: AuthModel | null): Promise<boolean> => {
+        if (!model) return false;
+        if (pb.authStore.isSuperuser) return true;
+        try {
+            const userRoles = await pb.collection("user_roles").getFullList({
+                filter: `user="${model.id}"`,
+                expand: "role"
+            });
+            return userRoles.some(ur => ur.expand?.role?.name === "Admin" || ur.expand?.role?.name === "Super Admin");
+        } catch {
+            return false;
+        }
+    };
 
-        // Subscribe to auth changes
-        const unsubscribe = pb.authStore.onChange((token, model) => {
+    useEffect(() => {
+        const updateAuthState = async (model: AuthModel | null) => {
             setUser(model);
             setIsValid(pb.authStore.isValid);
-            setIsAdmin(pb.authStore.isSuperuser);
+            if (model) {
+                const adminStatus = await checkUserIsAdmin(model);
+                setIsAdmin(adminStatus);
+            } else {
+                setIsAdmin(false);
+            }
+            setIsLoading(false);
+        };
+
+        // Initialize from stored auth
+        updateAuthState(pb.authStore.model);
+
+        // Subscribe to auth changes
+        const unsubscribe = pb.authStore.onChange(async (token, model) => {
+            await updateAuthState(model);
         });
 
         return () => {
@@ -79,15 +100,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             is_active: true, // Default to active
         });
 
-        // Assign default "Viewer" role
+        // Assign "Admin" role to new store owner
         try {
-            const viewerRole = await pb.collection("roles").getFirstListItem('name="Viewer"');
+            const adminRole = await pb.collection("roles").getFirstListItem('name="Admin"');
             await pb.collection("user_roles").create({
                 user: user.id,
-                role: viewerRole.id,
+                role: adminRole.id,
             });
         } catch (e) {
-            console.warn("Could not assign default role:", e);
+            console.warn("Could not assign Admin role:", e);
         }
 
         // Auto-login after registration

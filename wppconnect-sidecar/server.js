@@ -473,49 +473,79 @@ app.get('/api/:session/chats', async (req, res) => {
     try {
         console.log(`[${session}] Fetching chats...`);
 
-        let chats;
-        if (typeof sessionData.client.getAllChats === 'function') {
-            console.log(`[${session}] Using getAllChats...`);
-            chats = await sessionData.client.getAllChats();
-        } else {
-            // Fallback
-            if (typeof sessionData.client.listChats !== 'function') {
-                throw new Error('client.listChats is not a function');
+        let chats = [];
+        try {
+            if (typeof sessionData.client.listChats === 'function') {
+                console.log(`[${session}] Calling client.listChats()...`);
+                const result = await sessionData.client.listChats({ count: 50 });
+                if (Array.isArray(result)) {
+                    chats = result;
+                }
             }
-            console.log(`[${session}] Using listChats...`);
-            chats = await sessionData.client.listChats({ onlyUsers: false });
+        } catch (err) {
+            console.warn(`[${session}] client.listChats error:`, err.message);
         }
 
-        console.log(`[${session}] listChats/getAllChats returned type: ${typeof chats}, isArray: ${Array.isArray(chats)}`);
-
-        if (!Array.isArray(chats)) {
-            console.log(`[${session}] Unexpected chats result:`, chats);
-            res.json({ success: true, chats: [] });
-            return;
+        // Direct in-page fallback using WPP.chat.list() if listChats didn't return an array
+        if (!Array.isArray(chats) || chats.length === 0) {
+            try {
+                if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+                    console.log(`[${session}] Trying WPP.chat.list() in browser context...`);
+                    const evaluated = await sessionData.client.page.evaluate(async () => {
+                        if (window.WPP && window.WPP.chat && typeof window.WPP.chat.list === 'function') {
+                            const raw = await window.WPP.chat.list({ count: 50 });
+                            return (raw || []).map(c => {
+                                const idStr = c.id?._serialized || (typeof c.id === 'string' ? c.id : '');
+                                return {
+                                    id: { _serialized: idStr },
+                                    name: c.name || c.formattedTitle || c.contact?.pushname || c.contact?.name || (idStr ? idStr.split('@')[0] : 'Unknown'),
+                                    isGroup: !!c.isGroup,
+                                    timestamp: c.t || c.timestamp || Math.floor(Date.now() / 1000),
+                                    unreadCount: c.unreadCount || 0,
+                                    lastMessage: c.lastMessage ? {
+                                        body: c.lastMessage.body || '',
+                                        timestamp: c.lastMessage.t || c.lastMessage.timestamp || 0,
+                                        type: c.lastMessage.type || 'chat'
+                                    } : undefined
+                                };
+                            });
+                        }
+                        return [];
+                    });
+                    if (Array.isArray(evaluated) && evaluated.length > 0) {
+                        chats = evaluated;
+                    }
+                }
+            } catch (evalErr) {
+                console.warn(`[${session}] Browser WPP.chat.list() error:`, evalErr.message);
+            }
         }
+
+        console.log(`[${session}] Retrieved ${chats.length} chats`);
 
         // Enrich the top 20 chats with lastMessage if missing
-        // This is a workaround because getAllChats/listChats isn't returning lastMessage in this version
-        const slicedChats = chats.slice(0, 20); // Limit processing to top 20 for speed
+        const slicedChats = (chats || []).slice(0, 30);
 
         const enrichedChats = await Promise.all(slicedChats.map(async (chat) => {
             try {
                 if (!chat.lastMessage || !chat.lastMessage.body) {
-                    const chatId = chat.id._serialized || chat.id;
-                    const msgs = await sessionData.client.getMessages(chatId, { count: 1 });
-                    if (msgs && msgs.length > 0) {
-                        chat.lastMessage = msgs[msgs.length - 1];
+                    const chatId = chat.id?._serialized || (typeof chat.id === 'string' ? chat.id : null);
+                    if (chatId && typeof sessionData.client.getMessages === 'function') {
+                        const msgs = await sessionData.client.getMessages(chatId, { count: 1 });
+                        if (msgs && msgs.length > 0) {
+                            chat.lastMessage = msgs[msgs.length - 1];
+                        }
                     }
                 }
             } catch (err) {
-                console.warn(`[${session}] Failed to enrich chat ${chat.id?._serialized}: ${err.message}`);
+                console.warn(`[${session}] Failed to enrich chat ${chat.id?._serialized || chat.id}: ${err.message}`);
             }
             return chat;
         }));
 
         res.json({ success: true, chats: enrichedChats });
     } catch (error) {
-        console.error(`[${session}] listChats Error Details:`, error);
+        console.error(`[${session}] Fetch chats Error:`, error);
         res.status(500).json({ success: false, error: error.message, stack: error.stack });
     }
 });

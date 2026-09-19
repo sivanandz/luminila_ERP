@@ -9,8 +9,11 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Eye, EyeOff, Loader2, Sparkles } from "lucide-react";
 
+import { useAuth } from "@/contexts/AuthContext";
+
 export default function LoginPage() {
     const router = useRouter();
+    const { login, register } = useAuth();
     const [isLogin, setIsLogin] = useState(true);
     const [loading, setLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
@@ -28,15 +31,12 @@ export default function LoginPage() {
 
         try {
             if (isLogin) {
-                // Login
-                await pb.collection("users").authWithPassword(
-                    formData.email,
-                    formData.password
-                );
+                // Login via AuthContext
+                await login(formData.email, formData.password);
                 toast.success("Welcome back!");
                 router.push("/");
             } else {
-                // Register
+                // Register via AuthContext (auto-assigns Admin role & auto-logins)
                 if (formData.password !== formData.passwordConfirm) {
                     toast.error("Passwords do not match");
                     setLoading(false);
@@ -49,22 +49,9 @@ export default function LoginPage() {
                     return;
                 }
 
-                // Create user
-                await pb.collection("users").create({
-                    email: formData.email,
-                    password: formData.password,
-                    passwordConfirm: formData.passwordConfirm,
-                    name: formData.name,
-                    emailVisibility: true,
-                });
+                await register(formData.email, formData.password, formData.name);
 
-                // Auto-login after registration
-                await pb.collection("users").authWithPassword(
-                    formData.email,
-                    formData.password
-                );
-
-                toast.success("Account created successfully!");
+                toast.success("Store account created successfully with Admin access!");
                 router.push("/");
             }
         } catch (err: any) {

@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev-all.js",
+    "dev:frontend": "next dev",
+    "dev:pb": "pocketbase\\pocketbase.exe serve --http=127.0.0.1:8090 --dir=pocketbase\\pb_data",
+    "dev:sidecar": "node wppconnect-sidecar/server.js",
+    "dev:all": "node scripts/dev-all.js",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "dev:all": "pwsh -ExecutionPolicy Bypass -File scripts/start-all.ps1",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

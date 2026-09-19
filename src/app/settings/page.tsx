@@ -48,6 +48,9 @@ import { Switch } from "@/components/ui/switch";
 import { getCategories, createCategory, deleteCategory, type Category } from "@/lib/categories";
 import { getAttributes, createAttribute, deleteAttribute, type ProductAttribute, type AttributeType } from "@/lib/attributes";
 import { EwayBillSettings } from "@/components/settings/EwayBillSettings";
+import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
+import { getStoreSettings, saveStoreSettings, getDefaultStoreSettings, type StoreSettings } from "@/lib/settings";
 
 interface SettingSection {
     id: string;
@@ -69,41 +72,14 @@ const sections: SettingSection[] = [
 
 export default function SettingsPage() {
     const router = useRouter();
+    const { user } = useAuth();
     const [activeSection, setActiveSection] = useState("store");
     const [isSaving, setIsSaving] = useState(false);
 
-    // Unified Settings State
-    const [settings, setSettings] = useState({
-        storeName: "Zennila",
-        currency: "INR",
-        email: "contact@zennila.com",
-        phone: "+91 98765 43210",
-        address: "123 Fashion Street, Mumbai, Maharashtra 400001",
-        lowStockThreshold: 5,
-        companyLogo: null as string | null,
-        defaultPrintMode: "regular",
-        gstin: "",
-        pan: "",
-        stateCode: "",
-        bankName: "",
-        accountNumber: "",
-        ifsc: "",
-        branch: "",
-        invoiceFooter: "Thank you for your business!",
-        // Integrations
-        shopifyStore: "",
-        shopifyToken: "",
-        // PhonePe
-        phonepeMerchantId: "",
-        phonepeSaltKey: "",
-        phonepeSaltIndex: "1",
-        phonepeEnv: "UAT",
-        // Razorpay
-        razorpayKeyId: "",
-        razorpayKeySecret: "",
-        razorpayWebhookSecret: "",
-        razorpayEnv: "TEST",
-    });
+    // Unified Settings State - initialized with clean scoped defaults
+    const [settings, setSettings] = useState<StoreSettings>(() =>
+        getDefaultStoreSettings(user?.name, user?.email)
+    );
 
     // Categories state
     const [categories, setCategories] = useState<Category[]>([]);
@@ -120,24 +96,18 @@ export default function SettingsPage() {
         is_required: false,
     });
 
-    // Load data
+    // Load data scoped to current user/store
     useEffect(() => {
-        // Load settings from localStorage
-        const savedSettings = localStorage.getItem("luminila_settings");
-        if (savedSettings) {
-            try {
-                setSettings(prev => ({ ...prev, ...JSON.parse(savedSettings) }));
-            } catch (e) {
-                console.error("Failed to parse settings", e);
-            }
-        }
+        getStoreSettings(user?.id, user?.name, user?.email).then(loaded => {
+            setSettings(loaded);
+        });
 
         if (activeSection === "categories") {
             getCategories().then(setCategories);
         } else if (activeSection === "attributes") {
             getAttributes().then(setAttributes);
         }
-    }, [activeSection]);
+    }, [activeSection, user?.id, user?.name, user?.email]);
 
     // Connection statuses
     const connections = {
@@ -152,23 +122,11 @@ export default function SettingsPage() {
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            // Save to localStorage
-            localStorage.setItem("luminila_settings", JSON.stringify(settings));
-
-            // Simulate network delay
-            await new Promise((resolve) => setTimeout(resolve, 500));
-
-            // Show toast (native for now)
-            const el = document.createElement('div');
-            el.textContent = `Settings Saved`;
-            el.className = 'fixed bottom-4 right-4 bg-emerald-500 text-foreground px-4 py-2 rounded shadow-lg z-[100] animate-fade-in-up font-bold flex items-center gap-2';
-            el.innerHTML = '<span class="text-xl">✓</span> Settings Saved Successfully';
-            document.body.appendChild(el);
-            setTimeout(() => el.remove(), 2000);
-
+            await saveStoreSettings(settings, user?.id);
+            toast.success("Settings Saved Successfully");
         } catch (error) {
             console.error("Failed to save settings", error);
-            alert("Failed to save settings");
+            toast.error("Failed to save settings");
         } finally {
             setIsSaving(false);
         }
