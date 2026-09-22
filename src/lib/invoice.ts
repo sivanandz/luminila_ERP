@@ -116,25 +116,28 @@ export async function recordPayment(paymentDetails: {
     payment_date: string;
     recorded_by: string;
 }): Promise<void> {
-    // Record payment in invoice_payments collection
+    // Record payment in invoice_payments collection (spec schema: reference_number, notes)
     await pb.collection('invoice_payments').create({
         invoice: paymentDetails.invoice_id,
         amount: paymentDetails.amount,
         payment_date: paymentDetails.payment_date,
         payment_method: paymentDetails.payment_method,
-        reference: paymentDetails.reference || '',
-        recorded_by: paymentDetails.recorded_by,
+        reference_number: paymentDetails.reference || '',
+        notes: paymentDetails.recorded_by ? `Recorded by ${paymentDetails.recorded_by}` : '',
     });
 
-    // Update invoice paid amount
+    // Update invoice paid amount and status
     const invoice = await pb.collection('invoices').getOne(paymentDetails.invoice_id);
+    const invoiceTotal = Number(invoice.total || invoice.grand_total || 0);
     const newPaidAmount = (invoice.paid_amount || 0) + paymentDetails.amount;
-    const isPaid = newPaidAmount >= invoice.grand_total;
+    const isPaid = invoiceTotal > 0 && newPaidAmount >= invoiceTotal;
 
-    await pb.collection('invoices').update(paymentDetails.invoice_id, {
+    const updatePayload: Record<string, any> = {
         paid_amount: newPaidAmount,
-        is_paid: isPaid,
-    });
+        status: isPaid ? 'paid' : 'partially_paid',
+    };
+
+    await pb.collection('invoices').update(paymentDetails.invoice_id, updatePayload);
 }
 
 export interface StoreSettings {

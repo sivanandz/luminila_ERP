@@ -49,19 +49,65 @@ interface CustomerRow {
     phone?: string;
     loyalty_points?: number;
     total_spent?: number;
-    tier?: string;
     customer_type?: string;
-    customer_type_name?: string;
     whatsapp_opt_out?: boolean;
 }
 
-/** Resolve an audience segment into opted-in customers with valid phone numbers. */
-export async function resolveAudience(segment: AudienceSegment): Promise<BroadcastAudienceMember[]> {
+export interface AudienceResolutionResult {
+    members: BroadcastAudienceMember[];
+    skippedOptOut: number;
+    skippedNoPhone: number;
+}
+
+export interface CachedTier {
+    name: string;
+    min_points: number;
+}
+
+let cachedLoyaltyTiers: CachedTier[] | null = null;
+
+export async function loadLoyaltyTiers(): Promise<CachedTier[]> {
+    if (cachedLoyaltyTiers) return cachedLoyaltyTiers;
+    try {
+        const records = await pb.collection('loyalty_tiers').getFullList({
+            sort: '-min_points',
+        });
+        if (records.length > 0) {
+            cachedLoyaltyTiers = records.map((r: any) => ({
+                name: r.name,
+                min_points: r.min_points || 0,
+            }));
+            return cachedLoyaltyTiers;
+        }
+    } catch {
+        // fallback to standard ladder
+    }
+    return [
+        { name: 'Platinum', min_points: 2000 },
+        { name: 'Gold', min_points: 1000 },
+        { name: 'Silver', min_points: 300 },
+        { name: 'Bronze', min_points: 0 },
+    ];
+}
+
+export function resolveTierName(points: number, configuredTiers?: CachedTier[]): string {
+    const tiers = configuredTiers && configuredTiers.length > 0 ? configuredTiers : [
+        { name: 'Platinum', min_points: 2000 },
+        { name: 'Gold', min_points: 1000 },
+        { name: 'Silver', min_points: 300 },
+        { name: 'Bronze', min_points: 0 },
+    ];
+    const match = tiers.find(t => points >= t.min_points);
+    return match ? match.name : 'Bronze';
+}
+
+/** Resolve an audience segment into opted-in customers with valid phone numbers and detailed metrics. */
+export async function resolveAudienceDetailed(segment: AudienceSegment): Promise<AudienceResolutionResult> {
     const filters: Record<AudienceSegment, string> = {
         all_active: '',
-        vip_tiers: 'loyalty_points>500',
+        vip_tiers: 'loyalty_points>=1000',
         points_over_500: 'loyalty_points>500',
-        wholesale: 'customer_type="wholesale" || tier="wholesale"',
+        wholesale: 'customer_type="wholesale"',
     };
 
     let rows: CustomerRow[] = [];
@@ -77,28 +123,42 @@ export async function resolveAudience(segment: AudienceSegment): Promise<Broadca
                 sort: '-total_spent',
             }) as unknown as CustomerRow[];
 
-            if (segment === 'vip_tiers' || segment === 'points_over_500') {
+            if (segment === 'vip_tiers') {
+                rows = allRows.filter((r) => (r.loyalty_points || 0) >= 1000);
+            } else if (segment === 'points_over_500') {
                 rows = allRows.filter((r) => (r.loyalty_points || 0) > 500);
             } else if (segment === 'wholesale') {
-                rows = allRows.filter((r) => r.customer_type === 'wholesale' || r.tier === 'wholesale');
+                rows = allRows.filter((r) => r.customer_type === 'wholesale');
             } else {
                 rows = allRows;
             }
         } catch (fallbackErr) {
             console.error('[broadcast] resolveAudience failed completely:', fallbackErr);
-            return [];
+            return { members: [], skippedOptOut: 0, skippedNoPhone: 0 };
         }
     }
 
     const members: BroadcastAudienceMember[] = [];
+    let skippedNoPhone = 0;
+    let skippedOptOut = 0;
+
     for (const row of rows) {
         const rawPhone = row.phone || '';
         const digits = rawPhone.replace(/\D/g, '');
-        if (!rawPhone || digits.length < 10) continue;
+        if (!rawPhone || digits.length < 10) {
+            skippedNoPhone++;
+            continue;
+        }
 
         // Verify opt-out via both direct customer flag and global registry
-        if (row.whatsapp_opt_out) continue;
-        if (await isWhatsAppOptedOut(rawPhone)) continue;
+        if (row.whatsapp_opt_out) {
+            skippedOptOut++;
+            continue;
+        }
+        if (await isWhatsAppOptedOut(rawPhone)) {
+            skippedOptOut++;
+            continue;
+        }
 
         members.push({
             id: row.id,
@@ -106,23 +166,26 @@ export async function resolveAudience(segment: AudienceSegment): Promise<Broadca
             phone: normalizeE164(rawPhone),
             loyalty_points: row.loyalty_points || 0,
             total_spent: row.total_spent || 0,
-            customer_type: row.customer_type || row.tier || 'retail',
+            customer_type: row.customer_type || 'retail',
         });
     }
 
-    return members;
+    return { members, skippedOptOut, skippedNoPhone };
 }
 
-/** Render merge tags for a specific customer (spec §11.2). */
+/** Resolve an audience segment into opted-in customers with valid phone numbers. */
+export async function resolveAudience(segment: AudienceSegment): Promise<BroadcastAudienceMember[]> {
+    const res = await resolveAudienceDetailed(segment);
+    return res.members;
+}
+
+/** Render merge tags for a specific customer (spec §11.2) using canonical tiers. */
 export function renderMergeTags(
     template: string,
-    member: Pick<BroadcastAudienceMember, 'name' | 'loyalty_points' | 'total_spent' | 'customer_type'>
+    member: Pick<BroadcastAudienceMember, 'name' | 'loyalty_points' | 'total_spent' | 'customer_type'>,
+    configuredTiers?: CachedTier[]
 ): string {
-    const tier =
-        member.loyalty_points >= 2000 ? 'Platinum' :
-        member.loyalty_points >= 1000 ? 'Gold' :
-        member.loyalty_points >= 300 ? 'Silver' : 'Bronze';
-
+    const tier = resolveTierName(member.loyalty_points || 0, configuredTiers);
     const firstName = (member.name || '').trim().split(/\s+/)[0] || 'Customer';
 
     return template
@@ -168,12 +231,18 @@ export async function queueCampaign(input: {
     segment: AudienceSegment;
     createdBy?: string;
 }): Promise<CampaignQueueResult> {
-    const result: CampaignQueueResult = { campaign: input.campaign, queued: 0, skippedOptOut: 0, skippedNoPhone: 0 };
-    const audience = await resolveAudience(input.segment);
+    const { members, skippedOptOut, skippedNoPhone } = await resolveAudienceDetailed(input.segment);
+    const result: CampaignQueueResult = {
+        campaign: input.campaign,
+        queued: 0,
+        skippedOptOut,
+        skippedNoPhone,
+    };
+    const tiers = await loadLoyaltyTiers();
 
     let slotOffset = 0;
-    for (const member of audience) {
-        const body = renderMergeTags(input.template, member) + '\n\n_Reply STOP to opt out._';
+    for (const member of members) {
+        const body = renderMergeTags(input.template, member, tiers) + '\n\n_Reply STOP to opt out._';
         slotOffset += getHumanizedJitterDelayMs();
 
         try {

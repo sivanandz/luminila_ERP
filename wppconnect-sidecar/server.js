@@ -443,23 +443,6 @@ app.post('/api/:session/send-message', async (req, res) => {
     }
 });
 
-// Send image
-app.post('/api/:session/send-image', async (req, res) => {
-    const { session } = req.params;
-    const { phone, imageUrl, caption } = req.body;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        const result = await sessionData.client.sendImage(`${phone}@c.us`, imageUrl, 'image', caption);
-        res.json({ success: true, result });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
 
 // Get all chats
 app.get('/api/:session/chats', async (req, res) => {
@@ -637,10 +620,10 @@ app.post('/api/:session/download-media', async (req, res) => {
     }
 });
 
-// Send image
+// Send image (supports base64, data URI, or URL)
 app.post('/api/:session/send-image', async (req, res) => {
     const { session } = req.params;
-    const { phone, base64, filename, caption } = req.body;
+    const { phone, base64, imageUrl, filename, caption } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -648,7 +631,12 @@ app.post('/api/:session/send-image', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.sendImage(phone, base64, filename || 'image.jpg', caption || '');
+        const to = phone.includes('@') ? phone : `${phone}@c.us`;
+        const content = base64 || imageUrl;
+        if (!content) {
+            return res.status(400).json({ success: false, error: 'base64 or imageUrl is required' });
+        }
+        const result = await sessionData.client.sendImage(to, content, filename || 'image.jpg', caption || '');
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });

@@ -6,7 +6,8 @@
  *   3. PocketBase schema fields (broadcast_messages, whatsapp_opt_outs, payment_links.payment_id, customer_type)
  *   4. Razorpay clearing account idempotency & mutex
  *   5. Audience resolution resilience
- *   6. STOP opt-out registration
+ *   6. STOP opt-out registration with automatic teardown
+ *   7. Payment link reconciliation engine execution
  *
  * Run: npx tsx src/scripts/test-phase2-phase3.ts
  */
@@ -20,8 +21,12 @@ import {
     JITTER_MIN_MS,
     JITTER_MAX_MS,
     resolveAudience,
+    loadLoyaltyTiers,
 } from '../lib/whatsapp-broadcast';
-import { getRazorpayClearingAccountId } from '../lib/payment-reconciliation';
+import {
+    getRazorpayClearingAccountId,
+    reconcilePendingPaymentLinks,
+} from '../lib/payment-reconciliation';
 import { isWhatsAppOptedOut, setWhatsAppOptOut } from '../lib/whatsapp-crm';
 
 const PB_URL = process.env.PB_URL || 'http://127.0.0.1:8090';
@@ -44,14 +49,17 @@ async function runTests() {
     console.log("Running WhatsApp Phase 2 & 3 Automated Test Suite");
     console.log("==================================================");
 
+    const adminEmail = process.env.PB_ADMIN_EMAIL || 'admin@luminila.com';
+    const adminPass = process.env.PB_ADMIN_PASSWORD || 'password123456';
+
     // Authenticate shared pb instance for authenticated collection rules
     try {
-        await pb.collection('_superusers').authWithPassword('admin@luminila.com', 'password123456');
+        await pb.collection('_superusers').authWithPassword(adminEmail, adminPass);
     } catch {
         try {
-            await (pb as any).admins.authWithPassword('admin@luminila.com', 'password123456');
+            await (pb as any).admins.authWithPassword(adminEmail, adminPass);
         } catch {
-            await pb.collection('users').authWithPassword('admin@luminila.internal', 'LuminilaAdmin2026!').catch(() => {});
+            // best-effort fallback
         }
     }
 
@@ -70,6 +78,9 @@ async function runTests() {
 
     // 2. Merge Tags Rendering & Loyalty Tiers
     console.log("\n[Test 2] Merge Tags Rendering & Loyalty Tiers");
+    const configuredTiers = await loadLoyaltyTiers();
+    assert(Array.isArray(configuredTiers) && configuredTiers.length >= 3, "loadLoyaltyTiers loads canonical tiers from system");
+
     const samplePlatinum = {
         name: "Ananya Deshmukh",
         loyalty_points: 2450,
@@ -77,7 +88,7 @@ async function runTests() {
         customer_type: "retail",
     };
     const template = "Dear {{customer_name}} ({{first_name}}), you have {{loyalty_points}} pts in {{tier}} tier. Total spent: {{total_spent}}.";
-    const rendered = renderMergeTags(template, samplePlatinum);
+    const rendered = renderMergeTags(template, samplePlatinum, configuredTiers);
     assert(rendered.includes("Ananya Deshmukh"), "Renders {{customer_name}}");
     assert(rendered.includes("(Ananya)"), "Renders {{first_name}}");
     assert(rendered.includes("2450 pts"), "Renders {{loyalty_points}}");
@@ -85,14 +96,14 @@ async function runTests() {
     assert(rendered.includes("₹1,25,000"), "Renders formatted Indian currency for {{total_spent}}");
 
     const sampleBronze = { name: "Rohit", loyalty_points: 150, total_spent: 5000, customer_type: "retail" };
-    const renderedBronze = renderMergeTags("Tier: {{tier}}", sampleBronze);
+    const renderedBronze = renderMergeTags("Tier: {{tier}}", sampleBronze, configuredTiers);
     assert(renderedBronze === "Tier: Bronze", "Renders Bronze tier for < 300 points");
 
     // 3. Database Schema Verification in PocketBase
     console.log("\n[Test 3] PocketBase Schema Integrity");
     const adminPb = new PocketBase(PB_URL);
     try {
-        await adminPb.collection('_superusers').authWithPassword('admin@luminila.com', 'password123456');
+        await adminPb.collection('_superusers').authWithPassword(adminEmail, adminPass);
 
         // Check broadcast_messages
         const bmCol = await adminPb.collections.getOne('broadcast_messages');
@@ -145,16 +156,37 @@ async function runTests() {
         assert(false, `Audience resolution failed: ${err.message}`);
     }
 
-    // 6. STOP Opt-Out Lifecycle
-    console.log("\n[Test 6] Inbound STOP Opt-Out Lifecycle");
+    // 6. STOP Opt-Out Lifecycle with Automatic Teardown
+    console.log("\n[Test 6] Inbound STOP Opt-Out Lifecycle with Teardown");
+    const testPhone = "+919999900001";
     try {
-        const testPhone = "+919999900001";
-        const wasOpted = await isWhatsAppOptedOut(testPhone);
         await setWhatsAppOptOut(testPhone, undefined, 'stop');
         const isOptedNow = await isWhatsAppOptedOut(testPhone);
         assert(isOptedNow === true, "setWhatsAppOptOut registers opt-out and isWhatsAppOptedOut returns true");
     } catch (err: any) {
         assert(false, `Opt-out test failed: ${err.message}`);
+    } finally {
+        try {
+            const digits = testPhone.replace(/\D/g, '').slice(-10);
+            const rec = await adminPb.collection('whatsapp_opt_outs').getFirstListItem(`phone~"${digits}"`).catch(() => null);
+            if (rec) {
+                await adminPb.collection('whatsapp_opt_outs').delete(rec.id);
+            }
+        } catch {
+            // teardown
+        }
+    }
+
+    // 7. Payment Link Reconciliation Engine Execution
+    console.log("\n[Test 7] Payment Link Reconciliation Engine");
+    try {
+        const summary = await reconcilePendingPaymentLinks();
+        assert(
+            typeof summary.checked === 'number' && typeof summary.settled === 'number' && Array.isArray(summary.details),
+            `reconcilePendingPaymentLinks executes cleanly (checked: ${summary.checked}, settled: ${summary.settled}, errors: ${summary.errors})`
+        );
+    } catch (err: any) {
+        assert(false, `reconcilePendingPaymentLinks error: ${err.message}`);
     }
 
     console.log("\n==================================================");

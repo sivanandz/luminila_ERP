@@ -3,12 +3,14 @@
 import React, { useState } from "react";
 import { CreditCard, X, ExternalLink, Copy, Check, Send, Loader2, Sparkles } from "lucide-react";
 import { createPaymentLink, isRazorpayConfigured } from "@/lib/razorpay";
+import { pb } from "@/lib/pocketbase";
 
 export interface RazorpayPaymentModalProps {
     isOpen: boolean;
     onClose: () => void;
     customerName?: string;
     customerPhone?: string;
+    customerId?: string;
     defaultAmount?: number;
     defaultOrderId?: string;
     onSendPaymentLinkToChat: (linkUrl: string, amount: number) => void;
@@ -19,6 +21,7 @@ export function RazorpayPaymentModal({
     onClose,
     customerName = "",
     customerPhone = "",
+    customerId,
     defaultAmount = 0,
     defaultOrderId = "",
     onSendPaymentLinkToChat,
@@ -69,6 +72,31 @@ export function RazorpayPaymentModal({
                     url: res.data.short_url,
                     id: res.data.id,
                 });
+
+                // Ledger link in PocketBase (spec §12.1 payment_links) for reconciler
+                try {
+                    const payload: Record<string, any> = {
+                        provider: 'razorpay',
+                        link_id: res.data.id,
+                        short_url: res.data.short_url,
+                        amount,
+                        currency: 'INR',
+                        status: 'created',
+                        notes: {
+                            source: 'whatsapp_chat_modal',
+                            customer_name: name,
+                            customer_phone: phone,
+                            order_ref: orderRef,
+                        },
+                    };
+                    if (customerId) payload.customer = customerId;
+                    if (defaultOrderId && !defaultOrderId.startsWith('WA-')) {
+                        payload.order = defaultOrderId;
+                    }
+                    await pb.collection('payment_links').create(payload);
+                } catch (ledgerErr) {
+                    console.warn('[RazorpayPaymentModal] payment_links ledger failed:', ledgerErr);
+                }
             } else {
                 setError(res.error || "Failed to generate Razorpay link");
             }

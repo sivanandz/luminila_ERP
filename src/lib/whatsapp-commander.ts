@@ -63,6 +63,30 @@ export async function processAdminCommand(body: string, sender: string): Promise
                     await pb.collection('sales_orders').update(order.id, {
                         razorpay_link_id: linkRes.data.id,
                     });
+
+                    // Ledger link in PocketBase (spec §12.1 payment_links) for reconciler
+                    try {
+                        const payload: Record<string, any> = {
+                            provider: 'razorpay',
+                            link_id: linkRes.data.id,
+                            short_url: linkRes.data.short_url,
+                            amount: totalAmount,
+                            currency: 'INR',
+                            status: 'created',
+                            order: order.id,
+                            notes: {
+                                source: 'whatsapp_commander',
+                                customer_name: order.customer_name,
+                                customer_phone: order.customer_phone,
+                                order_ref: order.id,
+                            },
+                        };
+                        if (order.customer) payload.customer = order.customer;
+                        await pb.collection('payment_links').create(payload);
+                    } catch (ledgerErr) {
+                        console.warn('[whatsapp-commander] payment_links ledger failed:', ledgerErr);
+                    }
+
                     return `💳 *Payment Link for Order #${shortId}*\nAmount: ${formatPrice(totalAmount)}\n🔗 Pay Here: ${linkRes.data.short_url}`;
                 }
                 return `❌ Failed to create Razorpay link: ${linkRes.error || 'Unknown error'}`;

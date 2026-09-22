@@ -570,6 +570,7 @@ export default function WhatsAppPage() {
 
     const [showRazorpayModal, setShowRazorpayModal] = useState(false);
     const [razorpayModalAmount, setRazorpayModalAmount] = useState<number>(0);
+    const [razorpayModalOrderId, setRazorpayModalOrderId] = useState<string>('');
     const [showCatalogSyncModal, setShowCatalogSyncModal] = useState(false);
     const [slashPaletteOpen, setSlashPaletteOpen] = useState(false);
     const [slashQuery, setSlashQuery] = useState("");
@@ -1070,21 +1071,56 @@ _Your order will be confirmed and processed immediately upon successful payment.
         const phone = phoneFromChatId(selectedChat);
         if (!phone) return;
 
-        const items = cart.length > 0
-            ? cart.map(c => ({
+        let items: Array<{
+            sku?: string;
+            name: string;
+            quantity: number;
+            unitPrice: number;
+            totalPrice: number;
+            productId?: string;
+        }> = [];
+
+        if (cart.length > 0) {
+            items = cart.map(c => ({
                 sku: c.sku,
                 name: c.name,
                 quantity: c.quantity || 1,
                 unitPrice: c.base_price,
                 totalPrice: c.base_price * (c.quantity || 1),
                 productId: c.id
-            }))
-            : [{
-                name: `Item inquiry: "${msg.body?.slice(0, 35) || 'Jewelry piece'}"`,
-                quantity: 1,
-                unitPrice: 1000,
-                totalPrice: 1000,
-            }];
+            }));
+        } else {
+            // Attempt to resolve product from message hints
+            const hints = extractVariantHints(msg.body || '');
+            const query = hints.sku || hints.productKeywords[0] || '';
+            if (query) {
+                try {
+                    const { getTypeAheadProducts } = await import('@/lib/products');
+                    const matches = await getTypeAheadProducts(query);
+                    if (matches.length > 0) {
+                        const match = matches[0];
+                        const price = match.price || match.base_price || 0;
+                        items = [{
+                            sku: match.full_sku,
+                            name: match.name,
+                            quantity: 1,
+                            unitPrice: price,
+                            totalPrice: price,
+                            productId: match.id,
+                        }];
+                    }
+                } catch {
+                    // ignore lookup errors
+                }
+            }
+        }
+
+        if (items.length === 0) {
+            setAddedToast("Please add items to cart or select catalog products before creating an order.");
+            setActivePanel('catalog');
+            setTimeout(() => setAddedToast(null), 3500);
+            return;
+        }
 
         const res = await ingestWhatsAppCatalogOrder(
             msg,
@@ -3130,10 +3166,15 @@ _Your order will be confirmed and processed immediately upon successful payment.
             {/* Razorpay Payment Link Modal */}
             <RazorpayPaymentModal
                 isOpen={showRazorpayModal}
-                onClose={() => setShowRazorpayModal(false)}
+                onClose={() => {
+                    setShowRazorpayModal(false);
+                    setRazorpayModalOrderId('');
+                }}
                 customerName={customer?.name || ''}
                 customerPhone={customer?.phone || (selectedChat ? phoneFromChatId(selectedChat) || '' : '')}
+                customerId={customer?.id}
                 defaultAmount={razorpayModalAmount}
+                defaultOrderId={razorpayModalOrderId}
                 onSendPaymentLinkToChat={handleSendPaymentLinkToChat}
             />
 

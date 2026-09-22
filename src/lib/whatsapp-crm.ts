@@ -727,18 +727,29 @@ export async function sendProductCard(opts: {
 // OPT-OUT / STOP COMPLIANCE (spec §11.5)
 // ===========================================
 
-/** Register an opt-out (STOP) for a phone number. Idempotent. */
+/** Register an opt-out (STOP) for a phone number. Idempotent across both whatsapp_opt_outs and customers table. */
 export async function setWhatsAppOptOut(phoneOrChatId: string, customerId?: string, reason: 'stop' | 'manual' = 'stop'): Promise<void> {
     const digits = phoneOrChatId.replace(/\D/g, '').slice(-10);
     if (!digits || digits.length < 10) return;
     try {
+        let custId = customerId;
+        if (!custId) {
+            const matched = await pb.collection('customers').getFirstListItem(`phone~"${digits}"`).catch(() => null);
+            if (matched) custId = matched.id;
+        }
+
+        // Update customer profile opt-out flag if customer found
+        if (custId) {
+            await pb.collection('customers').update(custId, { whatsapp_opt_out: true }).catch(() => {});
+        }
+
         const existing = await pb.collection('whatsapp_opt_outs').getFirstListItem(
             `phone~"${digits}"`
         ).catch(() => null);
         if (existing) return;
         await pb.collection('whatsapp_opt_outs').create({
             phone: normalizeE164(phoneOrChatId),
-            customer: customerId || '',
+            customer: custId || '',
             reason,
             created_at: new Date().toISOString(),
         });
@@ -754,7 +765,12 @@ export async function isWhatsAppOptedOut(phone: string): Promise<boolean> {
         const existing = await pb.collection('whatsapp_opt_outs').getFirstListItem(
             `phone~"${digits}"`
         ).catch(() => null);
-        return !!existing;
+        if (existing) return true;
+
+        const customer = await pb.collection('customers').getFirstListItem(
+            `phone~"${digits}" && whatsapp_opt_out=true`
+        ).catch(() => null);
+        return !!customer;
     } catch {
         return false;
     }

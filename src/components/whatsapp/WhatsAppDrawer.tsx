@@ -7,12 +7,14 @@ import { toast } from "sonner";
 import { whatsappManager, getAllChats, getChatMessages, markAsRead, type WPPChat, type WPPMessage } from "@/lib/whatsapp";
 import {
     getStoredChats,
+    ensureChat,
     sendStaffMessage,
     broadcastAddToPOS,
     extractVariantHints,
     queueLabelPrint,
     type ContactType,
 } from "@/lib/whatsapp-crm";
+import { pb } from "@/lib/pocketbase";
 import { MessageActionMenu } from "@/components/whatsapp/MessageActionMenu";
 import { VendorIngestionModal, AddExistingInventoryModal } from "@/components/whatsapp/VendorIngestionModal";
 import { useLongPress } from "@/hooks/use-long-press";
@@ -48,6 +50,7 @@ export function WhatsAppDrawer() {
     }>({ isOpen: false, message: null, position: null });
     const [vendorIngestMsg, setVendorIngestMsg] = useState<string | null>(null);
     const [addInventoryMsg, setAddInventoryMsg] = useState<string | null>(null);
+    const [activeVendor, setActiveVendor] = useState<{ id: string; name: string } | null>(null);
 
     // Long-press gesture on the drawer transcript
     const { pressing: longPressing, handlers: longPressHandlers } = useLongPress((pos) => {
@@ -84,6 +87,20 @@ export function WhatsAppDrawer() {
         setActiveChat(chat);
         setMessages([]);
         setLoadingMessages(true);
+
+        // Ensure chat record exists in PocketBase for transcript persistence (spec §9/§12.1)
+        ensureChat({ chatId: chat.id, contactName: chat.name }).catch(() => {});
+
+        // Resolve vendor link if phone matches a registered vendor
+        const digits = (chat.id || '').replace(/\D/g, '').slice(-10);
+        if (digits) {
+            pb.collection('vendors').getFirstListItem(`phone~"${digits}"`).then((v: any) => {
+                setActiveVendor({ id: v.id, name: v.name });
+            }).catch(() => setActiveVendor(null));
+        } else {
+            setActiveVendor(null);
+        }
+
         try {
             const msgs = await getChatMessages(whatsappManager.getSessionIdSafe(), chat.id, 30);
             setMessages(msgs);
@@ -410,6 +427,8 @@ export function WhatsAppDrawer() {
                     isOpen
                     onClose={() => setVendorIngestMsg(null)}
                     messageBody={vendorIngestMsg}
+                    vendorId={activeVendor?.id}
+                    vendorName={activeVendor?.name}
                 />
             )}
             {addInventoryMsg !== null && (
@@ -417,6 +436,7 @@ export function WhatsAppDrawer() {
                     isOpen
                     onClose={() => setAddInventoryMsg(null)}
                     messageBody={addInventoryMsg}
+                    vendorId={activeVendor?.id}
                 />
             )}
         </>
