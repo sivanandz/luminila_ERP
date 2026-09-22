@@ -184,10 +184,11 @@ If starting with a clean repository or fresh database:
 3. **Execute Schema Creation**:
    ```bash
    npx tsx src/scripts/init-pocketbase.ts
+   npx tsx src/scripts/update-whatsapp-crm-schema.ts
    npx tsx src/scripts/seed-roles.ts
    npx tsx src/scripts/create-admin-user.ts
    ```
-   This script creates all **38 collections** (products, variants, sales, invoices, sales_orders, customers, vendors, banking, expenses, roles, shifts, etc.) and seeds staff roles and default administrator account.
+   `init-pocketbase.ts` creates all **38 core collections** (products, variants, sales, invoices, sales_orders, customers, vendors, banking, expenses, roles, shifts, etc.). `update-whatsapp-crm-schema.ts` adds the **4 conversational-commerce collections** (`whatsapp_chats`, `whatsapp_messages`, `payment_links`, `label_print_queue`) — 42 in total. The seed scripts populate staff roles and the default administrator account.
 
 ### 4.2 Schema Synchronization & Updates
 
@@ -196,6 +197,9 @@ When schema definitions in code evolve:
 ```bash
 # Sync schema modifications against existing collections
 npx tsx src/scripts/sync-pb-schema.ts
+
+# Add/verify the WhatsApp CRM collections (idempotent)
+npx tsx src/scripts/update-whatsapp-crm-schema.ts
 
 # Apply access rules (public/user/admin permissions)
 npx tsx src/scripts/apply-pb-access-rules.ts

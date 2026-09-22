@@ -33,7 +33,7 @@ graph TB
     end
 
     subgraph Local Services ["Host System Background Services"]
-        PB["PocketBase v0.25.0 Server (:8090)<br/>Embedded Go + SQLite Engine (WAL Mode)<br/>38 Relational Collections"]
+        PB["PocketBase v0.25.0 Server (:8090)<br/>Embedded Go + SQLite Engine (WAL Mode)<br/>44 Relational Collections"]
         WPP["WPPConnect Sidecar (:21465)<br/>Puppeteer / WhatsApp Web Automation"]
     end
 
@@ -121,11 +121,23 @@ luminila_inv_mgmt/
 │   │   │   ├── MobileDrawer.tsx  # Mobile slide-over navigation with grouped ERP sub-domains
 │   │   │   └── index.ts          # Layout components barrel export
 │   │   ├── settings/             # Dynamic server configuration and Google Drive sync modals
+│   │   ├── pos/                  # POS components:
+│   │   │   └── POSWhatsAppWidget.tsx # Checkout WhatsApp messenger (receipt auto-send + payment links)
+│   │   ├── whatsapp/             # Conversational CRM components:
+│   │   │   ├── MessageActionMenu.tsx # Right-click / long-press context action engine (customer & vendor suites)
+│   │   │   ├── VendorIngestionModal.tsx # Smart-extraction product ingestion & add-to-inventory
+│   │   │   ├── WhatsAppDrawer.tsx    # Global floating slide-over chat drawer (mounted in root layout)
+│   │   │   ├── BroadcastComposerModal.tsx # Anti-ban broadcast campaign composer (segmentation + merge tags)
+│   │   │   ├── ChatContextMenu.tsx   # Legacy desktop message context menu
+│   │   │   ├── SlashCommandPalette.tsx # Chat composer slash-command snippets
+│   │   │   ├── RazorpayPaymentModal.tsx # In-chat payment link generator
+│   │   │   └── WhatsAppCatalogSyncModal.tsx # WhatsApp Business catalog publisher
 │   │   └── ui/                   # Reusable UI primitives (dialog, button, table, input, card)
 │   ├── contexts/
 │   │   └── AuthContext.tsx       # Auth state, current user, role verification
 │   ├── hooks/
 │   │   ├── use-viewport.ts       # Viewport detection (isMobile, isTablet, isDesktop, isTauri, isAndroid)
+│   │   ├── use-long-press.ts     # 500ms long-press gesture with 10px tolerance & 40ms haptics
 │   │   └── usePermissions.ts     # RBAC capability flags hook
 │   ├── lib/                      # Domain Business Logic & API Services
 │   │   ├── activity.ts           # Audit log persistence
@@ -151,9 +163,16 @@ luminila_inv_mgmt/
 │   │   ├── returns.ts            # Return requests, credit notes, restock logic
 │   │   ├── sync/                 # Shopify & WooCommerce connector engines
 │   │   ├── sync-engine.ts        # Unified synchronization scheduler
-│   │   └── whatsapp.ts           # WPPConnect sidecar REST client
+│   │   ├── whatsapp.ts           # WPPConnect sidecar REST client
+│   │   ├── whatsapp-crm.ts       # Conversational CRM: contact resolution, chat persistence,
+│   │                             #   staff attribution, intent detection, vendor offer parsing,
+│   │                             #   product ingestion, label queue, POS cart broadcast,
+│   │                             #   product cards, STOP opt-out registry
+│   │   ├── payment-reconciliation.ts # Razorpay payment-link polling settlement engine
+│   │   ├── whatsapp-broadcast.ts # Anti-ban staggered broadcast queue (jitter, quota, segments)
 │   ├── scripts/                  # PocketBase migration, repair, and diagnostic scripts
-│   │   ├── init-pocketbase.ts    # Creates all 38 collections from scratch
+│   │   ├── init-pocketbase.ts    # Creates all 38 core collections from scratch
+│   │   ├── update-whatsapp-crm-schema.ts # Adds the 4 WhatsApp CRM collections
 │   │   ├── sync-pb-schema.ts     # Synchronizes schema differences
 │   │   ├── apply-pb-access-rules.ts # Sets collection security rules
 │   │   ├── seed-roles.ts         # Populates system roles and capability flags
@@ -183,9 +202,9 @@ luminila_inv_mgmt/
 
 ---
 
-## 4. Data Tier: 38 Relational Collections
+## 4. Data Tier: 44 Relational Collections
 
-PocketBase manages SQLite in `WAL` mode, providing ACID guarantees and high concurrent read performance. The schema is organized into 8 sub-domains:
+PocketBase manages SQLite in `WAL` mode, providing ACID guarantees and high concurrent read performance. The schema is organized into 9 sub-domains — 38 core collections from `init-pocketbase.ts` plus 6 conversational-commerce collections from `update-whatsapp-crm-schema.ts`:
 
 ```mermaid
 erDiagram
@@ -280,7 +299,15 @@ erDiagram
    - `discount_usage`: Customer redemption records against coupons.
    - `store_settings`: Global store metadata, tax rates, API credentials.
 
-*(Note: The built-in PocketBase `users` authentication collection hosts system staff and administrator accounts, bringing the active schema to 39 relational tables).*
+9. **Conversational Commerce (WhatsApp CRM)** — created by `update-whatsapp-crm-schema.ts`:
+   - `whatsapp_chats`: Conversation registry (`chat_id`, `contact_type: customer|vendor|lead`, customer/vendor relations, last message, unread count, status, assigned staff, labels).
+   - `whatsapp_messages`: Persisted transcript (message id, from-me flag, sender, staff attribution, body, type, delivery status, timestamp).
+   - `payment_links`: Razorpay/PhonePe payment link ledger (link id, short URL, amount, customer/order/invoice relations, `created|paid|partially_paid|expired|cancelled` status, payment id, paid timestamp).
+   - `label_print_queue`: Barcode tag batch queue (variant, quantity, `dumbbell|butterfly|sheet` template, status, source).
+   - `broadcast_messages`: Anti-ban campaign queue (campaign, customer relation, E.164 recipient, merge-tag rendered body, `queued|sent|failed|skipped` status, jittered `scheduled_at`).
+   - `whatsapp_opt_outs`: STOP compliance registry (E.164 phone, customer relation, reason).
+
+*(Note: The built-in PocketBase `users` authentication collection hosts system staff and administrator accounts, bringing the active schema to 43 relational tables).*
 
 ---
 
@@ -302,6 +329,7 @@ graph LR
         Fin[banking.ts / expenses.ts]
         Sync[sync-engine.ts / sync/*]
         WPPClient[whatsapp.ts]
+        WA_CRM[whatsapp-crm.ts]
     end
 
     Services --> PBClient["pb (pocketbase.ts)"]
@@ -319,6 +347,7 @@ graph LR
 - **`loyalty.ts`**: Calculates tiered point accruals based on invoice subtotals and checks redemption limits.
 - **`banking.ts` & `expenses.ts`**: Double-entry ledger updates for cash drawer drops, bank deposits, and expense vouchers.
 - **`whatsapp.ts` & `mobile-whatsapp.ts`**: Communicates with the local WPPConnect sidecar over HTTP to fetch pairing QR codes and dispatch order updates, with fallback to native Android `whatsapp://` intent for 1-tap dispatch.
+- **`whatsapp-crm.ts`**: Conversational CRM bridge — E.164 contact resolution (vendor → customer → auto-created lead), `whatsapp_chats`/`whatsapp_messages` persistence with unread tracking, staff-attribution outbound sends, inbound intent classification (`STOCK_INQUIRY`, `ORDER_STATUS`, `PRICE_CHECK`, `VENDOR_OFFER`, …), vendor-offer parsing with auto-SKU product ingestion (incl. draft GRN + stock movements), `label_print_queue` tag queueing, and the live POS cart broadcast bridge (`BroadcastChannel('pos_cart')` + `pos:cart-updated`).
 - **`mobile-scanner.ts`**: Unified hardware USB/Bluetooth barcode scanner listener (keyboard wedge), Tauri native scanner, and HTML5 camera fallback.
 - **`mobile-printer.ts`**: Android system print spooler integration and ESC/POS thermal receipt formatting for 58mm / 80mm wireless/Bluetooth POS receipt printers.
 - **`offline-queue.ts`**: Offline transaction queue persisting mutations locally with automatic drain and replay upon network reconnection.
@@ -359,6 +388,12 @@ To enable full-screen dedicated windowing on Android tablets and smartphones wit
 - **Distribution Strategy**:
   1. *Showroom Deployment*: Install directly as a standalone Progressive Web App via Chrome on showroom tablets/phones.
   2. *Release APK Compilation*: Compile the native binary on an NTFS partition (e.g. `C:\`), where Windows symbolic links and cross-drive Gradle builds are natively supported.
+
+### 6.6 Global Conversational Surfaces (WhatsApp CRM)
+WhatsApp messaging is embedded across three coordinated surfaces so staff never navigate away from active tasks:
+1. **Full-Screen Hub (`/whatsapp`)**: High-volume 3-pane CRM workspace with contact-type badges (`Customer`/`Vendor`/`Lead`), the context action engine (right-click on desktop, 500 ms long-press bottom sheet with 40 ms haptics on mobile), and the vendor ingestion modals.
+2. **Global Slide-Over Drawer (`WhatsAppDrawer.tsx`)**: Unread-badged floating button pinned to every route, mounted once in the root layout (`src/app/layout.tsx`); opens the conversation list and composer without page reloads.
+3. **POS Checkout Widget (`POSWhatsAppWidget.tsx`)**: Embedded in the POS terminal — WhatsApp verification indicator, pre-checked auto-receipt dispatch on checkout, and 1-tap Razorpay payment links recorded in the `payment_links` ledger.
 
 ---
 

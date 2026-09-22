@@ -489,37 +489,39 @@ To support this comprehensive specification, the following schema additions will
    - `invoice` (relation -> `invoices`, optional)
    - `status` (`'created'` | `'paid'` | `'expired'` | `'cancelled'`)
    - `paid_at` (datetime)
+   - `payment_id` (text, e.g. `pay_xxx`)
 4. **`label_print_queue`**:
    - `variant` (relation -> `product_variants`)
    - `quantity` (number, default 1)
    - `template` (`'dumbbell'` | `'butterfly'` | `'sheet'`)
    - `status` (`'pending'` | `'printed'` | `'cancelled'`)
    - `created_by` (relation -> `users`, optional)
+5. **`broadcast_messages`** (spec §11 anti-ban queue):
+   - `campaign` (text, required)
+   - `customer` (relation -> `customers`, optional)
+   - `recipient_phone` (text, required, E.164)
+   - `body` (text, merge-tag rendered)
+   - `status` (`'queued'` | `'sent'` | `'failed'` | `'skipped'`)
+   - `scheduled_at` (datetime, jittered slot)
+   - `sent_at` (datetime)
+   - `error` (text)
+   - `created_by` (relation -> `users`, optional)
+6. **`whatsapp_opt_outs`** (spec §11.5 STOP compliance):
+   - `phone` (text, required, unique index)
+   - `customer` (relation -> `customers`, optional)
+   - `reason` (text, e.g. `'stop'` | `'manual'`)
+   - `created_at` (datetime)
 
 ---
 
-## 13. Implementation Roadmap
+## 13. Implementation Status & Audit History
 
-```mermaid
-gantt
-    title WhatsApp ERP/CRM Feature Rollout Roadmap
-    dateFormat  YYYY-MM-DD
-    section Phase 1: Core Hub & Gestures
-    3-Pane /whatsapp Hub UI            :a1, 2026-10-01, 7d
-    Right-Click & Long-Press Gestures :a2, after a1, 4d
-    Instant In-Chat "Add to POS Cart"  :a3, after a2, 4d
-    Vendor Tagging & Ingestion Flow    :a4, after a2, 5d
-    Auto Barcode Tag Generator & Queue :a5, after a4, 3d
-    section Phase 2: Payments & Orders
-    Razorpay Payment Links Integration :b1, 2026-10-20, 6d
-    Inbound Intent Router & Drafts     :b2, after b1, 6d
-    POS & Global Drawer Widgets        :b3, after b2, 5d
-    section Phase 3: Catalog & Campaigns
-    WhatsApp Business Catalog Sync     :c1, 2026-11-05, 7d
-    In-Chat Rich Product Cards         :c2, after c1, 4d
-    Staggered Anti-Ban Broadcasts      :c3, after c2, 6d
-```
+| Phase | Description | Status | Audit Document |
+|---|---|---|---|
+| **Phase 1** | Core Hub & Context Gestures (3-pane layout, PC right-click context menu, mobile long-press with 40ms haptics, vendor message ingestion, auto-barcode generation & print queue, POS broadcast) | **COMPLETED & VERIFIED** | [`docs/WHATSAPP_CRM_CODE_AUDIT_2026-09-22.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_CRM_CODE_AUDIT_2026-09-22.md) |
+| **Phase 2** | Remote Payments & Accounting Reconciliation (Razorpay payment link modal, polling reconciler, automatic sales order & invoice settlement, clearing account double-entry ledger, loyalty point crediting, WhatsApp invoice auto-dispatch) | **COMPLETED & HARDENED** | [`docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md) |
+| **Phase 3** | WhatsApp Catalog Showcases & Smart Broadcasts (WhatsApp Business catalog sync, in-chat rich media product cards, staggered broadcast queue with 8–22s jitter, merge tags `{{customer_name}}`/`{{first_name}}`/`{{tier}}`/`{{loyalty_points}}`/`{{total_spent}}`, 150/day marketing quota, and STOP opt-out registry) | **COMPLETED & HARDENED** | [`docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md) |
 
 ---
 
-*This document serves as the official approved design blueprint for the Luminila WhatsApp-to-ERP/CRM enhancement milestone.*
+*This document serves as the official approved design blueprint and verification record for the Luminila WhatsApp-to-ERP/CRM enhancement milestone.*

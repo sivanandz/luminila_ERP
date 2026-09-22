@@ -56,6 +56,9 @@ import {
 import { createPOSSale } from "@/lib/pos-sales";
 import { getTypeAheadProducts, getProducts, type ProductWithVariant, type Product } from "@/lib/products";
 import { pb } from "@/lib/pocketbase";
+import { subscribeRemoteCartItems, type POSCartBroadcastItem } from "@/lib/whatsapp-crm";
+import { POSWhatsAppWidget, sendPOSReceiptViaWhatsApp } from "@/components/pos/POSWhatsAppWidget";
+import { toast } from "sonner";
 
 
 // Dynamically import BarcodeScanner to avoid SSR issues with html5-qrcode
@@ -137,6 +140,9 @@ export default function POSPage() {
 
     // Cash Tender State
     const [cashTendered, setCashTendered] = useState("");
+
+    // WhatsApp CRM bridge (spec §3.3 / §8.3)
+    const autoSendWhatsAppRef = useRef(false);
 
     // Loyalty State
     const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
@@ -375,6 +381,39 @@ export default function POSPage() {
         setShowPhonePeModal(false);
     };
 
+    // Remote "Add to POS Cart" from WhatsApp surfaces (spec §8.3)
+    useEffect(() => {
+        const unsubscribe = subscribeRemoteCartItems((item: POSCartBroadcastItem) => {
+            setCart((prev) => {
+                const existing = prev.find((c) => c.sku === item.sku);
+                if (existing) {
+                    return prev.map((c) =>
+                        c.sku === item.sku
+                            ? { ...c, quantity: c.quantity + (item.quantity || 1) }
+                            : c
+                    );
+                }
+                return [
+                    ...prev,
+                    {
+                        id: generateId(),
+                        sku: item.sku,
+                        name: item.name,
+                        variant: item.variant,
+                        price: item.price,
+                        quantity: item.quantity || 1,
+                        productId: item.productId,
+                        variantId: item.variantId,
+                    },
+                ];
+            });
+            toast.success(`Added ${item.quantity || 1}x ${item.sku} from WhatsApp chat${item.addedByName ? ` (${item.addedByName})` : ''}`, {
+                description: item.name,
+            });
+        });
+        return unsubscribe;
+    }, []);
+
     // Calculate totals
     const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
     const discountAmount = (subtotal * discount) / 100;
@@ -502,6 +541,17 @@ export default function POSPage() {
 
             setShowReceipt(true);
             clearCart();
+
+            // Auto-send receipt via WhatsApp (spec §3.3 checkbox)
+            if (autoSendWhatsAppRef.current && selectedCustomerId) {
+                sendPOSReceiptViaWhatsApp({
+                    customerId: selectedCustomerId,
+                    invoiceNumber: result.invoiceNumber,
+                    total,
+                    paymentMethod,
+                    pointsEarned: pointsToEarn,
+                }).catch((err) => console.warn('WhatsApp auto-send failed:', err));
+            }
         } catch (error) {
             console.error('Error processing sale:', error);
             alert('Failed to process sale. Please try again.');
@@ -567,6 +617,16 @@ export default function POSPage() {
 
             setShowReceipt(true);
             clearCart();
+
+            if (autoSendWhatsAppRef.current && selectedCustomerId) {
+                sendPOSReceiptViaWhatsApp({
+                    customerId: selectedCustomerId,
+                    invoiceNumber: result.invoiceNumber,
+                    total,
+                    paymentMethod: 'phonepe',
+                    pointsEarned: pointsToEarn,
+                }).catch((err) => console.warn('WhatsApp auto-send failed:', err));
+            }
         } catch (error) {
             console.error('Error processing PhonePe sale:', error);
             alert('Payment received but failed to record sale. Please contact support.');
@@ -996,6 +1056,15 @@ export default function POSPage() {
                         </div>
                     )}
 
+                    {/* WhatsApp Checkout Messenger (spec §3.3) */}
+                    <POSWhatsAppWidget
+                        mode="pre-sale"
+                        customerId={selectedCustomerId}
+                        total={total}
+                        paymentMethod={paymentMethod || undefined}
+                        autoSendRef={autoSendWhatsAppRef}
+                    />
+
                     {/* Checkout Button */}
                     <button
                         onClick={processSale}
@@ -1069,6 +1138,19 @@ export default function POSPage() {
                                     New Sale
                                 </Button>
                             </div>
+
+                            {/* WhatsApp receipt dispatch (spec §3.3 / §5) */}
+                            {selectedCustomerId && (
+                                <div className="flex gap-3 mt-3">
+                                    <POSWhatsAppWidget
+                                        mode="receipt"
+                                        customerId={selectedCustomerId}
+                                        total={lastTransaction.total}
+                                        invoiceNumber={lastTransaction.invoiceNumber}
+                                        paymentMethod={lastTransaction.paymentMethod}
+                                    />
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>

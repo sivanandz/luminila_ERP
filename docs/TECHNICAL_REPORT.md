@@ -154,11 +154,19 @@ To enable showroom floor staff to operate on Android smartphones and tablets:
 - **`src/lib/mobile-scanner.ts`**: Unified hardware USB/Bluetooth barcode scanner listener (keyboard wedge) and HTML5 camera scanner.
 - **`src/lib/mobile-printer.ts`**: Android system print spooler integration and ESC/POS thermal receipt formatting for 58mm/80mm wireless Bluetooth printers.
 
+### 3.4 Conversational CRM Bridge (`src/lib/whatsapp-crm.ts`)
+
+Implements Phase 1 of the WhatsApp ERP/CRM specification ([`docs/WHATSAPP_ERP_CRM_SPECIFICATION.md`](WHATSAPP_ERP_CRM_SPECIFICATION.md)):
+- **Contact resolution**: Inbound chat ids are matched against `vendors` then `customers` using E.164-normalized phones; unknown numbers become CRM leads automatically.
+- **Persistent transcripts**: Sidecar chats/messages are mirrored into `whatsapp_chats` / `whatsapp_messages` with unread counts, delivery status, and staff attribution prefixes on outbound messages.
+- **Context actions**: Role-aware right-click (desktop) / long-press (mobile, 40 ms haptic) action menus drive vendor ingestion (smart extraction → product + variant + stock movement + draft GRN → `label_print_queue` barcode tags) and customer commerce (smart SKU detection → live POS cart broadcast via `BroadcastChannel('pos_cart')`).
+- **Checkout dispatch**: `POSWhatsAppWidget` verifies the customer's WhatsApp account, auto-sends branded GST receipts on checkout, and creates Razorpay payment links that are recorded in the `payment_links` ledger.
+
 ---
 
-## 4. Database Schema: 38 Relational Collections
+## 4. Database Schema: 44 Relational Collections
 
-PocketBase manages SQLite in `WAL` mode across **38 relational collections** created by `src/scripts/init-pocketbase.ts`:
+PocketBase manages SQLite in `WAL` mode across **44 relational collections** — 38 core collections created by `src/scripts/init-pocketbase.ts` plus 6 conversational-commerce collections created by `src/scripts/update-whatsapp-crm-schema.ts`:
 
 ```mermaid
 erDiagram
@@ -197,7 +205,7 @@ erDiagram
     roles ||--o{ user_roles : "grants"
 ```
 
-### Schema Sub-Domains (38 Custom Collections)
+### Schema Sub-Domains (42 Custom Collections)
 1. **Catalog & Stock**: `products`, `product_variants`, `stock_movements`.
 2. **POS & Register**: `sales`, `sale_items`, `cash_register_shifts`, `cash_drawer_operations`.
 3. **GST Invoicing & Orders**: `invoices`, `invoice_items`, `invoice_payments`, `number_sequences`, `sales_orders`, `sales_order_items`.
@@ -206,6 +214,7 @@ erDiagram
 6. **CRM & Loyalty**: `customers`, `customer_interactions`, `loyalty_settings`, `loyalty_tiers`, `loyalty_accounts`, `loyalty_transactions`.
 7. **Treasury & Expenses**: `bank_accounts`, `bank_transactions`, `expense_categories`, `expenses`.
 8. **Governance & Settings**: `roles`, `user_roles`, `activity_logs`, `discounts`, `discount_usage`, `store_settings` *(Note: PocketBase also includes the built-in `users` auth collection).*
+9. **Conversational Commerce (WhatsApp CRM)**: `whatsapp_chats`, `whatsapp_messages`, `payment_links`, `label_print_queue`, `broadcast_messages`, `whatsapp_opt_outs` — created by `update-whatsapp-crm-schema.ts` and consumed by `src/lib/whatsapp-crm.ts`, `payment-reconciliation.ts`, and `whatsapp-broadcast.ts`.
 
 ---
 

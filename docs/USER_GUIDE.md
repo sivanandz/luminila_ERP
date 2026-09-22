@@ -16,6 +16,7 @@ Luminila is a dedicated fashion jewelry ERP and Point of Sale (POS) system. It r
 - **Showroom Cash Drawer Shifts**: Shift opening float, mid-shift drops, blind closing, and automatic variance calculation.
 - **Customer CRM & Loyalty**: Tiered points program (Bronze, Silver, Gold, Platinum) and customer purchase ledgers.
 - **WhatsApp Integration**: Automated order dispatch and customer communications via local WPPConnect sidecar.
+- **WhatsApp Conversational CRM**: Global chat drawer on every screen, right-click / long-press message actions, in-chat "Add to POS Cart", vendor product ingestion with auto barcode tags, and WhatsApp receipt + payment-link dispatch at POS checkout.
 - **Mobile & Android Ready**: Thumb-friendly navigation, camera barcode scanning, mobile printer support, and remote Cloudflare tunneling.
 
 ---
@@ -93,10 +94,11 @@ Luminila features two distinct credential sets:
 2. Run schema initialization and user/role seeding:
    ```bash
    npx tsx src/scripts/init-pocketbase.ts
+   npx tsx src/scripts/update-whatsapp-crm-schema.ts
    npx tsx src/scripts/seed-roles.ts
    npx tsx src/scripts/create-admin-user.ts
    ```
-3. All 38 collections, indexes, staff roles, and the administrator account are now ready.
+3. All 44 collections (38 core + 6 WhatsApp CRM), indexes, staff roles, and the administrator account are now ready.
 
 ---
 
@@ -143,7 +145,8 @@ On smartphones and small tablets:
 2. **Variant Selection**: For items with variants, select the desired ring size, metal tone (Rose Gold, 925 Silver, Yellow Gold), or material.
 3. **Customer & Loyalty**: Look up the customer's phone number to earn points or redeem accrued loyalty balance.
 4. **Select Payment Mode**: Choose Cash (with dynamic change due calculation), Card, UPI, or dynamic PhonePe QR. *(Note: Each sale currently settles through a single selected tender; multi-mode split tenders are slated for Milestone 3).*
-5. **Complete & Print**: Click **Complete Sale**. Print a thermal receipt (58mm/80mm) or generate an official GST tax invoice.
+5. **WhatsApp Checkout**: When a customer is attached, the WhatsApp panel shows a verification badge for their number and a pre-checked option to send the branded tax invoice receipt on checkout. You can also push a Razorpay payment link straight to their phone for remote settlement.
+6. **Complete & Print**: Click **Complete Sale**. Print a thermal receipt (58mm/80mm) or generate an official GST tax invoice.
 
 ### 3. Printing Barcode Tags for Jewelry
 1. Navigate to `/labels`.
@@ -162,6 +165,15 @@ On smartphones and small tablets:
 2. When the shipment arrives, click **Receive Goods (GRN)**.
 3. Inspect pieces: enter accepted quantity vs rejected quantity with rejection notes (e.g., *"stone loose"* or *"plating blemish"*).
 4. Commit the GRN. The system automatically increments variant stock levels and updates the PO status.
+
+### 6. WhatsApp Conversational CRM
+1. **Open the Chat Drawer**: Tap the green floating WhatsApp button on any screen (bottom-right on desktop, above the mobile nav bar). The badge shows total unread messages.
+2. **Reply on the Go**: Pick a conversation and reply — messages are sent under your name (e.g., `[Priya - Luminila Sales]`) from the store's official WhatsApp line.
+3. **Serve Customers In-Chat**: Right-click (PC) or press-and-hold (mobile) a customer's message for instant actions — **Add to POS Cart** (the item appears on the showroom POS terminal instantly), **Create Quote**, **Send Razorpay Payment Link**, or **Send Product Card**.
+4. **Ingest Vendor Consignments**: Press-and-hold a vendor's message — **Create New Product** reads purity, weight, and cost from the text, suggests a retail price and SKU, and offers to queue a barcode tag for `/labels`. **Add to Existing Inventory** records received quantities (with an automatic draft GRN).
+5. **Tag Contacts**: Use the colored pill in the chat header to switch a contact between Lead, Customer, and Vendor; new WhatsApp numbers are saved as leads automatically.
+6. **Automatic Payment Settlement**: Payment links you send are reconciled automatically by the background polling engine — when a customer completes their UPI or card payment, the linked sales order and invoice are settled (`PAID`), customer loyalty points are credited, a double-entry deposit is written to the Razorpay Clearing Account, and the official PDF invoice is dispatched back to their WhatsApp chat automatically.
+7. **Run a Smart Broadcast Campaign**: Click the **Broadcast** button in the `/whatsapp` hub header to open the **Smart Broadcast Composer** — select an audience cohort (*All Active*, *VIP Tiers*, *Points > 500*, or *Wholesale/B2B*), write or select a merge-tag template (`{{customer_name}}`, `{{first_name}}`, `{{tier}}`, `{{loyalty_points}}`, `{{total_spent}}`), review the live preview and daily quota meter, and click Queue. Messages are dispatched with randomized 8–22s humanized jitter to prevent account bans, strictly capped at 150/day. Any customer replying **STOP** is automatically registered in the opt-out compliance table and excluded from future marketing broadcasts.
 
 ---
 

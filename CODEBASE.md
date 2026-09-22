@@ -43,7 +43,8 @@ npm run tauri:build    # Build Windows MSI / Executable
 npx tauri android build --apk
 
 # Database & Schema Management
-npx tsx src/scripts/init-pocketbase.ts       # Initialize all 38 collections
+npx tsx src/scripts/init-pocketbase.ts       # Initialize all 38 core collections
+npx tsx src/scripts/update-whatsapp-crm-schema.ts # Add the 4 WhatsApp CRM collections (42 total)
 npx tsx src/scripts/sync-pb-schema.ts        # Sync schema modifications
 npx tsx src/scripts/apply-pb-access-rules.ts # Set collection security rules
 npx tsx src/scripts/seed-roles.ts            # Seed RBAC roles & capabilities
@@ -99,12 +100,18 @@ luminila_inv_mgmt/
 │   ├── components/
 │   │   ├── auth/                 # ProtectedRoute.tsx
 │   │   ├── layout/               # Sidebar.tsx, Header.tsx, MobileBottomNav.tsx, MobileDrawer.tsx
+│   │   ├── pos/                  # POSWhatsAppWidget.tsx (checkout WhatsApp receipt & payment links)
+│   │   ├── whatsapp/             # MessageActionMenu.tsx, VendorIngestionModal.tsx, WhatsAppDrawer.tsx,
+│   │   │                         #   BroadcastComposerModal.tsx, ChatContextMenu.tsx, SlashCommandPalette.tsx,
+│   │   │                         #   RazorpayPaymentModal.tsx
+│   │   ├── settings/             # ServerConfigModal, GoogleDriveSyncModal
 │   │   ├── dashboard/            # KPI cards, charts, alerts
 │   │   └── ui/                   # Button, Dialog, Input, Table, Card, etc.
 │   ├── contexts/
 │   │   └── AuthContext.tsx       # PocketBase auth state, user role, session persistence
 │   ├── hooks/
 │   │   ├── use-viewport.ts       # isMobile, isTablet, isDesktop, isTauri, isAndroid
+│   │   ├── use-long-press.ts     # 500ms long-press gesture (10px tolerance, 40ms haptics)
 │   │   └── usePermissions.ts     # RBAC capability flags hook
 │   ├── lib/                      # Business Logic & Database Services
 │   │   ├── pocketbase.ts         # PocketBase singleton, getPocketBaseUrl, setPocketBaseUrl, checkServerStatus
@@ -124,6 +131,11 @@ luminila_inv_mgmt/
 │   │   ├── rbac.ts               # Role permissions & capability flags
 │   │   ├── barcode-generator.ts  # Code128 vector barcode generation
 │   │   ├── whatsapp.ts           # WPPConnect sidecar REST client
+│   │   ├── whatsapp-crm.ts       # Conversational CRM: contact resolution, chat persistence, staff
+│   │   │                         #   attribution, intent detection, vendor ingestion, label queue,
+│   │   │                         #   POS cart broadcast bridge, product cards, STOP opt-outs
+│   │   ├── payment-reconciliation.ts # Razorpay payment-link polling settlement engine
+│   │   ├── whatsapp-broadcast.ts # Anti-ban staggered broadcast queue (jitter, quota, segments)
 │   │   ├── mobile-scanner.ts     # Unified hardware/camera/Tauri barcode scanner
 │   │   ├── mobile-printer.ts     # Android system print spooler & ESC/POS receipt engine
 │   │   ├── mobile-whatsapp.ts    # Dual-mode WhatsApp (WPPConnect or native wa.me intent)
@@ -155,7 +167,7 @@ luminila_inv_mgmt/
 │   ├── PROJECT_STATE.md          # Release maturity matrix, known defects, and roadmap
 │   ├── TECHNICAL_REPORT.md       # Comprehensive technical report & architecture benchmarks
 │   ├── APP_WORKING.md            # Daily operational workflows for cashiers and store admins
-│   ├── FEATURES.md               # Complete functional specification across 16 domains
+│   ├── FEATURES.md               # Complete functional specification across 17 domains
 │   ├── USER_GUIDE.md             # End-user showroom and cashier operations manual
 │   └── README.md                 # Documentation suite index
 └── package.json
@@ -188,6 +200,10 @@ Before modifying any file, maintain the following architectural boundaries:
 5. **Tauri Sidecar Process Supervision**:
    - The WhatsApp sidecar binary must be located in `src-tauri/binaries/` with the target triple name (e.g., `wppconnect-server-x86_64-pc-windows-msvc.exe`).
    - The Rust core (`src-tauri/src/lib.rs`) automatically restarts the sidecar if it crashes.
+
+6. **Conversational CRM Boundaries**:
+   - UI surfaces (hub page, drawer, POS widget) must talk to the sidecar and `whatsapp_*` collections through `src/lib/whatsapp-crm.ts` (contact resolution, persistence, attribution) rather than calling `pb.collection('whatsapp_*')` ad hoc.
+   - Cross-surface cart hand-offs must go through the `broadcastAddToPOS` / `subscribeRemoteCartItems` bridge in `whatsapp-crm.ts` (BroadcastChannel `pos_cart` + localStorage `pos:cart-updated`), never through ad-hoc channels.
 
 ---
 

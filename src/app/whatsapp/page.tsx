@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Header } from "@/components/layout";
 import {
     whatsappManager,
@@ -45,7 +45,8 @@ import {
     UserPlus,
     Tag,
     ExternalLink,
-    Store
+    Store,
+    RadioTower
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import {
@@ -72,6 +73,27 @@ import { WhatsAppCatalogSyncModal } from "@/components/whatsapp/WhatsAppCatalogS
 import { updateCustomerCRMProfile, setCustomerLeadStatus } from "@/lib/customer-lookup";
 import { sendPaidOrderInvoice } from "@/lib/whatsapp-notifications";
 import { ingestWhatsAppCatalogOrder } from "@/lib/whatsapp-order-ingestion";
+import { useLongPress } from "@/hooks/use-long-press";
+import { MessageActionMenu } from "@/components/whatsapp/MessageActionMenu";
+import { VendorIngestionModal, AddExistingInventoryModal } from "@/components/whatsapp/VendorIngestionModal";
+import {
+    resolveContact,
+    ensureChat,
+    persistMessages,
+    markChatRead,
+    broadcastAddToPOS,
+    extractVariantHints,
+    queueLabelPrint,
+    getStoredChats,
+    setChatContactType,
+    detectIntent,
+    sendProductCard,
+    setWhatsAppOptOut,
+    type ContactType,
+} from "@/lib/whatsapp-crm";
+import { startPaymentReconciler } from "@/lib/payment-reconciliation";
+import { processBroadcastQueue } from "@/lib/whatsapp-broadcast";
+import { BroadcastComposerModal } from "@/components/whatsapp/BroadcastComposerModal";
 
 // --- Types ---
 
@@ -493,6 +515,59 @@ export default function WhatsAppPage() {
         position: { x: number; y: number } | null;
     }>({ isOpen: false, message: null, position: null });
 
+    // CRM contact binding state (spec §8.1 / §9)
+    const [contactType, setContactType] = useState<ContactType>('lead');
+    const [contactVendor, setContactVendor] = useState<{ id: string; name: string } | null>(null);
+    const [chatTypeMap, setChatTypeMap] = useState<Record<string, ContactType>>({});
+    const chatRecordRef = useRef<string | null>(null);
+    const [actionMenu, setActionMenu] = useState<{
+        isOpen: boolean;
+        message: WPPMessage | null;
+        position: { x: number; y: number } | null;
+    }>({ isOpen: false, message: null, position: null });
+    const [vendorIngestMsg, setVendorIngestMsg] = useState<string | null>(null);
+    const [addInventoryMsg, setAddInventoryMsg] = useState<string | null>(null);
+
+    // Phase 2/3: payments reconciliation, broadcasts, order-intent banner
+    const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+    const [orderBannerMsg, setOrderBannerMsg] = useState<Message | null>(null);
+
+    // Payment link reconciliation (spec §7) + broadcast queue drain (spec §11)
+    useEffect(() => {
+        const stopReconciler = startPaymentReconciler(90_000);
+        let draining = false;
+        const drainTimer = setInterval(async () => {
+            if (draining) return;
+            draining = true;
+            try {
+                await processBroadcastQueue();
+            } finally {
+                draining = false;
+            }
+        }, 15_000);
+        return () => {
+            stopReconciler();
+            clearInterval(drainTimer);
+        };
+    }, []);
+
+    // Long-press gesture on the transcript (spec §8.4: 500ms hold, haptic feedback)
+    const { pressing: longPressing, handlers: longPressHandlers } = useLongPress((pos) => {
+        const el = document.elementFromPoint(pos.x, pos.y)?.closest('[data-msg-id]') as HTMLElement | null;
+        const msgId = el?.getAttribute('data-msg-id');
+        const msg = selectedChatMessages.find(m => m.id === msgId);
+        if (msg) setActionMenu({ isOpen: true, message: msg as unknown as WPPMessage, position: pos });
+    });
+
+    // Hydrate previously-resolved contact types for list badges
+    useEffect(() => {
+        getStoredChats().then((stored) => {
+            const map: Record<string, ContactType> = {};
+            for (const s of stored) map[s.chat_id] = s.contact_type as ContactType;
+            setChatTypeMap(map);
+        });
+    }, []);
+
     const [showRazorpayModal, setShowRazorpayModal] = useState(false);
     const [razorpayModalAmount, setRazorpayModalAmount] = useState<number>(0);
     const [showCatalogSyncModal, setShowCatalogSyncModal] = useState(false);
@@ -622,6 +697,38 @@ export default function WhatsAppPage() {
                 });
                 parsed.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 setSelectedChatMessages(parsed);
+
+                // CRM binding + persistence (spec §9 / §12.1)
+                const chatMeta = chats.find(c => c.id === selectedChat);
+                const ctx = await resolveContact(selectedChat, chatMeta?.name);
+                setContactType(ctx.type);
+                setContactVendor(ctx.vendor ? { id: ctx.vendor.id, name: ctx.vendor.company_name || ctx.vendor.name } : null);
+                setChatTypeMap(prev => ({ ...prev, [selectedChat]: ctx.type }));
+
+                const stored = await ensureChat({
+                    chatId: selectedChat,
+                    contactName: chatMeta?.name,
+                    contactType: ctx.type,
+                    customer: ctx.customer?.id || '',
+                    vendor: ctx.vendor?.id || '',
+                });
+                chatRecordRef.current = stored?.id || null;
+
+                if (stored) {
+                    persistMessages(stored.id, msgs);
+                    markChatRead(stored.id);
+                    whatsappManager.markAsRead(selectedChat).catch(() => {});
+                }
+
+                // Inbound intent router (spec §2): STOP opt-out + order-intent banner
+                const lastInbound = [...parsed].reverse().find(m => !m.fromMe && m.body);
+                if (lastInbound && detectIntent(lastInbound.body) === 'OPT_OUT') {
+                    setWhatsAppOptOut(selectedChat, ctx.customer?.id || undefined).catch(() => {});
+                    setAddedToast('Customer opted out — marketing messages blocked');
+                    setTimeout(() => setAddedToast(null), 3500);
+                }
+                const wantsOrder = !!lastInbound && /\b(book|order|buy|purchase|reserve)\b/i.test(lastInbound.body || '');
+                setOrderBannerMsg(wantsOrder ? lastInbound : null);
             } catch (err) {
                 console.error("Failed to load messages:", err);
             } finally {
@@ -1011,6 +1118,142 @@ _Your order will be confirmed and processed immediately upon successful payment.
         setCustomer(prev => prev ? { ...prev, lead_status: status } : null);
         setAddedToast(`Lead status updated: ${status.replace('_', ' ').toUpperCase()}`);
         setTimeout(() => setAddedToast(null), 3000);
+    };
+
+    // ===== Context Action Engine additions (spec §8.2 / §8.3) =====
+
+    /** Broadcast a detected product from a chat message straight to the POS terminal cart. */
+    const handleBroadcastToPOS = async (msg: WPPMessage) => {
+        const hints = extractVariantHints(msg.body || '');
+        const query = hints.sku || hints.productKeywords[0] || '';
+        if (!query) {
+            setAddedToast('No product or SKU detected in this message');
+            setTimeout(() => setAddedToast(null), 3000);
+            return;
+        }
+        try {
+            const { getTypeAheadProducts } = await import('@/lib/products');
+            const matches = await getTypeAheadProducts(query);
+            // Optional size refinement (e.g. "size 7")
+            let best = matches[0];
+            if (hints.size) {
+                best = matches.find(m => (m.variant_name || '').includes(hints.size!)) || best;
+            }
+            if (!best) {
+                setAddedToast(`No catalog match for "${query}"`);
+                setTimeout(() => setAddedToast(null), 3000);
+                return;
+            }
+            broadcastAddToPOS({
+                sku: best.full_sku,
+                name: best.name,
+                variant: best.variant_name,
+                price: best.price,
+                quantity: 1,
+                productId: best.id,
+                variantId: best.variant_id,
+                sourceChatId: selectedChat || undefined,
+                addedByName: chats.find(c => c.id === selectedChat)?.name,
+            });
+            setAddedToast(`Sent 1x ${best.full_sku} to POS terminal`);
+        } catch (err) {
+            console.error('Broadcast to POS failed:', err);
+            setAddedToast('Failed to send to POS');
+        }
+        setTimeout(() => setAddedToast(null), 3000);
+    };
+
+    /** Queue a Code128 barcode tag for a variant detected from a vendor message. */
+    const handleAutoBarcodeTag = async (msg: WPPMessage) => {
+        const hints = extractVariantHints(msg.body || '');
+        const query = hints.sku || hints.productKeywords[0] || '';
+        if (!query) {
+            setAddedToast('No SKU detected to tag');
+            setTimeout(() => setAddedToast(null), 3000);
+            return;
+        }
+        try {
+            const { getTypeAheadProducts } = await import('@/lib/products');
+            const matches = await getTypeAheadProducts(query);
+            if (!matches[0]) {
+                setAddedToast(`No variant found for "${query}"`);
+                setTimeout(() => setAddedToast(null), 3000);
+                return;
+            }
+            await queueLabelPrint({
+                variantId: matches[0].variant_id,
+                quantity: 1,
+                template: 'dumbbell',
+                source: 'vendor_ingestion',
+            });
+            setAddedToast(`Barcode tag queued for ${matches[0].full_sku} — print from /labels`);
+        } catch (err) {
+            console.error('Auto tag queue failed:', err);
+            setAddedToast('Failed to queue tag');
+        }
+        setTimeout(() => setAddedToast(null), 3000);
+    };
+
+    /** Real product card dispatch (spec §6.1.2): photo + specs + live stock. */
+    const handleSendProductCard = async (msg: WPPMessage) => {
+        if (!selectedChat) return;
+        const hints = extractVariantHints(msg.body || '');
+        const query = hints.sku || hints.productKeywords[0] || '';
+        if (!query) {
+            setAddedToast('No product detected for the card');
+            setTimeout(() => setAddedToast(null), 3000);
+            return;
+        }
+        try {
+            const { getTypeAheadProducts } = await import('@/lib/products');
+            const matches = await getTypeAheadProducts(query);
+            if (!matches[0]) {
+                setAddedToast(`No catalog match for "${query}"`);
+                setTimeout(() => setAddedToast(null), 3000);
+                return;
+            }
+            const ok = await sendProductCard({
+                chatId: selectedChat,
+                variantId: matches[0].variant_id,
+                chatRecordId: chatRecordRef.current || undefined,
+            });
+            if (ok) {
+                setAddedToast(`Product card sent (${matches[0].full_sku})`);
+            } else {
+                setAddedToast('Failed to send product card');
+            }
+        } catch (err) {
+            console.error('Product card failed:', err);
+            setAddedToast('Failed to send product card');
+        }
+        setTimeout(() => setAddedToast(null), 3000);
+    };
+
+    /** 1-click contact-type toggle in the chat header (spec §8.1). */
+    const handleToggleContactType = async () => {
+        if (!selectedChat) return;
+        const next: ContactType = contactType === 'lead' ? 'customer' : contactType === 'customer' ? 'vendor' : 'lead';
+        setContactType(next);
+        setChatTypeMap(prev => ({ ...prev, [selectedChat]: next }));
+
+        // Link relations when retagging
+        let links: { customer?: string; vendor?: string } = {};
+        if (next === 'customer' && customer) links.customer = customer.id;
+        if (next === 'vendor') {
+            if (contactVendor) links.vendor = contactVendor.id;
+            else {
+                const ctx = await resolveContact(selectedChat, chats.find(c => c.id === selectedChat)?.name);
+                if (ctx.vendor) {
+                    links.vendor = ctx.vendor.id;
+                    setContactVendor({ id: ctx.vendor.id, name: ctx.vendor.company_name || ctx.vendor.name });
+                }
+            }
+        }
+        if (chatRecordRef.current) {
+            await setChatContactType(chatRecordRef.current, next, links).catch(() => {});
+        }
+        setAddedToast(`Chat tagged as ${next.toUpperCase()}`);
+        setTimeout(() => setAddedToast(null), 2500);
     };
 
     const handleSaveCRMProfile = async () => {
@@ -1485,6 +1728,38 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     </div>
                 )}
 
+                {/* Inbound Order-Intent Approval Banner (spec §2) */}
+                {orderBannerMsg && selectedChat && (
+                    <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex flex-wrap items-center gap-3">
+                        <Sparkles size={16} className="text-amber-500 shrink-0" />
+                        <span className="text-xs font-semibold text-foreground flex-1 min-w-40">
+                            Order intent detected from {chats.find(c => c.id === selectedChat)?.name || 'customer'}:
+                            <span className="text-muted-foreground font-normal"> “{orderBannerMsg.body?.slice(0, 90)}{((orderBannerMsg.body || '').length > 90) ? '…' : ''}”</span>
+                        </span>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => handleContextConvertToOrder(orderBannerMsg as unknown as WPPMessage)}
+                                className="text-xs font-bold bg-primary text-primary-foreground px-3 py-1.5 rounded-lg hover:bg-primary/90 transition-colors"
+                            >
+                                Create Draft Order
+                            </button>
+                            <button
+                                onClick={() => handleContextGeneratePayLink()}
+                                className="text-xs font-bold bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-500 transition-colors"
+                            >
+                                Send Payment Link
+                            </button>
+                            <button
+                                onClick={() => setOrderBannerMsg(null)}
+                                className="text-xs text-muted-foreground hover:text-foreground px-2"
+                                title="Dismiss"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
 
                     {/* LEFT: Chats List */}
@@ -1500,7 +1775,16 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         </div>
                                     )}
                                 </div>
-                                <div className="flex gap-2">
+                                <div className="flex gap-1.5 items-center">
+                                    <button
+                                        onClick={() => setShowBroadcastModal(true)}
+                                        className="text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium transition-colors border border-amber-500/20"
+                                        title="Compose smart broadcast campaign (spec §11 anti-ban queue)"
+                                        aria-label="Open broadcast campaign composer"
+                                    >
+                                        <RadioTower size={13} />
+                                        <span className="hidden sm:inline">Broadcast</span>
+                                    </button>
                                     {sessionStatus === "connected" && !loadingChats && (
                                         <button
                                             onClick={() => loadExistingChats()}
@@ -1649,8 +1933,19 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         )}
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                        <div className="flex justify-between items-center">
-                                            <span className="font-bold text-sm truncate">{chat.name}</span>
+                                        <div className="flex justify-between items-center gap-1.5">
+                                            <span className="font-bold text-sm truncate flex items-center gap-1.5">
+                                                {chat.name}
+                                                {chatTypeMap[chat.id] && (
+                                                    <span className={`text-[9px] font-bold uppercase px-1 py-px rounded flex-shrink-0 ${
+                                                        chatTypeMap[chat.id] === 'vendor' ? 'bg-indigo-500/15 text-indigo-400'
+                                                        : chatTypeMap[chat.id] === 'customer' ? 'bg-emerald-500/15 text-emerald-400'
+                                                        : 'bg-amber-500/15 text-amber-400'
+                                                    }`}>
+                                                        {chatTypeMap[chat.id]}
+                                                    </span>
+                                                )}
+                                            </span>
                                             <span className="text-[10px] text-muted-foreground flex-shrink-0">{new Date(chat.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                                         </div>
                                         <p className="text-xs text-muted-foreground truncate">{chat.lastMessage}</p>
@@ -1682,6 +1977,18 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             )}
                                         </div>
                                         <span className="font-bold text-sm">{chats.find(c => c.id === selectedChat)?.name}</span>
+                                        {/* 1-click contact-type toggle (spec §8.1) */}
+                                        <button
+                                            onClick={handleToggleContactType}
+                                            title="Toggle Customer / Vendor / Lead"
+                                            className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded transition-colors ${
+                                                contactType === 'vendor' ? 'bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25'
+                                                : contactType === 'customer' ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
+                                                : 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
+                                            }`}
+                                        >
+                                            {contactType}
+                                        </button>
                                     </div>
                                     <div className="flex gap-2">
                                         <label className="text-xs flex items-center gap-1 cursor-pointer">
@@ -1691,7 +1998,10 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                     </div>
                                 </div>
 
-                                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-muted/10">
+                                <div
+                                    {...longPressHandlers}
+                                    className={`flex-1 overflow-y-auto p-4 space-y-3 bg-muted/10 ${longPressing ? 'select-none' : ''}`}
+                                >
                                     {selectedChatMessages.map(msg => (
                                         <div
                                             key={msg.id}
@@ -1699,9 +2009,9 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             data-msg-id={msg.id}
                                             onContextMenu={(e) => {
                                                 e.preventDefault();
-                                                setContextMenu({
+                                                setActionMenu({
                                                     isOpen: true,
-                                                    message: msg as any,
+                                                    message: msg as unknown as WPPMessage,
                                                     position: { x: e.clientX, y: e.clientY }
                                                 });
                                             }}
@@ -1712,9 +2022,9 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const rect = e.currentTarget.getBoundingClientRect();
-                                                        setContextMenu({
+                                                        setActionMenu({
                                                             isOpen: true,
-                                                            message: msg as any,
+                                                            message: msg as unknown as WPPMessage,
                                                             position: { x: rect.left, y: rect.bottom + 4 }
                                                         });
                                                     }}
@@ -2769,6 +3079,52 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 onSetLeadStatus={handleContextSetLeadStatus}
                 onOpenCustomerCRM={() => setActivePanel('customer')}
                 onQuoteReply={msg => setReplyText(`> ${msg.body || ''}\n\n`)}
+            />
+
+            {/* Context Action Engine — long-press / right-click (spec §8) */}
+            <MessageActionMenu
+                isOpen={actionMenu.isOpen}
+                onClose={() => setActionMenu({ isOpen: false, message: null, position: null })}
+                contactType={contactType}
+                position={actionMenu.position}
+                detectedAmount={(() => {
+                    const m = actionMenu.message?.body?.match(/₹?\s*([\d,]{2,7})/);
+                    return m ? parseInt(m[1].replace(/,/g, ''), 10) : undefined;
+                })()}
+                detectedSku={extractVariantHints(actionMenu.message?.body || '').sku}
+                onAddToCart={() => handleBroadcastToPOS(actionMenu.message!)}
+                onCreateQuote={() => handleContextConvertToOrder(actionMenu.message!)}
+                onSendPaymentLink={() => handleContextGeneratePayLink(undefined)}
+                onSendProductCard={() => handleSendProductCard(actionMenu.message!)}
+                onAddExistingInventory={() => setAddInventoryMsg(actionMenu.message?.body || '')}
+                onCreateProduct={() => setVendorIngestMsg(actionMenu.message?.body || '')}
+                onAutoBarcodeTag={() => handleAutoBarcodeTag(actionMenu.message!)}
+                onQuoteReply={() => setReplyText(`> ${actionMenu.message?.body || ''}\n\n`)}
+            />
+
+            {/* Vendor Ingestion Modals (spec §8.2) */}
+            {vendorIngestMsg !== null && (
+                <VendorIngestionModal
+                    isOpen
+                    onClose={() => setVendorIngestMsg(null)}
+                    messageBody={vendorIngestMsg}
+                    vendorId={contactVendor?.id}
+                    vendorName={contactVendor?.name}
+                />
+            )}
+            {addInventoryMsg !== null && (
+                <AddExistingInventoryModal
+                    isOpen
+                    onClose={() => setAddInventoryMsg(null)}
+                    messageBody={addInventoryMsg}
+                    vendorId={contactVendor?.id}
+                />
+            )}
+
+            {/* Smart Broadcast Campaign Composer (spec §11) */}
+            <BroadcastComposerModal
+                isOpen={showBroadcastModal}
+                onClose={() => setShowBroadcastModal(false)}
             />
 
             {/* Razorpay Payment Link Modal */}

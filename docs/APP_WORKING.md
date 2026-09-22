@@ -221,6 +221,37 @@ graph TD
 
 ---
 
+### Workflow 8: WhatsApp Conversational CRM & In-Chat Commerce
+
+```mermaid
+graph TD
+    A[Customer / Vendor messages the store WhatsApp line] --> B{Inbound Router Resolves Contact}
+    B -->|Phone matches vendors| C[Vendor Badge - Indigo]
+    B -->|Phone matches customers| D[Customer Badge - Emerald]
+    B -->|Unknown number| E[New Lead created in CRM - Amber]
+    C --> F[Chat persisted in whatsapp_chats / whatsapp_messages]
+    D --> F
+    E --> F
+    F --> G{Staff gesture on a message<br/>Right-click PC / Long-press Mobile}
+    G -->|Vendor chat| H[Vendor Action Suite]
+    G -->|Customer chat| I[Customer Commerce Suite]
+    H --> H1[Add to Existing Inventory - stock + draft GRN]
+    H --> H2[Create New Product - smart extraction, auto SKU, retail suggestion]
+    H --> H3[Auto Barcode Tag - queued to /labels]
+    I --> I1[Add to POS Cart - broadcast to POS terminal]
+    I --> I2[Create Quote / Estimate]
+    I --> I3[Send Razorpay Payment Link]
+```
+
+1. **Chat from Anywhere**: Staff open the unread-badged floating WhatsApp button on any screen (or the full `/whatsapp` hub). Chats are bound to CRM identities automatically; outbound replies carry the staff name tag.
+2. **Customer Commerce**: Right-click (PC) or long-press (mobile, haptic feedback) a customer message → **Add to POS Cart** pushes the detected SKU/variant straight to the showroom POS terminal, which toasts the cashier. **Send Razorpay Payment Link** creates a UPI payment link, messages it to the customer, and records it in the `payment_links` ledger.
+3. **Vendor Ingestion**: Long-press a vendor's consignment message → **Create New Product** pre-fills purity, weight, and cost from the message text, suggests a retail price, and generates a vendor SKU (`VND-CHK-18K-001` style). Approving ingests the product, logs stock, and prompts to queue a Code128 barcode tag for `/labels` batch printing. **Add to Existing Inventory** fast-tracks received quantities against an existing variant with an automatic draft GRN.
+4. **POS Checkout Dispatch**: When a cashier attaches a customer phone at `/pos`, the WhatsApp panel verifies the number, auto-sends the branded receipt on checkout (pre-checked), and can push a payment link for remote settlement.
+5. **Automatic Reconciliation**: Payment links are polled in the background while the hub is open — paid links confirm the linked order, award loyalty points, credit the Razorpay Clearing Account, and dispatch the invoice notification.
+6. **Broadcast Campaigns**: Use the antenna icon in the chats panel header to queue a staggered marketing campaign (8–22 s humanized delays, 150/day cap, STOP opt-out compliance).
+
+---
+
 ## 3. Database Administration & Maintenance
 
 ### PocketBase Administration
@@ -233,6 +264,11 @@ graph TD
 When updating schema fields, run the automated TypeScript migration script:
 ```powershell
 npx tsx src/scripts/sync-pb-schema.ts
+```
+
+To add or verify the WhatsApp CRM collections (`whatsapp_chats`, `whatsapp_messages`, `payment_links`, `label_print_queue`):
+```powershell
+npx tsx src/scripts/update-whatsapp-crm-schema.ts
 ```
 
 ### Database Backup

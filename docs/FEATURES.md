@@ -182,13 +182,45 @@ Comprehensive analytical dashboards and reports:
 
 ---
 
-## 15. WhatsApp Automation & Conversational CRM
+## 15. WhatsApp Automation & Conversational CRM (Phases 1–3 Implemented)
 
-- **Local Sidecar**: Communicates with a local WPPConnect Node.js service running Puppeteer.
+- **Local Sidecar**: Communicates with a local WPPConnect Node.js service running Puppeteer (`whatsapp.ts`).
 - **QR Pairing**: Displays WhatsApp Web QR code directly in the Luminila UI for quick smartphone pairing.
 - **Automated Alerts**: Pre-built message templates for order confirmations, digital invoice links, and shipping updates.
 - **Inbound Message Parsing**: Detects customer order inquiries directly from chat threads.
-- **Omnichannel Architecture Specification**: For the comprehensive design blueprint covering the 3-Pane CRM Hub, Razorpay remote payment links, catalog sync, and anti-ban broadcast engine, refer to **[`docs/WHATSAPP_ERP_CRM_SPECIFICATION.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_ERP_CRM_SPECIFICATION.md)**.
+- **Contact Resolution & Lead Capture (`whatsapp-crm.ts`)**:
+  - E.164 phone normalization; inbound chats auto-bind to `vendors`, then `customers`, otherwise a new **Lead** is created in the CRM (`lead_source: whatsapp`).
+  - 1-click contact-type toggle (`Customer` / `Vendor` / `Lead`) in the chat header with color-coded badges in every conversation list.
+- **Chat Persistence**: Conversations and transcripts are mirrored into the `whatsapp_chats` and `whatsapp_messages` collections with unread tracking and staff attribution (`[Priya - Luminila Sales]` prefixes on outbound staff messages).
+- **Global Floating Chat Drawer (`WhatsAppDrawer.tsx`)**:
+  - Reachable from **any** ERP route via an unread-badged floating button — staff can reply while inspecting stock on `/inventory` or verifying a PO in `/purchase`.
+- **Context Action Engine (right-click PC / long-press mobile)**:
+  - Desktop glassmorphic command palette with keyboard navigation; mobile bottom-sheet with 500 ms long-press, 10 px scroll tolerance, and 40 ms haptic feedback (`use-long-press.ts`).
+  - **Customer suite**: Add to POS Cart (smart SKU/variant detection), Create Quote, Send Razorpay Payment Link, Send Product Card.
+  - **Vendor suite**: Add to Existing Inventory (auto stock + draft GRN), Create New Product from Message (smart extraction of purity/weight/price with auto SKU and margin-based retail suggestion), Auto Barcode Tag generation into the `label_print_queue` for batch printing in `/labels`.
+- **Live POS Cart Bridge**: "Add to POS Cart" from any chat broadcasts the item to the active POS terminal (`BroadcastChannel('pos_cart')` + `pos:cart-updated`) with a cashier toast.
+- **POS Checkout Messenger (`POSWhatsAppWidget.tsx`)**:
+  - WhatsApp account verification indicator when a customer phone is attached.
+  - Pre-checked *"Send Tax Invoice & Receipt via WhatsApp on checkout"* with automated branded receipt dispatch.
+  - 1-tap Razorpay payment link creation sent to the customer's WhatsApp and recorded in the `payment_links` ledger.
+- **Payment Link Reconciliation (`payment-reconciliation.ts`, spec §7)**:
+  - Polling settlement engine tailored for the static-export architecture: pending `payment_links` are checked against Razorpay API.
+  - Settle cycle: `paid` links update payment status and record `payment_id`, mark the linked sales order confirmed and paid, settle linked invoice & create `invoice_payments` records, credit customer loyalty points, deposit settlement funds into the `Razorpay Clearing Account` (with cached ID mutex preventing race conditions), and auto-dispatch the official tax invoice via WhatsApp (`sendPaidOrderInvoice`).
+  - Stale/cancelled links are automatically flagged as `expired` or `cancelled`.
+- **Inbound Intent Router & Approval Banner (spec §2)**:
+  - Two-tier intent detection (`STOCK_INQUIRY`, `ORDER_STATUS`, `PRICE_CHECK`, `VENDOR_OFFER`, `CATALOG_REQUEST`, `OPT_OUT`) with human-in-the-loop verification — order intents surface an approval banner with 1-click **Create Draft Order** and **Send Payment Link**.
+  - "STOP" replies automatically register the number in the `whatsapp_opt_outs` registry and set `whatsapp_opt_out: true` on the customer profile.
+- **In-Chat Rich Product Cards (spec §6.1.2)**:
+  - `sendProductCard` drops an interactive card with the jewelry photo, title, SKU, metal purity, live showroom stock and price, plus a BOOK call-to-action; card messages persist as `message_type: product_card`.
+- **Smart Staggered Broadcast Campaigns (spec §11, `whatsapp-broadcast.ts` + `BroadcastComposerModal.tsx`)**:
+  - Audience segmentation (All active customers, VIP tiers, Points > 500, Wholesale / B2B buyers) with safe database query fallbacks.
+  - Merge-tag personalization: `{{customer_name}}`, `{{first_name}}`, `{{tier}}`, `{{loyalty_points}}`, `{{total_spent}}`.
+  - Anti-ban safeguards: randomized 8–22 s humanized jitter per message slot via CSPRNG, hard 150/day marketing quota guard with live visual progress bar, opt-out re-filtering at dispatch time, and a polite STOP footer on every campaign.
+  - Dedicated always-accessible "Broadcast" launch button in the `/whatsapp` hub header allowing staff to compose and queue campaigns regardless of immediate sidecar socket connection status.
+- **Audit & Architecture Documentation**:
+  - Phase 1 Audit & Remediation: **[`docs/WHATSAPP_CRM_CODE_AUDIT_2026-09-22.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_CRM_CODE_AUDIT_2026-09-22.md)**.
+  - Phase 2 & 3 Audit, Hardening & Verification: **[`docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md)**.
+  - Full Technical Specification: **[`docs/WHATSAPP_ERP_CRM_SPECIFICATION.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_ERP_CRM_SPECIFICATION.md)**.
 
 ---
 

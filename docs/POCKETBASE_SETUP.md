@@ -83,26 +83,33 @@ PocketBase provides a built-in administrative dashboard alongside application-le
 
 All schema collections, fields, relation rules, and indexes are managed via TypeScript scripts in `src/scripts/`:
 
-### 5.1 Initialize Complete Schema (38 Collections)
+### 5.1 Initialize Complete Schema (38 Core Collections)
 On a fresh installation, run:
 ```bash
 npx tsx src/scripts/init-pocketbase.ts
 ```
-This automatically authenticates and creates the full catalog of 38 collections (products, variants, sales, invoices, sales_orders, customers, vendors, banking, expenses, roles, shifts, etc.).
+This automatically authenticates and creates the full catalog of 38 core collections (products, variants, sales, invoices, sales_orders, customers, vendors, banking, expenses, roles, shifts, etc.).
 
-### 5.2 Schema Synchronization
+### 5.2 WhatsApp CRM Schema Extension (4 Collections)
+Adds the conversational-commerce collections used by the WhatsApp CRM subsystem:
+```bash
+npx tsx src/scripts/update-whatsapp-crm-schema.ts
+```
+Creates `whatsapp_chats`, `whatsapp_messages`, `payment_links`, `label_print_queue`, `broadcast_messages`, and `whatsapp_opt_outs` (44 collections total). The script is idempotent — safe to re-run.
+
+### 5.3 Schema Synchronization
 When adding new fields or collections in code:
 ```bash
 npx tsx src/scripts/sync-pb-schema.ts
 ```
 
-### 5.3 Apply API Security Rules
+### 5.4 Apply API Security Rules
 To ensure secure access control for public, staff, and admin tiers:
 ```bash
 npx tsx src/scripts/apply-pb-access-rules.ts
 ```
 
-### 5.4 Seed RBAC Roles and Admin User
+### 5.5 Seed RBAC Roles and Admin User
 To populate default user roles (`Admin`, `Manager`, `Staff`, `Cashier`, `Viewer`) and seed default staff accounts:
 ```bash
 npx tsx src/scripts/seed-roles.ts

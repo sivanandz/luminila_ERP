@@ -1,9 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { Toaster } from "sonner";
 import "./globals.css";
 import { Sidebar, MobileBottomNav } from "@/components/layout";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { WhatsAppDrawer } from "@/components/whatsapp/WhatsAppDrawer";
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
@@ -51,6 +53,8 @@ export default function RootLayout({
             </ErrorBoundary>
           </main>
           <MobileBottomNav />
+          <WhatsAppDrawer />
+          <Toaster position="top-right" richColors closeButton />
         </AuthProvider>
       </body>
     </html>

@@ -1070,6 +1070,11 @@ export class WhatsAppManager {
         }
     }
 
+    /** Public read access to the active session id. */
+    getSessionIdSafe(): string {
+        return this.sessionId;
+    }
+
     async connect(): Promise<boolean> {
         const session = await startSession(this.sessionId);
         return !!session;

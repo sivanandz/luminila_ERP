@@ -39,7 +39,7 @@ The matrix below details the current implementation status and operational readi
 | **RBAC & Auth** | ✅ Implemented | 🟢 Production Ready | PocketBase JWT auth, 5 seeded roles (`Admin`, `Manager`, `Staff`, `Cashier`, `Viewer`). Fast PIN/QR cashier switching scheduled in Milestone 3 roadmap. |
 | **Mobile & Android Support** | ✅ Implemented | 🟢 Production Ready | Verified live on Android 16 emulator (`1080x2400`). Thumb navigation (`MobileBottomNav`), slide-over drawer (`MobileDrawer` with 17 modules), `useViewport` detection, dynamic server switching (`ServerConfigModal`), Cloudflare Tunnel (`npm run tunnel`), offline queue (`offline-queue.ts`), mobile thermal printing (`mobile-printer.ts`), and camera scanner. |
 | **Internet Sync & Backup** | ✅ Implemented | 🟢 Production Ready | Dual-tier sync active: Tier 1 real-time Cloudflare Tunnel (`scripts/tunnel.js`) + Tier 2 decentralized Google Drive atomic changelog sync scaffold & offline mutation queue (`google-drive-sync.ts`, `GoogleDriveSyncModal.tsx`). |
-| **WhatsApp Automation** | 🚧 Beta | 🟡 In Progress | WPPConnect sidecar server runs locally on desktop; mobile automatically falls back to native Android `whatsapp://send` intent. |
+| **WhatsApp Automation & Conversational CRM** | ✅ Phase 1–3 Audited & Verified | 🟢 Production Ready | WPPConnect sidecar on desktop with `whatsapp://` intent fallback on mobile. Live: chat persistence (`whatsapp_chats`/`whatsapp_messages`), customer/vendor/lead auto-resolution, global chat drawer, right-click & long-press context actions, vendor ingestion with auto barcode tag queue, live "Add to POS Cart" broadcast bridge, POS checkout WhatsApp widget, Razorpay payment-link polling reconciliation with double-entry clearing ledger, inbound order-intent approval banner, in-chat product cards, and the anti-ban staggered broadcast engine (8–22s jitter + 150/day quota + STOP opt-out registry). Audited & verified via automated test suite. |
 | **E-Commerce Sync** | 🚧 Partial | 🟠 Planned | Shopify & WooCommerce sync clients designed; background webhook listener under testing. |
 
 ---
@@ -48,8 +48,8 @@ The matrix below details the current implementation status and operational readi
 
 ### PocketBase Migration (Completed)
 - **Migration Origin:** Deprecated Supabase PostgreSQL cloud instances in favor of local-first PocketBase.
-- **Active Collections:** 38 collections fully declared and operational in `pocketbase/pb_data/data.db`.
-- **Initialization Tooling:** Schema definitions and rules managed by `src/scripts/init-pocketbase.ts` and `src/scripts/sync-pb-schema.ts`.
+- **Active Collections:** 44 collections fully declared and operational in `pocketbase/pb_data/data.db` (38 core from `init-pocketbase.ts` + 6 conversational-commerce collections from `update-whatsapp-crm-schema.ts`).
+- **Initialization Tooling:** Schema definitions and rules managed by `src/scripts/init-pocketbase.ts`, `src/scripts/sync-pb-schema.ts`, and `src/scripts/update-whatsapp-crm-schema.ts` (WhatsApp CRM: `whatsapp_chats`, `whatsapp_messages`, `payment_links`, `label_print_queue`, `broadcast_messages`, `whatsapp_opt_outs`).
 - **Concurrency Mode:** SQLite configured in `WAL` (Write-Ahead Logging) mode to allow concurrent reads and writes between Next.js, Android, and Tauri.
 - **Dynamic Connectivity:** `src/lib/pocketbase.ts` supports runtime URL overrides (`PB_CUSTOM_URL`), allowing showroom Android devices on Wi-Fi or cellular networks to connect to the database via LAN IP (`http://192.168.x.x:8090`) or HTTPS tunnels (`https://*.trycloudflare.com`).
 
@@ -89,6 +89,18 @@ The following issues were identified during formal code logic audits (see [APP_L
 - **File:** [`src/lib/banking.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/banking.ts#L141-L180)
 - **Resolution:** Added balance pre-flight validation preventing withdrawals/transfers exceeding current funds, combined with rollback deletion of created transactions if balance mutation fails.
 
+### Defect 7: WhatsApp Phase 1 Schema Syntax & Stock Double-Counting
+- **Severity:** P1 (✅ RESOLVED)
+- **Files:** [`src/scripts/update-whatsapp-crm-schema.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/scripts/update-whatsapp-crm-schema.ts), [`src/lib/whatsapp-crm.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/whatsapp-crm.ts), [`src/components/whatsapp/VendorIngestionModal.tsx`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/components/whatsapp/VendorIngestionModal.tsx)
+- **Audit Report:** [`docs/WHATSAPP_CRM_CODE_AUDIT_2026-09-22.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_CRM_CODE_AUDIT_2026-09-22.md)
+- **Resolution:** Converted migration script to PocketBase 0.25 `fields` syntax with dynamic relation collection ID resolution. Fixed `category` relation name mismatch crash, eliminated stock double-counting between direct variant increment and draft GRN creation, and wired auto barcode tag queuing into `label_print_queue`.
+
+### Defect 8: WhatsApp Phase 2 & 3 Schema Omission, Wholesale Query & Clearing Mutex
+- **Severity:** P0/P1 (✅ RESOLVED)
+- **Files:** [`src/lib/payment-reconciliation.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/payment-reconciliation.ts), [`src/lib/whatsapp-broadcast.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/whatsapp-broadcast.ts), [`src/components/whatsapp/BroadcastComposerModal.tsx`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/components/whatsapp/BroadcastComposerModal.tsx), [`src/scripts/update-whatsapp-crm-schema.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/scripts/update-whatsapp-crm-schema.ts)
+- **Audit Report:** [`docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md)
+- **Resolution:** Created `broadcast_messages` and `whatsapp_opt_outs` in PocketBase, added `payment_id` to `payment_links`, added `customer_type` and `whatsapp_opt_out` to `customers`, fixed PocketBase Go `validation.Required` zero-balance rejection on `bank_accounts`, implemented in-memory mutex cache for Razorpay clearing account creation, added linked invoice settlement, made the Broadcast button accessible and always available, and verified 100% test pass rate with automated test suite (`src/scripts/test-phase2-phase3.ts`).
+
 ---
 
 ## 5. Technical Debt & Platform Considerations
@@ -113,7 +125,7 @@ The following issues were identified during formal code logic audits (see [APP_L
 
 ### Milestone 1: Mobile & Android Feature Parity (Completed)
 - [x] Responsive navigation with `MobileBottomNav` and elevated POS FAB.
-- [x] Full slide-over drawer (`MobileDrawer`) organizing all 18 modules.
+- [x] Full slide-over drawer (`MobileDrawer`) organizing all 17 modules.
 - [x] Viewport detection hook (`useViewport`) detecting mobile/tablet/desktop/Android.
 - [x] Dynamic runtime PocketBase URL switching with health check & latency measurement (`ServerConfigModal.tsx`).
 - [x] Camera barcode scanning support on mobile via `html5-qrcode`.
@@ -132,10 +144,31 @@ The following issues were identified during formal code logic audits (see [APP_L
 - [x] Add GRN over-receipt guard in `purchase.ts`.
 - [x] Add overdraft protection in `banking.ts`.
 
-### Milestone 3: WhatsApp & Sidecar Hardening (Current Focus)
+### Milestone 3: WhatsApp Conversational CRM & Sidecar Hardening (Current Focus)
+
+*Phase 1 — Core Hub, Gestures & Commerce Bridge (Completed September 2026)*
+- [x] Contact resolution & lead auto-creation with E.164 normalization (`whatsapp-crm.ts`, spec §9).
+- [x] Chat & message persistence with unread counts and staff attribution tags (spec §10, §12.1).
+- [x] Context Action Engine: desktop right-click palette + mobile long-press bottom sheet with haptic feedback (spec §8).
+- [x] Vendor tagging & in-chat ingestion: smart-extraction product creation, add-to-existing-inventory with draft GRN, auto barcode tag queue (spec §8.2).
+- [x] Live "Add to POS Cart" broadcast bridge to the POS terminal (spec §8.3).
+- [x] Global floating WhatsApp drawer reachable from every route (spec §3.2).
+- [x] POS checkout WhatsApp widget: verification indicator, auto-receipt dispatch, Razorpay payment links with `payment_links` ledger (spec §3.3, §7).
+- [x] Schema extension: `whatsapp_chats`, `whatsapp_messages`, `payment_links`, `label_print_queue` (spec §12.1).
+
+*Phase 2 — Payments & Orders (Completed September 2026)*
+- [x] Razorpay payment-link reconciliation: polling engine settles `payment_links` (`payment-reconciliation.ts`) — marks links paid, confirms linked sales orders, awards loyalty points, credits the Razorpay Clearing Account, and dispatches invoice notifications. *(A push-webhook listener for server deployments remains optional.)*
+- [x] Inbound intent router: STOP opt-out registration and an order-intent approval banner with 1-click **Create Draft Order** / **Send Payment Link** (spec §2).
+
+*Phase 3 — Catalog & Campaigns (Completed September 2026)*
+- [x] WhatsApp Business catalog publishing (`whatsapp-catalog.ts` + Catalog Publisher modal).
+- [x] In-chat rich product cards: photo, SKU, purity, live stock and price via `sendProductCard` (spec §6.1.2).
+- [x] Anti-ban staggered broadcast engine (spec §11): audience segmentation, merge-tag personalization, 8–22s humanized jitter, 150/day marketing quota, and a STOP opt-out registry (`whatsapp-broadcast.ts` + Broadcast Composer).
+
+*Phase 4 — Sidecar Hardening (Remaining)*
 - [ ] Automated headless Chromium download validation for WPPConnect.
 - [ ] Robust QR re-connection and session caching.
-- [ ] Inbound WhatsApp order template parsing.
+- [ ] Optional push-webhook relay for Razorpay events (server deployment variant).
 
 ### Milestone 4: Multi-Channel Synchronization
 - [ ] Bi-directional Shopify inventory sync via GraphQL webhooks.
