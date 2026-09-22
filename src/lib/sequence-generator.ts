@@ -167,12 +167,14 @@ export async function createWithUniqueRetry<T>(
     maxRetries = 3
 ): Promise<T> {
     let attempt = 0;
+    let lastError: any = null;
     while (attempt < maxRetries) {
         attempt++;
         const docNumber = await generatorFn();
         try {
             return await createFn(docNumber);
         } catch (err: any) {
+            lastError = err;
             if (isUniqueConstraintError(err) && attempt < maxRetries) {
                 console.warn(
                     `[sequence-generator] Unique collision on document number '${docNumber}'. Retrying with fresh sequence (${attempt + 1}/${maxRetries})...`
@@ -184,5 +186,5 @@ export async function createWithUniqueRetry<T>(
             throw err;
         }
     }
-    throw new Error(`Failed to create record after ${maxRetries} unique constraint collision retries.`);
+    throw new Error(`Failed to create record after ${maxRetries} unique constraint collision retries.`, { cause: lastError });
 }

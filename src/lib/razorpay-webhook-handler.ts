@@ -51,6 +51,21 @@ export async function processRazorpayWebhookEvent(
 
         if (orderId) {
             try {
+                // WPA-11 idempotency guard: Razorpay can replay webhooks. If the
+                // order is already settled, skip loyalty re-award and duplicate
+                // customer notifications instead of processing again.
+                const existingOrder = await pb.collection('sales_orders').getOne(orderId) as unknown as {
+                    payment_status?: string;
+                    customer?: string;
+                    order_number?: string;
+                    total?: number;
+                    subtotal?: number;
+                };
+                if (existingOrder.payment_status === 'PAID') {
+                    console.log(`[webhook] Order ${orderId} already settled — skipping replayed ${event}`);
+                    return { success: true, orderId, event, error: undefined };
+                }
+
                 // Update sales order in PocketBase
                 const updatedOrder = await pb.collection('sales_orders').update(orderId, {
                     payment_status: 'PAID',

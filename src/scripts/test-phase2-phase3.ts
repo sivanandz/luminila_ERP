@@ -428,7 +428,7 @@ async function runTests() {
 
         // D. Verify T7-F2 fallback audit trail writes to activity_logs
         const testNotice = `[CRITICAL GST NOTICE] Test T7-F2 Sequence Fallback Audit Verification`;
-        await adminPb.collection('activity_logs').create({
+        const createdLog = await adminPb.collection('activity_logs').create({
             action: 'sync',
             entity_type: 'settings',
             entity_id: 'test_seq_id',
@@ -436,15 +436,234 @@ async function runTests() {
             metadata: { test: true, timestamp: new Date().toISOString() },
         });
 
-        const logCheck = await adminPb.collection('activity_logs').getFirstListItem(`description~"CRITICAL GST NOTICE"`).catch(() => null);
-        assert(logCheck !== null, "activity_logs successfully records CRITICAL GST NOTICE audit entries");
+        const logCheck = await adminPb.collection('activity_logs').getOne(createdLog.id).catch(() => null);
+        assert(logCheck !== null && logCheck.metadata?.test === true, "activity_logs successfully records CRITICAL GST NOTICE audit entries (verified by ID & test metadata)");
 
-        if (logCheck?.id) {
-            await adminPb.collection('activity_logs').delete(logCheck.id).catch(() => {});
+        if (createdLog?.id) {
+            await adminPb.collection('activity_logs').delete(createdLog.id).catch(() => {});
         }
 
     } catch (err: any) {
         assert(false, `Test 10 failed: ${err.message}`);
+    }
+
+    // 11. SWEEP-1: POS Checkout Lifecycle & Payment Method Support
+    console.log("\n[Test 11] SWEEP-1: POS Checkout Lifecycle & PhonePe Payment Method");
+    try {
+        const { createPOSSale } = await import('../lib/pos-sales');
+
+        // A. Verify schema select options on 'sales' collection
+        const salesCol = await adminPb.collections.getOne('sales');
+        const statusField = salesCol.fields.find((f: any) => f.name === 'status');
+        const pmField = salesCol.fields.find((f: any) => f.name === 'payment_method');
+
+        assert(Array.isArray(statusField?.values) && statusField.values.includes('delivered'),
+            "sales.status select options include 'delivered' for immediate POS sales");
+        assert(Array.isArray(pmField?.values) && pmField.values.includes('phonepe'),
+            "sales.payment_method select options include 'phonepe'");
+
+        // B. Ensure an open register shift exists
+        let shiftId = '';
+        const shifts = await adminPb.collection('cash_register_shifts').getList(1, 1);
+        if (shifts.items.length > 0) {
+            shiftId = shifts.items[0].id;
+        } else {
+            const newShift = await adminPb.collection('cash_register_shifts').create({
+                opened_by: (adminPb.authStore.model as any)?.id || 'admin',
+                opening_cash: 1000,
+                status: 'open',
+                opened_at: new Date().toISOString(),
+            });
+            shiftId = newShift.id;
+        }
+
+        // C. Find an existing variant/product
+        let variantId = '';
+        let productId = '';
+        const variants = await adminPb.collection('product_variants').getList(1, 1);
+        if (variants.items.length > 0) {
+            variantId = variants.items[0].id;
+            productId = (variants.items[0] as any).product || '';
+        }
+
+        // D. Execute live createPOSSale with PhonePe & 'delivered' status
+        const posResult = await createPOSSale({
+            items: [{
+                name: 'Automated Test Gold Ring',
+                price: 15000,
+                quantity: 1,
+                productId: productId || undefined,
+                variantId: variantId || undefined,
+            }],
+            subtotal: 15000,
+            discountPercent: 0,
+            discountAmount: 0,
+            loyaltyDiscount: 0,
+            total: 15000,
+            paymentMethod: 'phonepe',
+            shiftId: shiftId,
+            userId: 'admin',
+            notes: 'Test POS PhonePe Sale Verification',
+        });
+
+        assert(Boolean(posResult.saleId), `createPOSSale successfully created sale with PhonePe (${posResult.saleId})`);
+        assert(Boolean(posResult.invoiceId), `createPOSSale automatically generated linked invoice (${posResult.invoiceNumber})`);
+
+        // E. Verify persisted record attributes in PocketBase
+        const saleRecord = await adminPb.collection('sales').getOne(posResult.saleId);
+        assert(saleRecord.status === 'delivered', "Persisted sale status is strictly 'delivered'");
+        assert(saleRecord.payment_method === 'phonepe', "Persisted sale payment_method is strictly 'phonepe'");
+
+        // Cleanup
+        if (posResult.invoiceId) await adminPb.collection('invoices').delete(posResult.invoiceId).catch(() => {});
+        if (posResult.saleId) await adminPb.collection('sales').delete(posResult.saleId).catch(() => {});
+
+    } catch (err: any) {
+        assert(false, `Test 11 failed: ${err.message}`);
+    }
+
+    // 12. SWEEP-2 & SWEEP-3: Delivery Challans & Credit Notes Full GST Field Persistence
+    console.log("\n[Test 12] SWEEP-2 & SWEEP-3: Delivery Challans & Credit Notes Full GST Field Persistence");
+    try {
+        const { createChallan, getChallan } = await import('../lib/challan');
+        const { createCreditNote, getCreditNote } = await import('../lib/returns');
+
+        // A. Schema field checks on delivery_challans
+        const dcCol = await adminPb.collections.getOne('delivery_challans');
+        const dcFields = new Set(dcCol.fields.map((f: any) => f.name));
+        assert(dcFields.has('consignor_name') && dcFields.has('consignor_gstin') && dcFields.has('taxable_value') && dcFields.has('total_value'),
+            "delivery_challans schema includes consignor details and GST total values");
+
+        // B. Schema field checks on delivery_challan_items
+        const dciCol = await adminPb.collections.getOne('delivery_challan_items');
+        const dciFields = new Set(dciCol.fields.map((f: any) => f.name));
+        assert(dciFields.has('hsn_code') && dciFields.has('taxable_value') && dciFields.has('cgst_amount') && dciFields.has('sgst_amount'),
+            "delivery_challan_items schema includes HSN and GST line breakdown fields");
+
+        // C. Live delivery challan creation with full GST payload
+        const challanRes = await createChallan({
+            challan_date: new Date().toISOString(),
+            challan_type: 'job_work',
+            consignor_name: 'Luminila Jewelers HQ',
+            consignor_gstin: '27AABCU9603R1ZM',
+            consignor_address: '101 Zaveri Bazaar, Mumbai',
+            consignor_state_code: '27',
+            consignee_id: '',
+            consignee_name: 'Artisan Workshop Ltd',
+            consignee_gstin: '27ABCDE1234F1Z5',
+            consignee_address: '45 Goldsmith Lane, Pune',
+            consignee_state_code: '27',
+            place_of_supply: 'Maharashtra',
+            sales_order_id: '',
+            invoice_id: '',
+            vehicle_number: 'MH-01-AB-1234',
+            transporter_name: 'FastCargo',
+            driver_name: 'Ramesh Kumar',
+            driver_phone: '+919876543210',
+            transport_mode: 'road',
+            eway_bill_number: '231098765432',
+            eway_bill_date: new Date().toISOString(),
+            total_quantity: 5,
+            taxable_value: 50000,
+            cgst_amount: 750,
+            sgst_amount: 750,
+            igst_amount: 0,
+            total_value: 51500,
+            reason: 'Job work crafting',
+            notes: 'Fragile diamonds',
+            internal_notes: 'Priority dispatch',
+            expected_delivery_date: new Date().toISOString(),
+        }, [{
+            product_id: '',
+            variant_id: '',
+            sr_no: 1,
+            description: 'Raw Gold Bar 24K',
+            hsn_code: '7108',
+            quantity: 5,
+            unit: 'GMS',
+            unit_price: 10000,
+            taxable_value: 50000,
+            gst_rate: 3,
+            cgst_rate: 1.5,
+            cgst_amount: 750,
+            sgst_rate: 1.5,
+            sgst_amount: 750,
+            igst_rate: 0,
+            igst_amount: 0,
+            total: 51500,
+            remarks: 'Certified 99.9% purity',
+        }]);
+
+        assert(challanRes.success && Boolean(challanRes.challanId), `createChallan succeeded (${challanRes.challanNumber})`);
+
+        const fetchedChallan = await getChallan(challanRes.challanId!);
+        assert(fetchedChallan?.consignor_gstin === '27AABCU9603R1ZM' && fetchedChallan?.total_value === 51500,
+            "Persisted challan preserves consignor GSTIN and numeric total value (zero hollow data drop)");
+
+        // D. Schema field checks on credit_notes & credit_note_items
+        const cnCol = await adminPb.collections.getOne('credit_notes');
+        const cnFields = new Set(cnCol.fields.map((f: any) => f.name));
+        assert(cnFields.has('buyer_gstin') && cnFields.has('taxable_value') && cnFields.has('grand_total') && cnFields.has('total_tax'),
+            "credit_notes schema includes buyer GSTIN and full tax reversal totals");
+
+        // E. Live credit note creation with tax reversal breakdown
+        const cnRes = await createCreditNote({
+            original_invoice_id: '',
+            original_sale_id: '',
+            return_reason: 'Defective clasp',
+            notes: 'Customer returned within 7 days',
+            buyer_name: 'Priya Sharma',
+            buyer_address: 'Bandra West, Mumbai',
+            buyer_gstin: '27AABCU9603R1ZM',
+            buyer_state_code: '27',
+            taxable_value: 20000,
+            cgst_amount: 300,
+            sgst_amount: 300,
+            igst_amount: 0,
+            total_tax: 600,
+            grand_total: 20600,
+        }, [{
+            variant_id: '',
+            description: 'Diamond Pendant 18K',
+            hsn_code: '7113',
+            quantity: 1,
+            unit_price: 20000,
+            discount_percent: 0,
+            discount_amount: 0,
+            taxable_amount: 20000,
+            gst_rate: 3,
+            cgst_amount: 300,
+            sgst_amount: 300,
+            igst_amount: 0,
+            total_amount: 20600,
+        }]);
+
+        assert(Boolean(cnRes.id) && Boolean(cnRes.credit_note_number), `createCreditNote succeeded (${cnRes.credit_note_number})`);
+
+        const fetchedCN = await getCreditNote(cnRes.id);
+        assert(fetchedCN?.buyer_name === 'Priya Sharma' && fetchedCN?.total_tax === 600 && fetchedCN?.grand_total === 20600,
+            "Persisted credit note preserves buyer identity and tax reversal totals (zero hollow data drop)");
+
+        // Cleanup
+        if (challanRes.challanId) await adminPb.collection('delivery_challans').delete(challanRes.challanId).catch(() => {});
+        if (cnRes.id) await adminPb.collection('credit_notes').delete(cnRes.id).catch(() => {});
+
+    } catch (err: any) {
+        assert(false, `Test 12 failed: ${err.message}`);
+    }
+
+    // 13. WPA-05: Payment Links API Rules Lockdown Verification
+    console.log("\n[Test 13] WPA-05: Payment Links API Rules Security Lockdown");
+    try {
+        const plCol = await adminPb.collections.getOne('payment_links');
+        const authRule = '@request.auth.id != ""';
+
+        assert(plCol.listRule === authRule && plCol.viewRule === authRule,
+            "payment_links listRule & viewRule require authentication");
+        assert(plCol.createRule === authRule && plCol.updateRule === authRule && plCol.deleteRule === authRule,
+            "payment_links createRule, updateRule & deleteRule locked to authenticated users (no public tampering)");
+    } catch (err: any) {
+        assert(false, `Test 13 failed: ${err.message}`);
     }
 
     console.log("\n==================================================");

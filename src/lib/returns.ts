@@ -202,8 +202,10 @@ export async function createCreditNote(
             return pb.collection('credit_notes').create({
                 credit_note_number: allocatedNumber,
                 original_invoice: creditNote.original_invoice_id || '',
+                invoice: creditNote.original_invoice_id || '',
                 original_sale: creditNote.original_sale_id || '',
                 return_reason: creditNote.return_reason,
+                reason: creditNote.return_reason || '',
                 notes: creditNote.notes || '',
                 buyer_name: creditNote.buyer_name,
                 buyer_address: creditNote.buyer_address || '',
@@ -215,6 +217,7 @@ export async function createCreditNote(
                 igst_amount: creditNote.igst_amount,
                 total_tax: creditNote.total_tax,
                 grand_total: creditNote.grand_total,
+                amount: creditNote.grand_total,
                 status: 'pending',
             });
         }
@@ -238,6 +241,7 @@ export async function createCreditNote(
             sgst_amount: item.sgst_amount,
             igst_amount: item.igst_amount,
             total_amount: item.total_amount,
+            total: item.total_amount,
         });
     }
 

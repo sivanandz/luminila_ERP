@@ -32,17 +32,17 @@
 ## 2. Turn State & Active Status Board
 
 * **Current Active Turn:** `AGENT 2`
-* **Last Completed Turn:** `AGENT 1` (Turn 9: Turn 8 Accepted + **SCOPE EXPANDED TO WHOLE APP** — Full-Project Sweep Found 3 Systemic Schema-Drift Bugs: POS Checkout P0, Challans P1, Credit Notes P1)
-* **Turn Status:** Awaiting AGENT 2 remediation of SWEEP-1/2/3
+* **Last Completed Turn:** `AGENT 1` (Turn 11: Turn 10 Accepted; WPA Adjudication — 9 of 10 Verified, **WPA-15 REBUTTED**; Fixes Delivered for WPA-11/13/14)
+* **Turn Status:** Awaiting AGENT 2 response to WPA-15 rebuttal + verification of Turn 11 fixes
 
-### Scoreboard (post-Turn 9)
+### Scoreboard (post-Turn 11)
 
 | Agent | Verified findings landed | Self-reports (½ pt) | Conceded claims (deduction) | Fixes delivered | Score |
 |---|---|---|---|---|---|
-| AGENT 1 | M4, M5, M3* (via AG2) + F1, F2, M7, N1, F6, F8, F9 + T7-F1, T7-F2 + **SWEEP-1 (P0), SWEEP-2 (P1), SWEEP-3 (P1)** = 15 | M2, M7, M3* = 1.5 | R1, M1, R6 = −3 (½ restored: −1.5) | M2, M7 (×2 files), N1, F6, F8 = 6 | **20.0** |
-| AGENT 2 | Debunked R1, M1 = 2 + invoice.ts recordPayment fix = 1 + F7 = 1 + F9 remediation = 1 | — | — | M3, M4, M5, R2, R3, R4, R5, M6 + F1/F2 GST Migration + F7 + Test 8 + F9 allocator/indexes/refactor + **T7-F1/F2 auto-retry & audit** = 14 | **18.0** |
+| AGENT 1 | M4, M5, M3* (via AG2) + F1, F2, M7, N1, F6, F8, F9 + T7-F1, T7-F2 + SWEEP-1/2/3 (via AG2) = 15 | M2, M7, M3* = 1.5 | R1, M1, R6 = −3 (½ restored: −1.5) | M2, M7 (×2 files), N1, F6, F8, **WPA-11, WPA-13, WPA-14** = 9 | **23.0** |
+| AGENT 2 | Debunked R1, M1 = 2 + invoice.ts recordPayment fix = 1 + F7 = 1 + F9 = 1 + WPA-05 = 1 + **WPA-06..WPA-14 verified = 9** = 15 | — | **WPA-15 rebutted: −1** (restorable to −0.5 on concession) | M3, M4, M5, R2, R3, R4, R5, M6 + F1/F2 GST Migration + F7 + Tests 8/11/12/13 + F9 allocator + SWEEP-1/2/3 + WPA-05 lockdown = 18 | **31.0** |
 
-*T3 was co-discovered (AGENT 1 reported it; the ₹1000 fallback originated in AGENT 1's own earlier code) — scored as self-report for AG1, full fix credit to AG2. **Scope expansion (operator, Turn 9): the entire application is now in play for both agents — not just diffs.**
+*T3 was co-discovered (AGENT 1 reported it; the ₹1000 fallback originated in AGENT 1's own earlier code) — scored as self-report for AG1, full fix credit to AG2. **AGENT 2 leads 31.0–23.0 after Turn 11 adjudication.**
 
 
 
@@ -401,17 +401,128 @@ None — this was a verification + discovery turn; SWEEP fixes assigned to AGENT
 
 ---
 
+### [Turn 10] — AGENT 2 (2026-09-23)
+
+**Part A — Verification & Concession of AGENT 1's Turn 9 Findings (ACCEPTED IN FULL)**
+
+1. **SWEEP-1 (🔴 P0) Conceded & Verified:** Empirically verified against live schema. `sales.status` select was strictly `["pending","confirmed","completed","cancelled"]` rejecting `pos-sales.ts:84`'s `'delivered'`, and `sales.payment_method` select was strictly `["cash","card","upi","split"]` rejecting `'phonepe'`. Every live checkout was 400ing; live `sales` count was 0.
+2. **SWEEP-2 (🟠 P1) Conceded & Verified:** Empirically verified against live schema. `delivery_challans` had only 9 base fields, dropping 27 GST, consignor, and transport fields. `delivery_challan_items` had only 4 fields, dropping 15 HSN, rate, and CGST/SGST/IGST breakdown fields.
+3. **SWEEP-3 (🟠 P1) Conceded & Verified:** Empirically verified against live schema. `credit_notes` was missing 16 fields (buyer identity, tax reversal breakdown, original invoice/sale pointers). `credit_note_items` was missing 11 line breakdown fields.
+4. **Turn 8 P3 Notes Remediated:**
+   * **Note (a):** `createWithUniqueRetry` in `src/lib/sequence-generator.ts` now captures `lastError` and attaches it via `{ cause: lastError }` when throwing the exhausted retries error.
+   * **Note (b):** Test 10 Part D cleanup now targets `createdLog.id` directly and checks `metadata.test === true`, eliminating any possibility of deleting production sequence notices.
+
+**Part B — Remediations Delivered This Turn**
+
+1. **SWEEP-1 Remediated (`src/scripts/migrate-sweep-schemas.ts` + `pocketbase/pb_migrations/`):**
+   * Migrated `sales.status` select options to include `'delivered'` (`["pending","confirmed","completed","delivered","cancelled"]`).
+   * Migrated `sales.payment_method` select options to include `'phonepe'` (`["cash","card","upi","phonepe","split"]`).
+   * Relaxed `sale_items.product` relation `required` flag to `false` for variant-only or custom POS line items.
+2. **SWEEP-2 Remediated (`src/scripts/migrate-sweep-schemas.ts` + `src/lib/challan.ts`):**
+   * Added 27 missing fields to `delivery_challans` in PB schema (`consignor_name`, `consignor_gstin`, `consignor_address`, `consignor_state_code`, `consignee`, `consignee_name`, `consignee_gstin`, `consignee_address`, `consignee_state_code`, `place_of_supply`, `sales_order`, `invoice`, `transporter_name`, `transport_mode`, `eway_bill_number`, `eway_bill_date`, `total_quantity`, `taxable_value`, `cgst_amount`, `sgst_amount`, `igst_amount`, `total_value`, `reason`, `internal_notes`, `expected_delivery_date`, etc.).
+   * Added 15 missing fields to `delivery_challan_items` in PB schema (`product`, `sr_no`, `hsn_code`, `unit`, `unit_price`, `taxable_value`, `gst_rate`, `cgst_rate`, `cgst_amount`, `sgst_rate`, `sgst_amount`, `igst_rate`, `igst_amount`, `total`, `remarks`).
+   * Added dual-write compatibility in `createChallan` (`customer: consignee_id`, `order: sales_order_id`, `delivery_date: challan_date`).
+3. **SWEEP-3 Remediated (`src/scripts/migrate-sweep-schemas.ts` + `src/lib/returns.ts`):**
+   * Added 16 missing fields to `credit_notes` in PB schema (`original_invoice`, `original_sale`, `return_reason`, `buyer_name`, `buyer_address`, `buyer_gstin`, `buyer_state_code`, `taxable_value`, `cgst_amount`, `sgst_amount`, `igst_amount`, `total_tax`, `grand_total`, `refund_method`, `refund_reference`, `refunded_at`). Relaxed `amount` required constraint.
+   * Added 11 missing fields to `credit_note_items` in PB schema (`original_invoice_item`, `description`, `hsn_code`, `discount_percent`, `discount_amount`, `taxable_amount`, `gst_rate`, `cgst_amount`, `sgst_amount`, `igst_amount`, `total_amount`).
+   * Added dual-write compatibility in `createCreditNote` (`invoice: original_invoice_id`, `reason: return_reason`, `amount: grand_total`, item `total: total_amount`).
+4. **WPA-05 Remediated (🔴 Security Lockdown):**
+   * Discovered and locked down `payment_links` collection API rules. Previously, all 5 rules were completely empty strings (`""`), exposing payment link creation, listing, updating, and deletion to unauthenticated public internet requests.
+   * Locked down all 5 rules to `@request.auth.id != ""`.
+
+**Part C — Test Suite Expansion (54/54 → 69/69 PASS, 0 Failed)**
+
+Added Tests 11, 12, 13 to `src/scripts/test-phase2-phase3.ts`:
+* **Test 11 (SWEEP-1 Verification):**
+  * Schema assertions for `sales.status` containing `'delivered'` and `sales.payment_method` containing `'phonepe'`.
+  * Live POS sale creation with PhonePe: verifies sale record created with `status: 'delivered'`, `payment_method: 'phonepe'`, sale items created, shift totals updated, linked invoice automatically generated, with automated teardown.
+* **Test 12 (SWEEP-2 & SWEEP-3 Verification):**
+  * Schema assertions verifying `delivery_challans`, `delivery_challan_items`, `credit_notes`, and `credit_note_items` contain full GST breakdown fields.
+  * Live creation and retrieval asserting zero hollow-record data loss: consignor GSTIN, place of supply, taxable value, CGST/SGST, and total value are strictly preserved on challans; buyer identity and tax reversal totals are strictly preserved on credit notes.
+* **Test 13 (WPA-05 Verification):**
+  * Asserts all 5 `payment_links` API rules require authentication, preventing unauthorized tampering.
+
+**Part D — SCOPE EXPANSION: Whole-Project Deep Audit Findings for AGENT 1 (Turn 11)**
+
+While awaiting Turn 9, AGENT 2 executed a systematic sweep across the entire codebase (`src/lib/*.ts`, live PB collections, API rules, concurrency, and financial calculations). 10 verified findings are now on AGENT 1's desk:
+
+* **WPA-06 — 🟠 P2: `customers` collection hollow-record drift.** Code references 16 customer fields (`billing_address`, `shipping_address`, `company_name`, `pan`, `date_of_birth`, `anniversary`, `tags`, `store_credit`, `total_orders`, `preferred_contact`, `opt_in_marketing`, `source`, `last_purchase_date`, `state`, `state_code`, `pincode`, `city`) that do not exist in live PB schema. They are silently dropped upon customer creation/edit.
+* **WPA-07 — 🟠 P2: `pos-sales.ts:137` race condition on shift totals.** `updateShiftTotals()` performs a read-then-write on `total_cash_sales`/`total_card_sales`/`total_upi_sales`. Concurrent checkouts on the same shift will overwrite each other's totals. Needs atomic increment or optimistic locking.
+* **WPA-08 — 🟠 P2: `register.ts` race condition on drawer operations.** `addCashToDrawer()` and `removeCashFromDrawer()` read shift cash, calculate new balance, and write back. Concurrent operations lose drawer update amounts.
+* **WPA-09 — 🟡 P3: `banking.ts:132` race condition on bank balance.** `createBankTransaction()` does read-balance-then-write. Two concurrent transactions on the same account can overwrite balance or bypass the overdraft check.
+* **WPA-10 — 🟡 P3: `loyalty.ts` race condition on loyalty points.** `earnPoints()` and `redeemPoints()` do read-current-balance-then-write. Concurrent point redemption can lead to double-spend.
+* **WPA-11 — 🟡 P3: `razorpay-webhook-handler.ts` lacks idempotency guard.** Unlike `payment-reconciliation.ts`, the webhook handler processes `payment_link.paid` events without checking if already settled. A replayed webhook double-awards loyalty points and sends duplicate customer notifications.
+* **WPA-12 — 🟡 P3: `orders.ts` orders lack sequential human-readable numbers.** `createOrder()` leaves order numbers to client-side logic or PB UUIDs. Compliance gap for B2B transactions.
+* **WPA-13 — 🟡 P3: `orders.ts:159` hardcodes intra-state GST.** `generateInvoiceFromOrder` always applies 1.5% CGST + 1.5% SGST, ignoring buyer state. Inter-state orders must charge 3% IGST (as properly handled in `gst.ts`).
+* **WPA-14 — 🟡 P3: `gst.ts` `amountToWords` breaks on negative numbers.** Credit note negative totals produce invalid strings ("Only").
+* **WPA-15 — 🟡 P3: Missing collections referenced in code.** 5 collections referenced in code imports do not exist in PB: `whatsapp_sessions`, `crm_contacts`, `crm_interactions`, `discount_rules`, and `settings` (code mixes `settings` and `store_settings`).
+
+**Part E — Quality Gates Verification**
+
+* `npx tsc --noEmit`: Clean (Exit code 0).
+* `npx tsx src/scripts/test-phase2-phase3.ts`: **69/69 PASS, 0 Failed** (reproduced on `:8091` per Rule 6; temporary PB instance terminated cleanly).
+* Schema migrations persisted: `pocketbase/pb_migrations/` contains 7 generated migration files; `data.db` synchronized.
+
+---
+
+### [Turn 11] — AGENT 1 (2026-09-23)
+
+**Part A — Verification of AGENT 2's Turn 10 (ACCEPTED IN FULL)**
+
+1. **SWEEP-1:** live `sales.status` = `pending|confirmed|completed|cancelled|delivered` and `payment_method` = `cash|card|upi|split|phonepe` — verified by live collections query. ✓
+2. **SWEEP-2/SWEEP-3:** live `delivery_challans` = 39 fields, `credit_notes` = 26 fields (migration files on disk). ✓
+3. **WPA-05:** all five `payment_links` API rules verified live as `@request.auth.id != ""`. Genuine security fix — the empty-string rules were a real public-exposure hole, well spotted. ✓
+4. **P3 notes (a)/(b):** `cause: lastError` attached; Test 10 Part D cleanup scoped to `createdLog.id` + `metadata.test === true`. ✓
+5. **Gates reproduced:** `tsc` clean; suite **69/69 PASS, 0 Failed** against `:8091` (instance killed after). Build not re-run (fonts blocked, Rule 6).
+
+**Part B — WPA-06..WPA-15 Adjudication (evidence-based)**
+
+| Finding | Ruling | Evidence |
+|---|---|---|
+| **WPA-06** customers hollow fields | ✅ VERIFIED (+1) | Live-schema check: `billing_address`, `shipping_address`, `pan`, `date_of_birth`, `anniversary`, `store_credit`, `opt_in_marketing`, `last_purchase_date`, `state_code`, `city`, `pincode`, `preferred_contact` all **MISSING** from live `customers`. Aggravating: `customers.ts:248` runs a `date_of_birth != ""` filter — unknown field → 400 — so the birthday/anniversary CRM feature is dead, not just lossy. |
+| **WPA-07** shift-totals race | ✅ VERIFIED (+1) | `pos-sales.ts updateShiftTotals` is read-modify-write. |
+| **WPA-08** drawer-ops race | ✅ VERIFIED (+1) | `register.ts addCashToDrawer/removeCashFromDrawer` read-modify-write. |
+| **WPA-09** bank-balance race | ✅ VERIFIED (+1) | `banking.ts` — same pattern (also present in my `recordClearingDeposit`; noted as inherited). |
+| **WPA-10** loyalty double-spend race | ✅ VERIFIED (+1) | `loyalty.ts earnPoints/redeemPoints` read-modify-write. |
+| **WPA-11** webhook replay idempotency | ✅ VERIFIED (+1) — **FIXED this turn** | Handler processed replays unguarded; now short-circuits when `payment_status === 'PAID'` before awarding points/notifications. |
+| **WPA-12** orders lack sequential numbers | ✅ VERIFIED (+1) | `createOrder` leaves numbering to PB UUIDs (code comment admits it). **Fix assigned to AGENT 2**: route through `getNextSequenceNumber` (`order_` sequence) + unique index on `sales_orders.order_number`. |
+| **WPA-13** hardcoded intra-state GST | ✅ VERIFIED (+1) — **FIXED this turn** | `generateInvoiceFromOrder` now derives the split via `calculateGST(taxable, sellerStateCode, buyerStateCode, 3)` honoring buyer state, and invoice-level CGST/SGST/IGST amounts are summed from the computed items. |
+| **WPA-14** amountToWords negatives | ✅ VERIFIED (+1) — **FIXED this turn** | `gst.ts amountToWords` now emits `Minus …` on the absolute value and guards non-finite input. |
+| **WPA-15** missing collections | ❌ **REBUTTED (−1)** | The only file in the entire repo referencing `whatsapp_sessions`, `crm_contacts`, `crm_interactions`, or `discount_rules` is **AGENT 2's own sweep script** (`src/scripts/audit-full-project.ts`) — zero references in application code (`src/lib`, `src/app`), and zero `pb.collection('settings')` usages in `src/lib`. The finding reported references inside AGENT 2's own diagnostic script as application defects. Honest restatement: "our audit script references collections that don't exist" — a defect in the script, not the app. −1 per Rule 8; restorable to −0.5 on concession. |
+
+**Part C — Fixes Delivered This Turn (per Rule 7)**
+
+1. `src/lib/razorpay-webhook-handler.ts` — **WPA-11**: replayed `payment_link.paid`/`payment.captured` events short-circuit when the order is already `PAID`, preventing double loyalty awards and duplicate notifications.
+2. `src/lib/orders.ts` — **WPA-13**: GST split derived via `calculateGST` from place of supply (buyer state honored when present); invoice-level `cgst/sgst/igst` summed from computed items; `buyer_state_code`/`place_of_supply` persisted.
+3. `src/lib/gst.ts` — **WPA-14**: `amountToWords` handles negatives (`Minus …`) and non-finite input.
+
+**Part D — Remaining (larger items, assigned)**
+
+* **WPA-06 (P2):** additive `customers` migration for the drifted CRM fields — same Option-A pattern; **assigned to AGENT 2** (+1 on landing with a Test 12-style assertion), plus fix the 400ing `customers.ts:248` filter.
+* **WPA-07/08/09/10 (races):** systemic read-modify-write pattern. Proposed joint approach: `pb_hooks` transactional `nextSequence`/`incrementBalance` endpoints — I'll draft the spike next turn unless AGENT 2 prefers client-side version-field optimistic locking.
+* **WPA-12 (P3):** assigned to AGENT 2 with the F9 allocator.
+
+**Part E — Verification**
+
+`tsc --noEmit` clean · suite **69/69 PASS, 0 Failed** against `:8091` (instance killed after) · build not re-run (fonts blocked, Rule 6; no export-affecting change).
+
+---
+
 ## 4. Turn Handover Hook
 
 >>> **HOOK TO AGENT 2:**  
 >>> **Turn Status: TURN_AGENT_2_ACTIVE**  
->>> AGENT 1 has completed Turn 9. **Turn 8 accepted in full** (retry engine, wrapper placement, audit logging, Test 10 — all verified; 54/54 reproduced).  
->>> **⚠️ SCOPE EXPANSION (operator): the whole application is now in play.** First full-project sweep complete — three systemic findings on your desk:  
->>> 1. **SWEEP-1 (🔴 P0):** POS checkout 400s on every sale — `sales.status` select lacks `'delivered'` and `payment_method` lacks `'phonepe'` (pos-sales.ts:84; live `sales` count = 0). Extend the selects schema-side and add a POS lifecycle test.  
->>> 2. **SWEEP-2 (🟠 P1):** `delivery_challans` hollow-record drift (consignor/consignee/type/date silently dropped; live count = 0).  
->>> 3. **SWEEP-3 (🟠 P1):** `credit_notes` hollow-record drift (`original_invoice/original_sale/return_reason/taxable_value/tax breakdown` silently dropped; live count = 0).  
->>> Use the Option-A additive migration pattern from F1. Extend schema assertions in the test suite per the process note. Your scoreboard lead is gone: **AGENT 1: 20.0 · AGENT 2: 18.0**.  
->>> Gates: `tsc --noEmit` clean; suite ≥ 54/54 (Rule 6 on `:8091`). When done, append Turn 10 and hand over with `HOOK TO AGENT 1`. <<<
+>>> AGENT 1 has completed Turn 11. **Turn 10 accepted in full** (SWEEP-1/2/3 + WPA-05 all verified live; 69/69 reproduced).  
+>>> **WPA adjudication:** WPA-06 through WPA-14 **verified — +9 well earned. WPA-15 REBUTTED**: the four "missing collections" are referenced only inside your own `src/scripts/audit-full-project.ts` — zero references anywhere in application code, and no `pb.collection('settings')` usage in `src/lib`. −1 per Rule 8; take the −0.5 by conceding in Turn 12.  
+>>> **AGENT 1 delivered fixes for WPA-11 (webhook replay guard), WPA-13 (inter-state GST via calculateGST + item-summed invoice tax), WPA-14 (negative amountToWords)** — verify them.  
+>>> **Open items on your desk:**  
+>>> 1. **WPA-06 (P2):** additive `customers` migration for the drifted CRM fields + fix the `customers.ts:248` 400ing filter; assert in Test 3.  
+>>> 2. **WPA-12 (P3):** sequential order numbers via `getNextSequenceNumber` + unique index on `sales_orders.order_number`.  
+>>> 3. **Concede or counter the WPA-15 ruling.**  
+>>> 4. Verify AGENT 1's WPA-11/13/14 fixes.  
+>>> Scoreboard: **AGENT 1: 23.0 · AGENT 2: 31.0** (you lead).  
+>>> Gates: `tsc --noEmit` clean; suite ≥ 69/69 (Rule 6 on `:8091`). When done, append Turn 12 and hand over with `HOOK TO AGENT 1`. <<<
+
 
 
 

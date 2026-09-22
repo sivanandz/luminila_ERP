@@ -6,6 +6,7 @@
 import { pb } from '@/lib/pocketbase';
 import { toast } from 'sonner';
 import { createInvoice, getStoreSettings } from '@/lib/invoice';
+import { calculateGST } from '@/lib/gst';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
 export type OrderType = 'estimate' | 'sales_order';
@@ -153,11 +154,15 @@ export async function generateInvoiceFromOrder(orderId: string) {
 
         const store = await getStoreSettings();
 
+        // WPA-13 fix: derive the CGST/SGST vs IGST split from place of supply
+        // instead of hardcoding intra-state CGST+SGST regardless of buyer state.
+        const sellerStateCode = store.store_state_code || '27';
+        const buyerStateCode = (order as any).buyer_state_code || (order as any).place_of_supply || sellerStateCode;
+
         const invoiceItems = orderItems.map((item: any, idx: number) => {
             const taxable = (item.unit_price || 0) * (item.quantity || 1);
             const gstRate = 3; // Standard jewelry GST rate
-            const cgst = taxable * 0.015;
-            const sgst = taxable * 0.015;
+            const gst = calculateGST(taxable, sellerStateCode, buyerStateCode, gstRate);
             return {
                 sr_no: idx + 1,
                 variant_id: item.variant || '',
@@ -170,20 +175,20 @@ export async function generateInvoiceFromOrder(orderId: string) {
                 discount_amount: 0,
                 taxable_amount: taxable,
                 gst_rate: gstRate,
-                cgst_rate: 1.5,
-                cgst_amount: cgst,
-                sgst_rate: 1.5,
-                sgst_amount: sgst,
-                igst_rate: 0,
-                igst_amount: 0,
+                cgst_rate: gst.cgstRate,
+                cgst_amount: gst.cgstAmount,
+                sgst_rate: gst.sgstRate,
+                sgst_amount: gst.sgstAmount,
+                igst_rate: gst.igstRate,
+                igst_amount: gst.igstAmount,
                 cess_rate: 0,
                 cess_amount: 0,
-                total_amount: item.total || (taxable + cgst + sgst)
+                total_amount: item.total || (taxable + gst.totalTax)
             };
         });
 
         const subtotal = order.subtotal || invoiceItems.reduce((acc, it) => acc + it.taxable_amount, 0);
-        const totalTax = order.tax_total || invoiceItems.reduce((acc, it) => acc + it.cgst_amount + it.sgst_amount, 0);
+        const totalTax = order.tax_total || invoiceItems.reduce((acc, it) => acc + it.cgst_amount + it.sgst_amount + it.igst_amount, 0);
         const grandTotal = order.total || (subtotal + totalTax);
 
         const invoice = await createInvoice({
@@ -201,16 +206,16 @@ export async function generateInvoiceFromOrder(orderId: string) {
             buyer_phone: order.customer_phone || '',
             buyer_email: order.customer_email || '',
             buyer_address: order.billing_address || order.shipping_address || '',
-            buyer_state_code: store.store_state_code || '27',
-            place_of_supply: store.store_state_code || '27',
+            buyer_state_code: buyerStateCode,
+            place_of_supply: buyerStateCode,
             subtotal: subtotal,
             tax: totalTax,
             discount: order.discount_total || 0,
             total: grandTotal,
             taxable_value: subtotal,
-            cgst_amount: totalTax / 2,
-            sgst_amount: totalTax / 2,
-            igst_amount: 0,
+            cgst_amount: invoiceItems.reduce((acc, it) => acc + it.cgst_amount, 0),
+            sgst_amount: invoiceItems.reduce((acc, it) => acc + it.sgst_amount, 0),
+            igst_amount: invoiceItems.reduce((acc, it) => acc + it.igst_amount, 0),
             cess_amount: 0,
             total_tax: totalTax,
             discount_amount: order.discount_total || 0,

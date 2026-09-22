@@ -178,10 +178,16 @@ function convertToWords(num: number): string {
 }
 
 export function amountToWords(amount: number, currency: string = 'Rupees'): string {
-    if (amount === 0) return `Zero ${currency} Only`;
+    if (!isFinite(amount)) return `Invalid ${currency} Only`;
+    // WPA-14: credit notes / reversals can produce negative totals — emit a signed
+    // phrase on the absolute value instead of an empty "Only".
+    const sign = amount < 0 ? 'Minus ' : '';
+    const absAmount = Math.abs(amount);
 
-    const rupees = Math.floor(amount);
-    const paise = Math.round((amount - rupees) * 100);
+    if (absAmount === 0) return `Zero ${currency} Only`;
+
+    const rupees = Math.floor(absAmount);
+    const paise = Math.round((absAmount - rupees) * 100);
 
     let result = '';
 
@@ -193,7 +199,7 @@ export function amountToWords(amount: number, currency: string = 'Rupees'): stri
         result += (rupees > 0 ? ' and ' : '') + convertToWords(paise) + ' Paise';
     }
 
-    return result + ' Only';
+    return sign + result + ' Only';
 }
 
 export const toWords = amountToWords;
