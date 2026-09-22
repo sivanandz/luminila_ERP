@@ -28,14 +28,14 @@ Before running Luminila, ensure you have:
 - **Operating System**: Windows 10/11, macOS 12+, Linux, or Android (phones/tablets).
 - **Hardware**: Minimum 4GB RAM (8GB recommended), 2GB free disk space.
 - **Node.js**: v18.17+ or v20+ LTS (for development or running from source).
-- **Local Database**: Embedded PocketBase v0.26.5 (included in the `pocketbase/` folder — no external cloud database or monthly subscription required).
+- **Local Database**: Embedded PocketBase v0.25.0 server (included in the `pocketbase/` folder with PocketBase JS SDK v0.26.5 — no external cloud database or monthly subscription required).
 
 ### Installation & Launch Options
 
 #### Option 1: Native Desktop Application (Tauri v2)
 1. Download the pre-built desktop installer (`Luminila_0.1.0_x64_en-US.msi` or `.exe`).
 2. Run the installer and launch Luminila from your desktop or Start Menu.
-3. The desktop shell automatically starts background services and supervises the WhatsApp sidecar.
+3. The desktop shell supervises the WhatsApp sidecar natively. PocketBase runs locally on port 8090 (launched via store service or `npm run dev:all`).
 
 #### Option 2: Unified Local Server (Developer / Store Server PC)
 To boot all three core background services together on the store master PC:
@@ -51,7 +51,9 @@ cd wppconnect-sidecar && npm install && cd ..
 # 3. Copy environment configuration
 cp env.example.txt .env.local
 
-# 4. Start all services concurrently (PocketBase, WhatsApp Sidecar, Next.js)
+# 4. Start all services concurrently (PocketBase 0.0.0.0:8090, WhatsApp Sidecar :21465, Next.js :3000)
+npm run dev
+# or:
 npm run dev:all
 ```
 - **Web App**: `http://localhost:3000`
@@ -70,20 +72,31 @@ npm run dev:all
 
 ## 🗄️ Database Setup (PocketBase)
 
-Luminila uses an embedded, high-performance SQLite database engine (**PocketBase**) running in Write-Ahead Logging (`WAL`) mode. Everything is stored locally on your machine in `pocketbase/pb_data/data.db`.
+Luminila uses an embedded, high-performance SQLite database engine (**PocketBase v0.25.0**) running in Write-Ahead Logging (`WAL`) mode, bound to `0.0.0.0:8090`. Everything is stored locally on your machine in `pocketbase/pb_data/data.db`.
 
-### First-Time Admin Account Setup:
+### Administrative & Staff Credentials
+
+Luminila features two distinct credential sets:
+
+1. **PocketBase Superuser / Database Admin Console** (`http://127.0.0.1:8090/_/`):
+   - **Email**: `admin@luminila.com`
+   - **Password**: `password123456`
+   - *Use this console for low-level schema inspection, raw records, and database backups.*
+
+2. **Luminila Staff Application Admin** (`/login`):
+   - **Email**: `admin@luminila.local`
+   - **Password**: `Admin@123456`
+   - *Seeded via `src/scripts/create-admin-user.ts` for logging into the POS, Inventory, and ERP interface.*
+
+### Initialization Sequence:
 1. Start PocketBase (`npm run dev:pb` or `npm run dev:all`).
-2. Open `http://127.0.0.1:8090/_/` in your browser.
-3. Create your initial administrator account:
-   - **Default Admin Email**: `admin@luminila.com`
-   - **Default Admin Password**: `password123456`
-4. Run the schema creation and role seeding scripts:
+2. Run schema initialization and user/role seeding:
    ```bash
    npx tsx src/scripts/init-pocketbase.ts
    npx tsx src/scripts/seed-roles.ts
+   npx tsx src/scripts/create-admin-user.ts
    ```
-5. All 38 collections, indexes, and role capabilities are now ready.
+3. All 38 collections, indexes, staff roles, and the administrator account are now ready.
 
 ---
 
@@ -113,7 +126,7 @@ On desktop screens, the left sidebar provides direct access to all departments:
 ### Mobile Navigation (Bottom Nav & Drawer)
 On smartphones and small tablets:
 - **Bottom Navigation Bar**: Instant thumb access to **Home**, **Stock**, **Invoices**, and a prominent elevated center **POS FAB** button.
-- **Slide-Over Drawer**: Tap **Menu** to access all 18 ERP modules grouped logically into Sales & POS, Inventory, Finance, and System.
+- **Slide-Over Drawer**: Tap **Menu** to access all 17 ERP modules grouped logically into Sales & POS, Inventory, Finance, and System.
 - **Server Switcher**: Tap **Server Settings** inside the drawer to test latency or switch database endpoints.
 
 ---
@@ -129,7 +142,7 @@ On smartphones and small tablets:
 1. **Add Items**: Scan physical jewelry tags using a barcode scanner or tap the camera icon to use your phone's camera. You can also search by product name or SKU.
 2. **Variant Selection**: For items with variants, select the desired ring size, metal tone (Rose Gold, 925 Silver, Yellow Gold), or material.
 3. **Customer & Loyalty**: Look up the customer's phone number to earn points or redeem accrued loyalty balance.
-4. **Select Payment Mode**: Choose Cash, Card, UPI, or dynamic PhonePe QR. Split payments across multiple tenders are fully supported.
+4. **Select Payment Mode**: Choose Cash (with dynamic change due calculation), Card, UPI, or dynamic PhonePe QR. *(Note: Each sale currently settles through a single selected tender; multi-mode split tenders are slated for Milestone 3).*
 5. **Complete & Print**: Click **Complete Sale**. Print a thermal receipt (58mm/80mm) or generate an official GST tax invoice.
 
 ### 3. Printing Barcode Tags for Jewelry

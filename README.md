@@ -60,7 +60,7 @@ For detailed technical and operational documentation, consult the dedicated guid
 
 - [Node.js](https://nodejs.org/) v18.17+
 - [Rust](https://rustup.rs/) (for Tauri desktop builds)
-- [PocketBase](https://pocketbase.io/docs/) v0.26+ (included in `pocketbase/` directory)
+- [PocketBase](https://pocketbase.io/docs/) v0.25.0 server (included in `pocketbase/` directory, client SDK `^0.26.5`)
 
 ### Installation
 
@@ -146,7 +146,8 @@ luminila_inv_mgmt/
 │   │   ├── settings/          # Configuration
 │   │   └── login/             # Authentication
 │   ├── components/
-│   │   ├── layout/            # Sidebar, Header, ProtectedRoute
+│   │   ├── auth/              # ProtectedRoute, Auth guards
+│   │   ├── layout/            # Sidebar, Header, MobileNav, Drawer
 │   │   ├── dashboard/         # KPI Cards, Charts
 │   │   └── ui/                # Reusable shadcn/base-ui components
 │   ├── contexts/

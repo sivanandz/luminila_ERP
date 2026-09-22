@@ -10,10 +10,10 @@ Luminila is designed to run locally with three coordinated background services. 
 
 ```mermaid
 graph TD
-    User([Developer / Store Operator]) --> Launch["npm run dev:all<br/>(scripts/start-all.ps1)"]
+    User([Developer / Store Operator]) --> Launch["npm run dev / npm run dev:all<br/>(scripts/dev-all.js)"]
 
-    subgraph Orchestration ["start-all.ps1 Launcher"]
-        P1["1. PocketBase Server<br/>(pocketbase.exe serve)<br/>Port: 8090"]
+    subgraph Orchestration ["scripts/dev-all.js Launcher"]
+        P1["1. PocketBase Server<br/>(pocketbase.exe serve)<br/>Port: 8090 (0.0.0.0)"]
         P2["2. WPPConnect Sidecar<br/>(node server.js)<br/>Port: 21465"]
         P3["3. Next.js App Server<br/>(next dev)<br/>Port: 3000"]
     end
@@ -29,9 +29,11 @@ graph TD
 ### Starting the Application
 
 #### Option A: Unified Launcher (Recommended)
-Run the PowerShell launcher which boots PocketBase, the WhatsApp sidecar, and Next.js concurrently:
+Run the Node.js unified launcher which boots PocketBase (bound to `0.0.0.0:8090`), the WhatsApp sidecar (`:21465`), and Next.js (`:3000`) concurrently with health checks:
 
-```powershell
+```bash
+npm run dev
+# or:
 npm run dev:all
 ```
 *(Pressing `Ctrl+C` cleanly shuts down all background services.)*
@@ -41,19 +43,21 @@ If running services in dedicated terminal windows:
 
 1. **Terminal 1 — PocketBase:**
    ```powershell
-   ./pocketbase/pocketbase.exe serve --http="127.0.0.1:8090" --dir="pocketbase/pb_data"
+   npm run dev:pb
+   # Equivalent to: ./pocketbase/pocketbase.exe serve --http="0.0.0.0:8090" --dir="pocketbase/pb_data"
    ```
    *PocketBase Admin UI:* `http://127.0.0.1:8090/_/`
 
 2. **Terminal 2 — WhatsApp Sidecar:**
    ```powershell
-   cd wppconnect-sidecar
-   node server.js
+   npm run dev:sidecar
+   # Equivalent to: cd wppconnect-sidecar && node server.js
    ```
 
-3. **Terminal 3 — Next.js Application:**
+3. **Terminal 3 — Next.js Application Alone:**
    ```powershell
-   npm run dev
+   npm run dev:frontend
+   # Equivalent to: next dev
    ```
    *Application URL:* `http://localhost:3000`
 
@@ -78,7 +82,7 @@ sequenceDiagram
     participant POS as POS Service (lib/pos-sales)
     participant DB as PocketBase
 
-    Cashier->>UI: Logs in with PIN / Badge QR
+    Cashier->>UI: Logs in with credentials (email/password)
     Cashier->>UI: Opens Register Shift (Enters opening float e.g. ₹5,000)
     UI->>Reg: openShift(userId, float)
     Reg->>DB: Create cash_register_shifts record
@@ -221,7 +225,8 @@ graph TD
 
 ### PocketBase Administration
 - **Web Admin Console**: Navigate to `http://127.0.0.1:8090/_/` in any browser.
-- **Admin Credentials**: Configured during first-time setup (default: `admin@luminila.com`).
+- **Database Superuser Admin**: `admin@luminila.com` / `password123456` (configured for low-level collection inspection and raw backups).
+- **Staff Application User**: `admin@luminila.local` / `Admin@123456` (seeded via `src/scripts/create-admin-user.ts` for `/login`).
 - **Collection Management**: Inspect raw SQLite tables, verify indexes, and download uploaded media attachments.
 
 ### Schema Synchronization

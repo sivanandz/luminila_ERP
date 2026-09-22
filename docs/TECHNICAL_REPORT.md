@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-Luminila is a fashion jewelry inventory management and Point of Sale (POS) system engineered for retail showrooms, B2B wholesale counters, and multi-channel e-commerce operations. It merges a native desktop container (Tauri v2), an embedded local database (PocketBase v0.26.5 running SQLite in WAL mode), a modern responsive web frontend (Next.js 16 + React 19), and background microservices (WPPConnect WhatsApp sidecar).
+Luminila is a fashion jewelry inventory management and Point of Sale (POS) system engineered for retail showrooms, B2B wholesale counters, and multi-channel e-commerce operations. It merges a native desktop container (Tauri v2), an embedded local database (PocketBase v0.25.0 server engine with SQLite in WAL mode, paired with PocketBase JS SDK v0.26.5), a modern responsive web frontend (Next.js 16 + React 19), and background microservices (WPPConnect WhatsApp sidecar).
 
 ---
 
@@ -25,7 +25,7 @@ graph TD
 
     subgraph Service Tier ["Local Host Services"]
         D[WPPConnect Sidecar :21465 - Node.js Express + Puppeteer]
-        E[PocketBase Engine :8090 - Embedded Go + SQLite WAL]
+        E[PocketBase Engine :8090 - Embedded Go v0.25.0 + SQLite WAL]
     end
 
     subgraph Connectivity ["Networking & Tunneling"]
@@ -64,7 +64,7 @@ graph TD
 - **Frontend**: Next.js 16.1.0 (App Router) + React 19.2.3, TypeScript 5, React Compiler (`babel-plugin-react-compiler`).
 - **UI & Styling**: Tailwind CSS v4 (`@tailwindcss/postcss`), `@base-ui/react`, Shadcn UI primitives, `lucide-react`.
 - **Desktop & Mobile Container**: Tauri v2.9.x (Rust 2021) supporting Windows (`.msi`/`.exe`), macOS, Linux, and Android (`.apk`).
-- **Database Engine**: PocketBase v0.26.5 (Embedded Go binary + SQLite in Write-Ahead Logging `WAL` mode).
+- **Database Engine**: PocketBase v0.25.0 Server (Embedded Go binary `pocketbase.exe` + SQLite in Write-Ahead Logging `WAL` mode, binding `0.0.0.0:8090`).
 - **Client SDK**: PocketBase JS SDK (`pocketbase ^0.26.5`) with dynamic runtime URL switching (`src/lib/pocketbase.ts`).
 - **Messaging Sidecar**: WPPConnect Server (`@wppconnect-team/wppconnect ^2.3.3`) running on Express (port 21465), compiled via `pkg` for native Tauri bundling.
 - **Barcodes & Imaging**: `jsbarcode` (vector Code128 generation), `html5-qrcode` (camera barcode scanning).
@@ -78,12 +78,12 @@ graph TD
    - Eliminates ongoing cloud hosting costs, prevents offline showroom checkout blockage when internet drops, and guarantees sub-millisecond local query latencies.
 2. **Tauri v2 over Electron**:
    - Reduces the installer bundle footprint from 150MB+ down to <30MB by utilizing OS-native WebViews (Edge WebView2 on Windows).
-   - Provides native memory efficiency and supervisor capabilities in Rust.
+   - Provides native memory efficiency and supervisor capabilities in Rust (supervising the WPPConnect sidecar).
 3. **Dynamic Network Gateway Architecture**:
    - Mobile and multi-terminal devices dynamically repoint `pb.baseUrl` via `localStorage.getItem("PB_CUSTOM_URL")` to showroom LAN IPs (`192.168.x.x:8090`) or Cloudflare Zero-Trust tunnels (`trycloudflare.com`).
 4. **Decentralized Offline Mutation Queue & Cloud Sync**:
    - Client mutations are persisted to an offline queue (`src/lib/offline-queue.ts`) with automatic replay upon reconnection.
-   - Tier 2 sync logs incremental changes to Google Drive (`src/lib/google-drive-sync.ts`) for serverless multi-device synchronization.
+   - Tier 2 sync logs incremental changes with Google Drive client scaffold (`src/lib/google-drive-sync.ts`) for serverless multi-device synchronization (Beta / Scaffold with offline queue).
 
 ---
 
@@ -150,7 +150,7 @@ export async function checkServerStatus(targetUrl?: string): Promise<ServerHealt
 To enable showroom floor staff to operate on Android smartphones and tablets:
 - **`src/hooks/use-viewport.ts`**: Real-time form factor detection (`isMobile`, `isTablet`, `isDesktop`, `isTauri`, `isAndroid`).
 - **`src/components/layout/MobileBottomNav.tsx`**: Bottom thumb bar with elevated Point of Sale (POS) Floating Action Button.
-- **`src/components/layout/MobileDrawer.tsx`**: Slide-over navigation grouping all 18 ERP modules.
+- **`src/components/layout/MobileDrawer.tsx`**: Slide-over navigation grouping 17 ERP modules across Sales, Inventory, Finance, and Showroom.
 - **`src/lib/mobile-scanner.ts`**: Unified hardware USB/Bluetooth barcode scanner listener (keyboard wedge) and HTML5 camera scanner.
 - **`src/lib/mobile-printer.ts`**: Android system print spooler integration and ESC/POS thermal receipt formatting for 58mm/80mm wireless Bluetooth printers.
 
@@ -158,7 +158,7 @@ To enable showroom floor staff to operate on Android smartphones and tablets:
 
 ## 4. Database Schema: 38 Relational Collections
 
-PocketBase manages SQLite in `WAL` mode across **38 relational collections**:
+PocketBase manages SQLite in `WAL` mode across **38 relational collections** created by `src/scripts/init-pocketbase.ts`:
 
 ```mermaid
 erDiagram
@@ -197,15 +197,15 @@ erDiagram
     roles ||--o{ user_roles : "grants"
 ```
 
-### Schema Sub-Domains
+### Schema Sub-Domains (38 Custom Collections)
 1. **Catalog & Stock**: `products`, `product_variants`, `stock_movements`.
 2. **POS & Register**: `sales`, `sale_items`, `cash_register_shifts`, `cash_drawer_operations`.
-3. **GST Invoicing**: `invoices`, `invoice_items`, `invoice_payments`, `number_sequences`.
+3. **GST Invoicing & Orders**: `invoices`, `invoice_items`, `invoice_payments`, `number_sequences`, `sales_orders`, `sales_order_items`.
 4. **Procurement**: `vendors`, `purchase_orders`, `purchase_order_items`, `goods_received_notes`, `grn_items`.
 5. **Returns & Logistics**: `credit_notes`, `credit_note_items`, `delivery_challans`, `delivery_challan_items`.
 6. **CRM & Loyalty**: `customers`, `customer_interactions`, `loyalty_settings`, `loyalty_tiers`, `loyalty_accounts`, `loyalty_transactions`.
 7. **Treasury & Expenses**: `bank_accounts`, `bank_transactions`, `expense_categories`, `expenses`.
-8. **Governance & Integrations**: `users`, `roles`, `user_roles`, `activity_logs`, `discounts`, `discount_usage`, `store_settings`, `sync_logs`.
+8. **Governance & Settings**: `roles`, `user_roles`, `activity_logs`, `discounts`, `discount_usage`, `store_settings` *(Note: PocketBase also includes the built-in `users` auth collection).*
 
 ---
 
@@ -213,8 +213,13 @@ erDiagram
 
 ### 5.1 Local Development Commands
 ```bash
-# Unified multi-service launcher (PocketBase :8090, Sidecar :21465, Next.js :3000)
+# Unified multi-service launcher (PocketBase 0.0.0.0:8090, Sidecar :21465, Next.js :3000)
+npm run dev
+# or:
 npm run dev:all
+
+# Frontend standalone development (Next.js :3000 only)
+npm run dev:frontend
 
 # Desktop application development (Tauri v2)
 npm run tauri:dev
@@ -222,13 +227,13 @@ npm run tauri:dev
 # Mobile Android application development
 npx tauri android dev
 
-# Cloudflare Zero-Trust Tunnel (remote mobile access)
+# Cloudflare Zero-Trust Tunnel (remote mobile access to 0.0.0.0:8090)
 npm run tunnel
 ```
 
 ### 5.2 Production Compilation Pipelines
 1. **Frontend Static Export**: `npm run build` generates static HTML/JS into `out/` with React Compiler optimization.
-2. **WPPConnect Sidecar**: `cd wppconnect-sidecar && npm run build` compiles `server.js` using `pkg` to `src-tauri/binaries/wppconnect-server-<triple>.exe`.
+2. **WPPConnect Sidecar**: `cd wppconnect-sidecar && npm run build` compiles `server.js` using `pkg` (`npx pkg`) to `src-tauri/binaries/wppconnect-server-<triple>.exe`.
 3. **Desktop Windows Installer**: `npm run tauri:build` packages `luminila.exe` and MSI/NSIS setup bundles.
 4. **Android APK**: `npx tauri android build --apk` packages debug and release APKs.
 
@@ -238,11 +243,11 @@ npm run tunnel
 
 ### 6.1 Security Measures
 - **PocketBase JWT Auth**: Cryptographically signed JSON Web Tokens with client-side localStorage persistence.
-- **PIN & QR Fast Cashier Switching**: Showroom staff can lock/unlock terminals using a 4-to-6 digit PIN or QR badge without retyping master passwords.
-- **Fine-Grained RBAC**: Role-based access control with explicit permission dictionary flags protecting sensitive views.
-- **Tauri Content Security Policy (CSP)**: Locks Webview connect origins to local loopback ports (`127.0.0.1:*`) and verified Cloudflare tunnel domains (`*.trycloudflare.com`).
+- **RBAC Matrix**: Role-based access control (`Admin`, `Manager`, `Staff`, `Cashier`, `Viewer`) with permission guards protecting sensitive views.
+- **PIN & QR Fast Cashier Switching**: Roadmap item scheduled for Milestone 3. Current release authenticates users via email/password credentials with session persistence.
+- **Tauri Content Security Policy (CSP)**: Protocol-based policy (`connect-src 'self' http: https: ws: wss:`) allowing local service loopback and encrypted cloud tunnels.
 
 ### 6.2 Performance Optimizations
 - **SQLite WAL Mode**: Allows concurrent reads from multiple POS terminals while writes are processed sequentially without database locking.
-- **Zero Heavy Web Runtimes**: Tauri eliminates Chromium runtime overhead in desktop production, keeping memory usage <100MB RAM.
+- **Zero Heavy Web Runtimes**: Tauri eliminates Chromium runtime overhead in desktop production, keeping memory usage minimal compared to Electron.
 - **Vector Barcode Generation**: Fast client-side vector Code128 rendering via `jsbarcode` without external network requests.

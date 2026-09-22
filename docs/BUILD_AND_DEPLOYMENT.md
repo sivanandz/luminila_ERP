@@ -12,7 +12,7 @@ This guide provides end-to-end instructions for installing prerequisites, config
 |---|---|---|---|
 | **Node.js** | `v18.17.0+` | `v20.x LTS` | Engine for Next.js and WPPConnect sidecar |
 | **npm** | `v9.x+` | `v10.x+` | Package manager |
-| **PocketBase** | `v0.26.0+` | `v0.26.5` | Embedded Go SQLite backend (included in `pocketbase/`) |
+| **PocketBase** | `v0.25.0` | `v0.25.0 (Server) / ^0.26.5 (JS SDK)` | Embedded Go SQLite backend (server in `pocketbase/`, JS SDK in `package.json`) |
 | **Rust / Cargo** | `1.75.0+` | `latest stable` | Required for Tauri v2 native shell compilation |
 | **Git** | `2.40+` | `latest` | Version control |
 
@@ -103,16 +103,18 @@ The app supports runtime database URL overrides without rebuilding. When running
 
 ## 3. Local Development Workflows
 
-### 3.1 Option A: Unified Launcher (`npm run dev:all`) — Recommended
+### 3.1 Option A: Unified Launcher (`npm run dev` or `npm run dev:all`) — Recommended
 
-The unified orchestrator (`scripts/dev-all.js`) concurrently manages all three backend/frontend services with color-coded logging and clean process termination:
+The unified orchestrator (`scripts/dev-all.js`) concurrently manages all three backend/frontend services with color-coded logging, health pre-checks, and clean process termination:
 
 ```bash
+npm run dev
+# or:
 npm run dev:all
 ```
 
 **What it launches:**
-1. **PocketBase Server**: `http://127.0.0.1:8090` (Admin: `http://127.0.0.1:8090/_/`)
+1. **PocketBase Server**: `http://127.0.0.1:8090` (Admin: `http://127.0.0.1:8090/_/`, bound to `0.0.0.0:8090` for LAN/emulator access)
 2. **WhatsApp WPPConnect Sidecar**: `http://127.0.0.1:21465`
 3. **Next.js Web Frontend**: `http://localhost:3000`
 
@@ -123,15 +125,15 @@ npm run dev:all
 If debugging a specific subsystem, run each process in an independent terminal:
 
 ```bash
-# Terminal 1: PocketBase Server
+# Terminal 1: PocketBase Server (bound to all interfaces 0.0.0.0)
 npm run dev:pb
-# Equivalent to: pocketbase\pocketbase.exe serve --http=127.0.0.1:8090 --dir=pocketbase\pb_data
+# Equivalent to: pocketbase\pocketbase.exe serve --http=0.0.0.0:8090 --dir=pocketbase\pb_data
 
 # Terminal 2: WhatsApp Sidecar
 npm run dev:sidecar
 # Equivalent to: node wppconnect-sidecar/server.js
 
-# Terminal 3: Next.js Frontend
+# Terminal 3: Next.js Frontend Alone
 npm run dev:frontend
 # Equivalent to: next dev
 ```
@@ -169,22 +171,23 @@ npx tauri android dev
 PocketBase stores everything locally in `pocketbase/pb_data/data.db` (SQLite in WAL mode).
 
 ### 4.1 First-Time Initialization
-
+ 
 If starting with a clean repository or fresh database:
-
+ 
 1. **Start PocketBase**:
    ```bash
    npm run dev:pb
    ```
-2. **Access Admin Console**:
-   Visit `http://127.0.0.1:8090/_/` and create the primary admin credentials:
-   - **Default Admin Email**: `admin@luminila.com`
-   - **Default Admin Password**: `password123456`
+2. **Access Admin Console & Staff Accounts**:
+   - **PocketBase Superuser Admin** (`http://127.0.0.1:8090/_/`): `admin@luminila.com` / `password123456`
+   - **Staff Application User** (`/login`): `admin@luminila.local` / `Admin@123456`
 3. **Execute Schema Creation**:
    ```bash
    npx tsx src/scripts/init-pocketbase.ts
+   npx tsx src/scripts/seed-roles.ts
+   npx tsx src/scripts/create-admin-user.ts
    ```
-   This script creates all **38 collections** (products, variants, sales, invoices, customers, vendors, banking, expenses, roles, shifts, etc.).
+   This script creates all **38 collections** (products, variants, sales, invoices, sales_orders, customers, vendors, banking, expenses, roles, shifts, etc.) and seeds staff roles and default administrator account.
 
 ### 4.2 Schema Synchronization & Updates
 
@@ -241,7 +244,7 @@ cd ..
 ```
 
 **What `build.js` does:**
-1. Uses `@yao-pkg/pkg` to package `server.js` and assets into `dist/wppconnect-server.exe`.
+1. Uses `pkg` (`npx pkg`) to package `server.js` and assets into `dist/wppconnect-server.exe`.
 2. Renames and copies the binary to:
    `src-tauri/binaries/wppconnect-server-x86_64-pc-windows-msvc.exe` (or `apple-darwin` / `unknown-linux-gnu` depending on host OS).
 
@@ -362,8 +365,9 @@ npx tsx src/scripts/check-collections.ts
 
 ### Issue 3: `Tauri CSP blocks connection to PocketBase`
 - **Cause**: The Content Security Policy in `src-tauri/tauri.conf.json` restricts network origins.
-- **Fix**: Ensure `connect-src` in `tauri.conf.json` includes:
-  `'self' http://127.0.0.1:* ws://127.0.0.1:* https://*.trycloudflare.com`
+- **Fix**: The system now utilizes a clean protocol-based CSP (`src-tauri/tauri.conf.json` line 26):
+  `"csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; font-src 'self' data:; connect-src 'self' http: https: ws: wss:;"`
+  This allows connections to local loopback ports, LAN host endpoints, and secure Cloudflare tunnels without requiring ad-hoc domain whitelisting.
 
 ### Issue 4: Android Build Fails with `NDK not found`
 - **Cause**: `NDK_HOME` or `ANDROID_HOME` is not set or points to an incompatible NDK.

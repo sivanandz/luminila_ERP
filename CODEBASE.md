@@ -6,7 +6,7 @@
 
 ## 1. Project Overview & Quick Reference
 
-Luminila is a fashion jewelry ERP and Point of Sale (POS) application designed to run as a native desktop application (Windows/macOS/Linux via Tauri v2), a mobile app (Android via Tauri v2), or a web application (Next.js 16 + React 19). It connects to an embedded local database (PocketBase v0.26.5 running SQLite in WAL mode) and a WhatsApp Web automation sidecar (Node.js WPPConnect).
+Luminila is a fashion jewelry ERP and Point of Sale (POS) application designed to run as a native desktop application (Windows/macOS/Linux via Tauri v2), a mobile app (Android via Tauri v2 or PWA), or a web application (Next.js 16 + React 19). It connects to an embedded local database (PocketBase v0.25.0 server running SQLite in WAL mode, with JS client SDK ^0.26.5) and a WhatsApp Web automation sidecar (Node.js WPPConnect).
 
 ### Quick Build & Run Commands
 
@@ -16,6 +16,8 @@ npm install
 cd wppconnect-sidecar && npm install && cd ..
 
 # Run all services concurrently (PocketBase :8090, WPPConnect :21465, Next.js :3000)
+npm run dev
+# or:
 npm run dev:all
 
 # Run Cloudflare Tunnel (expose PocketBase for remote Android devices)
@@ -60,7 +62,7 @@ npx tsx src/scripts/create-admin-user.ts     # Seed initial admin user
 | **Styling** | Tailwind CSS v4 | `^4.0.0` | `src/app/globals.css`, `@tailwindcss/postcss` |
 | **UI Primitives** | `@base-ui/react`, Shadcn UI | `1.0.0`, `3.6.2` | `src/components/ui/` |
 | **Icons** | Lucide React | `^0.562.0` | `lucide-react` |
-| **Database Engine** | PocketBase (Go SQLite) | `0.26.5` | `pocketbase/pocketbase.exe`, `pb_data/data.db` |
+| **Database Engine** | PocketBase (Go SQLite) | `0.25.0 (Server)` | `pocketbase/pocketbase.exe`, `pb_data/data.db` |
 | **Client Database SDK** | PocketBase JS SDK | `^0.26.5` | `src/lib/pocketbase.ts` |
 | **WhatsApp Sidecar** | Express + WPPConnect | `2.3.3` | `wppconnect-sidecar/server.js` |
 | **Barcodes** | JSBarcode, HTML5-QRCode | `3.12.1`, `2.3.8` | Code128 generation & camera scanner |
@@ -93,16 +95,17 @@ luminila_inv_mgmt/
 │   │   ├── users/                # Staff accounts & RBAC assignment
 │   │   ├── settings/             # Store configuration, tax rates, sync
 │   │   ├── setup/                # First-run admin initialization wizard
-│   │   └── login/                # Authentication, PIN & QR quick switch
+│   │   └── login/                # Authentication
 │   ├── components/
+│   │   ├── auth/                 # ProtectedRoute.tsx
 │   │   ├── layout/               # Sidebar.tsx, Header.tsx, MobileBottomNav.tsx, MobileDrawer.tsx
 │   │   ├── dashboard/            # KPI cards, charts, alerts
 │   │   └── ui/                   # Button, Dialog, Input, Table, Card, etc.
 │   ├── contexts/
-│   │   └── AuthContext.tsx       # PocketBase auth state, user role, PIN cashier switcher
+│   │   └── AuthContext.tsx       # PocketBase auth state, user role, session persistence
 │   ├── hooks/
 │   │   ├── use-viewport.ts       # isMobile, isTablet, isDesktop, isTauri, isAndroid
-│   │   └── use-mobile.ts         # Screen width hook
+│   │   └── usePermissions.ts     # RBAC capability flags hook
 │   ├── lib/                      # Business Logic & Database Services
 │   │   ├── pocketbase.ts         # PocketBase singleton, getPocketBaseUrl, setPocketBaseUrl, checkServerStatus
 │   │   ├── pos-sales.ts          # POS checkout & inventory decrement
@@ -188,13 +191,13 @@ Before modifying any file, maintain the following architectural boundaries:
 
 ---
 
-## 5. Known Logic Defects & Active Work
-
+## 5. Resolved Logic Defects & Active Work
+ 
 Refer to [`docs/PROJECT_STATE.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/PROJECT_STATE.md) for full details:
-
-1. **Shift Reconciliation Formula** ([`src/lib/register.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/register.ts)): Opening float is currently added twice when calculating expected closing balance.
-2. **Non-Atomic POS Sales Write** ([`src/lib/pos-sales.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/pos-sales.ts)): Need compensating rollback if intermediate step (sale items, stock deduction, invoice) fails.
-3. **Sales Order Invoicing Link** ([`src/lib/orders.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/orders.ts)): Converting order to invoice updates status but needs invoice persistence call.
-4. **Customer Return Restock Hook** ([`src/lib/returns.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/returns.ts)): Need automated inventory restock when a return credit note is approved.
-5. **GRN Over-Receipt Guard** ([`src/lib/purchase.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/purchase.ts)): Validate `received_qty <= ordered_qty`.
-6. **Banking Overdraft Protection** ([`src/lib/banking.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/banking.ts)): Prevent withdrawal if balance is insufficient.
+ 
+1. **Shift Reconciliation Formula** ([`src/lib/register.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/register.ts)): **RESOLVED** — Opening float recorded directly as `operation_type: 'opening_float'` without incrementing `cash_added`, preventing duplicate summation upon shift close.
+2. **Non-Atomic POS Sales Write** ([`src/lib/pos-sales.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/pos-sales.ts)): **RESOLVED** — Implemented compensating rollback hooks to restore inventory and remove orphaned sale items and stock movement records on failure.
+3. **Sales Order Invoicing Link** ([`src/lib/orders.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/orders.ts)): **RESOLVED** — Order-to-invoice conversion explicitly invokes `createInvoice` to persist the GST invoice with line items before setting order status to `invoiced`.
+4. **Customer Return Restock Hook** ([`src/lib/returns.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/returns.ts)): **RESOLVED** — Approving a credit note restores variant inventory levels and writes audit records to `stock_movements`.
+5. **GRN Over-Receipt Guard** ([`src/lib/purchase.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/purchase.ts)): **RESOLVED** — `createGRN` validates received quantity against `ordered - already_received`.
+6. **Banking Overdraft Protection** ([`src/lib/banking.ts`](file:///e:/Local_GIT_2/luminila_inv_mgmt/src/lib/banking.ts)): **RESOLVED** — Pre-flight balance check prevents overdraft on debits and transfers; transactions roll back if balance persistence fails.

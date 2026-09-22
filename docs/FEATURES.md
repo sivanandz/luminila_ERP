@@ -14,12 +14,12 @@ Designed for high-speed retail checkout in jewelry showrooms and retail counters
   - Built-in camera scanner via `html5-qrcode` for mobile or tablet terminals.
 - **Variant Selector**: Seamless variant modal to select ring sizes, metal colors (Rose Gold, Yellow Gold, Silver), and stone materials.
 - **Cart Management**: Real-time recalculation of item subtotal, item-level discounts, order-level percentage or flat discounts, and applicable GST.
-- **Split & Multi-Tender Payments**:
-  - Cash (with change due calculation).
+- **Payment Modes**:
+  - Cash (with live change due calculation).
   - Credit/Debit Cards.
   - UPI / QR code payment.
   - Integrated **PhonePe** dynamic QR generation.
-  - Split tender transactions across multiple payment modes.
+  - *Note: Each sale currently settles via a single selected tender; split-tender transactions across multiple simultaneous payment modes are scheduled for the Milestone 3 roadmap.*
 - **Receipt & Invoice Generation**: Immediate generation of thermal POS receipts or official A4/A5 GST tax invoices with auto-generated document numbers.
 - **Active Shift Association**: Every POS sale is linked to the cashier’s currently open cash register shift.
 
@@ -102,7 +102,7 @@ End-to-end B2B and wholesale workflow:
 
 - **Quotations / Estimates**: Issue formal price estimates with validity expiration dates.
 - **Order Conversion**: Convert an approved estimate into an active Sales Order with one click without retyping line items.
-- **Status Lifecycle**: Tracks progression through `draft` → `sent` → `confirmed` → `shipped` → `delivered` → `invoiced`.
+- **Status Lifecycle**: Tracks progression through `draft` → `sent` → `confirmed` → `shipped` → `delivered` → `invoiced` (with `cancelled` handling).
 - **Down Payment / Advance Tracking**: Record customer advances before fulfilling custom jewelry orders.
 
 ---
@@ -199,7 +199,7 @@ Designed for floor sales staff operating on Android smartphones, tablets, and mo
   - Quick-switch tabs for Home, Stock, Invoices, and Menu.
   - Prominent elevated center Floating Action Button (FAB) dedicated to instant Point of Sale (`/pos`).
 - **Complete Slide-Over Drawer (`MobileDrawer`)**:
-  - Full access to all 18 ERP modules grouped into Sales & POS, Inventory, Finance, and System.
+  - Full access to 17 ERP navigation modules grouped into Sales & POS, Inventory, Finance, and System.
   - One-tap access to Server Configuration and Cloud Sync.
 - **Hardware & Camera Barcode Scanning (`mobile-scanner.ts`)**:
   - Seamless listener for hardware USB/Bluetooth barcode guns (keyboard wedge listener).
@@ -215,4 +215,4 @@ Designed for floor sales staff operating on Android smartphones, tablets, and mo
   - Automatically drains and replays queued mutations in chronological order upon reconnection.
 - **Decentralized Cloud Sync (`google-drive-sync.ts`)**:
   - Tier 2 incremental change-log engine recording atomic JSON mutations.
-  - Enables peer-to-peer showroom multi-device synchronization via Google Drive cloud folders.
+  - Peer-to-peer showroom multi-device synchronization client for Google Drive (Beta / Scaffold with Mock Mode for offline testing).

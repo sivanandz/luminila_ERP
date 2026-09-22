@@ -7,10 +7,10 @@ This document provides an objective, transparent status report on the Luminila I
 ## 1. Executive Status
 
 - **Project Version:** `0.1.0` (Active Local Development)
-- **Primary Backend:** PocketBase v0.26.5 (Local embedded SQLite in WAL mode)
+- **Primary Backend:** PocketBase Server v0.25.0 (Embedded Go SQLite in WAL mode; JS SDK v0.26.5)
 - **Frontend Stack:** Next.js 16.1.0 (App Router) + React 19.2.3 + Tailwind CSS v4
 - **Desktop & Mobile Runtime:** Tauri v2.9.x (Windows, macOS, Linux, Android) & Standalone PWA
-- **Last Comprehensive Architecture & Logic Audit:** March 2026 (Android Emulator Verified: September 2026)
+- **Last Comprehensive Architecture & Logic Audit:** March 2026 (Android Emulator & Codebase Audit Verified: September 2026)
 
 The project has successfully transitioned from an initial cloud-hosted prototype (Supabase) to a local-first, privacy-respecting embedded architecture powered by PocketBase and Tauri. The UI layer and feature surfaces are complete across retail POS, inventory, procurement, invoicing, and responsive Android/tablet layouts, with dual-tier internet synchronization (Cloudflare Tunnel + Google Drive changelog sync) and offline mutation queues active.
 
@@ -22,7 +22,7 @@ The matrix below details the current implementation status and operational readi
 
 | Module | Status | Maturity | Notes / Current State |
 |---|---|---|---|
-| **Point of Sale (POS)** | ✅ Implemented | 🟢 Production Ready | Touch and barcode cart flows functional. Camera scanner and elevated mobile POS FAB verified live on Android 16 emulator. |
+| **Point of Sale (POS)** | ✅ Implemented | 🟢 Production Ready | Single-tender retail cart flows (Cash with change calculator, Card, UPI, PhonePe QR). Camera scanner and elevated mobile POS FAB verified live on Android 16 emulator. Split-tender scheduled for future milestone. |
 | **Register / Shifts** | ✅ Implemented | 🟢 Production Ready | Open/close shifts and drawer tracking working; reconciliation opening float double-count fixed. |
 | **Catalog & Inventory** | ✅ Implemented | 🟢 Production Ready | Full CRUD, variant matrix (size/color/material), stock level triggers, and low stock warnings. |
 | **Barcode Labels** | ✅ Implemented | 🟢 Production Ready | Code128 generation via `jsbarcode`, customizable dimensions, batch sheet printing for jewelry tags. |
@@ -36,9 +36,9 @@ The matrix below details the current implementation status and operational readi
 | **Banking Ledger** | ✅ Implemented | 🟢 Production Ready | Bank account management, overdraft balance validation, and transactional rollback protection active. |
 | **Expense Management** | ✅ Implemented | 🟢 Production Ready | Categorized expense entries, payment modes, and voucher tracking. |
 | **Reports & Analytics** | ✅ Implemented | 🟢 Production Ready | Dashboard KPIs, revenue trends, inventory valuation, and tax summaries. |
-| **RBAC & Auth** | ✅ Implemented | 🟢 Production Ready | PocketBase JWT auth, role capabilities, PIN/QR cashier switching. |
-| **Mobile & Android Support** | ✅ Implemented | 🟢 Production Ready | Verified live on Android 16 emulator (`1080x2400`). Thumb navigation (`MobileBottomNav`), slide-over drawer (`MobileDrawer`), `useViewport` detection, dynamic server switching (`ServerConfigModal`), Cloudflare Tunnel (`npm run tunnel`), offline queue (`offline-queue.ts`), mobile thermal printing (`mobile-printer.ts`), and camera scanner. |
-| **Internet Sync & Backup** | ✅ Implemented | 🟢 Production Ready | Dual-tier sync active: Tier 1 real-time Cloudflare Tunnel (`scripts/tunnel.js`) + Tier 2 decentralized Google Drive atomic changelog sync (`google-drive-sync.ts`, `GoogleDriveSyncModal.tsx`). |
+| **RBAC & Auth** | ✅ Implemented | 🟢 Production Ready | PocketBase JWT auth, 5 seeded roles (`Admin`, `Manager`, `Staff`, `Cashier`, `Viewer`). Fast PIN/QR cashier switching scheduled in Milestone 3 roadmap. |
+| **Mobile & Android Support** | ✅ Implemented | 🟢 Production Ready | Verified live on Android 16 emulator (`1080x2400`). Thumb navigation (`MobileBottomNav`), slide-over drawer (`MobileDrawer` with 17 modules), `useViewport` detection, dynamic server switching (`ServerConfigModal`), Cloudflare Tunnel (`npm run tunnel`), offline queue (`offline-queue.ts`), mobile thermal printing (`mobile-printer.ts`), and camera scanner. |
+| **Internet Sync & Backup** | ✅ Implemented | 🟢 Production Ready | Dual-tier sync active: Tier 1 real-time Cloudflare Tunnel (`scripts/tunnel.js`) + Tier 2 decentralized Google Drive atomic changelog sync scaffold & offline mutation queue (`google-drive-sync.ts`, `GoogleDriveSyncModal.tsx`). |
 | **WhatsApp Automation** | 🚧 Beta | 🟡 In Progress | WPPConnect sidecar server runs locally on desktop; mobile automatically falls back to native Android `whatsapp://send` intent. |
 | **E-Commerce Sync** | 🚧 Partial | 🟠 Planned | Shopify & WooCommerce sync clients designed; background webhook listener under testing. |
 

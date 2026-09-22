@@ -7,7 +7,7 @@ This document describes the end-to-end architecture, technology stack, data tier
 ## 1. System Overview & Topology
 
 Luminila is architected as a hybrid desktop-first, local-network, and mobile-ready ERP solution designed specifically for fashion jewelry retail and wholesale businesses. It combines:
-1. **Embedded Database Engine**: [PocketBase v0.26.5](https://pocketbase.io/) (Go binary + SQLite in Write-Ahead Logging `WAL` mode).
+1. **Embedded Database Engine**: [PocketBase v0.25.0](https://pocketbase.io/) (Go server binary + SQLite in Write-Ahead Logging `WAL` mode; JS SDK `v0.26.x`).
 2. **Native Shell Containers**: [Tauri v2.9.x](https://tauri.app/) (Rust) providing native desktop (Windows/macOS/Linux) and mobile (Android) runtimes.
 3. **Modern Web Frontend**: [Next.js 16.1.0](https://nextjs.org/) (App Router) + React 19.2.3 with React Compiler and Tailwind CSS v4.
 4. **Background Automation Sidecar**: Node.js [WPPConnect Server](https://github.com/wppconnect-team/wppconnect) automating WhatsApp Web via headless Puppeteer.
@@ -17,23 +17,23 @@ Luminila is architected as a hybrid desktop-first, local-network, and mobile-rea
 graph TB
     subgraph Desktop Shell ["Tauri v2 Native Desktop Container (Rust)"]
         WV[Next.js 16 Webview - Edge WebView2 / WebKit]
-        TauriCore[Tauri Rust Core & Process Supervisor]
+        TauriCore[Tauri Rust Core & Sidecar Supervisor]
     end
 
     subgraph Mobile Devices ["Mobile App / Showroom Tablets (Android)"]
-        AndroidApp[Tauri Android Container / Mobile Chrome]
+        AndroidApp[Tauri Android Container / Mobile PWA]
         CameraScanner[Camera Barcode Scanner - html5-qrcode]
         MobileNav[MobileBottomNav + MobileDrawer]
     end
 
     subgraph Network Gateway ["Connectivity & Routing Tier"]
         LocalLoop["Localhost Loopback (127.0.0.1:8090)"]
-        LAN["Showroom Wi-Fi LAN (192.168.x.x:8090)"]
+        LAN["Showroom Wi-Fi LAN (0.0.0.0:8090 / 192.168.x.x)"]
         Tunnel["Cloudflare Zero-Trust Tunnel (trycloudflare.com)"]
     end
 
     subgraph Local Services ["Host System Background Services"]
-        PB["PocketBase v0.26.5 (:8090)<br/>Embedded Go + SQLite Engine (WAL Mode)<br/>38 Relational Collections"]
+        PB["PocketBase v0.25.0 Server (:8090)<br/>Embedded Go + SQLite Engine (WAL Mode)<br/>38 Relational Collections"]
         WPP["WPPConnect Sidecar (:21465)<br/>Puppeteer / WhatsApp Web Automation"]
     end
 
@@ -54,7 +54,6 @@ graph TB
     WV -- "HTTP JSON / Webhooks" --> WPP
     WV -- "IPC Commands" --> TauriCore
     TauriCore -- "Supervises Lifecycle & Restarts" --> WPP
-    TauriCore -- "Spawns / Manages" --> PB
 
     WV -- "Sync Engine (lib/sync)" --> Shopify
     WV -- "Catalog Sync" --> Woo
@@ -77,7 +76,7 @@ graph TB
 | **Charts & Visualizations** | `recharts` | `^3.6.0` | Revenue trends, inventory valuation, and expense charts |
 | **Barcodes & Camera** | `jsbarcode`, `html5-qrcode` | `^3.12.1`, `^2.3.8` | Code128 barcode generation, physical label printing, device camera scanning |
 | **Spreadsheets & Data** | `exceljs`, `jszip` | `^4.4.0`, `^3.10.1` | Bulk catalog import/export and XLSX report generation |
-| **Embedded Database & Auth** | [PocketBase](https://pocketbase.io/) | `0.26.5` (Go SQLite) | Embedded relational database, JWT auth, file storage, real-time SSE |
+| **Embedded Database & Auth** | [PocketBase](https://pocketbase.io/) | Server `v0.25.0` (Go SQLite), Client `^0.26.5` (JS SDK) | Embedded relational database, JWT auth, file storage, real-time SSE |
 | **Messaging Sidecar** | [WPPConnect Server](https://github.com/wppconnect-team/wppconnect) | `^2.3.3` | WhatsApp Web automation, QR pairing, automated outbound order updates |
 | **Language & Tooling** | TypeScript, Rust, Node.js | `TS 5`, `Rust 2021`, `Node 20+` | Type safety across entire stack and native binary performance |
 
@@ -100,7 +99,7 @@ luminila_inv_mgmt/
 │   │   ├── inventory/            # Product catalog, variant matrix, stock levels
 │   │   ├── invoices/             # GST B2B/B2C invoices, PDF rendering & thermal printing
 │   │   ├── labels/               # Barcode label batch designer & printing (Code128)
-│   │   ├── login/                # PocketBase JWT authentication, PIN & QR quick switch
+│   │   ├── login/                # PocketBase JWT authentication & role redirection
 │   │   ├── orders/               # Sales orders & quotation estimates
 │   │   ├── pos/                  # Point of Sale touch terminal, cart, & shift management
 │   │   ├── purchase/             # Purchase orders & Goods Received Notes (GRN)
@@ -112,20 +111,22 @@ luminila_inv_mgmt/
 │   │   ├── vendors/              # Supplier management & purchase histories
 │   │   └── whatsapp/             # WPPConnect status, chat sync, auto-replies
 │   ├── components/
+│   │   ├── auth/                 # Authentication & authorization:
+│   │   │   └── ProtectedRoute.tsx# RBAC route protection wrapper
 │   │   ├── dashboard/            # KPI cards, revenue charts, alerts
 │   │   ├── layout/               # Navigation components:
 │   │   │   ├── Header.tsx        # Top desktop navigation & user session badge
 │   │   │   ├── Sidebar.tsx       # Desktop collapsible sidebar
 │   │   │   ├── MobileBottomNav.tsx # Mobile thumb-friendly navigation bar + elevated POS FAB
 │   │   │   ├── MobileDrawer.tsx  # Mobile slide-over navigation with grouped ERP sub-domains
-│   │   │   ├── ProtectedRoute.tsx# RBAC route protection wrapper
 │   │   │   └── index.ts          # Layout components barrel export
+│   │   ├── settings/             # Dynamic server configuration and Google Drive sync modals
 │   │   └── ui/                   # Reusable UI primitives (dialog, button, table, input, card)
 │   ├── contexts/
-│   │   └── AuthContext.tsx       # Auth state, current user, role permissions, PIN switch
+│   │   └── AuthContext.tsx       # Auth state, current user, role verification
 │   ├── hooks/
 │   │   ├── use-viewport.ts       # Viewport detection (isMobile, isTablet, isDesktop, isTauri, isAndroid)
-│   │   └── use-mobile.ts         # Screen width detection hook
+│   │   └── usePermissions.ts     # RBAC capability flags hook
 │   ├── lib/                      # Domain Business Logic & API Services
 │   │   ├── activity.ts           # Audit log persistence
 │   │   ├── analytics.ts          # Aggregated dashboard metrics & charts
@@ -230,11 +231,13 @@ erDiagram
    - `product_variants`: SKU variant, size, color, material, stock_level, low_stock_threshold, price_adjustment.
    - `stock_movements`: Immutable stock ledger (`sale`, `purchase`, `adjustment`, `return`, `sync`) with quantity changes and reference IDs.
 
-2. **Sales & Point of Sale (POS)**:
+2. **Sales, Orders & Point of Sale (POS)**:
    - `sales`: Transaction header (channel: `pos`, `shopify`, `woocommerce`, `whatsapp`; totals, customer relation).
    - `sale_items`: Snapshot line items (unit price, quantity, total price, variant relation).
+   - `sales_orders`: B2B customer sales orders and quotation estimates (order date, delivery date, totals, status: `draft` to `invoiced`/`cancelled`).
+   - `sales_order_items`: Order line items with variant link, unit price, quantity, tax rate, item total.
    - `cash_register_shifts`: Cashier register sessions (opening float, cash additions/drops, expected vs actual closing balances, variance).
-   - `cash_drawer_operations`: Individual cash drawer operations (`add`, `remove`, `sale`, `refund`).
+   - `cash_drawer_operations`: Individual cash drawer operations (`opening_float`, `add`, `remove`, `sale`, `refund`).
 
 3. **Invoicing & GST Engine**:
    - `invoices`: Tax invoice headers conforming to Indian GST (B2B/B2C, seller/buyer GSTIN, place of supply, taxable value, CGST/SGST/IGST, reverse charge, vehicle details).
@@ -269,15 +272,15 @@ erDiagram
    - `expense_categories`: Operational expense taxonomy (Rent, Packaging, Wages, Marketing).
    - `expenses`: Direct expense vouchers with payee, payment method, tax receipt attachments.
 
-8. **Governance & Integrations**:
-   - `users`: Staff user directory with PIN hashes and QR tokens.
-   - `roles`: RBAC permissions dictionary with capability flags.
-   - `user_roles`: Mapping between users and roles.
+8. **Governance & System**:
+   - `roles`: RBAC permissions dictionary with capability flags (`Admin`, `Manager`, `Staff`, `Cashier`, `Viewer`).
+   - `user_roles`: Mapping between staff users and system roles.
    - `activity_logs`: Entity mutation history (storing previous and current JSON snapshots).
    - `discounts`: Promotional coupons and percentage/flat discounts.
    - `discount_usage`: Customer redemption records against coupons.
    - `store_settings`: Global store metadata, tax rates, API credentials.
-   - `sync_logs`: Multi-channel sync execution history.
+
+*(Note: The built-in PocketBase `users` authentication collection hosts system staff and administrator accounts, bringing the active schema to 39 relational tables).*
 
 ---
 
@@ -340,7 +343,7 @@ The `useViewport` hook detects the device form factor and environment:
 - **Desktop (`md:flex`)**: Persistent collapsible `Sidebar.tsx` with all ERP sub-menus.
 - **Mobile (`md:hidden`)**: 
   - `MobileBottomNav.tsx`: Fixed bottom bar with quick links (Home, Stock, Invoices, Menu) and an elevated Center Floating Action Button (FAB) dedicated to Point of Sale (`/pos`).
-  - `MobileDrawer.tsx`: Slide-over drawer organizing all 18 ERP modules into clear functional sections (Sales & POS, Inventory, Finance, Showroom & System).
+  - `MobileDrawer.tsx`: Slide-over drawer organizing all 17 ERP modules into clear functional sections (Sales & POS, Inventory & Catalog, Finance & Accounts, Showroom & System).
 
 ### 6.3 Camera Barcode Scanning
 On mobile devices without physical USB barcode guns, `html5-qrcode` utilizes the device's native rear camera to scan Code128 product tags directly into the POS cart.
@@ -368,14 +371,17 @@ graph TD
     Client[Next.js Client] --> Detect[getPocketBaseUrl]
     Detect --> CheckCustom{PB_CUSTOM_URL in localStorage?}
     CheckCustom -- Yes --> UseCustom[Use Custom URL e.g. Cloudflare Tunnel / LAN IP]
-    CheckCustom -- No --> UseDefault[Use NEXT_PUBLIC_POCKETBASE_URL / localhost:8090]
+    CheckCustom -- No --> CheckHost{Host != localhost / 127.0.0.1?}
+    CheckHost -- Yes --> UseLAN[Auto-detect LAN / Emulator: http://host:8090]
+    CheckHost -- No --> UseDefault[Use NEXT_PUBLIC_POCKETBASE_URL / 127.0.0.1:8090]
     UseCustom --> PBInstance[pb = new PocketBase]
+    UseLAN --> PBInstance
     UseDefault --> PBInstance
     PBInstance --> HealthCheck[checkServerStatus: Tests Latency & Reachability]
     HealthCheck -- Server Changed --> DispatchEvent[window.dispatchEvent 'pb:server-changed']
 ```
 
-- **`getPocketBaseUrl()`**: Checks `localStorage.getItem("PB_CUSTOM_URL")` before falling back to `process.env.NEXT_PUBLIC_POCKETBASE_URL` or `http://127.0.0.1:8090`.
+- **`getPocketBaseUrl()`**: Checks `localStorage.getItem("PB_CUSTOM_URL")` first. If absent and the client is running on an external host or Android emulator (hostname is not `localhost` or `127.0.0.1`), it automatically defaults to `http://<window.location.hostname>:8090`. Otherwise, it falls back to `process.env.NEXT_PUBLIC_POCKETBASE_URL` or `http://127.0.0.1:8090`.
 - **`setPocketBaseUrl(url)`**: Dynamically repoints the PocketBase client at runtime, persists to `localStorage`, and fires a `pb:server-changed` window event so UI views refresh without page reloads.
 - **`checkServerStatus(targetUrl)`**: Asynchronously tests server reachability, measures round-trip latency in milliseconds, and detects if the connection is running over a tunnel.
 
@@ -387,30 +393,33 @@ Tauri v2 compiles into a native Windows, macOS, or Linux application with a tiny
 
 ### 8.1 Rust Supervisor & Sidecar Lifecycle (`src-tauri/src/lib.rs`)
 The Rust backend is responsible for:
-1. **Sidecar Process Execution**: Spawns the compiled `wppconnect-server` binary on application launch.
+1. **Sidecar Process Execution**: Spawns the compiled `wppconnect-server` binary on application launch. *(Note: PocketBase runs as an independent host daemon managed by `scripts/dev-all.js` or an OS background service).*
 2. **Background Health Monitoring Loop**: Polls `http://127.0.0.1:21465/health` every 5 seconds. If the sidecar terminates or fails 3 consecutive health checks, the Rust supervisor automatically kills the dead PID and respawns a fresh sidecar process.
 3. **Tauri IPC Commands**: Exposes `get_sidecar_status` and `restart_sidecar` to the Next.js frontend.
-4. **Content Security Policy (CSP)**: Locks down origin permissions to local loopback ports and verified external endpoints.
+4. **Content Security Policy (CSP)**: Locks down origin permissions to local loopback ports and verified external endpoints (`connect-src 'self' http: https: ws: wss:`).
 
 ---
 
 ## 9. Security, Authentication & RBAC
 
 ### 9.1 Authentication Architecture
-- **JWT Identity**: Users authenticate against PocketBase's native auth collection via email/password. PocketBase issues a cryptographically signed JWT stored in `pb.authStore`.
+- **JWT Identity**: Users authenticate against PocketBase's native `users` auth collection via email and password (`pb.collection('users').authWithPassword`). PocketBase issues a cryptographically signed JWT stored in `pb.authStore`.
 - **State Hydration**: `AuthContext.tsx` synchronizes with `pb.authStore`, persisting sessions across page reloads.
-- **Cashier Quick Switch**: Retail cashiers switch terminal sessions rapidly using a 4-to-6 digit PIN or an authenticated badge QR code without full password re-entry.
+- **Cashier Quick Switch (Roadmap)**: Dedicated PIN/badge quick-switching is slated for Milestone 3. Currently, session switching uses standard credential re-authentication.
 
 ### 9.2 Role-Based Access Control (RBAC)
-Roles (`admin`, `manager`, `cashier`, `inventory_clerk`) define fine-grained capability flags in a JSON structure:
+The application defines five standard roles in `src/scripts/seed-roles.ts` (`Admin`, `Manager`, `Staff`, `Cashier`, `Viewer`), each carrying granular permission matrices:
 
 ```json
 {
-  "pos": { "create_sale": true, "apply_discount": true, "override_price": false },
-  "inventory": { "view": true, "edit_stock": false, "create_product": false },
-  "invoices": { "view": true, "cancel": false },
-  "reports": { "view_financials": false }
+  "Admin": { "all_modules": ["create", "read", "update", "delete", "print", "export"] },
+  "Manager": { "operations": ["create", "read", "update", "print", "export"] },
+  "Staff": { "daily_ops": ["create", "read", "update", "print"] },
+  "Cashier": { "pos_sales": ["create", "read", "print"], "drawer": ["read", "update"] },
+  "Viewer": { "read_only": ["read"] }
 }
 ```
+
+The `ProtectedRoute` component and `usePermissions` hook intercept unauthorized route navigation and disable forbidden UI actions based on assigned user roles.
 
 The `ProtectedRoute` component and `usePermission` hook intercept unauthorized route navigation and disable forbidden UI actions.
