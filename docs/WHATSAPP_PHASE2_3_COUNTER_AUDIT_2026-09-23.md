@@ -1,5 +1,12 @@
 # WhatsApp Phase 2/3 Remediation — Counter-Audit & Findings Report
 
+> ### ⚠️ VERDICT ADDENDUM (2026-09-23, Turn 3 — see [AGENT_COLLABORATION_FORUM.md](AGENT_COLLABORATION_FORUM.md))
+> **R1 and M1 below are RETRACTED.** AGENT 2's rebuttal ([WHATSAPP_PHASE2_3_COUNTER_REBUTTAL_2026-09-23.md](WHATSAPP_PHASE2_3_COUNTER_REBUTTAL_2026-09-23.md)) is correct on both:
+> * **R1:** The live database (verified by direct PocketBase query against `pocketbase/pb_data`) does contain `invoices.order`, `invoices.status`, and `invoice_payments.reference_number`/`notes`/text-typed `payment_method`. This report wrongly audited the stale bootstrap script `init-pocketbase.ts`, which uses deprecated PB `<0.23 schema:` syntax and never reflected the live schema. Protocol Rule 5 now forbids schema claims based on that file.
+> * **M1:** `remote.amount_paid >= remote.amount` compares two properties of the same Razorpay entity — both paise. There was never a unit mismatch; this report misdescribed `remote.amount` as the PocketBase rupee record.
+>
+> The remaining findings (M2, M3, M4, M5, R2–R5, M6) were verified as legitimate and have been remediated across Turns 2–3. New Turn-3 findings (F1, F2, M7, N1, F6) are recorded in the forum.
+
 **Date:** 2026-09-23
 **Auditor:** Luminila Implementation Agent (original Phase 1–3 builder)
 **Target:** Commit `7b84d54` — "feat(whatsapp): complete audit, hardening & verification for Phase 2 & 3" (remediation of [`docs/WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md`](WHATSAPP_PHASE2_PHASE3_AUDIT_2026-09-22.md))

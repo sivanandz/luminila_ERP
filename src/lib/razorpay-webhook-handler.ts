@@ -66,11 +66,14 @@ export async function processRazorpayWebhookEvent(
                     const points = await calculatePointsToEarn(totalAmount);
 
                     if (points > 0) {
+                        // earnPoints(customerId, purchaseAmount, referenceType, referenceId) —
+                        // pass the rupee amount, never the derived points, or they get
+                        // re-computed on themselves.
                         await earnPoints(
                             updatedOrder.customer,
-                            points,
-                            orderId,
-                            updatedOrder.order_number
+                            totalAmount,
+                            'sales_order',
+                            orderId
                         );
 
                         await sendLoyaltyMilestoneAlert(
@@ -81,9 +84,9 @@ export async function processRazorpayWebhookEvent(
                 }
 
                 return { success: true, orderId, event };
-            } catch (orderErr: any) {
+            } catch (orderErr) {
                 console.error(`Failed to process order ${orderId} in webhook:`, orderErr);
-                return { success: false, orderId, event, error: orderErr.message };
+                return { success: false, orderId, event, error: (orderErr as Error).message };
             }
         }
     }

@@ -1136,6 +1136,9 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
         if (res.success) {
             setAddedToast(`Draft Order #${res.orderNumber} created!`);
+            // Link subsequent Razorpay links from this chat to the draft order so the
+            // reconciler settles it automatically (spec §7 / §12.1).
+            if (res.orderId) setRazorpayModalOrderId(res.orderId);
             getCustomerOrders(customer?.id || phone).then(setCustomerOrders);
             setActivePanel('orders');
         } else {

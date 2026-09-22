@@ -17,7 +17,7 @@
 
 import { pb } from './pocketbase';
 import { fetchPaymentLinkStatus, isRazorpayConfigured } from './razorpay';
-import { sendPaidOrderInvoice, sendLoyaltyMilestoneAlert } from './whatsapp-notifications';
+import { sendPaidOrderInvoice } from './whatsapp-notifications';
 import { earnPoints, calculatePointsToEarn } from './loyalty';
 import { normalizeE164 } from './whatsapp-crm';
 
@@ -81,11 +81,38 @@ export async function getRazorpayClearingAccountId(): Promise<string> {
     return clearingAccountPromise;
 }
 
-/** Record double-entry clearing deposit in banking ledger (spec §7). */
+/** True if a clearing deposit already exists for this payment link (crash-safe retry guard). */
+async function hasClearingEntry(linkRecordId: string): Promise<boolean> {
+    const existing = await pb.collection('bank_transactions').getFirstListItem(
+        `related_entity_type="payment_link" && related_entity_id="${linkRecordId}"`
+    ).catch(() => null);
+    return !!existing;
+}
+
+/** True if an invoice payment with this reference was already recorded (retry guard). */
+async function hasInvoicePayment(invoiceId: string, reference: string): Promise<boolean> {
+    if (!reference) return false;
+    const existing = await pb.collection('invoice_payments').getFirstListItem(
+        `invoice="${invoiceId}" && reference_number="${reference}"`
+    ).catch(() => null);
+    return !!existing;
+}
+
+/** True if loyalty points were already awarded for this order (retry guard). */
+async function hasLoyaltyEarnForOrder(orderId: string): Promise<boolean> {
+    const existing = await pb.collection('loyalty_transactions').getFirstListItem(
+        `type="earn" && reference_type="sales_order" && reference_id="${orderId}"`
+    ).catch(() => null);
+    return !!existing;
+}
+
+/** Record double-entry clearing deposit in banking ledger (spec §7). Idempotent per link. */
 async function recordClearingDeposit(
     link: PaymentLinkRecord,
     paymentRef: string
 ): Promise<void> {
+    if (await hasClearingEntry(link.id)) return; // already ledgered (crash-retry)
+
     const accountId = await getRazorpayClearingAccountId();
     const account = await pb.collection('bank_accounts').getOne(accountId);
 
@@ -106,7 +133,7 @@ async function recordClearingDeposit(
     });
 }
 
-/** Settle linked sales order, credit loyalty points, and dispatch invoice (spec §7). */
+/** Settle linked sales order, invoice, and loyalty (spec §7). Idempotent per order/link. */
 async function settleLinkedOrder(
     link: PaymentLinkRecord,
     paymentRef: string
@@ -121,13 +148,13 @@ async function settleLinkedOrder(
         subtotal?: number;
     };
 
-    // 1. Mark sales order PAID and confirmed
+    // 1. Mark sales order PAID and confirmed (idempotent by nature)
     await pb.collection('sales_orders').update(order.id, {
         payment_status: 'PAID',
         status: 'confirmed',
     });
 
-    // 2. Settle associated invoice if exists
+    // 2. Settle associated invoice if resolvable (idempotent: skips duplicated payments)
     let invoiceId = link.invoice;
     if (!invoiceId) {
         const matchingInvoice = await pb.collection('invoices').getFirstListItem(
@@ -142,32 +169,30 @@ async function settleLinkedOrder(
             paid_amount: link.amount,
         }).catch(() => {});
 
-        await pb.collection('invoice_payments').create({
-            invoice: invoiceId,
-            amount: link.amount,
-            payment_date: new Date().toISOString(),
-            payment_method: 'online',
-            reference_number: paymentRef || link.link_id,
-            notes: `Auto-settled via Razorpay Link ${link.link_id}`,
-        }).catch(() => {});
-    }
-
-    // 3. Loyalty points calculation & crediting
-    let pointsCredited = 0;
-    if (order.customer) {
-        const amount = order.total || order.subtotal || link.amount;
-        const points = await calculatePointsToEarn(amount).catch(() => 0);
-        if (points > 0) {
-            await earnPoints(order.customer, points, order.id, order.order_number || '').catch(() => {});
-            await sendLoyaltyMilestoneAlert(order.customer, points).catch(() => {});
-            pointsCredited = points;
+        const reference = paymentRef || link.link_id;
+        if (!(await hasInvoicePayment(invoiceId, reference))) {
+            await pb.collection('invoice_payments').create({
+                invoice: invoiceId,
+                amount: link.amount,
+                payment_date: new Date().toISOString(),
+                payment_method: 'upi',
+                reference_number: reference,
+                notes: `Auto-settled via Razorpay Link ${link.link_id}`,
+            }).catch(() => {});
         }
     }
 
-    // 4. WhatsApp invoice auto-dispatch
-    await sendPaidOrderInvoice(order.id).catch((err) => {
-        console.warn(`[reconciler] WhatsApp invoice notification failed for ${order.id}:`, err?.message);
-    });
+    // 3. Loyalty points on the settled amount — idempotent per order, and pass the
+    //    PURCHASE AMOUNT (not the points) with proper reference fields.
+    let pointsCredited = 0;
+    if (order.customer && !(await hasLoyaltyEarnForOrder(order.id))) {
+        const amount = order.total || order.subtotal || link.amount;
+        const points = await calculatePointsToEarn(amount).catch(() => 0);
+        if (points > 0) {
+            await earnPoints(order.customer, amount, 'sales_order', order.id).catch(() => {});
+            pointsCredited = points;
+        }
+    }
 
     return { orderNumber: order.order_number || order.id, pointsCredited };
 }
@@ -213,17 +238,14 @@ export async function reconcilePendingPaymentLinks(): Promise<ReconciliationSumm
             const paymentRef = paymentEntity?.id || '';
 
             if (remote.status === 'paid' || remote.amount_paid >= remote.amount) {
-                // 1. Mark payment link settled
-                await pb.collection('payment_links').update(link.id, {
-                    status: 'paid',
-                    paid_at: new Date().toISOString(),
-                    payment_id: paymentRef,
-                });
-
-                // 2. Settle linked sales order, invoice, and loyalty
+                // Crash-safe ordering: run all idempotent side effects FIRST; mark the
+                // link paid LAST. If the process dies mid-settlement, the link stays
+                // "created" and the next pass retries safely (dedupes prevent doubles).
+                let orderNumber = '';
+                let pointsCredited = 0;
                 if (link.order) {
                     try {
-                        const { orderNumber, pointsCredited } = await settleLinkedOrder(link, paymentRef);
+                        ({ orderNumber, pointsCredited } = await settleLinkedOrder(link, paymentRef));
                         summary.details.push(`Order ${orderNumber} settled (pts: +${pointsCredited})`);
                     } catch (err) {
                         summary.errors++;
@@ -231,7 +253,6 @@ export async function reconcilePendingPaymentLinks(): Promise<ReconciliationSumm
                     }
                 }
 
-                // 3. Double-entry bank ledger deposit
                 try {
                     await recordClearingDeposit(link, paymentRef);
                 } catch (err) {
@@ -239,8 +260,23 @@ export async function reconcilePendingPaymentLinks(): Promise<ReconciliationSumm
                     summary.details.push(`${link.link_id}: bank ledger entry failed — ${(err as Error)?.message}`);
                 }
 
+                // Final state transition — only after side effects completed
+                await pb.collection('payment_links').update(link.id, {
+                    status: 'paid',
+                    paid_at: new Date().toISOString(),
+                    payment_id: paymentRef,
+                });
+
                 summary.settled++;
                 summary.details.push(`✅ ${link.link_id} settled (₹${link.amount.toLocaleString('en-IN')})`);
+
+                // Notification runs after the paid mark: a crash here can, at worst,
+                // lose one reminder (never double-settle) — acceptable trade-off.
+                if (link.order) {
+                    await sendPaidOrderInvoice(link.order).catch((err) => {
+                        console.warn(`[reconciler] WhatsApp invoice notification failed for ${link.order}:`, err?.message);
+                    });
+                }
             } else if (remote.status === 'expired' || remote.status === 'cancelled') {
                 await pb.collection('payment_links').update(link.id, { status: remote.status });
                 summary.expired++;

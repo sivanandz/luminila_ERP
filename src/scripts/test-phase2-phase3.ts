@@ -128,6 +128,30 @@ async function runTests() {
         assert(custFields.includes('customer_type') && custFields.includes('whatsapp_opt_out'),
             "customers collection includes customer_type & whatsapp_opt_out fields");
 
+        // Check invoices and invoice_items have GST compliance fields (F1 & F2)
+        const invCol = await adminPb.collections.getOne('invoices');
+        const invFields = invCol.fields.map((f: any) => f.name);
+        assert(
+            invFields.includes('taxable_value') &&
+            invFields.includes('grand_total') &&
+            invFields.includes('seller_gstin') &&
+            invFields.includes('buyer_name') &&
+            invFields.includes('cgst_amount') &&
+            invFields.includes('sgst_amount'),
+            "invoices collection includes all required GST compliance fields (F1)"
+        );
+
+        const invItemsCol = await adminPb.collections.getOne('invoice_items');
+        const invItemFields = invItemsCol.fields.map((f: any) => f.name);
+        assert(
+            invItemFields.includes('hsn_code') &&
+            invItemFields.includes('gst_rate') &&
+            invItemFields.includes('cgst_amount') &&
+            invItemFields.includes('sgst_amount') &&
+            invItemFields.includes('taxable_amount'),
+            "invoice_items collection includes all required GST item fields (F1)"
+        );
+
     } catch (err: any) {
         assert(false, `PocketBase connection / schema lookup error: ${err.message}`);
     }
@@ -187,6 +211,103 @@ async function runTests() {
         );
     } catch (err: any) {
         assert(false, `reconcilePendingPaymentLinks error: ${err.message}`);
+    }
+
+    // 8. GST Invoice Full-Stack Lifecycle & Persistence (F1 & F2 Verification)
+    console.log("\n[Test 8] GST Invoice Full-Stack Lifecycle & Persistence");
+    let testInvoiceId = '';
+    try {
+        const { createInvoice, getInvoice } = await import('../lib/invoice');
+        const createdInv = await createInvoice({
+            invoice_date: new Date().toISOString().split('T')[0],
+            invoice_type: 'regular',
+            seller_gstin: '27AABCU9603R1ZM',
+            seller_name: 'Luminila Fine Jewels',
+            seller_address: '101 Zaveri Bazaar, Mumbai, Maharashtra - 400002',
+            seller_state_code: '27',
+            buyer_name: 'Priya Sharma',
+            buyer_gstin: '',
+            buyer_phone: '+919876543210',
+            buyer_email: 'priya@example.com',
+            buyer_address: 'Bandra West, Mumbai',
+            buyer_state_code: '27',
+            place_of_supply: '27',
+            taxable_value: 10000,
+            cgst_amount: 150,
+            sgst_amount: 150,
+            igst_amount: 0,
+            cess_amount: 0,
+            total_tax: 300,
+            discount_amount: 0,
+            shipping_charges: 0,
+            grand_total: 10300,
+            amount_in_words: 'Ten Thousand Three Hundred Only',
+            is_reverse_charge: false,
+            is_paid: false,
+            paid_amount: 0,
+            notes: 'Test Automated Phase 2 & 3 GST Invoice',
+            items: [
+                {
+                    sr_no: 1,
+                    description: '22K Gold Traditional Jhumka',
+                    hsn_code: '7113',
+                    quantity: 1,
+                    unit: 'PCS',
+                    unit_price: 10000,
+                    discount_percent: 0,
+                    discount_amount: 0,
+                    taxable_amount: 10000,
+                    gst_rate: 3,
+                    cgst_rate: 1.5,
+                    cgst_amount: 150,
+                    sgst_rate: 1.5,
+                    sgst_amount: 150,
+                    igst_rate: 0,
+                    igst_amount: 0,
+                    cess_rate: 0,
+                    cess_amount: 0,
+                    total_amount: 10300,
+                }
+            ]
+        });
+
+        testInvoiceId = createdInv.id || '';
+        assert(typeof testInvoiceId === 'string' && testInvoiceId.length > 0, `createInvoice persists invoice with ID (${testInvoiceId})`);
+
+        // Fetch back and verify dual-mapping and GST breakdown
+        const fetched = await getInvoice(testInvoiceId);
+        assert(fetched !== null, "getInvoice retrieves the persisted invoice");
+        if (fetched) {
+            assert(fetched.grand_total === 10300 && fetched.total === 10300, "grand_total & total dual-mapping preserved (₹10,300)");
+            assert(fetched.taxable_value === 10000 && fetched.subtotal === 10000, "taxable_value & subtotal dual-mapping preserved (₹10,000)");
+            assert(fetched.total_tax === 300 && fetched.tax === 300, "total_tax & tax dual-mapping preserved (₹300)");
+            assert(fetched.cgst_amount === 150 && fetched.sgst_amount === 150, "CGST & SGST breakdowns persisted accurately");
+            assert(fetched.seller_gstin === '27AABCU9603R1ZM', "seller_gstin persisted");
+            assert(fetched.buyer_name === 'Priya Sharma', "buyer_name persisted");
+            assert(fetched.status === 'pending', "status initialized to 'pending'");
+            assert(Array.isArray(fetched.items) && fetched.items.length === 1, "items loaded via invoice_items relation");
+            if (fetched.items.length > 0) {
+                const item = fetched.items[0];
+                assert(item.hsn_code === '7113', "item.hsn_code persisted");
+                assert(item.gst_rate === 3, "item.gst_rate persisted");
+                assert(item.cgst_amount === 150, "item.cgst_amount persisted");
+            }
+        }
+    } catch (err: any) {
+        assert(false, `GST Invoice Lifecycle test failed: ${err.message}`);
+    } finally {
+        if (testInvoiceId) {
+            try {
+                // Delete test invoice items and invoice
+                const items = await adminPb.collection('invoice_items').getFullList({ filter: `invoice="${testInvoiceId}"` });
+                for (const item of items) {
+                    await adminPb.collection('invoice_items').delete(item.id);
+                }
+                await adminPb.collection('invoices').delete(testInvoiceId);
+            } catch {
+                // teardown
+            }
+        }
     }
 
     console.log("\n==================================================");

@@ -26,7 +26,7 @@ import { useAuth } from "@/contexts/AuthContext";
 
 const SEGMENTS: { id: AudienceSegment; label: string; hint: string }[] = [
     { id: 'all_active', label: 'All Active Customers', hint: 'All opted-in WhatsApp numbers' },
-    { id: 'vip_tiers', label: 'VIP Tiers (500+ pts)', hint: 'Gold & Platinum cohorts' },
+    { id: 'vip_tiers', label: 'VIP Tiers (1000+ pts)', hint: 'Gold & Platinum cohorts' },
     { id: 'points_over_500', label: 'Unredeemed Points > 500', hint: 'Points-heavy customers' },
     { id: 'wholesale', label: 'Wholesale / B2B Buyers', hint: 'Wholesale customer type' },
 ];

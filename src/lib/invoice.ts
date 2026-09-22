@@ -60,8 +60,18 @@ export interface Invoice {
     buyer_state_code: string;
     place_of_supply: string;
 
-    // Linked sale
+    // Relations & Dual-Mapping
     sale_id?: string;
+    order_id?: string;
+    customer_id?: string;
+    order?: string;
+    customer?: string;
+    sale?: string;
+    status?: 'paid' | 'pending' | 'overdue' | 'partially_paid' | 'cancelled';
+    subtotal?: number;
+    discount?: number;
+    tax?: number;
+    total?: number;
 
     // Amounts
     taxable_value: number;
@@ -135,6 +145,7 @@ export async function recordPayment(paymentDetails: {
     const updatePayload: Record<string, any> = {
         paid_amount: newPaidAmount,
         status: isPaid ? 'paid' : 'partially_paid',
+        is_paid: isPaid,
     };
 
     await pb.collection('invoices').update(paymentDetails.invoice_id, updatePayload);
@@ -239,19 +250,25 @@ async function generateInvoiceNumber(): Promise<string> {
     const seqName = `invoice_${fyPrefix}`;
 
     try {
-        // Get or create sequence
+        // Get or create sequence — name-scoped per financial year so each FY
+        // restarts at 00001. Do NOT fall back to prefix-only matching: that would
+        // keep counting from the previous FY's record and desync name vs counter.
         let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
 
         let nextValue: number;
         if (seq) {
-            nextValue = (seq.current_value || 0) + 1;
-            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
+            nextValue = (seq.current_number || seq.current_value || 0) + 1;
+            await pb.collection('number_sequences').update(seq.id, {
+                current_value: nextValue,
+                current_number: nextValue,
+            });
         } else {
             nextValue = 1;
             await pb.collection('number_sequences').create({
                 name: seqName,
                 prefix: 'INV',
                 current_value: nextValue,
+                current_number: nextValue,
                 padding: 5,
             });
         }
@@ -275,70 +292,114 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'invoice_numbe
     // Calculate amount in words
     const amountWords = amountToWords(invoice.grand_total);
 
-    // Insert invoice
-    const invoiceData = await pb.collection('invoices').create({
+    // Resolve Customer ID if not explicitly provided but phone is present
+    let customerId = invoice.customer_id || (invoice as any).customer || null;
+    if (!customerId && invoice.buyer_phone) {
+        const cleanPhone = invoice.buyer_phone.replace(/\D/g, '').slice(-10);
+        if (cleanPhone.length === 10) {
+            try {
+                const matchedCustomer = await pb.collection('customers').getFirstListItem(
+                    `phone~"${cleanPhone}"`
+                ).catch(() => null);
+                if (matchedCustomer) {
+                    customerId = matchedCustomer.id;
+                }
+            } catch {
+                // ignore lookup error
+            }
+        }
+    }
+
+    const orderId = invoice.order_id || (invoice as any).order || null;
+    const saleId = invoice.sale_id || (invoice as any).sale || null;
+    const invoiceStatus = invoice.status || (invoice.is_paid ? 'paid' : (invoice.paid_amount > 0 ? 'partially_paid' : 'pending'));
+    const subtotal = invoice.subtotal ?? invoice.taxable_value;
+    const discount = invoice.discount ?? invoice.discount_amount;
+    const tax = invoice.tax ?? invoice.total_tax;
+    const total = invoice.total ?? invoice.grand_total;
+
+    // Insert invoice payload with both GST and flat/relational fields
+    const invoicePayload: Record<string, any> = {
         invoice_number: invoiceNumber,
         invoice_date: invoice.invoice_date,
         invoice_type: invoice.invoice_type,
-        seller_gstin: invoice.seller_gstin,
-        seller_name: invoice.seller_name,
-        seller_address: invoice.seller_address,
-        seller_state_code: invoice.seller_state_code,
-        buyer_name: invoice.buyer_name,
-        buyer_gstin: invoice.buyer_gstin,
-        buyer_phone: invoice.buyer_phone,
-        buyer_email: invoice.buyer_email,
-        buyer_address: invoice.buyer_address,
-        buyer_state_code: invoice.buyer_state_code,
-        place_of_supply: invoice.place_of_supply || invoice.buyer_state_code,
-        sale: invoice.sale_id,
+        status: invoiceStatus,
+        subtotal: subtotal,
+        discount: discount,
+        tax: tax,
+        total: total,
+        paid_amount: invoice.paid_amount || 0,
+        notes: invoice.notes || '',
+        due_date: invoice.due_date || '',
+        seller_gstin: invoice.seller_gstin || '',
+        seller_name: invoice.seller_name || '',
+        seller_address: invoice.seller_address || '',
+        seller_state_code: invoice.seller_state_code || '',
+        buyer_name: invoice.buyer_name || '',
+        buyer_gstin: invoice.buyer_gstin || '',
+        buyer_phone: invoice.buyer_phone || '',
+        buyer_email: invoice.buyer_email || '',
+        buyer_address: invoice.buyer_address || '',
+        buyer_state_code: invoice.buyer_state_code || '',
+        place_of_supply: invoice.place_of_supply || invoice.buyer_state_code || '',
         taxable_value: invoice.taxable_value,
-        cgst_amount: invoice.cgst_amount,
-        sgst_amount: invoice.sgst_amount,
-        igst_amount: invoice.igst_amount,
-        cess_amount: invoice.cess_amount,
+        cgst_amount: invoice.cgst_amount || 0,
+        sgst_amount: invoice.sgst_amount || 0,
+        igst_amount: invoice.igst_amount || 0,
+        cess_amount: invoice.cess_amount || 0,
         total_tax: invoice.total_tax,
-        discount_amount: invoice.discount_amount,
-        shipping_charges: invoice.shipping_charges,
+        discount_amount: invoice.discount_amount || 0,
+        shipping_charges: invoice.shipping_charges || 0,
         grand_total: invoice.grand_total,
         amount_in_words: amountWords,
-        is_reverse_charge: invoice.is_reverse_charge,
+        is_reverse_charge: !!invoice.is_reverse_charge,
         transport_mode: invoice.transport_mode || '',
         vehicle_number: invoice.vehicle_number || '',
         payment_terms: invoice.payment_terms || '',
-        due_date: invoice.due_date || '',
-        is_paid: invoice.is_paid,
-        paid_amount: invoice.paid_amount,
-        notes: invoice.notes || '',
-    });
+        is_paid: !!invoice.is_paid,
+    };
+
+    if (customerId) invoicePayload.customer = customerId;
+    if (orderId) invoicePayload.order = orderId;
+    if (saleId) invoicePayload.sale = saleId;
+
+    const invoiceData = await pb.collection('invoices').create(invoicePayload);
 
     // Insert invoice items
     const itemsWithInvoiceId: InvoiceItem[] = [];
     for (let index = 0; index < invoice.items.length; index++) {
         const item = invoice.items[index];
-        const itemRecord = await pb.collection('invoice_items').create({
+        const itemDiscount = item.discount_amount || (item.quantity * item.unit_price * (item.discount_percent / 100));
+        const itemTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0) + (item.cess_amount || 0);
+
+        const itemPayload: Record<string, any> = {
             invoice: invoiceData.id,
-            variant: item.variant_id || '',
+            variant: item.variant_id || (item as any).variant || null,
             sr_no: index + 1,
             description: item.description,
-            hsn_code: item.hsn_code,
+            hsn_code: item.hsn_code || '',
             quantity: item.quantity,
-            unit: item.unit,
+            unit: item.unit || 'PCS',
             unit_price: item.unit_price,
-            discount_percent: item.discount_percent,
-            discount_amount: item.discount_amount,
+            discount: itemDiscount,
+            discount_percent: item.discount_percent || 0,
+            discount_amount: item.discount_amount || 0,
             taxable_amount: item.taxable_amount,
-            gst_rate: item.gst_rate,
-            cgst_rate: item.cgst_rate,
-            cgst_amount: item.cgst_amount,
-            sgst_rate: item.sgst_rate,
-            sgst_amount: item.sgst_amount,
-            igst_rate: item.igst_rate,
-            igst_amount: item.igst_amount,
-            cess_rate: item.cess_rate,
-            cess_amount: item.cess_amount,
+            tax: itemTax,
+            gst_rate: item.gst_rate || 0,
+            cgst_rate: item.cgst_rate || 0,
+            cgst_amount: item.cgst_amount || 0,
+            sgst_rate: item.sgst_rate || 0,
+            sgst_amount: item.sgst_amount || 0,
+            igst_rate: item.igst_rate || 0,
+            igst_amount: item.igst_amount || 0,
+            cess_rate: item.cess_rate || 0,
+            cess_amount: item.cess_amount || 0,
+            total: item.total_amount,
             total_amount: item.total_amount,
-        });
+        };
+
+        const itemRecord = await pb.collection('invoice_items').create(itemPayload);
         itemsWithInvoiceId.push({
             ...item,
             id: itemRecord.id,
@@ -351,6 +412,14 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'invoice_numbe
         ...invoice,
         id: invoiceData.id,
         invoice_number: invoiceNumber,
+        customer_id: customerId || undefined,
+        order_id: orderId || undefined,
+        sale_id: saleId || undefined,
+        status: invoiceStatus,
+        subtotal: subtotal,
+        discount: discount,
+        tax: tax,
+        total: total,
         items: itemsWithInvoiceId,
         created_at: invoiceData.created,
         updated_at: invoiceData.updated,
@@ -370,36 +439,46 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
             invoice_number: invoice.invoice_number,
             invoice_date: invoice.invoice_date,
             invoice_type: invoice.invoice_type,
+            customer_id: invoice.customer || undefined,
+            order_id: invoice.order || undefined,
+            sale_id: invoice.sale || undefined,
+            order: invoice.order || undefined,
+            customer: invoice.customer || undefined,
+            sale: invoice.sale || undefined,
+            status: invoice.status || (invoice.is_paid ? 'paid' : 'pending'),
+            subtotal: invoice.subtotal ?? invoice.taxable_value ?? 0,
+            discount: invoice.discount ?? invoice.discount_amount ?? 0,
+            tax: invoice.tax ?? invoice.total_tax ?? 0,
+            total: invoice.total ?? invoice.grand_total ?? 0,
             seller_gstin: invoice.seller_gstin || '',
             seller_name: invoice.seller_name || '',
             seller_address: invoice.seller_address || '',
             seller_state_code: invoice.seller_state_code || '',
-            buyer_name: invoice.buyer_name,
+            buyer_name: invoice.buyer_name || '',
             buyer_gstin: invoice.buyer_gstin || '',
             buyer_phone: invoice.buyer_phone || '',
             buyer_email: invoice.buyer_email || '',
             buyer_address: invoice.buyer_address || '',
             buyer_state_code: invoice.buyer_state_code || '',
             place_of_supply: invoice.place_of_supply || '',
-            sale_id: invoice.sale,
-            taxable_value: invoice.taxable_value,
+            taxable_value: invoice.taxable_value ?? invoice.subtotal ?? 0,
             cgst_amount: invoice.cgst_amount || 0,
             sgst_amount: invoice.sgst_amount || 0,
             igst_amount: invoice.igst_amount || 0,
             cess_amount: invoice.cess_amount || 0,
-            total_tax: invoice.total_tax,
-            discount_amount: invoice.discount_amount || 0,
+            total_tax: invoice.total_tax ?? invoice.tax ?? 0,
+            discount_amount: invoice.discount_amount ?? invoice.discount ?? 0,
             shipping_charges: invoice.shipping_charges || 0,
-            grand_total: invoice.grand_total,
+            grand_total: invoice.grand_total ?? invoice.total ?? 0,
             amount_in_words: invoice.amount_in_words || '',
             is_reverse_charge: invoice.is_reverse_charge || false,
-            transport_mode: invoice.transport_mode,
-            vehicle_number: invoice.vehicle_number,
-            payment_terms: invoice.payment_terms,
-            due_date: invoice.due_date,
-            is_paid: invoice.is_paid || false,
+            transport_mode: invoice.transport_mode || '',
+            vehicle_number: invoice.vehicle_number || '',
+            payment_terms: invoice.payment_terms || '',
+            due_date: invoice.due_date || '',
+            is_paid: invoice.is_paid ?? (invoice.status === 'paid'),
             paid_amount: invoice.paid_amount || 0,
-            notes: invoice.notes,
+            notes: invoice.notes || '',
             items: items.map((item: any) => ({
                 id: item.id,
                 invoice_id: item.invoice,
@@ -411,8 +490,8 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
                 unit: item.unit || 'PCS',
                 unit_price: item.unit_price,
                 discount_percent: item.discount_percent || 0,
-                discount_amount: item.discount_amount || 0,
-                taxable_amount: item.taxable_amount,
+                discount_amount: item.discount_amount ?? item.discount ?? 0,
+                taxable_amount: item.taxable_amount ?? ((item.quantity * item.unit_price) - (item.discount || 0)),
                 gst_rate: item.gst_rate || 0,
                 cgst_rate: item.cgst_rate || 0,
                 cgst_amount: item.cgst_amount || 0,
@@ -422,7 +501,7 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
                 igst_amount: item.igst_amount || 0,
                 cess_rate: item.cess_rate || 0,
                 cess_amount: item.cess_amount || 0,
-                total_amount: item.total_amount,
+                total_amount: item.total_amount ?? item.total ?? 0,
             })),
             created_at: invoice.created,
             updated_at: invoice.updated,
@@ -488,36 +567,46 @@ export async function getInvoices(filters?: {
             invoice_number: inv.invoice_number,
             invoice_date: inv.invoice_date,
             invoice_type: inv.invoice_type,
+            customer_id: inv.customer || undefined,
+            order_id: inv.order || undefined,
+            sale_id: inv.sale || undefined,
+            order: inv.order || undefined,
+            customer: inv.customer || undefined,
+            sale: inv.sale || undefined,
+            status: inv.status || (inv.is_paid ? 'paid' : 'pending'),
+            subtotal: inv.subtotal ?? inv.taxable_value ?? 0,
+            discount: inv.discount ?? inv.discount_amount ?? 0,
+            tax: inv.tax ?? inv.total_tax ?? 0,
+            total: inv.total ?? inv.grand_total ?? 0,
             seller_gstin: inv.seller_gstin || '',
             seller_name: inv.seller_name || '',
             seller_address: inv.seller_address || '',
             seller_state_code: inv.seller_state_code || '',
-            buyer_name: inv.buyer_name,
+            buyer_name: inv.buyer_name || '',
             buyer_gstin: inv.buyer_gstin || '',
             buyer_phone: inv.buyer_phone || '',
             buyer_email: inv.buyer_email || '',
             buyer_address: inv.buyer_address || '',
             buyer_state_code: inv.buyer_state_code || '',
             place_of_supply: inv.place_of_supply || '',
-            sale_id: inv.sale,
-            taxable_value: inv.taxable_value,
+            taxable_value: inv.taxable_value ?? inv.subtotal ?? 0,
             cgst_amount: inv.cgst_amount || 0,
             sgst_amount: inv.sgst_amount || 0,
             igst_amount: inv.igst_amount || 0,
             cess_amount: inv.cess_amount || 0,
-            total_tax: inv.total_tax,
-            discount_amount: inv.discount_amount || 0,
+            total_tax: inv.total_tax ?? inv.tax ?? 0,
+            discount_amount: inv.discount_amount ?? inv.discount ?? 0,
             shipping_charges: inv.shipping_charges || 0,
-            grand_total: inv.grand_total,
+            grand_total: inv.grand_total ?? inv.total ?? 0,
             amount_in_words: inv.amount_in_words || '',
             is_reverse_charge: inv.is_reverse_charge || false,
-            transport_mode: inv.transport_mode,
-            vehicle_number: inv.vehicle_number,
-            payment_terms: inv.payment_terms,
-            due_date: inv.due_date,
-            is_paid: inv.is_paid || false,
+            transport_mode: inv.transport_mode || '',
+            vehicle_number: inv.vehicle_number || '',
+            payment_terms: inv.payment_terms || '',
+            due_date: inv.due_date || '',
+            is_paid: inv.is_paid ?? (inv.status === 'paid'),
             paid_amount: inv.paid_amount || 0,
-            notes: inv.notes,
+            notes: inv.notes || '',
             items: (itemsByInvoice.get(inv.id) || []).map((item: any) => ({
                 id: item.id,
                 invoice_id: item.invoice,
@@ -529,8 +618,8 @@ export async function getInvoices(filters?: {
                 unit: item.unit || 'PCS',
                 unit_price: item.unit_price,
                 discount_percent: item.discount_percent || 0,
-                discount_amount: item.discount_amount || 0,
-                taxable_amount: item.taxable_amount,
+                discount_amount: item.discount_amount ?? item.discount ?? 0,
+                taxable_amount: item.taxable_amount ?? ((item.quantity * item.unit_price) - (item.discount || 0)),
                 gst_rate: item.gst_rate || 0,
                 cgst_rate: item.cgst_rate || 0,
                 cgst_amount: item.cgst_amount || 0,
@@ -540,7 +629,7 @@ export async function getInvoices(filters?: {
                 igst_amount: item.igst_amount || 0,
                 cess_rate: item.cess_rate || 0,
                 cess_amount: item.cess_amount || 0,
-                total_amount: item.total_amount,
+                total_amount: item.total_amount ?? item.total ?? 0,
             })),
             created_at: inv.created,
             updated_at: inv.updated,
@@ -555,9 +644,11 @@ export async function markInvoicePaid(id: string, paidAmount?: number): Promise<
     const invoice = await getInvoice(id);
     if (!invoice) throw new Error('Invoice not found');
 
+    const total = invoice.grand_total || invoice.total || 0;
     await pb.collection('invoices').update(id, {
+        status: 'paid',
         is_paid: true,
-        paid_amount: paidAmount ?? invoice.grand_total,
+        paid_amount: paidAmount ?? total,
     });
 }
 
@@ -644,7 +735,14 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
         buyer_state_code: storeSettings.store_state_code,
         place_of_supply: storeSettings.store_state_code,
 
+        customer_id: sale.customer || undefined,
         sale_id: saleId,
+
+        status: 'paid',
+        subtotal: taxableValue,
+        discount: sale.discount || 0,
+        tax: totalTax,
+        total: grandTotal - (sale.discount || 0),
 
         taxable_value: taxableValue,
         cgst_amount: cgstAmount,
@@ -660,7 +758,7 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
         is_reverse_charge: false,
         payment_terms: storeSettings.invoice_terms,
         is_paid: true,
-        paid_amount: sale.total,
+        paid_amount: sale.total || (grandTotal - (sale.discount || 0)),
         notes: sale.notes,
 
         items: invoiceItems,
