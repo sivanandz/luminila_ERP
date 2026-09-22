@@ -182,12 +182,13 @@ Comprehensive analytical dashboards and reports:
 
 ---
 
-## 15. WhatsApp Automation (WPPConnect Integration)
+## 15. WhatsApp Automation & Conversational CRM
 
 - **Local Sidecar**: Communicates with a local WPPConnect Node.js service running Puppeteer.
 - **QR Pairing**: Displays WhatsApp Web QR code directly in the Luminila UI for quick smartphone pairing.
 - **Automated Alerts**: Pre-built message templates for order confirmations, digital invoice links, and shipping updates.
 - **Inbound Message Parsing**: Detects customer order inquiries directly from chat threads.
+- **Omnichannel Architecture Specification**: For the comprehensive design blueprint covering the 3-Pane CRM Hub, Razorpay remote payment links, catalog sync, and anti-ban broadcast engine, refer to **[`docs/WHATSAPP_ERP_CRM_SPECIFICATION.md`](file:///e:/Local_GIT_2/luminila_inv_mgmt/docs/WHATSAPP_ERP_CRM_SPECIFICATION.md)**.
 
 ---
 

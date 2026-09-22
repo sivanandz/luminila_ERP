@@ -17,6 +17,7 @@ This documentation suite provides complete technical, operational, and architect
 | **[State of the Project](PROJECT_STATE.md)** | Current release status, module maturity matrix, known audit defect registers, technical debt, and release milestones. | Tech Leads, Contributors, Auditors |
 | **[Technical Report](TECHNICAL_REPORT.md)** | Comprehensive engineering analysis, sub-system topology, and architectural benchmark report. | Engineers, System Architects |
 | **[Features Specification](FEATURES.md)** | Exhaustive breakdown of all 16 functional domains (POS, Shifts, Catalog, Barcodes, GST Invoicing, Challans, GRN, CRM, Loyalty, Banking, WhatsApp, Mobile). | Product Managers, Store Owners |
+| **[WhatsApp ERP & CRM Blueprint](WHATSAPP_ERP_CRM_SPECIFICATION.md)** | Approved architecture specification for WhatsApp conversational commerce, 3-pane CRM hub, Razorpay links, and anti-ban broadcasts. | Product Managers, Developers, CRM Teams |
 | **[Operational Workflows & Working Guide](APP_WORKING.md)** | Step-by-step business workflows, service orchestration (`scripts/dev-all.js`), daily cashier routines, and database maintenance. | Store Operators, Cashiers, DevOps |
 | **[User Guide](USER_GUIDE.md)** | End-user showroom manual for store staff, cashiers, and retail owners. | Store Staff, Cashiers |
 
