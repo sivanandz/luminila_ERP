@@ -15,8 +15,9 @@ The Luminila WhatsApp subsystem transforms WhatsApp from a simple notification p
 
 ```mermaid
 graph TB
-    subgraph WhatsApp Environment ["WhatsApp Network & Customers"]
+    subgraph WhatsApp Environment ["WhatsApp Network & External Actors"]
         Customer[Customer Smartphone / WhatsApp Client]
+        Vendor[Jewelry Artisan / Bullion Supplier / Vendor]
     end
 
     subgraph Service Tier ["Local Host Sidecar & Gateways"]
@@ -27,14 +28,17 @@ graph TB
     subgraph Application Tier ["Luminila ERP Core (Next.js 16 + React 19)"]
         Router[Inbound Message Router & Intent Classifier]
         CRMHub["/whatsapp 3-Pane Omnichannel Hub"]
+        ContextMenu[Context Action Engine<br/>Right-Click PC / Long-Press Mobile]
         GlobalDrawer[Global Slide-Over Chat Drawer]
         POSWidget[POS & Checkout Messenger Widget]
         OutboundDispatcher[Outbound Transactional Dispatcher]
         BroadcastEngine[Smart Staggered Broadcast Queue]
+        TagGenerator[Vector Code128 Jewelry Tag Engine]
     end
 
     subgraph Data Tier ["Embedded Persistence (PocketBase v0.25.0)"]
         PB_Cust[(customers & loyalty_accounts)]
+        PB_Vendors[(vendors & purchase_orders)]
         PB_Orders[(sales_orders & sales)]
         PB_Invoices[(invoices & invoice_items)]
         PB_Catalog[(products & product_variants)]
@@ -42,15 +46,22 @@ graph TB
     end
 
     Customer <-->|Encrypted WhatsApp Protocol| WPP
+    Vendor <-->|Encrypted WhatsApp Protocol| WPP
     WPP <-->|REST API & Webhooks| Router
     WPP <-->|SSE / Long Poll| CRMHub
     
-    Router -->|Auto-Lookup / Link| PB_Cust
+    Router -->|Auto-Lookup / Link Customer| PB_Cust
+    Router -->|Auto-Lookup / Link Vendor| PB_Vendors
     Router -->|Draft Orders| PB_Orders
     
     CRMHub <--> PB_Chats
     CRMHub <--> PB_Cust
+    CRMHub <--> PB_Vendors
     CRMHub <--> PB_Catalog
+    
+    ContextMenu -->|Customer: Add to POS Cart| POSWidget
+    ContextMenu -->|Vendor: Ingest New Product| PB_Catalog
+    ContextMenu -->|Vendor: Auto-Generate Tag| TagGenerator
     
     POSWidget -->|1-Tap PDF / Receipt| OutboundDispatcher
     OutboundDispatcher -->|Send PDF & Text| WPP
@@ -71,23 +82,28 @@ Incoming messages are processed through an intelligent two-tier pipeline with **
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Customer
+    actor Sender as Customer or Vendor
     participant WPP as WPPConnect Sidecar
     participant Router as Inbound Message Router
     participant DB as PocketBase
     actor Staff as Showroom Sales Rep
     participant UI as ERP Notification / Drawer
 
-    Customer->>WPP: "Do you have size 7 Rose Gold Solitaire Ring in stock?"
+    Sender->>WPP: "Do you have size 7 Rose Gold Solitaire Ring in stock?" (or Vendor Stock Memo)
     WPP->>Router: Webhook onMessage(payload)
-    Router->>DB: Lookup sender phone in `customers`
-    alt Existing Customer
+    Router->>DB: Lookup sender phone in `customers` and `vendors`
+    alt Verified Vendor
+        DB-->>Router: Vendor Profile (Payment terms, lead time, POs)
+        Router->>Router: Tag Chat as 'VENDOR'
+    else Existing Customer
         DB-->>Router: Customer Profile (Tier, Name, History)
+        Router->>Router: Tag Chat as 'CUSTOMER'
     else New Number
         Router->>DB: Create Lead in `customers` (status: 'lead')
+        Router->>Router: Tag Chat as 'LEAD'
     end
 
-    Router->>Router: Classify Intent: [STOCK_INQUIRY, VARIANT_LOOKUP]
+    Router->>Router: Classify Intent: [STOCK_INQUIRY, VARIANT_LOOKUP, VENDOR_OFFER]
     Router->>DB: Query `product_variants` (SKU match, size 7, color Rose Gold)
     DB-->>Router: 4 units available in Showroom (SKU: RNG-SOL-RG-7, ₹14,500)
     
@@ -97,7 +113,7 @@ sequenceDiagram
     UI-->>Staff: Displays incoming text + Pre-computed action: [Send Stock Card] [Create Estimate]
     Staff->>UI: 1-Click "Send Stock Card"
     UI->>WPP: Dispatches photo, specs, and price card
-    WPP-->>Customer: Rich WhatsApp Message delivered
+    WPP-->>Sender: Rich WhatsApp Message delivered
 ```
 
 ### Key Capabilities:
@@ -105,6 +121,7 @@ sequenceDiagram
    - `STOCK_INQUIRY`: Matches jewelry names, metal tones (Rose Gold, 925 Silver, Yellow Gold), and sizes.
    - `ORDER_STATUS`: Matches order tokens, invoice numbers (`INV-2026-XXXX`), or tracking inquiries.
    - `PRICE_CHECK`: Queries real-time catalog prices with active store discounts.
+   - `VENDOR_OFFER`: Identifies wholesale consignments, weights, and karatages from verified suppliers.
    - `TALK_TO_STAFF`: Rings immediate visual alerts on active cashier and staff tablets.
 2. **Draft Sales Order Generation**:
    - When a customer says *"Please book 2 pieces of RNG-001 in size 8"*, the router constructs a **Draft Sales Order** in PocketBase without committing inventory.
@@ -121,30 +138,37 @@ To ensure staff can assist customers without navigating away from active tasks, 
 |  1. Full-Screen Hub (/whatsapp)       |  2. Global Slide-Over Drawer  |  3. POS Popover |
 |  - High-volume customer support       |  - Accessible from ANY route  |  - Instant send |
 |  - 3-Pane layout with full CRM record |  - Check chat while in inv/PO |  - In-cart chat |
+|  - Right-click / Long-press Actions   |  - Gesture-driven workflows   |  - 1-Tap Add    |
 +---------------------------------------------------------------------------------------+
 ```
 
 ### 3.1 The 3-Pane Omnichannel CRM Hub (`/whatsapp`)
 - **Left Pane (Conversations List)**:
-  - Filter tabs: `All`, `Unread`, `Pending Quotes`, `VIP / Loyalty`, `Leads`.
-  - Badges for unread counts, WhatsApp labels (e.g., *Custom Job Work*, *Payment Pending*), and online presence.
-  - Search bar filtering by customer name, phone number, or recent message content.
-- **Center Pane (Active Transcript & Message Composer)**:
+  - Filter tabs: `All`, `Unread`, `Customers`, `Vendors`, `Pending Quotes`, `Leads`.
+  - Identity Badges: Color-coded pills designating `Customer` (Emerald), `Vendor` (Indigo), `VIP` (Gold), or `Lead` (Amber).
+  - Badges for unread counts, WhatsApp labels (e.g., *Job Work*, *Payment Pending*), and online presence.
+  - Search bar filtering by contact name, phone number, vendor company, or recent message text.
+- **Center Pane (Active Transcript & Contextual Message Composer)**:
   - Rich chat bubbles with status ticks (Sent, Delivered, Read).
-  - Quoted message / reply previews.
+  - **Context Action Engine**: Full support for **Right-Click (PC/Desktop)** and **Long-Press (Android/Mobile)** on any message bubble:
+    - Customer message: Instant **"Add to POS Cart"**, **"Create Quote"**, or **"Send Razorpay Link"**.
+    - Vendor message: Instant **"Add to Existing Inventory"**, **"Create New Product"**, and **"Auto-Generate Barcode Tag"**.
   - Quick Response Action Bar:
     - 🏷️ **Attach Product Card**: Modal to search jewelry catalog and send an interactive spec card.
     - 💳 **Request Razorpay Payment**: Popover to specify amount and invoice reference.
     - 📄 **Send GST Invoice / Estimate**: Pick from the customer's active invoices.
+    - 🏢 **Tag as Vendor / Customer**: 1-click toggle to link contact to `vendors` or `customers`.
     - ⚡ **Canned Templates**: Showroom hours, bank details, return policy, ring sizing guide.
-- **Right Pane (Customer 360° Dossier)**:
-  - Central customer identity (Name, Phone, Email, City, GSTIN).
-  - **Loyalty Metric Box**: Current tier badge (`Gold`), points balance, total lifetime spend.
-  - **Recent Purchases**: Scrollable timeline of previous POS sales and tax invoices.
-  - **Quick Action Buttons**:
-    - `[+ New POS Cart]`: Pre-loads customer into the POS terminal.
-    - `[+ New Estimate]`: Launches quote authoring with customer pre-selected.
-    - `[Edit CRM Profile]`: Update address, anniversary dates, and preferred metal tone.
+- **Right Pane (Dynamic Customer / Vendor 360° Dossier)**:
+  - **When Chatting with a Customer**:
+    - Central customer identity (Name, Phone, Email, City, GSTIN).
+    - **Loyalty Metric Box**: Current tier badge (`Gold`), points balance, total lifetime spend.
+    - **Recent Purchases**: Scrollable timeline of previous POS sales and tax invoices.
+    - **Quick Action Buttons**: `[+ New POS Cart]`, `[+ New Estimate]`, `[Edit CRM Profile]`.
+  - **When Chatting with a Vendor**:
+    - Vendor identity (Company Name, GSTIN, Primary Contact, Lead Time, Payment Terms).
+    - **Open Purchase Orders**: Pending POs and incoming consignment status.
+    - **Quick Procurement Actions**: `[+ New Purchase Order]`, `[Create GRN]`, `[View Ledger]`.
 
 ### 3.2 Global Floating Slide-Over Drawer (`WhatsAppDrawer.tsx`)
 - Floating button pinned to the bottom-right of every ERP screen (POS, Inventory, Purchase, Challans, Reports).
@@ -279,19 +303,111 @@ sequenceDiagram
 
 ---
 
-## 8. CRM Customer Linking, Lead Management & De-duplication
+## 8. In-Chat Context Actions: Right-Click & Long-Press Operations
+
+To empower sales reps and inventory clerks to work at maximum velocity directly within the WhatsApp sidecar/chat window, Luminila introduces **Contextual Gesture Actions**:
+- **On PC Desktop**: HTML5 `onContextMenu` (Right-Click) suppressing the browser's default menu to present a sleek glassmorphic command palette.
+- **On Mobile Devices (Android / Tablets)**: `onTouchStart` + `500ms` duration threshold with `<10px` movement tolerance, firing a 40ms haptic feedback pulse (`navigator.vibrate?.(40)`), a radial press ripple, and sliding up a native bottom-sheet drawer.
+
+```mermaid
+graph TD
+    Message[Incoming WhatsApp Message] --> Trigger{User Gesture}
+    Trigger -->|Right-Click on PC| ContextMenu[Glassmorphic Context Menu]
+    Trigger -->|Long-Press on Mobile| BottomSheet[Haptic Bottom Action Drawer]
+
+    ContextMenu --> CheckRole{Chat Contact Type}
+    BottomSheet --> CheckRole
+
+    subgraph Vendor Workflows ["When Chatting with a Vendor"]
+        CheckRole -->|Vendor Contact| V_Actions[Vendor Action Suite]
+        V_Actions --> V_AddStock["1. Add to Existing Inventory / Variant"]
+        V_Actions --> V_NewProd["2. Create New Product from Message"]
+        V_Actions --> V_AutoTag["3. Auto Barcode Tag Generation"]
+        
+        V_NewProd --> SmartExtract[Smart Extraction Modal with Preview<br/>Auto SKU + Price Markup + Image]
+        SmartExtract --> CommitDB[(Save to products & variants)]
+        CommitDB --> TagPrompt{Prompt to Print Tag?}
+        TagPrompt -->|Approved| DirectPrint[Immediate Code128 Thermal Print]
+        TagPrompt -->|Deferred/Rejected| QueueLabels[Appended to /labels Batch Queue]
+    end
+
+    subgraph Customer Workflows ["When Chatting with a Customer"]
+        CheckRole -->|Customer / Lead| C_Actions[Customer Commerce Suite]
+        C_Actions --> C_SmartDetect["1. Smart Detect Variant from Text/Card"]
+        C_Actions --> C_AddToCart["2. Direct Add to Active POS Cart"]
+        C_Actions --> C_MiniCart["3. In-Chat Mini-Cart Drawer"]
+        C_Actions --> C_QuickPay["4. Instant Razorpay Payment Link"]
+
+        C_AddToCart --> LiveBroadcast[Broadcast live to POS Terminal<br/>BroadcastChannel + localStorage]
+        C_MiniCart --> CartReview[Review Qty, Line Discounts & Send to Main POS]
+    end
+```
+
+### 8.1 Vendor Identification & Tagging
+1. **Auto-Match by Phone**: Inbound numbers are automatically matched against PocketBase `vendors.phone` (normalizing E.164 format). If matched, the chat header and conversation item display an **Indigo 'Vendor' Badge** with the supplier's trading name.
+2. **1-Click Header & Context Toggle**: Staff can toggle any conversation between `Customer`, `Vendor`, and `Lead` via a 1-click header pill or by right-clicking the contact in the conversations list.
+3. **Contact Card Designation**: Right-clicking or long-pressing a contact brings up **"Mark as Supplier / Vendor"**, opening a fast-entry drawer to assign company GSTIN, payment terms (e.g. Net 30), and lead time. This seamlessly synchronizes with `/vendors` in the ERP.
+
+### 8.2 In-Chat Vendor Ingestion: Message → Inventory & Auto Barcode Tag
+When a vendor messages with new jewelry consignments, wholesale manifests, or sample photos:
+1. **Right-Click (PC) / Long-Press (Mobile)** on the vendor's message opens the **Vendor Action Palette**:
+   - 📦 **Add to Existing Inventory / Variant**:
+     - Fast-track search opens a mini-variant lookup.
+     - Staff selects existing variant (e.g., `RNG-SOL-RG-7`), enters received quantity (pre-parsed from text if detected), and confirms cost price.
+     - Automatically creates a `stock_movements` record (type: `purchase_receipt`), increments `product_variants.stock_level`, and generates a draft GRN in `/purchase`.
+   - 💎 **Create New Product from Message**:
+     - **Smart Extraction Modal with Human-in-the-Loop**:
+       - Media photo is automatically downloaded via WPPConnect and set as the primary product image.
+       - Natural language parser extracts metal purity (e.g. *18K*), category (*Choker / Ring*), net weight (*14.2g*), and vendor cost price (*₹42,000*).
+       - Automatically computes suggested retail price based on showroom margin settings.
+       - **Auto SKU Generation**: Generates standard SKU (e.g. `VND-CHK-18K-001`).
+       - Staff verifies or adjusts fields in the modal and clicks **"Approve & Ingest"**.
+       - Saves new records in `products` and `product_variants` in PocketBase.
+   - 🏷️ **Auto Barcode Tag Generation**:
+     - Immediately upon product approval, the system generates a vector Code128 barcode configured for jewelry dumbbell/butterfly barbell labels (containing SKU, Net Wt, Purity, and Retail Price).
+     - **Prompt to Print**: A floating prompt asks *"Print Barcode Tag Now?"*.
+       - If **Approved**: Dispatches immediately to the default thermal label printer.
+       - If **Deferred/Rejected**: Automatically saves and queues the tag into `/labels` for end-of-day batch printing.
+
+### 8.3 In-Chat Customer Commerce: Message → Direct "Add to POS Cart"
+When chatting with customers inquiring about items, custom orders, or purchasing:
+1. **Right-Click (PC) / Long-Press (Mobile)** on any customer inquiry or replied product card brings up the **Customer Commerce Palette**:
+   - 🛒 **Add to POS Cart**:
+     - **Smart Detection**: If the message quotes an existing product card or contains an SKU/keyword, the variant is pre-selected.
+     - **1-Click Variant Picker**: If ambiguous (e.g., *"I want the rose gold ring"*), a compact variant picker pops up to select Ring Size (6/7/8) or Metal Finish.
+     - **Live Broadcast to POS Terminal**: Pushes the selected item directly into the active Point of Sale terminal cart via `BroadcastChannel('pos_cart')` and localStorage events (`pos:cart-updated`).
+     - Cashier standing at the showroom terminal instantly sees the cart update with a toast: *"Added 1x RNG-SOL-RG-7 from WhatsApp chat with Priya M."*
+   - 🛍️ **In-Chat Mini-Cart Drawer**:
+     - Staff can open a slide-out mini-cart right inside the WhatsApp panel to review staged items, adjust quantities, apply custom line-item discounts, and view live subtotal + GST.
+     - Buttons:
+       - `[Send to Main POS Counter]`: Transmits cart to physical showroom checkout.
+       - `[Generate Razorpay Payment Link]`: Converts the staged mini-cart directly into a 1-tap remote payment link sent back into the chat.
+       - `[Save as Wholesale Estimate]`: Exports as a formal quote in `/orders`.
+
+### 8.4 Cross-Platform Interaction Design
+- **Desktop (PC / Mac)**:
+  - Event: `onContextMenu` listener bound to each `.message-bubble`.
+  - Behavior: `e.preventDefault()`, captures `(clientX, clientY)`, renders `<GlassmorphicContextMenu />` with keyboard navigation (`Esc` to close, arrow keys, `Enter` to select).
+- **Mobile (Android Tablet / Smartphone)**:
+  - Event: `onTouchStart` starts 500ms timeout timer. If finger moves `> 10px` (`onTouchMove`), timer cancels to allow scrolling.
+  - On timeout: triggers `navigator.vibrate?.(40)` for tactical haptic feedback, renders a radial ripple animation over the message bubble, and slides up a `<BottomSheetDrawer />` with large thumb-friendly action buttons.
+
+---
+
+## 9. CRM Customer Linking, Lead Management & De-duplication
 
 - **E.164 Normalization**: Every phone number is sanitized to E.164 standard (`+91XXXXXXXXXX`), stripping spaces, dashes, and leading zeros.
 - **Automatic Profile Resolution**:
   - If the number exists in `customers`, the conversation immediately binds to their profile, displaying customer lifetime value (LTV), credit balance, and loyalty tier.
+  - If the number exists in `vendors`, it binds to the supplier dossier.
   - If the number is not recognized, a new record is created with `status: 'lead'` and `lead_source: 'whatsapp'`.
 - **1-Click Profile Enrichment**:
-  - Staff can update the customer's name, email, billing address, and GSTIN directly from the chat sidebar.
+  - Staff can update the customer's or vendor's name, email, billing address, and GSTIN directly from the chat sidebar.
   - Changes instantly synchronize to PocketBase.
 
 ---
 
-## 9. Multi-Terminal Session Architecture & Staff Attribution
+## 10. Multi-Terminal Session Architecture & Staff Attribution
 
 In multi-counter jewelry showrooms, multiple staff members share the official store WhatsApp line:
 
@@ -322,7 +438,7 @@ graph TD
 
 ---
 
-## 10. Marketing Campaigns & Anti-Ban Safeguards
+## 11. Marketing Campaigns & Anti-Ban Safeguards
 
 To prevent Meta account restrictions during festival promotions and seasonal campaigns:
 
@@ -336,14 +452,16 @@ To prevent Meta account restrictions during festival promotions and seasonal cam
 
 ---
 
-## 11. Schema Extensions for PocketBase
+## 12. Schema Extensions for PocketBase
 
 To support this comprehensive specification, the following schema additions will be introduced into `src/scripts/init-pocketbase.ts`:
 
-### 11.1 New Collections
+### 12.1 New Collections
 1. **`whatsapp_chats`**:
    - `chat_id` (string, unique, e.g. `919876543210@c.us`)
+   - `contact_type` (`'customer'` | `'vendor'` | `'lead'`, default `'lead'`)
    - `customer` (relation -> `customers`, optional)
+   - `vendor` (relation -> `vendors`, optional)
    - `last_message_body` (text)
    - `last_message_time` (datetime)
    - `unread_count` (number)
@@ -371,27 +489,35 @@ To support this comprehensive specification, the following schema additions will
    - `invoice` (relation -> `invoices`, optional)
    - `status` (`'created'` | `'paid'` | `'expired'` | `'cancelled'`)
    - `paid_at` (datetime)
+4. **`label_print_queue`**:
+   - `variant` (relation -> `product_variants`)
+   - `quantity` (number, default 1)
+   - `template` (`'dumbbell'` | `'butterfly'` | `'sheet'`)
+   - `status` (`'pending'` | `'printed'` | `'cancelled'`)
+   - `created_by` (relation -> `users`, optional)
 
 ---
 
-## 12. Implementation Roadmap
+## 13. Implementation Roadmap
 
 ```mermaid
 gantt
     title WhatsApp ERP/CRM Feature Rollout Roadmap
     dateFormat  YYYY-MM-DD
-    section Phase 1: Core Hub & Invoicing
-    3-Pane /whatsapp Hub UI           :a1, 2026-10-01, 7d
-    Instant PDF Receipt Dispatch      :a2, after a1, 5d
-    Customer CRM Dossier Sidebar      :a3, after a1, 5d
+    section Phase 1: Core Hub & Gestures
+    3-Pane /whatsapp Hub UI            :a1, 2026-10-01, 7d
+    Right-Click & Long-Press Gestures :a2, after a1, 4d
+    Instant In-Chat "Add to POS Cart"  :a3, after a2, 4d
+    Vendor Tagging & Ingestion Flow    :a4, after a2, 5d
+    Auto Barcode Tag Generator & Queue :a5, after a4, 3d
     section Phase 2: Payments & Orders
-    Razorpay Payment Links Integration:b1, 2026-10-15, 6d
-    Inbound Intent Router & Drafts    :b2, after b1, 6d
-    POS & Global Drawer Widgets       :b3, after b2, 5d
+    Razorpay Payment Links Integration :b1, 2026-10-20, 6d
+    Inbound Intent Router & Drafts     :b2, after b1, 6d
+    POS & Global Drawer Widgets        :b3, after b2, 5d
     section Phase 3: Catalog & Campaigns
-    WhatsApp Business Catalog Sync    :c1, 2026-11-01, 7d
-    In-Chat Rich Product Cards        :c2, after c1, 4d
-    Staggered Anti-Ban Broadcasts     :c3, after c2, 6d
+    WhatsApp Business Catalog Sync     :c1, 2026-11-05, 7d
+    In-Chat Rich Product Cards         :c2, after c1, 4d
+    Staggered Anti-Ban Broadcasts      :c3, after c2, 6d
 ```
 
 ---
