@@ -7,6 +7,7 @@ import { pb } from '@/lib/pocketbase';
 import { toast } from 'sonner';
 import { createInvoice, getStoreSettings } from '@/lib/invoice';
 import { calculateGST } from '@/lib/gst';
+import { getNextSequenceNumber, createWithUniqueRetry } from '@/lib/sequence-generator';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
 export type OrderType = 'estimate' | 'sales_order';
@@ -23,6 +24,7 @@ export interface OrderItemInput {
 }
 
 export interface OrderInput {
+    order_number?: string;
     order_type: OrderType;
     customer_id?: string;
     customer_name: string;
@@ -67,11 +69,29 @@ export interface SalesOrderItem {
 }
 
 /**
+ * Generate sequential order number (SO/YYMM/00001 or EST/YYMM/00001)
+ * Resolves WPA-12
+ */
+export async function generateOrderNumber(orderType: OrderType = 'sales_order'): Promise<string> {
+    const today = new Date();
+    const yymm = `${today.getFullYear().toString().slice(-2)}${(today.getMonth() + 1).toString().padStart(2, '0')}`;
+    const prefix = orderType === 'estimate' ? 'EST' : 'SO';
+    const seqName = `${prefix.toLowerCase()}_${yymm}`;
+
+    return getNextSequenceNumber({
+        seqName,
+        prefix,
+        padding: 5,
+        formatFn: (nextValue) => `${prefix}/${yymm}/${nextValue.toString().padStart(5, '0')}`,
+    });
+}
+
+/**
  * Create a new Estimate or Sales Order
  */
 export async function createOrder(data: OrderInput) {
     try {
-        // 1. Create Order Header
+        // 1. Create Order Header with Unique Retry (WPA-12)
         const orderData = {
             order_type: data.order_type,
             customer: data.customer_id, // Relation
@@ -91,30 +111,39 @@ export async function createOrder(data: OrderInput) {
             discount_total: data.discount_total,
             shipping_charges: data.shipping_charges,
             total: data.total,
-            // order_number: generated on client side logic or ignored for now? 
-            // Previous logic didn't show generation. Assuming PB ID is enough or future auto-increment hook.
         };
 
-        const order = await pb.collection('sales_orders').create(orderData);
+        let allocatedOrderNumber = '';
+        const order = await createWithUniqueRetry(
+            () => generateOrderNumber(data.order_type),
+            async (allocatedNumber) => {
+                allocatedOrderNumber = data.order_number || allocatedNumber;
+                return pb.collection('sales_orders').create({
+                    ...orderData,
+                    order_number: allocatedOrderNumber,
+                });
+            }
+        );
 
         // 2. Create Order Items
         const promises = data.items.map(item => {
-            return pb.collection('sales_order_items').create({
+            const itemData: any = {
                 order: order.id,
-                product: item.product_id,
-                variant: item.variant_id,
                 description: item.description,
                 quantity: item.quantity,
                 unit_price: item.unit_price,
                 tax_rate: item.tax_rate || 0,
                 discount_amount: item.discount_amount || 0,
                 total: item.total
-            });
+            };
+            if (item.product_id) itemData.product = item.product_id;
+            if (item.variant_id) itemData.variant = item.variant_id;
+            return pb.collection('sales_order_items').create(itemData);
         });
 
         await Promise.all(promises);
 
-        return { success: true, orderId: order.id, orderNumber: order.id }; // Use ID as number for now
+        return { success: true, orderId: order.id, orderNumber: allocatedOrderNumber };
     } catch (error) {
         console.error('Error creating order:', error);
         toast.error('Failed to create order');

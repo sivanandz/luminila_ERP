@@ -245,7 +245,7 @@ export async function getUpcomingBirthdays(days: number = 7): Promise<Customer[]
     // PB filtering for dates excluding year is hard. fetch all with DOB and filter in JS.
     try {
         const records = await pb.collection('customers').getFullList<Customer>({
-            filter: 'date_of_birth != ""',
+            filter: 'date_of_birth != "" && date_of_birth != null',
             sort: 'date_of_birth'
         });
 
@@ -272,7 +272,7 @@ export async function getUpcomingBirthdays(days: number = 7): Promise<Customer[]
 export async function getUpcomingAnniversaries(days: number = 7): Promise<Customer[]> {
     try {
         const records = await pb.collection('customers').getFullList<Customer>({
-            filter: 'anniversary != ""',
+            filter: 'anniversary != "" && anniversary != null',
             sort: 'anniversary'
         });
 

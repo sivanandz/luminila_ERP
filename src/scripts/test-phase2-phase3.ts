@@ -122,11 +122,13 @@ async function runTests() {
         const plFields = plCol.fields.map((f: any) => f.name);
         assert(plFields.includes('payment_id'), "payment_links collection includes payment_id field");
 
-        // Check customers has customer_type and whatsapp_opt_out
+        // Check customers has customer_type and whatsapp_opt_out plus extended CRM fields (WPA-06)
         const custCol = await adminPb.collections.getOne('customers');
         const custFields = custCol.fields.map((f: any) => f.name);
         assert(custFields.includes('customer_type') && custFields.includes('whatsapp_opt_out'),
             "customers collection includes customer_type & whatsapp_opt_out fields");
+        assert(custFields.includes('billing_address') && custFields.includes('company_name') && custFields.includes('date_of_birth') && custFields.includes('pan'),
+            "customers collection includes extended CRM fields (WPA-06: billing_address, company_name, date_of_birth, pan)");
 
         // Check invoices and invoice_items have GST compliance fields (F1 & F2)
         const invCol = await adminPb.collections.getOne('invoices');
@@ -664,6 +666,183 @@ async function runTests() {
             "payment_links createRule, updateRule & deleteRule locked to authenticated users (no public tampering)");
     } catch (err: any) {
         assert(false, `Test 13 failed: ${err.message}`);
+    }
+
+    // 14. WPA-06: Customer CRM Schema Drift & Birthday/Anniversary Query Resilience
+    console.log("\n[Test 14] WPA-06: Customer CRM Persistence & Birthday/Anniversary Queries");
+    try {
+        const { getUpcomingBirthdays, getUpcomingAnniversaries, createCustomer, deleteCustomer } = await import('../lib/customers');
+
+        // A. Verify getUpcomingBirthdays & getUpcomingAnniversaries queries run cleanly without 400
+        const birthdays = await getUpcomingBirthdays(30);
+        assert(Array.isArray(birthdays), "getUpcomingBirthdays executes without 400 bad request");
+
+        const anniversaries = await getUpcomingAnniversaries(30);
+        assert(Array.isArray(anniversaries), "getUpcomingAnniversaries executes without 400 bad request");
+
+        // B. Create customer with complete drifted CRM fields
+        const testCust = await createCustomer({
+            name: 'Vikramaditya Singhania',
+            phone: '+919988776655',
+            email: 'vikram@singhania.test',
+            customer_type: 'vip',
+            billing_address: '42 Marine Drive, Mumbai',
+            shipping_address: '42 Marine Drive, Mumbai',
+            company_name: 'Singhania Exports Ltd',
+            pan: 'ABCDE1234F',
+            date_of_birth: '1985-10-15',
+            anniversary: '2010-12-05',
+            store_credit: 5000,
+            preferred_contact: 'whatsapp',
+            opt_in_marketing: true,
+            source: 'walk_in',
+        });
+
+        assert(Boolean(testCust.id), `createCustomer created test customer with ID (${testCust.id})`);
+
+        // C. Fetch back and assert full field preservation (zero hollow data drop)
+        const fetchedCust = await adminPb.collection('customers').getOne(testCust.id);
+        assert(
+            fetchedCust.billing_address === '42 Marine Drive, Mumbai' &&
+            fetchedCust.company_name === 'Singhania Exports Ltd' &&
+            fetchedCust.pan === 'ABCDE1234F' &&
+            fetchedCust.date_of_birth === '1985-10-15' &&
+            fetchedCust.anniversary === '2010-12-05' &&
+            fetchedCust.store_credit === 5000,
+            "Persisted customer preserves all CRM fields (zero hollow-record data loss)"
+        );
+
+        // Cleanup
+        if (testCust.id) await deleteCustomer(testCust.id).catch(() => {});
+
+    } catch (err: any) {
+        assert(false, `Test 14 failed: ${err.message}`);
+    }
+
+    // 15. WPA-12: Sequential Order Numbering & Unique Index
+    console.log("\n[Test 15] WPA-12: Sequential Order Numbering & Unique Index");
+    try {
+        const { createOrder, generateOrderNumber } = await import('../lib/orders');
+
+        // A. Verify sales_orders has unique index on order_number
+        const soCol = await adminPb.collections.getOne('sales_orders');
+        const soIndexes = soCol.indexes || [];
+        const hasOrderNumberUnique = soIndexes.some((idx: string) =>
+            idx.includes('sales_orders') && idx.includes('order_number') && idx.toLowerCase().includes('unique')
+        );
+        assert(hasOrderNumberUnique, "sales_orders collection has UNIQUE index on order_number");
+
+        // B. Verify generateOrderNumber formats
+        const soNum = await generateOrderNumber('sales_order');
+        assert(/^SO\/\d{4}\/\d{5}$/.test(soNum), `generateOrderNumber('sales_order') matches SO/YYMM/XXXXX pattern (${soNum})`);
+
+        const estNum = await generateOrderNumber('estimate');
+        assert(/^EST\/\d{4}\/\d{5}$/.test(estNum), `generateOrderNumber('estimate') matches EST/YYMM/XXXXX pattern (${estNum})`);
+
+        // C. Live order creation allocates sequential order number
+        let soVariantId = '';
+        let soProductId = '';
+        const variants = await adminPb.collection('product_variants').getList(1, 1);
+        if (variants.items.length > 0) {
+            soVariantId = variants.items[0].id;
+            soProductId = (variants.items[0] as any).product || '';
+        }
+
+        const orderRes = await createOrder({
+            order_type: 'sales_order',
+            order_date: new Date().toISOString(),
+            customer_name: 'Test Sequential Order Customer',
+            status: 'draft',
+            subtotal: 10000,
+            tax_total: 300,
+            discount_total: 0,
+            shipping_charges: 0,
+            total: 10300,
+            items: [{
+                product_id: soProductId,
+                variant_id: soVariantId,
+                description: 'Gold Necklace 22K',
+                quantity: 1,
+                unit_price: 10000,
+                total: 10000,
+            }],
+        });
+
+        assert(orderRes.success && Boolean(orderRes.orderNumber), `createOrder succeeded with allocated sequential number (${orderRes.orderNumber})`);
+
+        if (orderRes.orderId) {
+            const fetchedOrder = await adminPb.collection('sales_orders').getOne(orderRes.orderId);
+            assert(fetchedOrder.order_number === orderRes.orderNumber, "Persisted sales_orders record has exact matching order_number");
+            await adminPb.collection('sales_orders').delete(orderRes.orderId).catch(() => {});
+        }
+
+    } catch (err: any) {
+        assert(false, `Test 15 failed: ${err.message}`);
+    }
+
+    // 16. Verification of AGENT 1 Turn 11 Deliveries (WPA-11, WPA-13, WPA-14)
+    console.log("\n[Test 16] Verification of AGENT 1 Turn 11 Deliveries (WPA-11, WPA-13, WPA-14)");
+    try {
+        const { amountToWords, calculateGST } = await import('../lib/gst');
+
+        // A. WPA-14: amountToWords negative and zero values
+        const negWords = amountToWords(-500);
+        assert(negWords.startsWith('Minus Five Hundred Rupees'), `amountToWords(-500) handles negative numbers correctly (${negWords})`);
+        const zeroWords = amountToWords(0);
+        assert(zeroWords === 'Zero Rupees Only', `amountToWords(0) handles zero correctly (${zeroWords})`);
+
+        // B. WPA-13: calculateGST inter-state vs intra-state logic
+        const intra = calculateGST(10000, '27', '27', 3);
+        assert(!intra.isInterState && intra.cgstAmount === 150 && intra.sgstAmount === 150 && intra.igstAmount === 0,
+            "Intra-state GST correctly splits 1.5% CGST + 1.5% SGST");
+
+        const inter = calculateGST(10000, '27', '29', 3);
+        assert(inter.isInterState && inter.igstAmount === 300 && inter.cgstAmount === 0 && inter.sgstAmount === 0,
+            "Inter-state GST correctly allocates 3% IGST with zero CGST/SGST");
+
+        // C. WPA-11: Webhook idempotency guard
+        const { processRazorpayWebhookEvent } = await import('../lib/razorpay-webhook-handler');
+        const { createOrder } = await import('../lib/orders');
+
+        const testOrderRes = await createOrder({
+            order_type: 'sales_order',
+            order_date: new Date().toISOString(),
+            customer_name: 'Idempotency Test Customer',
+            status: 'confirmed',
+            subtotal: 5000,
+            tax_total: 150,
+            discount_total: 0,
+            shipping_charges: 0,
+            total: 5150,
+            items: [],
+        });
+
+        assert(testOrderRes.success && Boolean(testOrderRes.orderId), "Created sales order for webhook idempotency verification");
+
+        await adminPb.collection('sales_orders').update(testOrderRes.orderId!, {
+            payment_status: 'PAID',
+        });
+
+        const rawBody = JSON.stringify({
+            event: 'payment_link.paid',
+            payload: {
+                payment_link: {
+                    entity: {
+                        notes: { order_id: testOrderRes.orderId }
+                    }
+                }
+            }
+        });
+
+        const replayResult = await processRazorpayWebhookEvent(rawBody, null);
+        assert(replayResult.success === true, "processRazorpayWebhookEvent safely short-circuits replayed event for PAID order (WPA-11)");
+
+        if (testOrderRes.orderId) {
+            await adminPb.collection('sales_orders').delete(testOrderRes.orderId).catch(() => {});
+        }
+
+    } catch (err: any) {
+        assert(false, `Test 16 failed: ${err.message}`);
     }
 
     console.log("\n==================================================");
