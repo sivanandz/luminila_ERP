@@ -10,6 +10,7 @@ import {
     getHSNForProduct,
     GST_RATES,
 } from './gst';
+import { getNextSequenceNumber } from './sequence-generator';
 
 // ===========================================
 // TYPES
@@ -236,7 +237,7 @@ export async function updateStoreSettings(updates: Partial<StoreSettings>): Prom
 // ===========================================
 // NUMBER GENERATION (PocketBase sequence)
 // ===========================================
-async function generateInvoiceNumber(): Promise<string> {
+export async function generateInvoiceNumber(): Promise<string> {
     const today = new Date();
     const month = today.getMonth() + 1;
     const year = today.getFullYear();
@@ -249,36 +250,12 @@ async function generateInvoiceNumber(): Promise<string> {
 
     const seqName = `invoice_${fyPrefix}`;
 
-    try {
-        // Get or create sequence — name-scoped per financial year so each FY
-        // restarts at 00001. Do NOT fall back to prefix-only matching: that would
-        // keep counting from the previous FY's record and desync name vs counter.
-        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
-
-        let nextValue: number;
-        if (seq) {
-            nextValue = (seq.current_number || seq.current_value || 0) + 1;
-            await pb.collection('number_sequences').update(seq.id, {
-                current_value: nextValue,
-                current_number: nextValue,
-            });
-        } else {
-            nextValue = 1;
-            await pb.collection('number_sequences').create({
-                name: seqName,
-                prefix: 'INV',
-                current_value: nextValue,
-                current_number: nextValue,
-                padding: 5,
-            });
-        }
-
-        return `INV/${fyPrefix.slice(0, 2)}-${fyPrefix.slice(2)}/${nextValue.toString().padStart(5, '0')}`;
-    } catch (error) {
-        // Fallback: use timestamp-based number
-        console.error('Error generating invoice number:', error);
-        return `INV/${Date.now()}`;
-    }
+    return getNextSequenceNumber({
+        seqName,
+        prefix: 'INV',
+        padding: 5,
+        formatFn: (nextValue) => `INV/${fyPrefix.slice(0, 2)}-${fyPrefix.slice(2)}/${nextValue.toString().padStart(5, '0')}`,
+    });
 }
 
 // ===========================================

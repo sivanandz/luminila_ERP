@@ -310,6 +310,72 @@ async function runTests() {
         }
     }
 
+    // 9. Concurrency Race Resilience Across Sequence Generators (F9 Verification)
+    console.log("\n[Test 9] Concurrency Race Resilience Across Sequence Generators (F9)");
+    try {
+        const { generateInvoiceNumber } = await import('../lib/invoice');
+        const { generatePONumber, generateGRNNumber } = await import('../lib/purchase');
+        const { generateCreditNoteNumber } = await import('../lib/returns');
+        const { generateChallanNumber } = await import('../lib/challan');
+        const { generateExpenseNumber } = await import('../lib/expenses');
+
+        // A. Verify Unique Indexes in live schema
+        const invCol = await adminPb.collections.getOne('invoices');
+        const poCol = await adminPb.collections.getOne('purchase_orders');
+        const grnCol = await adminPb.collections.getOne('goods_received_notes');
+        const cnCol = await adminPb.collections.getOne('credit_notes');
+        const dcCol = await adminPb.collections.getOne('delivery_challans');
+        const expCol = await adminPb.collections.getOne('expenses');
+        const seqCol = await adminPb.collections.getOne('number_sequences');
+
+        assert(invCol.indexes.some((i: string) => i.includes('invoice_number') && i.includes('UNIQUE')), "invoices has UNIQUE index on invoice_number");
+        assert(poCol.indexes.some((i: string) => i.includes('po_number') && i.includes('UNIQUE')), "purchase_orders has UNIQUE index on po_number");
+        assert(grnCol.indexes.some((i: string) => i.includes('grn_number') && i.includes('UNIQUE')), "goods_received_notes has UNIQUE index on grn_number");
+        assert(cnCol.indexes.some((i: string) => i.includes('credit_note_number') && i.includes('UNIQUE')), "credit_notes has UNIQUE index on credit_note_number");
+        assert(dcCol.indexes.some((i: string) => i.includes('challan_number') && i.includes('UNIQUE')), "delivery_challans has UNIQUE index on challan_number");
+        assert(expCol.indexes.some((i: string) => i.includes('expense_number') && i.includes('UNIQUE')), "expenses has UNIQUE index on expense_number");
+        assert(seqCol.indexes.some((i: string) => i.includes('name') && i.includes('UNIQUE')), "number_sequences has UNIQUE index on name");
+
+        // B. Concurrent Race Simulation: Invoices (10 concurrent requests)
+        const invTasks = Array.from({ length: 10 }, () => generateInvoiceNumber());
+        const invResults = await Promise.all(invTasks);
+        const uniqueInvoices = new Set(invResults);
+        assert(uniqueInvoices.size === 10, `10 concurrent invoice calls yielded 10 unique serials (sample: ${invResults[0]} .. ${invResults[9]})`);
+
+        // C. Concurrent Race Simulation: Purchase Orders (10 concurrent requests)
+        const poTasks = Array.from({ length: 10 }, () => generatePONumber());
+        const poResults = await Promise.all(poTasks);
+        const uniquePOs = new Set(poResults);
+        assert(uniquePOs.size === 10, `10 concurrent PO calls yielded 10 unique serials (sample: ${poResults[0]} .. ${poResults[9]})`);
+
+        // D. Concurrent Race Simulation: GRNs (10 concurrent requests)
+        const grnTasks = Array.from({ length: 10 }, () => generateGRNNumber());
+        const grnResults = await Promise.all(grnTasks);
+        const uniqueGRNs = new Set(grnResults);
+        assert(uniqueGRNs.size === 10, `10 concurrent GRN calls yielded 10 unique serials (sample: ${grnResults[0]} .. ${grnResults[9]})`);
+
+        // E. Concurrent Race Simulation: Credit Notes (10 concurrent requests)
+        const cnTasks = Array.from({ length: 10 }, () => generateCreditNoteNumber());
+        const cnResults = await Promise.all(cnTasks);
+        const uniqueCNs = new Set(cnResults);
+        assert(uniqueCNs.size === 10, `10 concurrent credit note calls yielded 10 unique serials (sample: ${cnResults[0]} .. ${cnResults[9]})`);
+
+        // F. Concurrent Race Simulation: Delivery Challans (10 concurrent requests)
+        const dcTasks = Array.from({ length: 10 }, () => generateChallanNumber());
+        const dcResults = await Promise.all(dcTasks);
+        const uniqueDCs = new Set(dcResults);
+        assert(uniqueDCs.size === 10, `10 concurrent challan calls yielded 10 unique serials (sample: ${dcResults[0]} .. ${dcResults[9]})`);
+
+        // G. Concurrent Race Simulation: Expenses (10 concurrent requests)
+        const expTasks = Array.from({ length: 10 }, () => generateExpenseNumber());
+        const expResults = await Promise.all(expTasks);
+        const uniqueExps = new Set(expResults);
+        assert(uniqueExps.size === 10, `10 concurrent expense calls yielded 10 unique serials (sample: ${expResults[0]} .. ${expResults[9]})`);
+
+    } catch (err: any) {
+        assert(false, `Concurrency Race Resilience test failed: ${err.message}`);
+    }
+
     console.log("\n==================================================");
     console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
     console.log("==================================================");

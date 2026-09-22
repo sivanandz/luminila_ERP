@@ -5,6 +5,7 @@
 
 import { pb } from './pocketbase';
 import { toast } from 'sonner';
+import { getNextSequenceNumber } from './sequence-generator';
 
 // ==========================================
 // TYPES
@@ -47,31 +48,14 @@ export interface ExpenseStats {
 // ==========================================
 // NUMBER GENERATION
 // ==========================================
-async function generateExpenseNumber(): Promise<string> {
+export async function generateExpenseNumber(): Promise<string> {
     const seqName = 'expense';
 
-    try {
-        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
-
-        let nextValue: number;
-        if (seq) {
-            nextValue = (seq.current_value || 0) + 1;
-            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
-        } else {
-            nextValue = 1;
-            await pb.collection('number_sequences').create({
-                name: seqName,
-                prefix: 'EXP',
-                current_value: nextValue,
-                padding: 5,
-            });
-        }
-
-        return `EXP-${nextValue.toString().padStart(5, '0')}`;
-    } catch (error) {
-        console.error('Error generating expense number:', error);
-        return `EXP-${Date.now()}`;
-    }
+    return getNextSequenceNumber({
+        seqName,
+        prefix: 'EXP',
+        padding: 5,
+    });
 }
 
 // ==========================================

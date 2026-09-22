@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { getNextSequenceNumber } from './sequence-generator';
 
 // ===========================================
 // TYPES
@@ -66,33 +67,17 @@ export interface CreditNoteItem {
 // ===========================================
 // NUMBER GENERATION
 // ===========================================
-async function generateCreditNoteNumber(): Promise<string> {
+export async function generateCreditNoteNumber(): Promise<string> {
     const today = new Date();
     const yymm = `${today.getFullYear().toString().slice(-2)}${(today.getMonth() + 1).toString().padStart(2, '0')}`;
     const seqName = `cn_${yymm}`;
 
-    try {
-        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
-
-        let nextValue: number;
-        if (seq) {
-            nextValue = (seq.current_value || 0) + 1;
-            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
-        } else {
-            nextValue = 1;
-            await pb.collection('number_sequences').create({
-                name: seqName,
-                prefix: 'CN',
-                current_value: nextValue,
-                padding: 5,
-            });
-        }
-
-        return `CN/${yymm}/${nextValue.toString().padStart(5, '0')}`;
-    } catch (error) {
-        console.error('Error generating credit note number:', error);
-        return `CN/${Date.now()}`;
-    }
+    return getNextSequenceNumber({
+        seqName,
+        prefix: 'CN',
+        padding: 5,
+        formatFn: (nextValue) => `CN/${yymm}/${nextValue.toString().padStart(5, '0')}`,
+    });
 }
 
 // ===========================================

@@ -6,6 +6,7 @@
 import { pb } from './pocketbase';
 import { toast } from 'sonner';
 import { getStoreSettings } from './invoice';
+import { getNextSequenceNumber } from './sequence-generator';
 
 // ============================================
 // TYPES
@@ -105,33 +106,17 @@ export const CHALLAN_STATUS_LABELS: Record<ChallanStatus, string> = {
 // NUMBER GENERATION
 // ============================================
 
-async function generateChallanNumber(): Promise<string> {
+export async function generateChallanNumber(): Promise<string> {
     const today = new Date();
     const yymm = `${today.getFullYear().toString().slice(-2)}${(today.getMonth() + 1).toString().padStart(2, '0')}`;
     const seqName = `dc_${yymm}`;
 
-    try {
-        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
-
-        let nextValue: number;
-        if (seq) {
-            nextValue = (seq.current_value || 0) + 1;
-            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
-        } else {
-            nextValue = 1;
-            await pb.collection('number_sequences').create({
-                name: seqName,
-                prefix: 'DC',
-                current_value: nextValue,
-                padding: 5,
-            });
-        }
-
-        return `DC/${yymm}/${nextValue.toString().padStart(5, '0')}`;
-    } catch (error) {
-        console.error('Error generating challan number:', error);
-        return `DC/${Date.now()}`;
-    }
+    return getNextSequenceNumber({
+        seqName,
+        prefix: 'DC',
+        padding: 5,
+        formatFn: (nextValue) => `DC/${yymm}/${nextValue.toString().padStart(5, '0')}`,
+    });
 }
 
 // ============================================

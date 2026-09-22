@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { getNextSequenceNumber } from './sequence-generator';
 
 // ===========================================
 // TYPES
@@ -86,62 +87,30 @@ export interface GoodsReceivedNote {
 // ===========================================
 // NUMBER GENERATION
 // ===========================================
-async function generatePONumber(): Promise<string> {
+export async function generatePONumber(): Promise<string> {
     const today = new Date();
     const yymm = `${today.getFullYear().toString().slice(-2)}${(today.getMonth() + 1).toString().padStart(2, '0')}`;
     const seqName = `po_${yymm}`;
 
-    try {
-        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
-
-        let nextValue: number;
-        if (seq) {
-            nextValue = (seq.current_value || 0) + 1;
-            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
-        } else {
-            nextValue = 1;
-            await pb.collection('number_sequences').create({
-                name: seqName,
-                prefix: 'PO',
-                current_value: nextValue,
-                padding: 4,
-            });
-        }
-
-        return `PO/${yymm}/${nextValue.toString().padStart(4, '0')}`;
-    } catch (error) {
-        console.error('Error generating PO number:', error);
-        return `PO/${Date.now()}`;
-    }
+    return getNextSequenceNumber({
+        seqName,
+        prefix: 'PO',
+        padding: 4,
+        formatFn: (nextValue) => `PO/${yymm}/${nextValue.toString().padStart(4, '0')}`,
+    });
 }
 
-async function generateGRNNumber(): Promise<string> {
+export async function generateGRNNumber(): Promise<string> {
     const today = new Date();
     const yymm = `${today.getFullYear().toString().slice(-2)}${(today.getMonth() + 1).toString().padStart(2, '0')}`;
     const seqName = `grn_${yymm}`;
 
-    try {
-        let seq = await pb.collection('number_sequences').getFirstListItem(`name="${seqName}"`).catch(() => null);
-
-        let nextValue: number;
-        if (seq) {
-            nextValue = (seq.current_value || 0) + 1;
-            await pb.collection('number_sequences').update(seq.id, { current_value: nextValue });
-        } else {
-            nextValue = 1;
-            await pb.collection('number_sequences').create({
-                name: seqName,
-                prefix: 'GRN',
-                current_value: nextValue,
-                padding: 4,
-            });
-        }
-
-        return `GRN/${yymm}/${nextValue.toString().padStart(4, '0')}`;
-    } catch (error) {
-        console.error('Error generating GRN number:', error);
-        return `GRN/${Date.now()}`;
-    }
+    return getNextSequenceNumber({
+        seqName,
+        prefix: 'GRN',
+        padding: 4,
+        formatFn: (nextValue) => `GRN/${yymm}/${nextValue.toString().padStart(4, '0')}`,
+    });
 }
 
 // ===========================================
