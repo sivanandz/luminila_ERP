@@ -1,11 +1,17 @@
+#[cfg(desktop)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(desktop)]
 use std::time::Duration;
+#[cfg(desktop)]
 use tauri::Emitter;
+#[cfg(desktop)]
 use tauri_plugin_shell::process::CommandChild;
 
+#[cfg(desktop)]
 static SIDECAR_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Check if WPPConnect sidecar is healthy
+#[cfg(desktop)]
 async fn check_sidecar_health() -> bool {
     match reqwest::get("http://127.0.0.1:21465/health").await {
         Ok(response) => response.status().is_success(),
@@ -14,6 +20,7 @@ async fn check_sidecar_health() -> bool {
 }
 
 /// Start the WPPConnect sidecar process
+#[cfg(desktop)]
 fn start_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
     use tauri_plugin_shell::ShellExt;
     
@@ -51,6 +58,7 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
 }
 
 /// Health monitoring loop - restarts sidecar if it crashes
+#[cfg(desktop)]
 async fn health_monitor_loop(app: tauri::AppHandle) {
     let mut consecutive_failures = 0;
     
@@ -95,30 +103,46 @@ async fn health_monitor_loop(app: tauri::AppHandle) {
 /// Tauri command to get sidecar status
 #[tauri::command]
 async fn get_sidecar_status() -> Result<serde_json::Value, String> {
-    let is_running = SIDECAR_RUNNING.load(Ordering::SeqCst);
-    let is_healthy = if is_running {
-        check_sidecar_health().await
-    } else {
-        false
-    };
-    
-    Ok(serde_json::json!({
-        "running": is_running,
-        "healthy": is_healthy
-    }))
+    #[cfg(mobile)]
+    return Ok(serde_json::json!({
+        "running": false,
+        "healthy": false,
+        "is_mobile": true
+    }));
+
+    #[cfg(desktop)]
+    {
+        let is_running = SIDECAR_RUNNING.load(Ordering::SeqCst);
+        let is_healthy = if is_running {
+            check_sidecar_health().await
+        } else {
+            false
+        };
+        
+        Ok(serde_json::json!({
+            "running": is_running,
+            "healthy": is_healthy
+        }))
+    }
 }
 
 /// Tauri command to restart sidecar
 #[tauri::command]
-async fn restart_sidecar(app: tauri::AppHandle) -> Result<String, String> {
-    SIDECAR_RUNNING.store(false, Ordering::SeqCst);
-    
-    // Give it a moment to stop
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    
-    match start_sidecar(&app) {
-        Ok(_) => Ok("Sidecar restarted".to_string()),
-        Err(e) => Err(e),
+async fn restart_sidecar(_app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(mobile)]
+    return Ok("Sidecar is managed by host PC in mobile mode".to_string());
+
+    #[cfg(desktop)]
+    {
+        SIDECAR_RUNNING.store(false, Ordering::SeqCst);
+        
+        // Give it a moment to stop
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        
+        match start_sidecar(&_app) {
+            Ok(_) => Ok("Sidecar restarted".to_string()),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -136,18 +160,21 @@ pub fn run() {
                 )?;
             }
             
-            // Start sidecar on app launch
-            let app_handle = app.handle().clone();
-            match start_sidecar(&app_handle) {
-                Ok(_) => log::info!("WPPConnect sidecar started"),
-                Err(e) => log::warn!("Failed to start sidecar: {} (will retry)", e),
+            #[cfg(desktop)]
+            {
+                // Start sidecar on app launch
+                let app_handle = app.handle().clone();
+                match start_sidecar(&app_handle) {
+                    Ok(_) => log::info!("WPPConnect sidecar started"),
+                    Err(e) => log::warn!("Failed to start sidecar: {} (will retry)", e),
+                }
+                
+                // Start health monitoring loop
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    health_monitor_loop(app_handle).await;
+                });
             }
-            
-            // Start health monitoring loop
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                health_monitor_loop(app_handle).await;
-            });
             
             Ok(())
         })

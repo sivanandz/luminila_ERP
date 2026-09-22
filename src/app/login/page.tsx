@@ -162,7 +162,7 @@ export default function LoginPage() {
                         <Button
                             type="submit"
                             disabled={loading}
-                            className="w-full bg-gradient-to-r from-electric-teal to-royal-purple hover:opacity-90 text-white font-medium py-2.5"
+                            className="w-full h-11 bg-primary text-primary-foreground font-bold hover:bg-primary/90 text-sm rounded-lg cursor-pointer transition-colors shadow-md"
                         >
                             {loading ? (
                                 <Loader2 className="w-4 h-4 animate-spin mr-2" />

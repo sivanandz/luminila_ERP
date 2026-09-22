@@ -5,6 +5,7 @@
 
 import { pb } from '@/lib/pocketbase';
 import { toast } from 'sonner';
+import { createInvoice, getStoreSettings } from '@/lib/invoice';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
 export type OrderType = 'estimate' | 'sales_order';
@@ -145,14 +146,81 @@ export async function convertEstimateToOrder(estimateId: string) {
  */
 export async function generateInvoiceFromOrder(orderId: string) {
     try {
-        const order = await pb.collection('sales_orders').getOne(orderId, {
-            expand: 'sales_order_items(order)' // Check reverse expand notation
+        const order = await pb.collection('sales_orders').getOne(orderId);
+        const orderItems = await pb.collection('sales_order_items').getFullList({
+            filter: `order="${orderId}"`
+        });
+
+        const store = await getStoreSettings();
+
+        const invoiceItems = orderItems.map((item: any, idx: number) => {
+            const taxable = (item.unit_price || 0) * (item.quantity || 1);
+            const gstRate = 3; // Standard jewelry GST rate
+            const cgst = taxable * 0.015;
+            const sgst = taxable * 0.015;
+            return {
+                sr_no: idx + 1,
+                variant_id: item.variant || '',
+                description: item.description || 'Jewelry Item',
+                hsn_code: '7117',
+                quantity: item.quantity || 1,
+                unit: 'PCS',
+                unit_price: item.unit_price || 0,
+                discount_percent: 0,
+                discount_amount: 0,
+                taxable_amount: taxable,
+                gst_rate: gstRate,
+                cgst_rate: 1.5,
+                cgst_amount: cgst,
+                sgst_rate: 1.5,
+                sgst_amount: sgst,
+                igst_rate: 0,
+                igst_amount: 0,
+                cess_rate: 0,
+                cess_amount: 0,
+                total_amount: item.total || (taxable + cgst + sgst)
+            };
+        });
+
+        const subtotal = order.subtotal || invoiceItems.reduce((acc, it) => acc + it.taxable_amount, 0);
+        const totalTax = order.tax_total || invoiceItems.reduce((acc, it) => acc + it.cgst_amount + it.sgst_amount, 0);
+        const grandTotal = order.total || (subtotal + totalTax);
+
+        const invoice = await createInvoice({
+            invoice_date: new Date().toISOString().split('T')[0],
+            invoice_type: 'regular',
+            seller_gstin: store.store_gstin || '',
+            seller_name: store.store_name || 'Luminila Jewelry',
+            seller_address: `${store.store_address || ''} ${store.store_city || ''}`.trim(),
+            seller_state_code: store.store_state_code || '27',
+            buyer_name: order.customer_name || 'Walk-in Customer',
+            buyer_gstin: '',
+            buyer_phone: order.customer_phone || '',
+            buyer_email: order.customer_email || '',
+            buyer_address: order.billing_address || order.shipping_address || '',
+            buyer_state_code: store.store_state_code || '27',
+            place_of_supply: store.store_state_code || '27',
+            taxable_value: subtotal,
+            cgst_amount: totalTax / 2,
+            sgst_amount: totalTax / 2,
+            igst_amount: 0,
+            cess_amount: 0,
+            total_tax: totalTax,
+            discount_amount: order.discount_total || 0,
+            shipping_charges: order.shipping_charges || 0,
+            grand_total: grandTotal,
+            amount_in_words: '',
+            is_reverse_charge: false,
+            is_paid: false,
+            paid_amount: 0,
+            notes: order.notes || `Generated from Sales Order #${order.order_number || orderId}`,
+            items: invoiceItems
         });
 
         // Mark order as invoiced
         await pb.collection('sales_orders').update(orderId, { status: 'invoiced' });
 
-        return { success: true, order };
+        return { success: true, order, invoice };
     } catch (error) {
         console.error('Error generating invoice:', error);
         toast.error('Failed to generate invoice');

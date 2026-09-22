@@ -13,8 +13,8 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
 
-  // Asset prefix for dev mode (Tauri loads from devUrl)
-  assetPrefix: isProd ? undefined : `http://${internalHost}:3000`,
+  // Asset prefix for dev mode (only if TAURI_DEV_HOST is explicitly set by Tauri)
+  assetPrefix: process.env.TAURI_DEV_HOST ? `http://${process.env.TAURI_DEV_HOST}:3000` : undefined,
 
   // Enable React Compiler
   reactCompiler: true,

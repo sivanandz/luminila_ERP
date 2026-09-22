@@ -1,350 +1,248 @@
-# Luminila Inventory Management System - Technical Report
+# Luminila Inventory Management System — Technical Report
 
-## Executive Summary
+## 1. Executive Summary
 
-Luminila is a premium inventory management system designed specifically for fashion jewelry brands. It provides a comprehensive solution for managing multi-channel sales, inventory tracking, and customer interactions through an integrated platform.
+Luminila is a fashion jewelry inventory management and Point of Sale (POS) system engineered for retail showrooms, B2B wholesale counters, and multi-channel e-commerce operations. It merges a native desktop container (Tauri v2), an embedded local database (PocketBase v0.26.5 running SQLite in WAL mode), a modern responsive web frontend (Next.js 16 + React 19), and background microservices (WPPConnect WhatsApp sidecar).
 
-## System Architecture
+---
 
-### High-Level Architecture
+## 2. System Architecture
+
+### 2.1 High-Level Architecture Topology
 
 ```mermaid
 graph TD
-    A[Frontend: Next.js 15] --> B[Tauri v2 Desktop App]
-    B --> C[Rust Backend]
-    C --> D[WPPConnect Sidecar]
-    C --> E[Supabase PostgreSQL]
-    E --> F[Shopify API]
-    E --> G[WooCommerce API]
-    D --> H[WhatsApp Web]
+    subgraph Client Tier ["Client Tier (Desktop, Web, Mobile)"]
+        A[Next.js 16 Webview - React 19 & React Compiler]
+        B[Tauri v2 Native Desktop Container - Windows/macOS/Linux]
+        M[Tauri v2 Android Mobile App / Showroom Tablets]
+    end
+
+    subgraph Native Shell ["Native Shell & Supervisor (Rust)"]
+        C[Rust Core Process Manager - src-tauri/src/lib.rs]
+        IPC[Tauri IPC Bridge - get_sidecar_status, restart_sidecar]
+    end
+
+    subgraph Service Tier ["Local Host Services"]
+        D[WPPConnect Sidecar :21465 - Node.js Express + Puppeteer]
+        E[PocketBase Engine :8090 - Embedded Go + SQLite WAL]
+    end
+
+    subgraph Connectivity ["Networking & Tunneling"]
+        Loopback[127.0.0.1:8090 Localhost]
+        LAN[192.168.x.x:8090 Showroom Wi-Fi]
+        Tunnel[Cloudflare Tunnel - trycloudflare.com HTTPS]
+    end
+
+    subgraph External Platforms ["External APIs & Gateways"]
+        F[Shopify GraphQL API]
+        G[WooCommerce REST API]
+        H[PhonePe Dynamic UPI QR]
+        W[WhatsApp Web Automation]
+        GST[NIC E-Way Bill Portals]
+    end
+
+    A --> B
+    B --> C
+    C --> IPC
+    C --> D
+    M --> LAN
+    M --> Tunnel
+    A --> Loopback
+    Loopback --> E
+    LAN --> E
+    Tunnel --> E
+    D --> W
+    A --> F
+    A --> G
+    A --> H
+    A --> GST
 ```
 
-### Technology Stack
+### 2.2 Technology Stack
 
-- **Frontend**: Next.js 15 with React 19, TypeScript 5
-- **Desktop Framework**: Tauri v2 with Rust backend
-- **Database**: Supabase PostgreSQL with realtime capabilities
-- **Styling**: Tailwind CSS with custom Luminila theme
-- **State Management**: React hooks and context API
-- **Build Tools**: Vite, SWC compiler
-- **Package Management**: npm
+- **Frontend**: Next.js 16.1.0 (App Router) + React 19.2.3, TypeScript 5, React Compiler (`babel-plugin-react-compiler`).
+- **UI & Styling**: Tailwind CSS v4 (`@tailwindcss/postcss`), `@base-ui/react`, Shadcn UI primitives, `lucide-react`.
+- **Desktop & Mobile Container**: Tauri v2.9.x (Rust 2021) supporting Windows (`.msi`/`.exe`), macOS, Linux, and Android (`.apk`).
+- **Database Engine**: PocketBase v0.26.5 (Embedded Go binary + SQLite in Write-Ahead Logging `WAL` mode).
+- **Client SDK**: PocketBase JS SDK (`pocketbase ^0.26.5`) with dynamic runtime URL switching (`src/lib/pocketbase.ts`).
+- **Messaging Sidecar**: WPPConnect Server (`@wppconnect-team/wppconnect ^2.3.3`) running on Express (port 21465), compiled via `pkg` for native Tauri bundling.
+- **Barcodes & Imaging**: `jsbarcode` (vector Code128 generation), `html5-qrcode` (camera barcode scanning).
+- **Spreadsheets & Data**: `exceljs`, `jszip` for bulk catalog import/export and XLSX report generation.
+- **Payments & Logistics**: PhonePe UPI dynamic QR generation, NIC E-Way Bill JSON generation.
 
-### Key Architectural Decisions
+### 2.3 Key Architectural Decisions
 
-1. **Tauri over Electron**: Chosen for smaller binary size, better performance, and native integration
-2. **Supabase over Firebase**: Provides PostgreSQL flexibility with realtime capabilities
-3. **Modular Component Design**: Separation of concerns with clear boundaries between UI, business logic, and data access
-4. **Offline-First Approach**: Local state management with sync capabilities
+1. **Local-First Embedded Database over Cloud Database**:
+   - Replaced cloud-hosted databases with **PocketBase** (embedded SQLite in WAL mode).
+   - Eliminates ongoing cloud hosting costs, prevents offline showroom checkout blockage when internet drops, and guarantees sub-millisecond local query latencies.
+2. **Tauri v2 over Electron**:
+   - Reduces the installer bundle footprint from 150MB+ down to <30MB by utilizing OS-native WebViews (Edge WebView2 on Windows).
+   - Provides native memory efficiency and supervisor capabilities in Rust.
+3. **Dynamic Network Gateway Architecture**:
+   - Mobile and multi-terminal devices dynamically repoint `pb.baseUrl` via `localStorage.getItem("PB_CUSTOM_URL")` to showroom LAN IPs (`192.168.x.x:8090`) or Cloudflare Zero-Trust tunnels (`trycloudflare.com`).
+4. **Decentralized Offline Mutation Queue & Cloud Sync**:
+   - Client mutations are persisted to an offline queue (`src/lib/offline-queue.ts`) with automatic replay upon reconnection.
+   - Tier 2 sync logs incremental changes to Google Drive (`src/lib/google-drive-sync.ts`) for serverless multi-device synchronization.
 
-## Core Components
+---
 
-### 1. Desktop Application (Tauri)
+## 3. Core Subsystems
 
-- **Main Process**: Rust-based application lifecycle management
-- **Sidecar Management**: WPPConnect server for WhatsApp integration
-- **Inter-Process Communication**: Tauri commands for frontend-backend communication
-- **Health Monitoring**: Automatic restart of failed sidecar processes
+### 3.1 Native Container & Sidecar Supervisor (Rust)
 
-### 2. Web Frontend (Next.js)
-
-- **App Router**: File-based routing system
-- **UI Components**: ShadCN component library with custom styling
-- **State Management**: React hooks and context API
-- **Theming**: Custom Luminila theme with Midnight Navy, Moonstone Silver, and Champagne Gold colors
-
-### 3. Database Layer (Supabase)
-
-- **Schema Design**: Comprehensive relational model for products, variants, sales, and inventory
-- **Realtime Updates**: PostgreSQL triggers and Supabase realtime API
-- **Row-Level Security**: Fine-grained access control policies
-- **Data Validation**: TypeScript types generated from database schema
-
-### 4. Integration Services
-
-- **Shopify Sync Engine**: GraphQL API integration for product and order synchronization
-- **WooCommerce Sync**: REST API integration for fallback e-commerce platform
-- **WhatsApp Automation**: WPPConnect sidecar for message parsing and auto-reply
-- **Barcode Generation**: jsbarcode library for label printing
-
-## Database Schema
-
-### Core Tables
-
-1. **products**: Base product information with SKU, pricing, and metadata
-2. **product_variants**: Size, color, and material variants with stock tracking
-3. **vendors**: Supplier information and contact details
-4. **sales**: Transaction records across all channels
-5. **sale_items**: Line items for each sale
-6. **stock_movements**: Comprehensive audit trail of inventory changes
-
-### Key Relationships
-
-```mermaid
-erDiagram
-    products ||--o{ product_variants : "has"
-    product_variants ||--o{ stock_movements : "tracks"
-    sales ||--o{ sale_items : "contains"
-    sale_items }|--|| product_variants : "references"
-    vendors ||--o{ vendor_products : "supplies"
-    vendor_products }|--|| product_variants : "maps to"
-```
-
-## Key Features
-
-### 1. Multi-Channel Inventory Management
-
-- **Point of Sale (PoS)**: Touch-friendly interface with barcode scanning
-- **Shopify Integration**: Real-time inventory sync via GraphQL API
-- **WooCommerce Support**: Optional fallback e-commerce integration
-- **WhatsApp Orders**: AI-powered message parsing and order detection
-
-### 2. Advanced Inventory Features
-
-- **Multi-Variant Products**: Support for size, color, and material variations
-- **Low Stock Alerts**: Configurable thresholds with visual indicators
-- **Batch Operations**: Bulk import/export via CSV
-- **Barcode System**: Code128 barcode generation for labels
-
-### 3. Sales and Order Management
-
-- **Unified Order Tracking**: Consolidated view across all sales channels
-- **Order Status Workflow**: Pending → Confirmed → Shipped → Delivered → Cancelled
-- **Customer Management**: Contact information and order history
-- **Revenue Analytics**: Sales reporting and performance metrics
-
-### 4. WhatsApp Integration
-
-- **Message Parsing**: AI detection of order intent and product mentions
-- **Auto-Reply System**: Context-aware responses for common inquiries
-- **Order Confirmation**: Automated shipping updates via WhatsApp
-- **Media Handling**: Image, video, and document support
-
-### 5. Sync Engine
-
-- **Bidirectional Synchronization**: Push and pull operations for all channels
-- **Conflict Resolution**: Timestamp-based conflict handling
-- **Status Tracking**: Comprehensive sync history and error logging
-- **Offline Support**: Queue operations for later synchronization
-
-## Technical Implementation Details
-
-### 1. Tauri Backend (Rust)
+The Rust native entrypoint (`src-tauri/src/lib.rs`) supervises the entire runtime:
 
 ```rust
 // src-tauri/src/lib.rs
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            // Initialize logging
-            // Start WPPConnect sidecar
-            // Set up health monitoring
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            get_sidecar_status,
-            restart_sidecar
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+#[tauri::command]
+async fn get_sidecar_status() -> Result<serde_json::Value, String> {
+    let is_running = SIDECAR_RUNNING.load(Ordering::SeqCst);
+    let is_healthy = if is_running { check_sidecar_health().await } else { false };
+    Ok(serde_json::json!({ "running": is_running, "healthy": is_healthy }))
 }
-```
 
-### 2. Supabase Integration
-
-```typescript
-// src/lib/supabase.ts
-export function getSupabase(): SupabaseClient<Database> {
-    if (!supabaseClient) {
-        supabaseClient = createClient<Database>(supabaseUrl, supabaseAnonKey, {
-            auth: { persistSession: true, autoRefreshToken: true },
-            realtime: { params: { eventsPerSecond: 10 } }
-        });
+#[tauri::command]
+async fn restart_sidecar(app: tauri::AppHandle) -> Result<String, String> {
+    SIDECAR_RUNNING.store(false, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    match start_sidecar(&app) {
+        Ok(_) => Ok("Sidecar restarted".to_string()),
+        Err(e) => Err(e),
     }
-    return supabaseClient;
 }
 ```
 
-### 3. Sync Engine
+The Rust supervisor maintains an asynchronous background loop testing `http://127.0.0.1:21465/health` every 5 seconds, automatically respawning the sidecar process if three consecutive health checks fail.
+
+### 3.2 Database Access & Dynamic Connection Tier (`src/lib/pocketbase.ts`)
 
 ```typescript
-// src/lib/sync-engine.ts
-export async function fullSync(onProgress?: (phase: string, progress: number) => void): Promise<SyncResult[]> {
-    const allResults: SyncResult[] = [];
-    
-    // Pull products from all channels
-    const productResults = await pullAllProducts();
-    allResults.push(...productResults);
-    
-    // Pull orders from all channels  
-    const orderResults = await pullAllOrders();
-    allResults.push(...orderResults);
-    
-    return allResults;
+// src/lib/pocketbase.ts
+export function getPocketBaseUrl(): string {
+    if (typeof window !== "undefined") {
+        const customUrl = localStorage.getItem("PB_CUSTOM_URL");
+        if (customUrl && customUrl.trim()) {
+            return customUrl.trim().replace(/\/+$/, "");
+        }
+    }
+    return (process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090').replace(/\/+$/, "");
+}
+
+export const pb = new PocketBase(getPocketBaseUrl());
+pb.autoCancellation(false);
+
+export async function checkServerStatus(targetUrl?: string): Promise<ServerHealthResult> {
+    const urlToCheck = (targetUrl || pb.baseUrl).replace(/\/+$/, "");
+    const startTime = Date.now();
+    try {
+        const testClient = targetUrl ? new PocketBase(urlToCheck) : pb;
+        const health = await testClient.health.check();
+        return { ok: health.code === 200, url: urlToCheck, latencyMs: Date.now() - startTime };
+    } catch (err: any) {
+        return { ok: false, url: urlToCheck, error: err?.message || "Connection refused" };
+    }
 }
 ```
 
-### 4. WhatsApp Integration
+### 3.3 Mobile & Responsive Navigation Tier
 
-```typescript
-// src/lib/whatsapp.ts
-export function parseOrderFromMessage(message: string): {
-    isOrder: boolean;
-    items: string[];
-    customerIntent: string;
-} {
-    const lowerMessage = message.toLowerCase();
-    const orderKeywords = ["order", "buy", "purchase", "want", "need"];
-    const hasOrderIntent = orderKeywords.some(kw => lowerMessage.includes(kw));
-    
-    // Extract SKUs and product mentions
-    const skuPattern = /LUM-[A-Z]{3}-\d{3}(-[A-Z0-9]+)?/gi;
-    const skus = message.match(skuPattern) || [];
-    
-    return {
-        isOrder: hasOrderIntent && skus.length > 0,
-        items: skus,
-        customerIntent: hasOrderIntent ? "purchase" : "inquiry"
-    };
-}
+To enable showroom floor staff to operate on Android smartphones and tablets:
+- **`src/hooks/use-viewport.ts`**: Real-time form factor detection (`isMobile`, `isTablet`, `isDesktop`, `isTauri`, `isAndroid`).
+- **`src/components/layout/MobileBottomNav.tsx`**: Bottom thumb bar with elevated Point of Sale (POS) Floating Action Button.
+- **`src/components/layout/MobileDrawer.tsx`**: Slide-over navigation grouping all 18 ERP modules.
+- **`src/lib/mobile-scanner.ts`**: Unified hardware USB/Bluetooth barcode scanner listener (keyboard wedge) and HTML5 camera scanner.
+- **`src/lib/mobile-printer.ts`**: Android system print spooler integration and ESC/POS thermal receipt formatting for 58mm/80mm wireless Bluetooth printers.
+
+---
+
+## 4. Database Schema: 38 Relational Collections
+
+PocketBase manages SQLite in `WAL` mode across **38 relational collections**:
+
+```mermaid
+erDiagram
+    products ||--o{ product_variants : "has variants"
+    products ||--o{ stock_movements : "logs movement"
+    product_variants ||--o{ sale_items : "sold via"
+    product_variants ||--o{ invoice_items : "billed via"
+    product_variants ||--o{ purchase_order_items : "ordered via"
+    product_variants ||--o{ grn_items : "inspected in"
+    product_variants ||--o{ credit_note_items : "returned via"
+    product_variants ||--o{ delivery_challan_items : "dispatched in"
+
+    sales ||--o{ sale_items : "contains"
+    sales ||--o| invoices : "converts to"
+    customers ||--o{ sales : "places"
+    customers ||--o{ sales_orders : "requests"
+    customers ||--o| loyalty_accounts : "holds"
+    loyalty_accounts ||--o{ loyalty_transactions : "accrues"
+
+    vendors ||--o{ purchase_orders : "supplies"
+    purchase_orders ||--o{ purchase_order_items : "lists"
+    purchase_orders ||--o{ goods_received_notes : "received by"
+    goods_received_notes ||--o{ grn_items : "contains"
+
+    invoices ||--o{ invoice_items : "bills"
+    invoices ||--o{ invoice_payments : "settled with"
+    invoices ||--o{ credit_notes : "reversed by"
+    credit_notes ||--o{ credit_note_items : "refunds"
+
+    bank_accounts ||--o{ bank_transactions : "records"
+    expense_categories ||--o{ expenses : "groups"
+
+    users ||--o{ cash_register_shifts : "operates"
+    cash_register_shifts ||--o{ cash_drawer_operations : "tracks"
+    users ||--o{ user_roles : "assigned"
+    roles ||--o{ user_roles : "grants"
 ```
 
-## Development Workflow
+### Schema Sub-Domains
+1. **Catalog & Stock**: `products`, `product_variants`, `stock_movements`.
+2. **POS & Register**: `sales`, `sale_items`, `cash_register_shifts`, `cash_drawer_operations`.
+3. **GST Invoicing**: `invoices`, `invoice_items`, `invoice_payments`, `number_sequences`.
+4. **Procurement**: `vendors`, `purchase_orders`, `purchase_order_items`, `goods_received_notes`, `grn_items`.
+5. **Returns & Logistics**: `credit_notes`, `credit_note_items`, `delivery_challans`, `delivery_challan_items`.
+6. **CRM & Loyalty**: `customers`, `customer_interactions`, `loyalty_settings`, `loyalty_tiers`, `loyalty_accounts`, `loyalty_transactions`.
+7. **Treasury & Expenses**: `bank_accounts`, `bank_transactions`, `expense_categories`, `expenses`.
+8. **Governance & Integrations**: `users`, `roles`, `user_roles`, `activity_logs`, `discounts`, `discount_usage`, `store_settings`, `sync_logs`.
 
-### Prerequisites
+---
 
-- Node.js v18+
-- Rust v1.77.2+
-- Supabase account
-- Shopify/WooCommerce credentials (optional)
+## 5. Development & Production Build Pipelines
 
-### Setup Process
-
+### 5.1 Local Development Commands
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/luminila_inv_mgmt.git
-cd luminila_inv_mgmt
+# Unified multi-service launcher (PocketBase :8090, Sidecar :21465, Next.js :3000)
+npm run dev:all
 
-# Install dependencies
-npm install
+# Desktop application development (Tauri v2)
+npm run tauri:dev
 
-# Configure environment
-cp env.example.txt .env.local
+# Mobile Android application development
+npx tauri android dev
 
-# Run in development mode
-npm run tauri dev
+# Cloudflare Zero-Trust Tunnel (remote mobile access)
+npm run tunnel
 ```
 
-### Build Process
+### 5.2 Production Compilation Pipelines
+1. **Frontend Static Export**: `npm run build` generates static HTML/JS into `out/` with React Compiler optimization.
+2. **WPPConnect Sidecar**: `cd wppconnect-sidecar && npm run build` compiles `server.js` using `pkg` to `src-tauri/binaries/wppconnect-server-<triple>.exe`.
+3. **Desktop Windows Installer**: `npm run tauri:build` packages `luminila.exe` and MSI/NSIS setup bundles.
+4. **Android APK**: `npx tauri android build --apk` packages debug and release APKs.
 
-```bash
-# Build for production
-npm run tauri build
+---
 
-# Output platforms:
-- Windows: .msi installer
-- macOS: .app bundle
-- Linux: .deb/.rpm packages
-```
+## 6. Security & Performance
 
-## Performance Considerations
+### 6.1 Security Measures
+- **PocketBase JWT Auth**: Cryptographically signed JSON Web Tokens with client-side localStorage persistence.
+- **PIN & QR Fast Cashier Switching**: Showroom staff can lock/unlock terminals using a 4-to-6 digit PIN or QR badge without retyping master passwords.
+- **Fine-Grained RBAC**: Role-based access control with explicit permission dictionary flags protecting sensitive views.
+- **Tauri Content Security Policy (CSP)**: Locks Webview connect origins to local loopback ports (`127.0.0.1:*`) and verified Cloudflare tunnel domains (`*.trycloudflare.com`).
 
-### Optimization Strategies
-
-1. **Database Indexing**: Comprehensive indexing on frequently queried columns
-2. **Realtime Throttling**: Configurable events per second for Supabase realtime
-3. **Lazy Loading**: On-demand loading of chat messages and media
-4. **Caching**: Local storage for sync status and UI preferences
-5. **Batch Operations**: Bulk database operations for inventory updates
-
-### Memory Management
-
-- **Rust Backend**: Efficient memory usage with minimal overhead
-- **Frontend**: React memoization and useCallback hooks
-- **Media Handling**: Progressive loading and error handling
-
-## Security Measures
-
-### Data Protection
-
-- **Row-Level Security**: PostgreSQL RLS policies for all tables
-- **Authentication**: Supabase JWT-based authentication
-- **Environment Variables**: Sensitive credentials in .env.local (gitignored)
-- **Input Validation**: TypeScript types and runtime validation
-
-### Communication Security
-
-- **HTTPS**: All API communications encrypted
-- **Tauri Security**: Windows subsystem configuration to prevent console access
-- **WhatsApp Encryption**: End-to-end encryption maintained through WPPConnect
-
-## Future Roadmap
-
-### Planned Features
-
-- **Offline Mode**: Full functionality without internet connection
-- **Mobile PWA**: Progressive Web App version for mobile devices
-- **Advanced Analytics**: Sales forecasting and inventory optimization
-- **Multi-Currency Support**: International sales capabilities
-- **Subscription Model**: Recurring billing for premium features
-
-### Technical Improvements
-
-- **Performance Monitoring**: Integration with monitoring tools
-- **Automated Testing**: Comprehensive test suite
-- **CI/CD Pipeline**: Automated build and deployment
-- **Localization**: Multi-language support
-- **Accessibility**: WCAG compliance improvements
-
-## Conclusion
-
-Luminila represents a sophisticated inventory management solution specifically tailored for fashion jewelry brands. Its architecture combines modern web technologies with native desktop capabilities, providing a seamless user experience across multiple sales channels. The system's modular design allows for easy extension and customization, while the comprehensive feature set addresses the unique needs of jewelry inventory management.
-
-The technical implementation demonstrates best practices in software engineering, including clear separation of concerns, robust error handling, and performance optimization. With its focus on user experience and business requirements, Luminila is well-positioned to become a leading solution in the fashion jewelry inventory management space.
-
-## Appendix
-
-### Key Metrics
-
-- **Database Tables**: 7 core tables + indexes
-- **API Endpoints**: 20+ Tauri commands
-- **UI Components**: 50+ reusable components
-- **Integration Points**: 4 external services (Supabase, Shopify, WooCommerce, WhatsApp)
-- **Supported Platforms**: Windows, macOS, Linux
-
-### File Structure
-
-```
-luminila_inv_mgmt/
-├── src/                  # Next.js frontend
-│   ├── app/              # Pages and routing
-│   ├── components/       # UI components
-│   ├── lib/              # Business logic
-│   └── types/            # TypeScript types
-├── src-tauri/            # Rust backend
-│   ├── src/              # Rust source
-│   └── Cargo.toml        # Rust dependencies
-├── supabase/             # Database migrations
-├── wppconnect-sidecar/   # WhatsApp integration
-└── package.json          # Project configuration
-```
-
-### Dependencies Overview
-
-**Production Dependencies:**
-
-- `@supabase/supabase-js`: Database client
-- `@tauri-apps/api`: Tauri frontend API
-- `next`: React framework
-- `react`: UI library
-- `jsbarcode`: Barcode generation
-- `html5-qrcode`: QR code scanning
-
-**Development Dependencies:**
-
-- `@tauri-apps/cli`: Tauri build tools
-- `typescript`: Type checking
-- `tailwindcss`: CSS framework
-- `eslint`: Code linting
-
-This technical report provides a comprehensive overview of the Luminila Inventory Management System, covering its architecture, components, features, and implementation details. The system demonstrates a well-designed, modern approach to inventory management with a focus on the specific needs of fashion jewelry brands.
+### 6.2 Performance Optimizations
+- **SQLite WAL Mode**: Allows concurrent reads from multiple POS terminals while writes are processed sequentially without database locking.
+- **Zero Heavy Web Runtimes**: Tauri eliminates Chromium runtime overhead in desktop production, keeping memory usage <100MB RAM.
+- **Vector Barcode Generation**: Fast client-side vector Code128 rendering via `jsbarcode` without external network requests.

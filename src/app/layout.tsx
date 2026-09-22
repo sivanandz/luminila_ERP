@@ -1,7 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import { Sidebar } from "@/components/layout";
+import { Sidebar, MobileBottomNav } from "@/components/layout";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
@@ -12,10 +12,25 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
 });
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+  themeColor: "#001F3F",
+};
+
 export const metadata: Metadata = {
   title: "Luminila - Inventory Manager",
   description: "Premium fashion jewelry inventory management system with multi-channel sync",
   keywords: ["inventory", "jewelry", "pos", "shopify", "whatsapp"],
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Luminila",
+  },
 };
 
 export default function RootLayout({
@@ -30,11 +45,12 @@ export default function RootLayout({
       >
         <AuthProvider>
           <Sidebar />
-          <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
+          <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-16 md:pb-0">
             <ErrorBoundary>
               {children}
             </ErrorBoundary>
           </main>
+          <MobileBottomNav />
         </AuthProvider>
       </body>
     </html>

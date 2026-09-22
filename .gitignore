@@ -69,3 +69,10 @@ backup_*/
 wppconnect-sidecar/tokens
 wppconnect-sidecar/userData
 src-tauri/binaries/
+src-tauri/gen/android/local.properties
+
+# Agent & workspace artifacts
+.mimosa/
+.v2c/
+.video_agent/
+.zcodeignore

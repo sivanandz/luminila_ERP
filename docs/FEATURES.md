@@ -188,3 +188,31 @@ Comprehensive analytical dashboards and reports:
 - **QR Pairing**: Displays WhatsApp Web QR code directly in the Luminila UI for quick smartphone pairing.
 - **Automated Alerts**: Pre-built message templates for order confirmations, digital invoice links, and shipping updates.
 - **Inbound Message Parsing**: Detects customer order inquiries directly from chat threads.
+
+---
+
+## 16. Mobile & Android Showroom Features
+
+Designed for floor sales staff operating on Android smartphones, tablets, and mobile POS terminals:
+
+- **Thumb-Friendly Navigation (`MobileBottomNav`)**:
+  - Quick-switch tabs for Home, Stock, Invoices, and Menu.
+  - Prominent elevated center Floating Action Button (FAB) dedicated to instant Point of Sale (`/pos`).
+- **Complete Slide-Over Drawer (`MobileDrawer`)**:
+  - Full access to all 18 ERP modules grouped into Sales & POS, Inventory, Finance, and System.
+  - One-tap access to Server Configuration and Cloud Sync.
+- **Hardware & Camera Barcode Scanning (`mobile-scanner.ts`)**:
+  - Seamless listener for hardware USB/Bluetooth barcode guns (keyboard wedge listener).
+  - High-performance HTML5 camera barcode scanner via `html5-qrcode` for instant cart additions without extra hardware.
+- **Mobile Thermal Printing & Spooler (`mobile-printer.ts`)**:
+  - Native Android Print Spooler integration (`window.print()`) for PDF export and Wi-Fi printers.
+  - Formatted ESC/POS receipt generation for 58mm and 80mm wireless Bluetooth thermal printers.
+- **Dual-Mode Mobile WhatsApp (`mobile-whatsapp.ts`)**:
+  - Dispatches automated messages through the local showroom WPPConnect sidecar when reachable.
+  - Automatically falls back to native Android `whatsapp://send` and `wa.me/` intents for 1-tap message dispatch directly from sales reps' phones.
+- **Offline Mutation Queue (`offline-queue.ts`)**:
+  - Persists pending transactions in `localStorage` when network connection is interrupted.
+  - Automatically drains and replays queued mutations in chronological order upon reconnection.
+- **Decentralized Cloud Sync (`google-drive-sync.ts`)**:
+  - Tier 2 incremental change-log engine recording atomic JSON mutations.
+  - Enables peer-to-peer showroom multi-device synchronization via Google Drive cloud folders.

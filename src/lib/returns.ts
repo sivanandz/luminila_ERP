@@ -265,6 +265,41 @@ export async function createCreditNote(
 // ===========================================
 
 export async function approveCreditNote(id: string): Promise<void> {
+    const cn = await pb.collection('credit_notes').getOne(id);
+
+    // Only restock if not already approved or refunded
+    if (cn.status !== 'approved' && cn.status !== 'refunded') {
+        try {
+            const items = await pb.collection('credit_note_items').getFullList({
+                filter: `credit_note="${id}"`
+            });
+
+            for (const item of items) {
+                if (item.variant && item.quantity > 0) {
+                    try {
+                        const variant = await pb.collection('product_variants').getOne(item.variant);
+                        await pb.collection('product_variants').update(item.variant, {
+                            stock_level: ((variant as any).stock_level || 0) + item.quantity
+                        });
+
+                        await pb.collection('stock_movements').create({
+                            variant: item.variant,
+                            movement_type: 'return',
+                            quantity: item.quantity,
+                            reference_id: id,
+                            source: 'credit_note',
+                            notes: `Restock from Return #${cn.credit_note_number || id}`
+                        }).catch((err) => console.warn('Failed to log stock movement for return:', err));
+                    } catch (variantErr) {
+                        console.warn(`Could not restore stock for variant ${item.variant}:`, variantErr);
+                    }
+                }
+            }
+        } catch (itemErr) {
+            console.error('Error restoring inventory for credit note:', itemErr);
+        }
+    }
+
     await pb.collection('credit_notes').update(id, { status: 'approved' });
 }
 

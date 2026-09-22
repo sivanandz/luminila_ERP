@@ -57,9 +57,14 @@ export function ProtectedRoute({
                     You don't have permission to access this resource.
                     Contact your administrator if you believe this is an error.
                 </p>
-                <Button variant="outline" onClick={() => router.back()}>
-                    Go Back
-                </Button>
+                <div className="flex items-center gap-3">
+                    <Button variant="outline" onClick={() => router.back()}>
+                        Go Back
+                    </Button>
+                    <Button onClick={() => router.push('/login')}>
+                        Sign In
+                    </Button>
+                </div>
             </div>
         );
     }

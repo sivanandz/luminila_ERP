@@ -141,36 +141,43 @@ export async function getBankTransactions(
 }
 
 export async function createBankTransaction(transaction: NewBankTransaction): Promise<BankTransaction> {
+    const account = await getBankAccount(transaction.account);
+    if (!account) {
+        throw new Error(`Bank account ${transaction.account} not found`);
+    }
+
+    // Overdraft protection: verify sufficient balance for debits
+    if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
+        if ((account.current_balance || 0) < transaction.amount) {
+            throw new Error(`Insufficient funds: account balance (₹${account.current_balance || 0}) is less than transaction amount (₹${transaction.amount})`);
+        }
+    }
+
+    let record: any = null;
     try {
-        const record = await pb.collection('bank_transactions').create(transaction);
+        record = await pb.collection('bank_transactions').create(transaction);
 
-        // PocketBase doesn't have DB triggers — update balance manually.
-        // Consider Go hooks if this becomes a bottleneck.
-        // So we MUST update the balance manually here or in a helper.
+        let newBalance = account.current_balance || 0;
+        if (transaction.type === 'deposit') {
+            newBalance += transaction.amount;
+        } else if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
+            newBalance -= transaction.amount;
+        }
 
-        await updateAccountBalance(transaction.account, transaction.type, transaction.amount);
+        await pb.collection('bank_accounts').update(transaction.account, {
+            current_balance: newBalance
+        });
 
         return record as unknown as BankTransaction;
     } catch (error) {
+        // Compensating rollback: delete transaction if balance update failed
+        if (record?.id) {
+            await pb.collection('bank_transactions').delete(record.id).catch((delErr) => {
+                console.error('Failed to rollback orphaned bank transaction:', delErr);
+            });
+        }
         throw error;
     }
-}
-
-// Helper to update balance manually since no DB triggers in PB (JS SDK)
-async function updateAccountBalance(accountId: string, type: string, amount: number) {
-    const account = await getBankAccount(accountId);
-    if (!account) return;
-
-    let newBalance = account.current_balance;
-    if (type === 'deposit') {
-        newBalance += amount;
-    } else if (type === 'withdrawal' || type === 'transfer') {
-        newBalance -= amount;
-    }
-
-    await pb.collection('bank_accounts').update(accountId, {
-        current_balance: newBalance
-    });
 }
 
 // ==========================================

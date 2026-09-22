@@ -1,37 +1,60 @@
 # Luminila Inventory Management — System Architecture
 
-This document describes the end-to-end architecture, technology stack, data tier, service layering, and deployment topology of the Luminila Inventory Management System.
+This document describes the end-to-end architecture, technology stack, data tier, service layering, mobile/responsive architecture, and deployment topology of the Luminila Inventory Management System. Any AI agent or engineer can use this document as a definitive reference for how the application is constructed and how its components interact.
 
 ---
 
 ## 1. System Overview & Topology
 
-Luminila is designed as a hybrid desktop-first and local-network ERP/inventory solution tailored for fashion jewelry businesses. It combines an embedded Go/SQLite database engine (**PocketBase**), a desktop container (**Tauri v2**), a modern frontend application (**Next.js 16 + React 19**), and background automation microservices (such as **WPPConnect**).
+Luminila is architected as a hybrid desktop-first, local-network, and mobile-ready ERP solution designed specifically for fashion jewelry retail and wholesale businesses. It combines:
+1. **Embedded Database Engine**: [PocketBase v0.26.5](https://pocketbase.io/) (Go binary + SQLite in Write-Ahead Logging `WAL` mode).
+2. **Native Shell Containers**: [Tauri v2.9.x](https://tauri.app/) (Rust) providing native desktop (Windows/macOS/Linux) and mobile (Android) runtimes.
+3. **Modern Web Frontend**: [Next.js 16.1.0](https://nextjs.org/) (App Router) + React 19.2.3 with React Compiler and Tailwind CSS v4.
+4. **Background Automation Sidecar**: Node.js [WPPConnect Server](https://github.com/wppconnect-team/wppconnect) automating WhatsApp Web via headless Puppeteer.
+5. **Dynamic Network Gateway**: Flexible loopback (`127.0.0.1:8090`), LAN Wi-Fi (`192.168.x.x:8090`), or Cloudflare Zero-Trust Tunnel (`trycloudflare.com`) connection modes.
 
 ```mermaid
 graph TB
     subgraph Desktop Shell ["Tauri v2 Native Desktop Container (Rust)"]
-        WV[Next.js 16 Webview - Chromium/Edge Webview2]
-        TauriCore[Tauri Rust Core & Process Manager]
+        WV[Next.js 16 Webview - Edge WebView2 / WebKit]
+        TauriCore[Tauri Rust Core & Process Supervisor]
     end
 
-    subgraph Local Services ["Local Host (127.0.0.1)"]
-        PB["PocketBase v0.26.5 (:8090)<br/>Embedded Go + SQLite Engine (WAL Mode)"]
+    subgraph Mobile Devices ["Mobile App / Showroom Tablets (Android)"]
+        AndroidApp[Tauri Android Container / Mobile Chrome]
+        CameraScanner[Camera Barcode Scanner - html5-qrcode]
+        MobileNav[MobileBottomNav + MobileDrawer]
+    end
+
+    subgraph Network Gateway ["Connectivity & Routing Tier"]
+        LocalLoop["Localhost Loopback (127.0.0.1:8090)"]
+        LAN["Showroom Wi-Fi LAN (192.168.x.x:8090)"]
+        Tunnel["Cloudflare Zero-Trust Tunnel (trycloudflare.com)"]
+    end
+
+    subgraph Local Services ["Host System Background Services"]
+        PB["PocketBase v0.26.5 (:8090)<br/>Embedded Go + SQLite Engine (WAL Mode)<br/>38 Relational Collections"]
         WPP["WPPConnect Sidecar (:21465)<br/>Puppeteer / WhatsApp Web Automation"]
     end
 
     subgraph External Platforms ["External APIs & Payment Gateways"]
         Shopify[Shopify GraphQL API]
         Woo[WooCommerce REST API]
-        PhonePe[PhonePe Payment Gateway]
+        PhonePe[PhonePe UPI Dynamic QR]
         GST[Govt E-Way / GST Portals]
     end
 
-    WV -- "REST API / SSE Subscriptions" --> PB
-    WV -- "HTTP JSON / Webhook Calls" --> WPP
+    WV -- "REST / SSE" --> LocalLoop
+    AndroidApp -- "REST / SSE via LAN or Tunnel" --> LAN
+    AndroidApp -- "REST / SSE via HTTPS" --> Tunnel
+    LocalLoop --> PB
+    LAN --> PB
+    Tunnel --> PB
+
+    WV -- "HTTP JSON / Webhooks" --> WPP
     WV -- "IPC Commands" --> TauriCore
-    TauriCore -- "Manages Lifecycle" --> WPP
-    TauriCore -- "Supervises / Spawns" --> PB
+    TauriCore -- "Supervises Lifecycle & Restarts" --> WPP
+    TauriCore -- "Spawns / Manages" --> PB
 
     WV -- "Sync Engine (lib/sync)" --> Shopify
     WV -- "Catalog Sync" --> Woo
@@ -41,61 +64,72 @@ graph TB
 
 ---
 
-## 2. Technology Stack
+## 2. Technology Stack & Dependencies
 
-| Layer | Technology | Purpose |
-|---|---|---|
-| **Desktop Shell** | [Tauri v2.9.x](https://tauri.app/) (Rust) | Native lightweight window container, sidecar supervision, native OS access |
-| **Frontend Framework** | [Next.js 16.1.0](https://nextjs.org/) (App Router) | Client-side routing, React 19 compiler, modern page layouts |
-| **UI Library & Primitives** | React 19.2.3, `@base-ui/react`, Shadcn UI primitives | Accessible components, modals, popovers, dropdowns |
-| **Styling** | [Tailwind CSS v4](https://tailwindcss.com/) | Bespoke jewelry brand design system (Midnight Navy, Moonstone Silver, Champagne Gold) |
-| **Icons & Visuals** | `lucide-react`, `tw-animate-css` | Micro-animations, visual cues, status indicators |
-| **Charts & Analytics** | `recharts` | Real-time sales, inventory valuation, and expense charts |
-| **Barcodes & Labels** | `jsbarcode`, `html5-qrcode` | Code128 barcode generation, physical label printing, camera barcode scanning |
-| **Spreadsheets & Data** | `exceljs`, `jszip` | Bulk catalog import/export, Excel generation |
-| **Database & Auth** | [PocketBase v0.26.5](https://pocketbase.io/) (SQLite) | Embedded relational database, JWT authentication, file storage, real-time SSE |
-| **Messaging Sidecar** | [WPPConnect Server](https://github.com/wppconnect-team/wppconnect) | WhatsApp Web automation, QR authentication, order notification auto-dispatch |
+| Layer | Technology | Version | Purpose |
+|---|---|---|---|
+| **Desktop & Mobile Shell** | [Tauri](https://tauri.app/) | `^2.9.1` (CLI `^2.9.6`) | Native Windows/macOS/Linux and Android container, process supervisor, IPC bridge |
+| **Frontend Framework** | [Next.js](https://nextjs.org/) | `16.1.0` (App Router) | Static export (`output: 'export'`), routing, client layouts |
+| **UI Runtime** | [React](https://react.dev/) | `19.2.3` | UI components, React Compiler (`babel-plugin-react-compiler`) |
+| **UI Primitives** | `@base-ui/react`, Shadcn UI | `1.0.0`, `3.6.2` | Accessible, unstyled accessible UI primitives (dialogs, popovers, dropdowns) |
+| **Styling & Design System** | [Tailwind CSS v4](https://tailwindcss.com/) | `^4.0.0` (`@tailwindcss/postcss`) | Bespoke jewelry theme (Midnight Navy, Moonstone Silver, Champagne Gold) |
+| **Icons & Animations** | `lucide-react`, `tw-animate-css` | `^0.562.0`, `^1.4.0` | Vector icons and smooth micro-interactions |
+| **Charts & Visualizations** | `recharts` | `^3.6.0` | Revenue trends, inventory valuation, and expense charts |
+| **Barcodes & Camera** | `jsbarcode`, `html5-qrcode` | `^3.12.1`, `^2.3.8` | Code128 barcode generation, physical label printing, device camera scanning |
+| **Spreadsheets & Data** | `exceljs`, `jszip` | `^4.4.0`, `^3.10.1` | Bulk catalog import/export and XLSX report generation |
+| **Embedded Database & Auth** | [PocketBase](https://pocketbase.io/) | `0.26.5` (Go SQLite) | Embedded relational database, JWT auth, file storage, real-time SSE |
+| **Messaging Sidecar** | [WPPConnect Server](https://github.com/wppconnect-team/wppconnect) | `^2.3.3` | WhatsApp Web automation, QR pairing, automated outbound order updates |
+| **Language & Tooling** | TypeScript, Rust, Node.js | `TS 5`, `Rust 2021`, `Node 20+` | Type safety across entire stack and native binary performance |
 
 ---
 
-## 3. Directory Structure & Layering
+## 3. Directory Structure & File Responsibilities
 
 ```
 luminila_inv_mgmt/
 ├── src/
-│   ├── app/                      # Next.js App Router (Pages & Views)
-│   │   ├── activity/             # System audit & activity timeline
+│   ├── app/                      # Next.js App Router (All Pages & Views)
+│   │   ├── layout.tsx            # Root HTML layout, font setup, viewport meta, Sidebar & MobileBottomNav
+│   │   ├── globals.css           # Tailwind CSS v4 design tokens and theme variables
+│   │   ├── page.tsx              # Executive KPI dashboard (revenue, low stock, sales charts)
+│   │   ├── activity/             # Audit logs and entity mutation timeline
 │   │   ├── banking/              # Bank accounts, deposits, withdrawals, transfers
-│   │   ├── challan/              # Delivery challan creation & tracking
-│   │   ├── customers/            # Customer CRM, ledgers, loyalty profiles
-│   │   ├── expenses/             # Expense vouchers & categorized expenses
+│   │   ├── challan/              # Delivery challan creation & dispatch tracking
+│   │   ├── customers/            # Customer CRM, sales ledgers, loyalty profiles
+│   │   ├── expenses/             # Expense vouchers and categorization
 │   │   ├── inventory/            # Product catalog, variant matrix, stock levels
-│   │   ├── invoices/             # GST invoices, B2B/B2C, PDF rendering
-│   │   ├── labels/               # Barcode label batch designer & printing
-│   │   ├── login/                # PocketBase JWT authentication, PIN & QR login
+│   │   ├── invoices/             # GST B2B/B2C invoices, PDF rendering & thermal printing
+│   │   ├── labels/               # Barcode label batch designer & printing (Code128)
+│   │   ├── login/                # PocketBase JWT authentication, PIN & QR quick switch
 │   │   ├── orders/               # Sales orders & quotation estimates
-│   │   ├── page.tsx              # Executive KPI dashboard
-│   │   ├── pos/                  # Point of Sale terminal & shift management
+│   │   ├── pos/                  # Point of Sale touch terminal, cart, & shift management
 │   │   ├── purchase/             # Purchase orders & Goods Received Notes (GRN)
-│   │   ├── reports/              # Financial, tax, and inventory analytics
-│   │   ├── returns/              # Returns & GST credit notes
-│   │   ├── settings/             # Store configuration, tax rates, integrations
+│   │   ├── reports/              # Financial, tax, and inventory analytics reports
+│   │   ├── returns/              # Customer returns & GST credit notes
+│   │   ├── settings/             # Store configuration, tax rates, e-commerce sync
 │   │   ├── setup/                # First-run admin initialization wizard
-│   │   ├── users/                # Staff user accounts & RBAC assignment
+│   │   ├── users/                # Staff accounts and RBAC role assignment
 │   │   ├── vendors/              # Supplier management & purchase histories
 │   │   └── whatsapp/             # WPPConnect status, chat sync, auto-replies
 │   ├── components/
-│   │   ├── dashboard/            # KPI cards, charts, alerts
-│   │   ├── layout/               # Header, Sidebar, ProtectedRoute, ShiftStatus
-│   │   └── ui/                   # Reusable UI primitives (dialog, button, table, input)
+│   │   ├── dashboard/            # KPI cards, revenue charts, alerts
+│   │   ├── layout/               # Navigation components:
+│   │   │   ├── Header.tsx        # Top desktop navigation & user session badge
+│   │   │   ├── Sidebar.tsx       # Desktop collapsible sidebar
+│   │   │   ├── MobileBottomNav.tsx # Mobile thumb-friendly navigation bar + elevated POS FAB
+│   │   │   ├── MobileDrawer.tsx  # Mobile slide-over navigation with grouped ERP sub-domains
+│   │   │   ├── ProtectedRoute.tsx# RBAC route protection wrapper
+│   │   │   └── index.ts          # Layout components barrel export
+│   │   └── ui/                   # Reusable UI primitives (dialog, button, table, input, card)
 │   ├── contexts/
-│   │   └── AuthContext.tsx       # Auth state, current user, role permissions
+│   │   └── AuthContext.tsx       # Auth state, current user, role permissions, PIN switch
 │   ├── hooks/
-│   │   └── use-mobile.ts         # Viewport and device detection
+│   │   ├── use-viewport.ts       # Viewport detection (isMobile, isTablet, isDesktop, isTauri, isAndroid)
+│   │   └── use-mobile.ts         # Screen width detection hook
 │   ├── lib/                      # Domain Business Logic & API Services
 │   │   ├── activity.ts           # Audit log persistence
 │   │   ├── analytics.ts          # Aggregated dashboard metrics & charts
-│   │   ├── banking.ts            # Banking ledger & double-entry updates
+│   │   ├── banking.ts            # Banking ledger & double-entry balance updates
 │   │   ├── barcode-generator.ts  # Code128 vector barcode generation
 │   │   ├── challan.ts            # Delivery challan lifecycle management
 │   │   ├── customers.ts          # Customer records & CRM history
@@ -107,7 +141,7 @@ luminila_inv_mgmt/
 │   │   ├── loyalty.ts            # Tier calculation, point earning & redemption
 │   │   ├── orders.ts             # Sales order state machine
 │   │   ├── phonepe.ts            # UPI & dynamic QR payment integration
-│   │   ├── pocketbase.ts         # PocketBase client singleton & sanitization
+│   │   ├── pocketbase.ts         # PocketBase client singleton, URL switcher, health checks
 │   │   ├── pos-sales.ts          # POS checkout, item deduction, cash records
 │   │   ├── products.ts           # Catalog CRUD, variant matrix helpers
 │   │   ├── purchase.ts           # PO creation, receiving, GRN generation
@@ -117,28 +151,40 @@ luminila_inv_mgmt/
 │   │   ├── sync/                 # Shopify & WooCommerce connector engines
 │   │   ├── sync-engine.ts        # Unified synchronization scheduler
 │   │   └── whatsapp.ts           # WPPConnect sidecar REST client
+│   ├── scripts/                  # PocketBase migration, repair, and diagnostic scripts
+│   │   ├── init-pocketbase.ts    # Creates all 38 collections from scratch
+│   │   ├── sync-pb-schema.ts     # Synchronizes schema differences
+│   │   ├── apply-pb-access-rules.ts # Sets collection security rules
+│   │   ├── seed-roles.ts         # Populates system roles and capability flags
+│   │   └── create-admin-user.ts  # Seeds default admin credentials
 │   └── types/
-│       └── database.ts           # TypeScript interfaces for all 38 collections
-├── src-tauri/                    # Tauri v2 Desktop Wrapper
-│   ├── tauri.conf.json           # Window size, CSP, sidecar definitions
-│   └── src/                      # Rust main process & event handlers
+│       └── database.ts           # TypeScript interfaces for all PocketBase collections
+├── src-tauri/                    # Tauri v2 Desktop & Mobile Container
+│   ├── Cargo.toml                # Rust dependencies (tauri, reqwest, tokio, tauri-plugin-shell)
+│   ├── tauri.conf.json           # Window size, CSP, sidecar definitions, bundle config
+│   ├── binaries/                 # Precompiled sidecars (wppconnect-server-<triple>.exe)
+│   └── src/
+│       ├── lib.rs                # Sidecar supervision, health monitoring loop, IPC commands
+│       └── main.rs               # Rust executable entrypoint
 ├── pocketbase/                   # Embedded PocketBase Server
-│   ├── pocketbase.exe            # PocketBase Go binary
-│   ├── pb_data/                  # SQLite database (data.db) + uploaded media
-│   └── pb_migrations/            # Declarative schema migrations
+│   ├── pocketbase.exe            # PocketBase Go executable
+│   └── pb_data/                  # SQLite database (data.db, auxiliary.db) + file storage
 ├── wppconnect-sidecar/           # Node.js Puppeteer sidecar for WhatsApp
-├── scripts/                      # Startup & operational automation scripts
-│   └── start-all.ps1             # Multi-service launcher (PocketBase + WPP + Next.js)
-└── package.json
+│   ├── server.js                 # Express server on port 21465
+│   ├── build.js                  # Compiles server.js via pkg into native sidecar binary
+│   └── package.json              # Sidecar dependencies (@wppconnect-team/wppconnect)
+├── scripts/                      # Operational automation scripts
+│   ├── dev-all.js                # Cross-platform Node orchestrator (PB + WPP + Next.js)
+│   └── start-all.ps1             # PowerShell multi-service launcher
+├── next.config.ts                # Static export configuration for Tauri
+└── package.json                  # Root project scripts and dependencies
 ```
 
 ---
 
-## 4. Data Tier: PocketBase Schema Design
+## 4. Data Tier: 38 Relational Collections
 
-The persistence tier runs entirely inside PocketBase, backed by SQLite in Write-Ahead Logging (`WAL`) mode for high concurrency.
-
-The schema comprises **38 relational collections** grouped into 8 operational sub-domains:
+PocketBase manages SQLite in `WAL` mode, providing ACID guarantees and high concurrent read performance. The schema is organized into 8 sub-domains:
 
 ```mermaid
 erDiagram
@@ -177,103 +223,186 @@ erDiagram
     roles ||--o{ user_roles : "grants"
 ```
 
-### Schema Sub-Domains
+### Complete Collection Catalog
 
-1. **Catalog & Inventory**
-   - `products`: Base catalog records (SKU, title, category, base price, cost price, image URL, barcode).
-   - `product_variants`: SKU variants (size, color, material, price adjustment, current `stock_level`, `low_stock_threshold`).
-   - `stock_movements`: Immutable inventory audit log tracking every movement (`sale`, `purchase`, `adjustment`, `return`, `sync`) with before/after quantity stamps.
+1. **Catalog & Stock**:
+   - `products`: SKU, name, description, category, base_price, cost_price, image_url, barcode, is_active.
+   - `product_variants`: SKU variant, size, color, material, stock_level, low_stock_threshold, price_adjustment.
+   - `stock_movements`: Immutable stock ledger (`sale`, `purchase`, `adjustment`, `return`, `sync`) with quantity changes and reference IDs.
 
-2. **Sales & Point of Sale (POS)**
-   - `sales`: Transaction header (channel: POS, Shopify, WooCommerce, WhatsApp; totals, payment method, customer relation).
-   - `sale_items`: Snapshot line items (unit price, quantity, totals, variant relation).
-   - `cash_register_shifts`: Cashier register sessions (terminal ID, opened/closed timestamps, opening balance float, cash additions/drops, expected vs actual closing balances, variance).
-   - `cash_drawer_operations`: Line-by-line cash drawer events (`add`, `remove`, `sale`, `refund`).
+2. **Sales & Point of Sale (POS)**:
+   - `sales`: Transaction header (channel: `pos`, `shopify`, `woocommerce`, `whatsapp`; totals, customer relation).
+   - `sale_items`: Snapshot line items (unit price, quantity, total price, variant relation).
+   - `cash_register_shifts`: Cashier register sessions (opening float, cash additions/drops, expected vs actual closing balances, variance).
+   - `cash_drawer_operations`: Individual cash drawer operations (`add`, `remove`, `sale`, `refund`).
 
-3. **Invoicing & GST Engine**
-   - `invoices`: Tax invoice headers conforming to Indian GST mandates (seller & buyer GSTIN, place of supply, taxable value, CGST/SGST/IGST breakdown, reverse charge, transport mode, vehicle number).
-   - `invoice_items`: HSN code, tax rates, CGST/SGST/IGST calculated amounts, discount rates, line totals.
-   - `invoice_payments`: Partial or full payment receipts against invoices (`cash`, `card`, `upi`, `bank_transfer`, `cheque`).
-   - `number_sequences`: Concurrency-safe auto-incrementing document sequence generator for `INV-`, `CN-`, `DC-`, `PO-`, `GRN-`.
+3. **Invoicing & GST Engine**:
+   - `invoices`: Tax invoice headers conforming to Indian GST (B2B/B2C, seller/buyer GSTIN, place of supply, taxable value, CGST/SGST/IGST, reverse charge, vehicle details).
+   - `invoice_items`: HSN code, tax rates, CGST/SGST/IGST amounts, discounts, line totals.
+   - `invoice_payments`: Payment receipts against invoices (`cash`, `card`, `upi`, `bank_transfer`, `cheque`).
+   - `number_sequences`: Document sequencing counter (`INV-`, `CN-`, `DC-`, `PO-`, `GRN-`).
 
-4. **Procurement & Goods Receiving**
-   - `vendors`: Supplier directory (GSTIN, contact details, payment terms).
-   - `purchase_orders`: Formal procurement POs with expected delivery dates and status workflow (`draft` → `sent` → `partial` → `received` → `cancelled`).
-   - `purchase_order_items`: Ordered quantities, unit costs, GST rates.
+4. **Procurement & Goods Receiving**:
+   - `vendors`: Supplier directory (GSTIN, contact info, lead times, payment terms).
+   - `purchase_orders`: Procurement POs with status workflow (`draft` → `sent` → `partial` → `received` → `cancelled`).
+   - `purchase_order_items`: Quantities, unit costs, GST rates.
    - `goods_received_notes`: Warehouse arrival records (GRN) linked to POs.
    - `grn_items`: Inspected quantities, accepted quantities, rejected quantities, rejection reasons.
 
-5. **Returns & Logistics**
-   - `credit_notes`: GST Credit Note records linked to original invoices, tracking reason (`defective`, `wrong_item`, `damaged`, `size_exchange`, `customer_request`), refund status, and amount.
-   - `credit_note_items`: Items being returned, restock flags (`stock_restored`).
-   - `delivery_challans`: Transport challans for job work, exhibition, inter-branch stock transfer, or approval delivery.
+5. **Returns & Logistics**:
+   - `credit_notes`: GST Credit Note records linked to invoices, tracking reason (`defective`, `wrong_item`, `damaged`, `size_exchange`, `customer_request`), refund status, and amount.
+   - `credit_note_items`: Items returned, restock flags (`stock_restored`).
+   - `delivery_challans`: Transport challans for job work, exhibitions, or inter-branch transfers.
    - `delivery_challan_items`: Dispatched goods with HSN codes, quantities, and approximate values.
 
-6. **CRM & Loyalty Engine**
-   - `customers`: Customer profiles with GSTIN, contact details, aggregate spend.
+6. **CRM & Loyalty Engine**:
+   - `customers`: Customer profiles with contact details, GSTIN, aggregate spend.
    - `customer_interactions`: Logged customer touchpoints (calls, visits, queries).
-   - `loyalty_settings`: System-wide parameters (points per rupee, redemption value, min redemption points).
-   - `loyalty_tiers`: Configurable tiers (Bronze, Silver, Gold, Platinum) with point thresholds and percentage multipliers.
+   - `loyalty_settings`: System parameters (points per rupee, redemption value, min redemption points).
+   - `loyalty_tiers`: Configurable tiers (Bronze, Silver, Gold, Platinum) with point multipliers.
    - `loyalty_accounts`: Customer point balances, lifetime values, member dates.
-   - `loyalty_transactions`: Immutable point accrual and redemption audit trail (`earn`, `redeem`, `adjust`, `expire`, `bonus`).
+   - `loyalty_transactions`: Immutable point ledger (`earn`, `redeem`, `adjust`, `expire`, `bonus`).
 
-7. **Treasury & Expenses**
-   - `bank_accounts`: Business accounts (current account, cash-in-hand, POS drawer, savings) with active balances.
+7. **Treasury & Expenses**:
+   - `bank_accounts`: Business accounts (Current, Cash-in-Hand, POS Drawer, Savings) with active balances.
    - `bank_transactions`: Double-entry transaction log (`deposit`, `withdrawal`, `transfer`).
-   - `expense_categories`: Operational expense taxonomy (Rent, Utilities, Packaging, Wages, Marketing).
+   - `expense_categories`: Operational expense taxonomy (Rent, Packaging, Wages, Marketing).
    - `expenses`: Direct expense vouchers with payee, payment method, tax receipt attachments.
 
-8. **Governance & Multi-Channel Sync**
-   - `roles` & `user_roles`: RBAC permissions dictionary and user assignments.
+8. **Governance & Integrations**:
+   - `users`: Staff user directory with PIN hashes and QR tokens.
+   - `roles`: RBAC permissions dictionary with capability flags.
+   - `user_roles`: Mapping between users and roles.
    - `activity_logs`: Entity mutation history (storing previous and current JSON snapshots).
-   - `discounts` & `discount_usage`: Coupon codes, percentage/flat discounts, usage caps.
-   - `store_settings`: Key-value configuration for store details, GST rates, API credentials.
+   - `discounts`: Promotional coupons and percentage/flat discounts.
+   - `discount_usage`: Customer redemption records against coupons.
+   - `store_settings`: Global store metadata, tax rates, API credentials.
+   - `sync_logs`: Multi-channel sync execution history.
 
 ---
 
-## 5. Service Layer Design (`src/lib/`)
+## 5. Service Layer Architecture (`src/lib/`)
 
-The application avoids scattered direct database calls in UI components by encapsulating operations into domain-driven service modules:
+All database interactions, calculations, and hardware calls are encapsulated in `src/lib/`:
 
 ```mermaid
 graph LR
-    UI[Next.js Pages & Components] --> LibServices[Domain Services in src/lib/]
+    UI[Pages & Components in src/app/] --> Services[Domain Services in src/lib/]
 
-    subgraph Domain Services
-        POSService[pos-sales.ts / register.ts]
-        InvService[products.ts / barcode-generator.ts]
-        GSTService[invoice.ts / gst.ts / eway-bill.ts]
-        ProcService[purchase.ts]
-        LogisticsService[challan.ts / returns.ts]
-        CRMService[customers.ts / loyalty.ts]
-        FinanceService[banking.ts / expenses.ts]
-        SyncService[sync-engine.ts / sync/*]
+    subgraph Services
+        POS[pos-sales.ts / register.ts]
+        Inv[products.ts / barcode-generator.ts]
+        Tax[invoice.ts / gst.ts / eway-bill.ts]
+        Proc[purchase.ts]
+        Logist[challan.ts / returns.ts]
+        CRM[customers.ts / loyalty.ts]
+        Fin[banking.ts / expenses.ts]
+        Sync[sync-engine.ts / sync/*]
+        WPPClient[whatsapp.ts]
     end
 
-    LibServices --> PocketBaseClient["pb (pocketbase.ts)"]
-    PocketBaseClient --> PBServer[(PocketBase SQLite)]
+    Services --> PBClient["pb (pocketbase.ts)"]
+    PBClient --> PBEngine[(PocketBase SQLite)]
+    WPPClient --> WPPServer["WPPConnect Sidecar (:21465)"]
 ```
 
-### Key Service Module Roles
-- **`pos-sales.ts`**: Coordinates atomic checkout transactions: records sale, creates sale items, decrements variant inventory, writes stock movement entries, creates invoice records, and updates shift cash totals.
-- **`register.ts`**: Governs cashier shifts, drawer operations, and reconciliation calculations.
-- **`invoice.ts` & `gst.ts`**: Evaluates intra-state vs inter-state tax liability (CGST + SGST vs IGST), formats numbers into Indian currency words, and issues sequential invoice numbers.
-- **`purchase.ts`**: Handles purchase order states, partial receipt tracking, and warehouse GRN generation.
-- **`returns.ts`**: Manages customer return requests, calculates credit note adjustments, and restocks inventory.
-- **`loyalty.ts`**: Computes point accruals based on invoice subtotals, checks tier advancement thresholds, and applies point redemption limits.
-- **`whatsapp.ts`**: Interacts with the local WPPConnect sidecar server over HTTP, handling QR retrieval, authentication status, and automated outbound notifications.
+### Domain Module Contracts
+- **`pos-sales.ts`**: Atomically executes checkout transactions: validates stock, creates sale record, creates sale items, decrements variant quantities, writes stock movements, creates tax invoice, and updates shift cash balance.
+- **`register.ts`**: Governs register shifts (`openShift`, `closeShift`), cash drawer additions/drops, and closing variance calculation.
+- **`invoice.ts` & `gst.ts`**: Implements Indian GST tax rules: intra-state (CGST + SGST) vs inter-state (IGST), number-to-words currency formatting, and sequential invoice numbers.
+- **`products.ts` & `barcode-generator.ts`**: Manages product CRUD, variant combinations (size/color/material), and renders Code128 barcode vector SVGs for jewelry labels.
+- **`purchase.ts`**: Manages procurement PO states and Goods Received Note (GRN) quality control inspections.
+- **`returns.ts`**: Issues legal GST credit notes, coordinates refunds, and handles inventory restock.
+- **`loyalty.ts`**: Calculates tiered point accruals based on invoice subtotals and checks redemption limits.
+- **`banking.ts` & `expenses.ts`**: Double-entry ledger updates for cash drawer drops, bank deposits, and expense vouchers.
+- **`whatsapp.ts` & `mobile-whatsapp.ts`**: Communicates with the local WPPConnect sidecar over HTTP to fetch pairing QR codes and dispatch order updates, with fallback to native Android `whatsapp://` intent for 1-tap dispatch.
+- **`mobile-scanner.ts`**: Unified hardware USB/Bluetooth barcode scanner listener (keyboard wedge), Tauri native scanner, and HTML5 camera fallback.
+- **`mobile-printer.ts`**: Android system print spooler integration and ESC/POS thermal receipt formatting for 58mm / 80mm wireless/Bluetooth POS receipt printers.
+- **`offline-queue.ts`**: Offline transaction queue persisting mutations locally with automatic drain and replay upon network reconnection.
+- **`google-drive-sync.ts`**: Decentralized Tier 2 cloud sync engine writing incremental JSON changelog mutations to Google Drive for multi-device synchronization without dedicated backend servers.
+- **`sync/`**: Connector engines for Shopify GraphQL API and WooCommerce REST API.
 
 ---
 
-## 6. Security & Authentication Architecture
+## 6. Responsive & Mobile Architecture
 
-### Authentication Model
-1. **PocketBase Identity**: Users authenticate against PocketBase's native auth system via email/password. PocketBase generates a signed JWT stored locally in `pb.authStore`.
-2. **Session Persistence**: `pb.authStore` persists in `localStorage` across page reloads. An `AuthContext` provides user data and reactive auth state.
-3. **Quick Switch (PIN / QR)**: Cashiers at retail terminals can quickly unlock or switch terminal sessions using a 4-to-6 digit PIN or an authenticated badge QR code without retyping lengthy passwords.
+To support retail showroom staff using Android tablets, phones, and touch POS terminals, the UI employs a responsive design strategy:
 
-### Role-Based Access Control (RBAC)
-User permissions are decoupled into roles (`admin`, `manager`, `cashier`, `inventory_clerk`). Each role defines explicit capability flags stored in a JSON structure:
+### 6.1 Viewport Detection (`src/hooks/use-viewport.ts`)
+The `useViewport` hook detects the device form factor and environment:
+- `isMobile`: Screen width `< 768px` (smartphones)
+- `isTablet`: Screen width `768px - 1024px` (tablets/iPads)
+- `isDesktop`: Screen width `> 1024px` (desktop monitors)
+- `isTauri`: Detects if running inside the Tauri native container
+- `isAndroid`: Detects Android user-agent or Tauri Android environment
+
+### 6.2 Mobile Navigation Structure
+- **Desktop (`md:flex`)**: Persistent collapsible `Sidebar.tsx` with all ERP sub-menus.
+- **Mobile (`md:hidden`)**: 
+  - `MobileBottomNav.tsx`: Fixed bottom bar with quick links (Home, Stock, Invoices, Menu) and an elevated Center Floating Action Button (FAB) dedicated to Point of Sale (`/pos`).
+  - `MobileDrawer.tsx`: Slide-over drawer organizing all 18 ERP modules into clear functional sections (Sales & POS, Inventory, Finance, Showroom & System).
+
+### 6.3 Camera Barcode Scanning
+On mobile devices without physical USB barcode guns, `html5-qrcode` utilizes the device's native rear camera to scan Code128 product tags directly into the POS cart.
+
+### 6.4 Standalone PWA Architecture (`public/manifest.json`)
+To enable full-screen dedicated windowing on Android tablets and smartphones without browser chrome:
+- **Web App Manifest**: Configured with `"display": "standalone"`, `"orientation": "any"`, and theme colors matching Luminila’s midnight navy design system (`#001F3F`).
+- **Apple & Mobile Meta**: `layout.tsx` exposes `appleWebApp: { capable: true, statusBarStyle: "black-translucent" }` and viewport cover parameters.
+- **Hardware Capability Parity**: The PWA mode maintains 100% feature parity with native Android builds, accessing camera barcode scanning via WebRTC `getUserMedia`, printing via the Android Print Spooler, and queueing offline mutations in IndexedDB.
+
+### 6.5 Filesystem Constraints & Native APK Compilation
+- **exFAT Filesystem Limitation**: When developing on an external drive formatted as `exFAT`, Windows forbids the creation of symbolic links at the OS kernel level (`Incorrect function. (os error 1)`). This causes Tauri’s automated Android CLI to abort when linking `libapp_lib.so` to the Android Gradle `jniLibs` directory.
+- **Distribution Strategy**:
+  1. *Showroom Deployment*: Install directly as a standalone Progressive Web App via Chrome on showroom tablets/phones.
+  2. *Release APK Compilation*: Compile the native binary on an NTFS partition (e.g. `C:\`), where Windows symbolic links and cross-drive Gradle builds are natively supported.
+
+---
+
+## 7. Dynamic Server URL & Network Architecture (`src/lib/pocketbase.ts`)
+
+Because PocketBase is an embedded local backend, mobile devices and external clients need flexible connectivity:
+
+```mermaid
+graph TD
+    Client[Next.js Client] --> Detect[getPocketBaseUrl]
+    Detect --> CheckCustom{PB_CUSTOM_URL in localStorage?}
+    CheckCustom -- Yes --> UseCustom[Use Custom URL e.g. Cloudflare Tunnel / LAN IP]
+    CheckCustom -- No --> UseDefault[Use NEXT_PUBLIC_POCKETBASE_URL / localhost:8090]
+    UseCustom --> PBInstance[pb = new PocketBase]
+    UseDefault --> PBInstance
+    PBInstance --> HealthCheck[checkServerStatus: Tests Latency & Reachability]
+    HealthCheck -- Server Changed --> DispatchEvent[window.dispatchEvent 'pb:server-changed']
+```
+
+- **`getPocketBaseUrl()`**: Checks `localStorage.getItem("PB_CUSTOM_URL")` before falling back to `process.env.NEXT_PUBLIC_POCKETBASE_URL` or `http://127.0.0.1:8090`.
+- **`setPocketBaseUrl(url)`**: Dynamically repoints the PocketBase client at runtime, persists to `localStorage`, and fires a `pb:server-changed` window event so UI views refresh without page reloads.
+- **`checkServerStatus(targetUrl)`**: Asynchronously tests server reachability, measures round-trip latency in milliseconds, and detects if the connection is running over a tunnel.
+
+---
+
+## 8. Desktop Shell Architecture (Tauri v2)
+
+Tauri v2 compiles into a native Windows, macOS, or Linux application with a tiny footprint (<30 MB) by utilizing native OS WebViews (Edge WebView2 on Windows).
+
+### 8.1 Rust Supervisor & Sidecar Lifecycle (`src-tauri/src/lib.rs`)
+The Rust backend is responsible for:
+1. **Sidecar Process Execution**: Spawns the compiled `wppconnect-server` binary on application launch.
+2. **Background Health Monitoring Loop**: Polls `http://127.0.0.1:21465/health` every 5 seconds. If the sidecar terminates or fails 3 consecutive health checks, the Rust supervisor automatically kills the dead PID and respawns a fresh sidecar process.
+3. **Tauri IPC Commands**: Exposes `get_sidecar_status` and `restart_sidecar` to the Next.js frontend.
+4. **Content Security Policy (CSP)**: Locks down origin permissions to local loopback ports and verified external endpoints.
+
+---
+
+## 9. Security, Authentication & RBAC
+
+### 9.1 Authentication Architecture
+- **JWT Identity**: Users authenticate against PocketBase's native auth collection via email/password. PocketBase issues a cryptographically signed JWT stored in `pb.authStore`.
+- **State Hydration**: `AuthContext.tsx` synchronizes with `pb.authStore`, persisting sessions across page reloads.
+- **Cashier Quick Switch**: Retail cashiers switch terminal sessions rapidly using a 4-to-6 digit PIN or an authenticated badge QR code without full password re-entry.
+
+### 9.2 Role-Based Access Control (RBAC)
+Roles (`admin`, `manager`, `cashier`, `inventory_clerk`) define fine-grained capability flags in a JSON structure:
 
 ```json
 {
@@ -284,13 +413,4 @@ User permissions are decoupled into roles (`admin`, `manager`, `cashier`, `inven
 }
 ```
 
-The `usePermission` hook and `ProtectedRoute` component verify capability claims before rendering routes or permitting mutating actions.
-
----
-
-## 7. Desktop Integration (Tauri v2)
-
-For desktop retail installations, Tauri v2 wraps the Next.js frontend into a lightweight native binary:
-- **Zero Heavy Runtimes**: Unlike Electron, Tauri uses the native OS Webview (Webview2 on Windows, WebKit on macOS/Linux), keeping the installation footprint below 30 MB.
-- **Process Supervision**: Tauri starts and monitors the WPPConnect sidecar process via `externalBin` configurations.
-- **Content Security Policy (CSP)**: `tauri.conf.json` defines strict origins, permitting connections solely to local loopback ports (`127.0.0.1:8090`, `127.0.0.1:21465`) and verified payment or sync endpoints.
+The `ProtectedRoute` component and `usePermission` hook intercept unauthorized route navigation and disable forbidden UI actions.

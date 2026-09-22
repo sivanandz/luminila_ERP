@@ -97,7 +97,7 @@ async function main() {
             console.error(`${RED}[PB] PocketBase executable not found at: ${PB_EXE}${RESET}`);
         } else {
             console.log(`${GREEN}[PB]${RESET} Starting PocketBase DB server...`);
-            const pbProc = spawn(PB_EXE, ['serve', '--http=127.0.0.1:8090', `--dir=${PB_DATA}`], {
+            const pbProc = spawn(PB_EXE, ['serve', '--http=0.0.0.0:8090', `--dir=${PB_DATA}`], {
                 cwd: PB_DIR,
                 stdio: ['ignore', 'pipe', 'pipe']
             });

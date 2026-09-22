@@ -19,6 +19,8 @@ For detailed technical and operational documentation, consult the dedicated guid
 | Guide | Description | Link |
 |---|---|---|
 | **System Architecture** | Technical topology, Tauri v2, Next.js 16, PocketBase 38-collection data tier, services & RBAC | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| **Build & Deployment Guide** | Step-by-step prerequisites, dev workflows, desktop installers, Android APK, and Cloudflare tunneling | [docs/BUILD_AND_DEPLOYMENT.md](docs/BUILD_AND_DEPLOYMENT.md) |
+| **Codebase & Agent Guide** | Quick developer and AI agent overview of modules, build commands, and file boundaries | [CODEBASE.md](CODEBASE.md) |
 | **State of the Project** | Current release status, module maturity matrix, audit findings & technical debt | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) |
 | **Features Specification** | Complete functional specification across 15 domains (POS, Shifts, GST Invoicing, CRM, etc.) | [docs/FEATURES.md](docs/FEATURES.md) |
 | **Workflows & Operations** | Service startup orchestration (`dev:all`), daily cashier flows, GRN, B2B, and maintenance | [docs/APP_WORKING.md](docs/APP_WORKING.md) |
@@ -82,26 +84,43 @@ For detailed technical and operational documentation, consult the dedicated guid
    # Edit .env.local — PocketBase URL defaults to http://127.0.0.1:8090
    ```
 
-4. **Start PocketBase + Next.js together**
+4. **Start All Services (PocketBase + WhatsApp Sidecar + Next.js)**
 
    ```bash
    npm run dev:all
    ```
 
-   Or separately:
+   Or run services separately:
 
    ```bash
-   # Terminal 1 — PocketBase
-   ./pocketbase/pocketbase serve
+   # Terminal 1 — PocketBase (:8090)
+   npm run dev:pb
 
-   # Terminal 2 — Next.js
-   npm run dev
+   # Terminal 2 — WhatsApp Sidecar (:21465)
+   npm run dev:sidecar
+
+   # Terminal 3 — Next.js Frontend (:3000)
+   npm run dev:frontend
    ```
 
-5. **Build for desktop (Tauri)**
+5. **Run & Build for Desktop (Tauri v2)**
 
    ```bash
+   # Desktop Development
+   npm run tauri:dev
+
+   # Desktop Production Build (MSI / EXE)
    npm run tauri:build
+   ```
+
+6. **Run & Build for Mobile (Android via Tauri v2)**
+
+   ```bash
+   # Android Development (Device or Emulator)
+   npx tauri android dev
+
+   # Android Production APK Build
+   npx tauri android build --apk
    ```
 
 ---

@@ -99,8 +99,17 @@ export async function openShift(
             cash_removed: 0
         });
 
-        // Add initial cash drop operation
-        await addCashToDrawer(record.id, openingBalance, "Opening Balance", userId);
+        // Record initial opening float in audit trail without incrementing cash_added
+        if (openingBalance > 0) {
+            await pb.collection('cash_drawer_operations').create({
+                shift: record.id,
+                operation_type: 'opening_float',
+                amount: openingBalance,
+                reason: "Opening Float",
+                performed_by: userId,
+                performed_at: new Date().toISOString()
+            }).catch((err) => console.warn('Failed to record initial drawer operation:', err));
+        }
 
         return record as unknown as CashRegisterShift;
     } catch (error: any) {

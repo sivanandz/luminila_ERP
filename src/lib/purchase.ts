@@ -401,7 +401,27 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
 
     // Insert GRN items and update stock
     const createdItems: GRNItem[] = [];
-    for (const item of grn.items.filter(i => i.quantity_received > 0)) {
+    const validItems = grn.items.filter(i => i.quantity_received > 0);
+
+    // Validate and guard against over-receipt on linked PO items
+    for (const item of validItems) {
+        if (item.po_item_id) {
+            try {
+                const poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
+                const ordered = poItem.quantity_ordered ?? poItem.quantity ?? 0;
+                const alreadyReceived = poItem.quantity_received || 0;
+                const remaining = Math.max(0, ordered - alreadyReceived);
+                if (ordered > 0 && item.quantity_received > remaining) {
+                    console.warn(`[GRN Guard] PO item ${item.po_item_id} ordered: ${ordered}, previously received: ${alreadyReceived}. Requested receipt ${item.quantity_received} exceeds remaining ${remaining}. Capping to remaining.`);
+                    item.quantity_received = remaining;
+                }
+            } catch (err) {
+                console.warn('Could not verify PO item bounds:', item.po_item_id, err);
+            }
+        }
+    }
+
+    for (const item of validItems.filter(i => i.quantity_received > 0)) {
         const itemRecord = await pb.collection('grn_items').create({
             grn: grnData.id,
             po_item: item.po_item_id || '',

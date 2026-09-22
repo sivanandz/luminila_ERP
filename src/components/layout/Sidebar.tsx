@@ -234,7 +234,7 @@ export function Sidebar() {
     };
 
     return (
-        <aside className="w-72 bg-card border-r flex flex-col h-full shrink-0 z-30">
+        <aside className="hidden md:flex md:w-64 lg:w-72 bg-card border-r flex-col h-full shrink-0 z-30 select-none">
             {/* Logo */}
             <div className="p-6 flex items-center gap-3">
                 <div className="size-10 bg-primary/10 rounded-lg flex items-center justify-center border border-primary/20">

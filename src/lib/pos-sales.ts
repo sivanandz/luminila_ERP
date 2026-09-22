@@ -63,6 +63,11 @@ export interface POSSaleResult {
 export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     const transactionId = `TXN-${Date.now().toString(36).toUpperCase()}`;
 
+    let createdSaleId: string | null = null;
+    const createdSaleItemIds: string[] = [];
+    const createdMovementIds: string[] = [];
+    const stockDeductions: { variantId: string; quantity: number }[] = [];
+
     try {
         // 1. Create sale record
         const sale = await pb.collection('sales').create({
@@ -83,11 +88,12 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
             change_given: data.changeGiven || null,
         });
 
+        createdSaleId = sale.id;
         console.log('Sale created:', sale.id);
 
-        // 2. Create sale items
+        // 2. Create sale items & decrement stock
         for (const item of data.items) {
-            await pb.collection('sale_items').create({
+            const saleItem = await pb.collection('sale_items').create({
                 sale: sale.id,
                 product: item.productId || null,
                 variant: item.variantId || null,
@@ -98,10 +104,11 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                 discount: 0,
                 total: item.price * item.quantity,
             });
+            createdSaleItemIds.push(saleItem.id);
 
             // 3. Create stock movement (decrement stock)
             if (item.variantId) {
-                await pb.collection('stock_movements').create({
+                const movement = await pb.collection('stock_movements').create({
                     variant: item.variantId,
                     movement_type: 'sale',
                     quantity: -item.quantity, // Negative for stock reduction
@@ -109,6 +116,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                     source: 'pos',
                     notes: `POS Sale: ${transactionId}`,
                 });
+                createdMovementIds.push(movement.id);
 
                 // Update variant stock level
                 try {
@@ -116,6 +124,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                     await pb.collection('product_variants').update(item.variantId, {
                         stock_level: Math.max(0, (variant as any).stock_level - item.quantity),
                     });
+                    stockDeductions.push({ variantId: item.variantId, quantity: item.quantity });
                 } catch (stockErr) {
                     console.warn('Could not update stock level for variant:', item.variantId, stockErr);
                 }
@@ -140,7 +149,41 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
         };
 
     } catch (error) {
-        console.error('Error creating POS sale:', error);
+        console.error('Error creating POS sale, initiating compensating rollback:', error);
+
+        // Rollback stock deductions
+        for (const deduction of stockDeductions) {
+            try {
+                const variant = await pb.collection('product_variants').getOne(deduction.variantId);
+                await pb.collection('product_variants').update(deduction.variantId, {
+                    stock_level: ((variant as any).stock_level || 0) + deduction.quantity,
+                });
+            } catch (err) {
+                console.error(`Rollback error: unable to restore stock for variant ${deduction.variantId}:`, err);
+            }
+        }
+
+        // Delete created stock movements
+        for (const movementId of createdMovementIds) {
+            await pb.collection('stock_movements').delete(movementId).catch((err) =>
+                console.error(`Rollback error: unable to delete stock movement ${movementId}:`, err)
+            );
+        }
+
+        // Delete created sale items
+        for (const itemId of createdSaleItemIds) {
+            await pb.collection('sale_items').delete(itemId).catch((err) =>
+                console.error(`Rollback error: unable to delete sale item ${itemId}:`, err)
+            );
+        }
+
+        // Delete created sale record
+        if (createdSaleId) {
+            await pb.collection('sales').delete(createdSaleId).catch((err) =>
+                console.error(`Rollback error: unable to delete sale ${createdSaleId}:`, err)
+            );
+        }
+
         throw error;
     }
 }
