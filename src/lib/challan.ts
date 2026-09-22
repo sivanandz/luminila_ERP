@@ -6,7 +6,7 @@
 import { pb } from './pocketbase';
 import { toast } from 'sonner';
 import { getStoreSettings } from './invoice';
-import { getNextSequenceNumber } from './sequence-generator';
+import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 
 // ============================================
 // TYPES
@@ -128,43 +128,48 @@ export async function createChallan(
     items: Omit<ChallanItem, 'id' | 'challan_id'>[]
 ): Promise<{ success: boolean; challanId?: string; challanNumber?: string; error?: string }> {
     try {
-        const challanNumber = await generateChallanNumber();
-
-        const data = await pb.collection('delivery_challans').create({
-            challan_number: challanNumber,
-            challan_date: challan.challan_date,
-            challan_type: challan.challan_type,
-            status: challan.status || 'draft',
-            consignor_name: challan.consignor_name,
-            consignor_gstin: challan.consignor_gstin || '',
-            consignor_address: challan.consignor_address || '',
-            consignor_state_code: challan.consignor_state_code || '',
-            consignee: challan.consignee_id || '',
-            consignee_name: challan.consignee_name,
-            consignee_gstin: challan.consignee_gstin || '',
-            consignee_address: challan.consignee_address || '',
-            consignee_state_code: challan.consignee_state_code || '',
-            place_of_supply: challan.place_of_supply || '',
-            sales_order: challan.sales_order_id || '',
-            invoice: challan.invoice_id || '',
-            vehicle_number: challan.vehicle_number || '',
-            transporter_name: challan.transporter_name || '',
-            driver_name: challan.driver_name || '',
-            driver_phone: challan.driver_phone || '',
-            transport_mode: challan.transport_mode || 'road',
-            eway_bill_number: challan.eway_bill_number || '',
-            eway_bill_date: challan.eway_bill_date || '',
-            total_quantity: challan.total_quantity,
-            taxable_value: challan.taxable_value,
-            cgst_amount: challan.cgst_amount,
-            sgst_amount: challan.sgst_amount,
-            igst_amount: challan.igst_amount,
-            total_value: challan.total_value,
-            reason: challan.reason || '',
-            notes: challan.notes || '',
-            internal_notes: challan.internal_notes || '',
-            expected_delivery_date: challan.expected_delivery_date || '',
-        });
+        let allocatedChallanNumber = '';
+        const data = await createWithUniqueRetry(
+            generateChallanNumber,
+            async (allocatedNumber) => {
+                allocatedChallanNumber = allocatedNumber;
+                return pb.collection('delivery_challans').create({
+                    challan_number: allocatedNumber,
+                    challan_date: challan.challan_date,
+                    challan_type: challan.challan_type,
+                    status: challan.status || 'draft',
+                    consignor_name: challan.consignor_name,
+                    consignor_gstin: challan.consignor_gstin || '',
+                    consignor_address: challan.consignor_address || '',
+                    consignor_state_code: challan.consignor_state_code || '',
+                    consignee: challan.consignee_id || '',
+                    consignee_name: challan.consignee_name,
+                    consignee_gstin: challan.consignee_gstin || '',
+                    consignee_address: challan.consignee_address || '',
+                    consignee_state_code: challan.consignee_state_code || '',
+                    place_of_supply: challan.place_of_supply || '',
+                    sales_order: challan.sales_order_id || '',
+                    invoice: challan.invoice_id || '',
+                    vehicle_number: challan.vehicle_number || '',
+                    transporter_name: challan.transporter_name || '',
+                    driver_name: challan.driver_name || '',
+                    driver_phone: challan.driver_phone || '',
+                    transport_mode: challan.transport_mode || 'road',
+                    eway_bill_number: challan.eway_bill_number || '',
+                    eway_bill_date: challan.eway_bill_date || '',
+                    total_quantity: challan.total_quantity,
+                    taxable_value: challan.taxable_value,
+                    cgst_amount: challan.cgst_amount,
+                    sgst_amount: challan.sgst_amount,
+                    igst_amount: challan.igst_amount,
+                    total_value: challan.total_value,
+                    reason: challan.reason || '',
+                    notes: challan.notes || '',
+                    internal_notes: challan.internal_notes || '',
+                    expected_delivery_date: challan.expected_delivery_date || '',
+                });
+            }
+        );
 
         // Insert items
         for (const item of items) {
@@ -192,7 +197,7 @@ export async function createChallan(
         }
 
         toast.success('Delivery Challan created successfully');
-        return { success: true, challanId: data.id, challanNumber };
+        return { success: true, challanId: data.id, challanNumber: allocatedChallanNumber };
     } catch (error) {
         console.error('Error creating challan:', error);
         toast.error('Failed to create challan');

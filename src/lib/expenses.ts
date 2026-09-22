@@ -5,7 +5,7 @@
 
 import { pb } from './pocketbase';
 import { toast } from 'sonner';
-import { getNextSequenceNumber } from './sequence-generator';
+import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 
 // ==========================================
 // TYPES
@@ -155,23 +155,28 @@ export async function getExpense(id: string): Promise<Expense | null> {
 
 export async function createExpense(expense: Omit<Expense, 'id' | 'expense_number' | 'created_at' | 'updated_at'>): Promise<Expense | null> {
     try {
-        const expenseNumber = await generateExpenseNumber();
-
-        const e = await pb.collection('expenses').create({
-            expense_number: expenseNumber,
-            expense_date: expense.date,
-            category: expense.category_id,
-            amount: expense.amount,
-            payment_mode: expense.payment_mode,
-            payee: expense.payee || '',
-            description: expense.description || '',
-            receipt_url: expense.receipt_url || '',
-            reference_number: expense.reference_number || '',
-        });
+        let allocatedExpenseNumber = '';
+        const e = await createWithUniqueRetry(
+            generateExpenseNumber,
+            async (allocatedNumber) => {
+                allocatedExpenseNumber = allocatedNumber;
+                return pb.collection('expenses').create({
+                    expense_number: allocatedNumber,
+                    expense_date: expense.date,
+                    category: expense.category_id,
+                    amount: expense.amount,
+                    payment_mode: expense.payment_mode,
+                    payee: expense.payee || '',
+                    description: expense.description || '',
+                    receipt_url: expense.receipt_url || '',
+                    reference_number: expense.reference_number || '',
+                });
+            }
+        );
 
         return {
             id: e.id,
-            expense_number: expenseNumber,
+            expense_number: allocatedExpenseNumber,
             date: expense.date,
             category_id: expense.category_id,
             amount: expense.amount,

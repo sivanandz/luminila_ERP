@@ -10,7 +10,7 @@ import {
     getHSNForProduct,
     GST_RATES,
 } from './gst';
-import { getNextSequenceNumber } from './sequence-generator';
+import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 
 // ===========================================
 // TYPES
@@ -340,7 +340,13 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'invoice_numbe
     if (orderId) invoicePayload.order = orderId;
     if (saleId) invoicePayload.sale = saleId;
 
-    const invoiceData = await pb.collection('invoices').create(invoicePayload);
+    const explicitNumber = (invoice as any).invoice_number;
+    const invoiceData = explicitNumber
+        ? await pb.collection('invoices').create({ ...invoicePayload, invoice_number: explicitNumber })
+        : await createWithUniqueRetry(
+            generateInvoiceNumber,
+            (allocatedNumber) => pb.collection('invoices').create({ ...invoicePayload, invoice_number: allocatedNumber })
+        );
 
     // Insert invoice items
     const itemsWithInvoiceId: InvoiceItem[] = [];

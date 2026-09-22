@@ -4,7 +4,7 @@
  */
 
 import { pb } from './pocketbase';
-import { getNextSequenceNumber } from './sequence-generator';
+import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 
 // ===========================================
 // TYPES
@@ -120,29 +120,33 @@ export async function generateGRNNumber(): Promise<string> {
 export async function createPurchaseOrder(
     po: Omit<PurchaseOrder, 'id' | 'po_number' | 'created_at' | 'updated_at'>
 ): Promise<PurchaseOrder> {
-    // Generate PO number
-    const poNumber = await generatePONumber();
-
     // Calculate totals
     const subtotal = po.items.reduce((sum, item) => sum + item.total_price, 0);
     const gstAmount = po.items.reduce((sum, item) => sum + item.gst_amount, 0);
     const total = subtotal + gstAmount + (po.shipping_cost || 0) - (po.discount_amount || 0);
 
-    // Insert PO
-    const poData = await pb.collection('purchase_orders').create({
-        po_number: poNumber,
-        vendor: po.vendor_id || '',
-        status: po.status,
-        order_date: po.order_date,
-        expected_date: po.expected_date || '',
-        subtotal,
-        gst_amount: gstAmount,
-        shipping_cost: po.shipping_cost || 0,
-        discount_amount: po.discount_amount || 0,
-        total,
-        shipping_address: po.shipping_address || '',
-        notes: po.notes || '',
-    });
+    let allocatedPoNumber = '';
+    // Insert PO with unique retry
+    const poData = await createWithUniqueRetry(
+        generatePONumber,
+        (allocatedNumber) => {
+            allocatedPoNumber = allocatedNumber;
+            return pb.collection('purchase_orders').create({
+                po_number: allocatedNumber,
+                vendor: po.vendor_id || '',
+                status: po.status,
+                order_date: po.order_date,
+                expected_date: po.expected_date || '',
+                subtotal,
+                gst_amount: gstAmount,
+                shipping_cost: po.shipping_cost || 0,
+                discount_amount: po.discount_amount || 0,
+                total,
+                shipping_address: po.shipping_address || '',
+                notes: po.notes || '',
+            });
+        }
+    );
 
     // Insert PO items
     const createdItems: PurchaseOrderItem[] = [];
@@ -170,7 +174,7 @@ export async function createPurchaseOrder(
 
     return {
         id: poData.id,
-        po_number: poNumber,
+        po_number: poData.po_number || allocatedPoNumber,
         vendor_id: po.vendor_id,
         status: po.status,
         order_date: po.order_date,
@@ -355,18 +359,22 @@ export async function cancelPurchaseOrder(id: string): Promise<void> {
 // ===========================================
 
 export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number' | 'created_at'>): Promise<GoodsReceivedNote> {
-    // Generate GRN number
-    const grnNumber = await generateGRNNumber();
-
-    // Insert GRN
-    const grnData = await pb.collection('goods_received_notes').create({
-        grn_number: grnNumber,
-        purchase_order: grn.po_id || '',
-        vendor: grn.vendor_id || '',
-        received_date: grn.received_date,
-        received_by: grn.received_by || '',
-        notes: grn.notes || '',
-    });
+    let allocatedGrnNumber = '';
+    // Insert GRN with unique retry
+    const grnData = await createWithUniqueRetry(
+        generateGRNNumber,
+        (allocatedNumber) => {
+            allocatedGrnNumber = allocatedNumber;
+            return pb.collection('goods_received_notes').create({
+                grn_number: allocatedNumber,
+                purchase_order: grn.po_id || '',
+                vendor: grn.vendor_id || '',
+                received_date: grn.received_date,
+                received_by: grn.received_by || '',
+                notes: grn.notes || '',
+            });
+        }
+    );
 
     // Insert GRN items and update stock
     const createdItems: GRNItem[] = [];
@@ -415,7 +423,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
                     quantity: item.quantity_received,
                     reference_id: grnData.id,
                     source: 'grn',
-                    notes: `Goods received via GRN ${grnNumber}`,
+                    notes: `Goods received via GRN ${allocatedGrnNumber}`,
                 });
             } catch (err) {
                 console.error('Error updating stock for variant:', item.variant_id, err);
@@ -468,7 +476,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
 
     return {
         id: grnData.id,
-        grn_number: grnNumber,
+        grn_number: grnData.grn_number || allocatedGrnNumber,
         po_id: grn.po_id,
         vendor_id: grn.vendor_id,
         received_date: grn.received_date,

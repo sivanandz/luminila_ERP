@@ -4,7 +4,7 @@
  */
 
 import { pb } from './pocketbase';
-import { getNextSequenceNumber } from './sequence-generator';
+import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 
 // ===========================================
 // TYPES
@@ -194,26 +194,31 @@ export async function createCreditNote(
     creditNote: Omit<CreditNote, 'id' | 'credit_note_number' | 'created_at' | 'status'>,
     items: Omit<CreditNoteItem, 'id' | 'credit_note_id'>[]
 ): Promise<CreditNote> {
-    const cnNumber = await generateCreditNoteNumber();
-
-    const cn = await pb.collection('credit_notes').create({
-        credit_note_number: cnNumber,
-        original_invoice: creditNote.original_invoice_id || '',
-        original_sale: creditNote.original_sale_id || '',
-        return_reason: creditNote.return_reason,
-        notes: creditNote.notes || '',
-        buyer_name: creditNote.buyer_name,
-        buyer_address: creditNote.buyer_address || '',
-        buyer_gstin: creditNote.buyer_gstin || '',
-        buyer_state_code: creditNote.buyer_state_code || '',
-        taxable_value: creditNote.taxable_value,
-        cgst_amount: creditNote.cgst_amount,
-        sgst_amount: creditNote.sgst_amount,
-        igst_amount: creditNote.igst_amount,
-        total_tax: creditNote.total_tax,
-        grand_total: creditNote.grand_total,
-        status: 'pending',
-    });
+    let allocatedCnNumber = '';
+    const cn = await createWithUniqueRetry(
+        generateCreditNoteNumber,
+        (allocatedNumber) => {
+            allocatedCnNumber = allocatedNumber;
+            return pb.collection('credit_notes').create({
+                credit_note_number: allocatedNumber,
+                original_invoice: creditNote.original_invoice_id || '',
+                original_sale: creditNote.original_sale_id || '',
+                return_reason: creditNote.return_reason,
+                notes: creditNote.notes || '',
+                buyer_name: creditNote.buyer_name,
+                buyer_address: creditNote.buyer_address || '',
+                buyer_gstin: creditNote.buyer_gstin || '',
+                buyer_state_code: creditNote.buyer_state_code || '',
+                taxable_value: creditNote.taxable_value,
+                cgst_amount: creditNote.cgst_amount,
+                sgst_amount: creditNote.sgst_amount,
+                igst_amount: creditNote.igst_amount,
+                total_tax: creditNote.total_tax,
+                grand_total: creditNote.grand_total,
+                status: 'pending',
+            });
+        }
+    );
 
     // Create items
     for (const item of items) {
@@ -239,7 +244,7 @@ export async function createCreditNote(
     return {
         ...creditNote,
         id: cn.id,
-        credit_note_number: cnNumber,
+        credit_note_number: cn.credit_note_number || allocatedCnNumber,
         status: 'pending',
         created_at: cn.created,
     };

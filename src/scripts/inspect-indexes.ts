@@ -22,7 +22,8 @@ async function main() {
         'credit_notes',
         'delivery_challans',
         'expenses',
-        'number_sequences'
+        'number_sequences',
+        'activity_logs'
     ];
 
     for (const c of collections) {
