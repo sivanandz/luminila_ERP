@@ -72,26 +72,27 @@ export async function getDashboardStats(): Promise<DashboardStats> {
             filter: `created>="${sixtyDaysAgoISO}"`,
         });
 
-        // Fetch sales orders
+        // Fetch sales orders: prioritize order_date (business date), fallback to created
         let ordersData: any[] = [];
         try {
             ordersData = await pb.collection('sales_orders').getFullList({
-                filter: `created>="${sixtyDaysAgoISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+                filter: `(order_date>="${sixtyDaysAgoISO}" || (order_date="" && created>="${sixtyDaysAgoISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
         } catch (e) {
             console.error('Failed to fetch sales_orders for stats:', e);
         }
 
         const sumRevenue = (items: any[]) => items.reduce((sum, item) => sum + (item.total || 0), 0);
+        const getOrderDate = (o: any): string => o.order_date || o.created;
 
         const salesLast30 = salesData.filter((s: any) => s.created >= thirtyDaysAgoISO);
-        const ordersLast30 = ordersData.filter((o: any) => o.created >= thirtyDaysAgoISO);
+        const ordersLast30 = ordersData.filter((o: any) => getOrderDate(o) >= thirtyDaysAgoISO);
 
         const salesPrev30 = salesData.filter((s: any) => s.created < thirtyDaysAgoISO && s.created >= sixtyDaysAgoISO);
-        const ordersPrev30 = ordersData.filter((o: any) => o.created < thirtyDaysAgoISO && o.created >= sixtyDaysAgoISO);
+        const ordersPrev30 = ordersData.filter((o: any) => getOrderDate(o) < thirtyDaysAgoISO && getOrderDate(o) >= sixtyDaysAgoISO);
 
         const salesToday = salesData.filter((s: any) => s.created >= todayISO);
-        const ordersToday = ordersData.filter((o: any) => o.created >= todayISO);
+        const ordersToday = ordersData.filter((o: any) => getOrderDate(o) >= todayISO);
 
         const totalRevenue = sumRevenue(salesLast30) + sumRevenue(ordersLast30);
         const totalOrders = salesLast30.length + ordersLast30.length;
@@ -160,7 +161,7 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
         let orders: any[] = [];
         try {
             orders = await pb.collection('sales_orders').getFullList({
-                filter: `created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+                filter: `(order_date>="${startDateISO}" || (order_date="" && created>="${startDateISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
         } catch (e) {
             console.error('Failed to fetch sales_orders for trend:', e);
@@ -175,9 +176,10 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
             byDate.set(key, { revenue: 0, orders: 0 });
         }
 
-        const aggregate = (items: any[]) => {
+        const aggregate = (items: any[], isOrder = false) => {
             items.forEach((item: any) => {
-                const dateKey = new Date(item.created).toISOString().split('T')[0];
+                const rawDate = isOrder ? (item.order_date || item.created) : item.created;
+                const dateKey = new Date(rawDate).toISOString().split('T')[0];
                 const existing = byDate.get(dateKey);
                 if (existing) {
                     byDate.set(dateKey, {
@@ -188,8 +190,8 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
             });
         };
 
-        aggregate(sales);
-        aggregate(orders);
+        aggregate(sales, false);
+        aggregate(orders, true);
 
         return Array.from(byDate.entries()).map(([date, data]) => ({
             date,
@@ -267,7 +269,7 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
         // Sales Orders
         try {
             const salesOrders = await pb.collection('sales_orders').getFullList({
-                filter: `created>="${thirtyDaysAgo.toISOString()}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+                filter: `(order_date>="${thirtyDaysAgo.toISOString()}" || (order_date="" && created>="${thirtyDaysAgo.toISOString()}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
 
             salesOrders.forEach((order: any) => {

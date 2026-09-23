@@ -133,20 +133,30 @@ export async function updateDiscount(id: string, updates: Partial<Discount>): Pr
     if (cleanUpdates.code) {
         cleanUpdates.code = cleanUpdates.code.toUpperCase();
     }
-    if (cleanUpdates.discount_type) {
+    if (cleanUpdates.discount_type !== undefined) {
         cleanUpdates.type = cleanUpdates.discount_type;
+    } else if (cleanUpdates.type !== undefined) {
+        cleanUpdates.discount_type = cleanUpdates.type;
     }
     if (cleanUpdates.min_purchase !== undefined) {
         cleanUpdates.min_order_value = cleanUpdates.min_purchase;
+    } else if (cleanUpdates.min_order_value !== undefined) {
+        cleanUpdates.min_purchase = cleanUpdates.min_order_value;
     }
     if (cleanUpdates.usage_limit !== undefined) {
         cleanUpdates.max_uses = cleanUpdates.usage_limit;
+    } else if (cleanUpdates.max_uses !== undefined) {
+        cleanUpdates.usage_limit = cleanUpdates.max_uses;
     }
     if (cleanUpdates.start_date !== undefined) {
         cleanUpdates.valid_from = cleanUpdates.start_date;
+    } else if (cleanUpdates.valid_from !== undefined) {
+        cleanUpdates.start_date = cleanUpdates.valid_from;
     }
     if (cleanUpdates.end_date !== undefined) {
         cleanUpdates.valid_until = cleanUpdates.end_date;
+    } else if (cleanUpdates.valid_until !== undefined) {
+        cleanUpdates.end_date = cleanUpdates.valid_until;
     }
 
     const d = await pb.collection('discounts').update(id, cleanUpdates);

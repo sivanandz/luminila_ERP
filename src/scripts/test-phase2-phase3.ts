@@ -67,6 +67,18 @@ async function runTests() {
         }
     }
 
+    // 0. PocketBase Engine Reachability Gate (T25-N2)
+    console.log("\n[Test 0] PocketBase Engine Reachability Gate (T25-N2)");
+    try {
+        const health = await pb.health.check();
+        assert(health && health.code === 200, `PocketBase reachable at ${PB_URL} (status code 200)`);
+    } catch (err: any) {
+        console.error(`\n❌ CRITICAL ENVIRONMENT ERROR: PocketBase is not reachable at ${PB_URL}`);
+        console.error(`Ensure PocketBase is running (e.g. 'pocketbase\\pocketbase.exe serve --http=127.0.0.1:8091 --dir=pocketbase\\pb_data').`);
+        console.error(`Error details: ${err?.message || err}\n`);
+        process.exit(1);
+    }
+
     // 1. Anti-Ban Jitter Range
     console.log("\n[Test 1] Anti-Ban Jitter Slot Calculation (8,000 - 22,000 ms)");
     let allInBounds = true;
@@ -690,39 +702,43 @@ async function runTests() {
         assert(Array.isArray(anniversaries), "getUpcomingAnniversaries executes without 400 bad request");
 
         // B. Create customer with complete drifted CRM fields
-        const testCust = await createCustomer({
-            name: 'Vikramaditya Singhania',
-            phone: '+919988776655',
-            email: 'vikram@singhania.test',
-            customer_type: 'vip',
-            billing_address: '42 Marine Drive, Mumbai',
-            shipping_address: '42 Marine Drive, Mumbai',
-            company_name: 'Singhania Exports Ltd',
-            pan: 'ABCDE1234F',
-            date_of_birth: '1985-10-15',
-            anniversary: '2010-12-05',
-            store_credit: 5000,
-            preferred_contact: 'whatsapp',
-            opt_in_marketing: true,
-            source: 'walk_in',
-        });
+        let testCustId = '';
+        try {
+            const testCust = await createCustomer({
+                name: 'Vikramaditya Singhania',
+                phone: '+919988776655',
+                email: 'vikram@singhania.test',
+                customer_type: 'vip',
+                billing_address: '42 Marine Drive, Mumbai',
+                shipping_address: '42 Marine Drive, Mumbai',
+                company_name: 'Singhania Exports Ltd',
+                pan: 'ABCDE1234F',
+                date_of_birth: '1985-10-15',
+                anniversary: '2010-12-05',
+                store_credit: 5000,
+                preferred_contact: 'whatsapp',
+                opt_in_marketing: true,
+                source: 'walk_in',
+            });
+            testCustId = testCust.id;
 
-        assert(Boolean(testCust.id), `createCustomer created test customer with ID (${testCust.id})`);
+            assert(Boolean(testCust.id), `createCustomer created test customer with ID (${testCust.id})`);
 
-        // C. Fetch back and assert full field preservation (zero hollow data drop)
-        const fetchedCust = await adminPb.collection('customers').getOne(testCust.id);
-        assert(
-            fetchedCust.billing_address === '42 Marine Drive, Mumbai' &&
-            fetchedCust.company_name === 'Singhania Exports Ltd' &&
-            fetchedCust.pan === 'ABCDE1234F' &&
-            fetchedCust.date_of_birth === '1985-10-15' &&
-            fetchedCust.anniversary === '2010-12-05' &&
-            fetchedCust.store_credit === 5000,
-            "Persisted customer preserves all CRM fields (zero hollow-record data loss)"
-        );
-
-        // Cleanup
-        if (testCust.id) await deleteCustomer(testCust.id).catch(() => {});
+            // C. Fetch back and assert full field preservation (zero hollow data drop)
+            const fetchedCust = await adminPb.collection('customers').getOne(testCust.id);
+            assert(
+                fetchedCust.billing_address === '42 Marine Drive, Mumbai' &&
+                fetchedCust.company_name === 'Singhania Exports Ltd' &&
+                fetchedCust.pan === 'ABCDE1234F' &&
+                fetchedCust.date_of_birth === '1985-10-15' &&
+                fetchedCust.anniversary === '2010-12-05' &&
+                fetchedCust.store_credit === 5000,
+                "Persisted customer preserves all CRM fields (zero hollow-record data loss)"
+            );
+        } finally {
+            // Cleanup hoisted into finally block (T25-N1)
+            if (testCustId) await deleteCustomer(testCustId).catch(() => {});
+        }
 
     } catch (err: any) {
         assert(false, `Test 14 failed: ${err.message}`);
@@ -757,32 +773,38 @@ async function runTests() {
             soProductId = (variants.items[0] as any).product || '';
         }
 
-        const orderRes = await createOrder({
-            order_type: 'sales_order',
-            order_date: new Date().toISOString(),
-            customer_name: 'Test Sequential Order Customer',
-            status: 'draft',
-            subtotal: 10000,
-            tax_total: 300,
-            discount_total: 0,
-            shipping_charges: 0,
-            total: 10300,
-            items: [{
-                product_id: soProductId,
-                variant_id: soVariantId,
-                description: 'Gold Necklace 22K',
-                quantity: 1,
-                unit_price: 10000,
-                total: 10000,
-            }],
-        });
+        let orderIdToClean = '';
+        try {
+            const orderRes = await createOrder({
+                order_type: 'sales_order',
+                order_date: new Date().toISOString(),
+                customer_name: 'Test Sequential Order Customer',
+                status: 'draft',
+                subtotal: 10000,
+                tax_total: 300,
+                discount_total: 0,
+                shipping_charges: 0,
+                total: 10300,
+                items: [{
+                    product_id: soProductId,
+                    variant_id: soVariantId,
+                    description: 'Gold Necklace 22K',
+                    quantity: 1,
+                    unit_price: 10000,
+                    total: 10000,
+                }],
+            });
 
-        assert(orderRes.success && Boolean(orderRes.orderNumber), `createOrder succeeded with allocated sequential number (${orderRes.orderNumber})`);
+            orderIdToClean = orderRes.orderId || '';
+            assert(orderRes.success && Boolean(orderRes.orderNumber), `createOrder succeeded with allocated sequential number (${orderRes.orderNumber})`);
 
-        if (orderRes.orderId) {
-            const fetchedOrder = await adminPb.collection('sales_orders').getOne(orderRes.orderId);
-            assert(fetchedOrder.order_number === orderRes.orderNumber, "Persisted sales_orders record has exact matching order_number");
-            await adminPb.collection('sales_orders').delete(orderRes.orderId).catch(() => {});
+            if (orderRes.orderId) {
+                const fetchedOrder = await adminPb.collection('sales_orders').getOne(orderRes.orderId);
+                assert(fetchedOrder.order_number === orderRes.orderNumber, "Persisted sales_orders record has exact matching order_number");
+            }
+        } finally {
+            // Teardown hoisted into finally (T25-N1)
+            if (orderIdToClean) await adminPb.collection('sales_orders').delete(orderIdToClean).catch(() => {});
         }
 
     } catch (err: any) {
@@ -813,41 +835,46 @@ async function runTests() {
         const { processRazorpayWebhookEvent } = await import('../lib/razorpay-webhook-handler');
         const { createOrder } = await import('../lib/orders');
 
-        const testOrderRes = await createOrder({
-            order_type: 'sales_order',
-            order_date: new Date().toISOString(),
-            customer_name: 'Idempotency Test Customer',
-            status: 'confirmed',
-            subtotal: 5000,
-            tax_total: 150,
-            discount_total: 0,
-            shipping_charges: 0,
-            total: 5150,
-            items: [],
-        });
+        let testOrderId = '';
+        try {
+            const testOrderRes = await createOrder({
+                order_type: 'sales_order',
+                order_date: new Date().toISOString(),
+                customer_name: 'Idempotency Test Customer',
+                status: 'confirmed',
+                subtotal: 5000,
+                tax_total: 150,
+                discount_total: 0,
+                shipping_charges: 0,
+                total: 5150,
+                items: [],
+            });
 
-        assert(testOrderRes.success && Boolean(testOrderRes.orderId), "Created sales order for webhook idempotency verification");
+            testOrderId = testOrderRes.orderId || '';
+            assert(testOrderRes.success && Boolean(testOrderRes.orderId), "Created sales order for webhook idempotency verification");
 
-        await adminPb.collection('sales_orders').update(testOrderRes.orderId!, {
-            payment_status: 'PAID',
-        });
+            await adminPb.collection('sales_orders').update(testOrderRes.orderId!, {
+                payment_status: 'PAID',
+            });
 
-        const rawBody = JSON.stringify({
-            event: 'payment_link.paid',
-            payload: {
-                payment_link: {
-                    entity: {
-                        notes: { order_id: testOrderRes.orderId }
+            const rawBody = JSON.stringify({
+                event: 'payment_link.paid',
+                payload: {
+                    payment_link: {
+                        entity: {
+                            notes: { order_id: testOrderRes.orderId }
+                        }
                     }
                 }
+            });
+
+            const replayResult = await processRazorpayWebhookEvent(rawBody, null);
+            assert(replayResult.success === true, "processRazorpayWebhookEvent safely short-circuits replayed event for PAID order (WPA-11)");
+        } finally {
+            // Teardown hoisted into finally (T25-N1)
+            if (testOrderId) {
+                await adminPb.collection('sales_orders').delete(testOrderId).catch(() => {});
             }
-        });
-
-        const replayResult = await processRazorpayWebhookEvent(rawBody, null);
-        assert(replayResult.success === true, "processRazorpayWebhookEvent safely short-circuits replayed event for PAID order (WPA-11)");
-
-        if (testOrderRes.orderId) {
-            await adminPb.collection('sales_orders').delete(testOrderRes.orderId).catch(() => {});
         }
 
     } catch (err: any) {
@@ -1623,45 +1650,150 @@ async function runTests() {
         const normRange = normalizeDateRange('2026-09-01', '2026-09-30');
         assert(normRange.start === '2026-09-01 00:00:00.000Z' && normRange.end === '2026-09-30 23:59:59.999Z', "normalizeDateRange formats full month boundary");
 
-        // B. WPA-34 & WPA-35: End-Date Inclusion & Expense Stats Precision in Practice
-        // Create an expense with expense_date set to '2026-09-23 15:45:00.000Z'
-        const expRecord = await adminPb.collection('expenses').create({
-            expense_number: `EXP-TEST-${Date.now()}`,
-            expense_date: '2026-09-23 15:45:00.000Z',
-            amount: 1500,
-            payment_mode: 'cash',
-            payee: 'Packaging Vendor',
-            description: 'Test Box Packaging'
-        });
+        let expIdToClean = '';
+        try {
+            // B. WPA-34 & WPA-35: End-Date Inclusion & Expense Stats Precision in Practice
+            // Create an expense with expense_date set to '2026-09-23 15:45:00.000Z'
+            const expRecord = await adminPb.collection('expenses').create({
+                expense_number: `EXP-TEST-${Date.now()}`,
+                expense_date: '2026-09-23 15:45:00.000Z',
+                amount: 1500,
+                payment_mode: 'cash',
+                payee: 'Packaging Vendor',
+                description: 'Test Box Packaging'
+            });
+            expIdToClean = expRecord.id;
 
-        // Query with single-day filter startDate === endDate === '2026-09-23'
-        const queryResults = await getExpenses({ startDate: '2026-09-23', endDate: '2026-09-23' });
-        const foundExp = queryResults.some(e => e.id === expRecord.id);
-        assert(foundExp, "getExpenses finds expense timestamped mid-day on endDate (no lexicographical drop)");
+            // Query with single-day filter startDate === endDate === '2026-09-23'
+            const queryResults = await getExpenses({ startDate: '2026-09-23', endDate: '2026-09-23' });
+            const foundExp = queryResults.some(e => e.id === expRecord.id);
+            assert(foundExp, "getExpenses finds expense timestamped mid-day on endDate (no lexicographical drop)");
 
-        // Verify stats calculation with rounded percentages
-        const stats = await getExpenseStats('2026-09-23', '2026-09-23');
-        assert(stats.totalAmount >= 1500, "getExpenseStats includes expenses on endDate");
-        for (const cat of stats.byCategory) {
-            const decCount = (cat.percentage.toString().split('.')[1] || '').length;
-            assert(decCount <= 2, `Category ${cat.name} percentage is rounded to max 2 decimals (${cat.percentage}%)`);
+            // Verify stats calculation with rounded percentages
+            const stats = await getExpenseStats('2026-09-23', '2026-09-23');
+            assert(stats.totalAmount >= 1500, "getExpenseStats includes expenses on endDate");
+            for (const cat of stats.byCategory) {
+                const decCount = (cat.percentage.toString().split('.')[1] || '').length;
+                assert(decCount <= 2, `Category ${cat.name} percentage is rounded to max 2 decimals (${cat.percentage}%)`);
+            }
+
+            // C. WPA-36: Expense Update Date Field Mapping
+            const updatedExp = await updateExpense(expRecord.id, {
+                date: '2026-09-25 10:00:00.000Z',
+                amount: 1800,
+            });
+            assert(Boolean(updatedExp), "updateExpense succeeds");
+            const refreshedDbExp = await adminPb.collection('expenses').getOne(expRecord.id);
+            assert(refreshedDbExp.expense_date.startsWith('2026-09-25'), "updateExpense maps updates.date to PB schema expense_date");
+            assert(refreshedDbExp.amount === 1800, "updateExpense updates numeric amount correctly");
+        } finally {
+            // Teardown hoisted into finally (T25-N1)
+            if (expIdToClean) await adminPb.collection('expenses').delete(expIdToClean).catch(() => {});
         }
-
-        // C. WPA-36: Expense Update Date Field Mapping
-        const updatedExp = await updateExpense(expRecord.id, {
-            date: '2026-09-25 10:00:00.000Z',
-            amount: 1800,
-        });
-        assert(Boolean(updatedExp), "updateExpense succeeds");
-        const refreshedDbExp = await adminPb.collection('expenses').getOne(expRecord.id);
-        assert(refreshedDbExp.expense_date.startsWith('2026-09-25'), "updateExpense maps updates.date to PB schema expense_date");
-        assert(refreshedDbExp.amount === 1800, "updateExpense updates numeric amount correctly");
-
-        // Teardown
-        await adminPb.collection('expenses').delete(expRecord.id).catch(() => {});
 
     } catch (err: any) {
         assert(false, `Test 25 failed: ${err.message}`);
+    }
+
+    // 26. Whole-Project Audit (WPA-37..43): Analytics Date Alignment, Discounts Sync, Backup Coverage & Customer Lookup Alignment
+    console.log("\n[Test 26]: Whole-Project Audit (WPA-37..43) Remediation Verification");
+    try {
+        const { getDashboardStats, getSalesTrend, getChannelBreakdown } = await import('../lib/analytics');
+        const { createDiscount, updateDiscount, getDiscount, deleteDiscount } = await import('../lib/discounts');
+        const { createBackup } = await import('../lib/backup');
+        const { mapCustomerRecord } = await import('../lib/customer-lookup');
+
+        // A. WPA-37: Analytics Business Date Support
+        const dStats = await getDashboardStats();
+        assert(typeof dStats.totalRevenue === 'number' && typeof dStats.totalOrders === 'number', "getDashboardStats executes cleanly with order_date prioritization (WPA-37)");
+
+        const sTrend = await getSalesTrend(7);
+        assert(Array.isArray(sTrend) && sTrend.length === 7, "getSalesTrend(7) executes cleanly with business order date attribution");
+
+        const cBreakdown = await getChannelBreakdown();
+        assert(Array.isArray(cBreakdown), "getChannelBreakdown executes cleanly with order_date filtering");
+
+        // B. WPA-40: Discounts Dual-Field Bidirectional Synchronization
+        let testDiscountId = '';
+        try {
+            const testDisc = await createDiscount({
+                code: `TESTWPA40${Date.now().toString().slice(-4)}`,
+                name: 'WPA-40 Test Discount',
+                discount_type: 'percentage',
+                value: 15,
+                min_purchase: 1000,
+                min_items: 1,
+                applies_to: 'all',
+                usage_limit: 100,
+                per_customer_limit: 1,
+                is_active: true,
+            });
+            testDiscountId = testDisc.id || '';
+            assert(Boolean(testDisc.id), "createDiscount creates discount record successfully");
+
+            // Update with modern field names
+            await updateDiscount(testDisc.id!, {
+                min_purchase: 2500,
+                usage_limit: 50,
+            });
+
+            // Inspect DB record directly to verify dual-field synchronization
+            const dbDisc = await adminPb.collection('discounts').getOne(testDisc.id!);
+            assert(
+                dbDisc.min_purchase === 2500 && dbDisc.min_order_value === 2500,
+                "updateDiscount synchronizes both min_purchase and legacy min_order_value (WPA-40)"
+            );
+            assert(
+                dbDisc.usage_limit === 50 && dbDisc.max_uses === 50,
+                "updateDiscount synchronizes both usage_limit and legacy max_uses (WPA-40)"
+            );
+        } finally {
+            if (testDiscountId) await deleteDiscount(testDiscountId).catch(() => {});
+        }
+
+        // C. WPA-41: Backup & Disaster Recovery Full ERP Coverage
+        const backupResult = await createBackup();
+        assert(backupResult !== null && typeof backupResult.tables === 'object', "createBackup generates backup object");
+        const tables = backupResult?.tables || {} as any;
+        assert(
+            Array.isArray(tables.invoices) &&
+            Array.isArray(tables.sales_orders) &&
+            Array.isArray(tables.purchase_orders) &&
+            Array.isArray(tables.expenses) &&
+            Array.isArray(tables.cash_registers) &&
+            Array.isArray(tables.bank_accounts) &&
+            Array.isArray(tables.discounts),
+            "createBackup exports all critical ERP accounting tables (WPA-41)"
+        );
+
+        // D. WPA-42: Customer Lookup CRM Canonical Schema Alignment
+        const mockRawPBRecord = {
+            id: 'mockcust1234567',
+            name: 'Pooja Bhatt',
+            phone: '+919876543210',
+            billing_address: '102 Marine Drive, Mumbai',
+            shipping_address: '102 Marine Drive, Mumbai',
+            pan: 'ABCDE9999F',
+            store_credit: 2500,
+            opt_in_marketing: true,
+            date_of_birth: '1990-05-15',
+            anniversary: '2015-11-20',
+            created: '2026-01-01T00:00:00.000Z',
+            updated: '2026-01-01T00:00:00.000Z',
+        };
+        const mapped = mapCustomerRecord(mockRawPBRecord);
+        assert(
+            mapped.billing_address === '102 Marine Drive, Mumbai' &&
+            mapped.pan === 'ABCDE9999F' &&
+            mapped.store_credit === 2500 &&
+            mapped.opt_in_marketing === true &&
+            mapped.date_of_birth === '1990-05-15' &&
+            mapped.anniversary === '2015-11-20',
+            "mapCustomerRecord preserves canonical CRM fields without hollow data drop (WPA-42)"
+        );
+
+    } catch (err: any) {
+        assert(false, `Test 26 failed: ${err.message}`);
     }
 
     console.log("\n==================================================");

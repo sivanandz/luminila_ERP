@@ -17,6 +17,30 @@ interface BackupData {
         sales: unknown[];
         sale_items: unknown[];
         stock_movements: unknown[];
+        invoices?: unknown[];
+        invoice_items?: unknown[];
+        invoice_payments?: unknown[];
+        sales_orders?: unknown[];
+        sales_order_items?: unknown[];
+        purchase_orders?: unknown[];
+        purchase_order_items?: unknown[];
+        expenses?: unknown[];
+        expense_categories?: unknown[];
+        cash_registers?: unknown[];
+        cash_register_shifts?: unknown[];
+        cash_drawer_operations?: unknown[];
+        bank_accounts?: unknown[];
+        bank_transactions?: unknown[];
+        loyalty_accounts?: unknown[];
+        loyalty_transactions?: unknown[];
+        loyalty_tiers?: unknown[];
+        discounts?: unknown[];
+        credit_notes?: unknown[];
+        delivery_challans?: unknown[];
+        delivery_challan_items?: unknown[];
+        activity_logs?: unknown[];
+        payment_links?: unknown[];
+        whatsapp_opt_outs?: unknown[];
     };
 }
 
@@ -27,7 +51,14 @@ const BACKUP_VERSION = "1.0.0";
  */
 export async function createBackup(): Promise<BackupData | null> {
     try {
-        const [customers, products, variants, vendors, sales, saleItems, movements] = await Promise.all([
+        const [
+            customers, products, variants, vendors, sales, saleItems, movements,
+            invoices, invoiceItems, invoicePayments, salesOrders, salesOrderItems,
+            purchaseOrders, purchaseOrderItems, expenses, expenseCategories,
+            cashRegisters, registerShifts, drawerOps, bankAccounts, bankTransactions,
+            loyaltyAccounts, loyaltyTransactions, loyaltyTiers, discounts, creditNotes,
+            deliveryChallans, deliveryChallanItems, activityLogs, paymentLinks, optOuts
+        ] = await Promise.all([
             pb.collection("customers").getFullList().catch(() => []),
             pb.collection("products").getFullList().catch(() => []),
             pb.collection("product_variants").getFullList().catch(() => []),
@@ -35,6 +66,30 @@ export async function createBackup(): Promise<BackupData | null> {
             pb.collection("sales").getFullList().catch(() => []),
             pb.collection("sale_items").getFullList().catch(() => []),
             pb.collection("stock_movements").getFullList().catch(() => []),
+            pb.collection("invoices").getFullList().catch(() => []),
+            pb.collection("invoice_items").getFullList().catch(() => []),
+            pb.collection("invoice_payments").getFullList().catch(() => []),
+            pb.collection("sales_orders").getFullList().catch(() => []),
+            pb.collection("sales_order_items").getFullList().catch(() => []),
+            pb.collection("purchase_orders").getFullList().catch(() => []),
+            pb.collection("purchase_order_items").getFullList().catch(() => []),
+            pb.collection("expenses").getFullList().catch(() => []),
+            pb.collection("expense_categories").getFullList().catch(() => []),
+            pb.collection("cash_registers").getFullList().catch(() => []),
+            pb.collection("cash_register_shifts").getFullList().catch(() => []),
+            pb.collection("cash_drawer_operations").getFullList().catch(() => []),
+            pb.collection("bank_accounts").getFullList().catch(() => []),
+            pb.collection("bank_transactions").getFullList().catch(() => []),
+            pb.collection("loyalty_accounts").getFullList().catch(() => []),
+            pb.collection("loyalty_transactions").getFullList().catch(() => []),
+            pb.collection("loyalty_tiers").getFullList().catch(() => []),
+            pb.collection("discounts").getFullList().catch(() => []),
+            pb.collection("credit_notes").getFullList().catch(() => []),
+            pb.collection("delivery_challans").getFullList().catch(() => []),
+            pb.collection("delivery_challan_items").getFullList().catch(() => []),
+            pb.collection("activity_logs").getFullList().catch(() => []),
+            pb.collection("payment_links").getFullList().catch(() => []),
+            pb.collection("whatsapp_opt_outs").getFullList().catch(() => []),
         ]);
 
         const backup: BackupData = {
@@ -48,6 +103,30 @@ export async function createBackup(): Promise<BackupData | null> {
                 sales: sales || [],
                 sale_items: saleItems || [],
                 stock_movements: movements || [],
+                invoices: invoices || [],
+                invoice_items: invoiceItems || [],
+                invoice_payments: invoicePayments || [],
+                sales_orders: salesOrders || [],
+                sales_order_items: salesOrderItems || [],
+                purchase_orders: purchaseOrders || [],
+                purchase_order_items: purchaseOrderItems || [],
+                expenses: expenses || [],
+                expense_categories: expenseCategories || [],
+                cash_registers: cashRegisters || [],
+                cash_register_shifts: registerShifts || [],
+                cash_drawer_operations: drawerOps || [],
+                bank_accounts: bankAccounts || [],
+                bank_transactions: bankTransactions || [],
+                loyalty_accounts: loyaltyAccounts || [],
+                loyalty_transactions: loyaltyTransactions || [],
+                loyalty_tiers: loyaltyTiers || [],
+                discounts: discounts || [],
+                credit_notes: creditNotes || [],
+                delivery_challans: deliveryChallans || [],
+                delivery_challan_items: deliveryChallanItems || [],
+                activity_logs: activityLogs || [],
+                payment_links: paymentLinks || [],
+                whatsapp_opt_outs: optOuts || [],
             },
         };
 

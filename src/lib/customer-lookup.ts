@@ -16,19 +16,27 @@ export interface Customer {
     pincode: string | null;
     company_name: string | null;
     gstin: string | null;
+    pan?: string | null;
     customer_type: 'retail' | 'wholesale' | 'vip';
+    billing_address?: string | null;
+    shipping_address?: string | null;
+    state_code?: string | null;
     loyalty_points: number;
+    store_credit?: number;
     total_spent: number;
     total_orders: number;
     preferred_contact: 'phone' | 'email' | 'whatsapp';
+    opt_in_marketing?: boolean;
     notes: string | null;
     tags: string[] | null;
     source: string;
-    // 360° Jewelry CRM Attributes
+    // 360° Jewelry CRM Attributes & backward compatibility
     ring_size?: string | null;
     bangle_size?: string | null;
     preferred_metal?: string | null;
+    anniversary?: string | null;
     anniversary_date?: string | null;
+    date_of_birth?: string | null;
     birthday_date?: string | null;
     lead_status?: 'new_lead' | 'contacted' | 'quoted' | 'awaiting_payment' | 'won' | 'vip' | null;
     assigned_staff?: string | null;
@@ -89,18 +97,26 @@ export function mapCustomerRecord(result: any): Customer {
         pincode: result.pincode || null,
         company_name: result.company_name || null,
         gstin: result.gstin || null,
+        pan: result.pan || null,
         customer_type: result.customer_type || 'retail',
+        billing_address: result.billing_address || result.address || null,
+        shipping_address: result.shipping_address || null,
+        state_code: result.state_code || null,
         loyalty_points: result.loyalty_points || 0,
+        store_credit: result.store_credit || 0,
         total_spent: result.total_spent || 0,
         total_orders: result.total_orders || 0,
         preferred_contact: result.preferred_contact || 'phone',
+        opt_in_marketing: Boolean(result.opt_in_marketing),
         notes: result.notes || null,
         tags: result.tags || null,
         source: result.source || 'manual',
         ring_size: result.ring_size || null,
         bangle_size: result.bangle_size || null,
         preferred_metal: result.preferred_metal || null,
+        anniversary: result.anniversary || result.anniversary_date || null,
         anniversary_date: result.anniversary_date || result.anniversary || null,
+        date_of_birth: result.date_of_birth || result.birthday_date || null,
         birthday_date: result.birthday_date || result.date_of_birth || null,
         lead_status: result.lead_status || null,
         assigned_staff: result.assigned_staff || null,

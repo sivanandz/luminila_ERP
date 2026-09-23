@@ -20,7 +20,7 @@ interface PhonePeConfig {
 // Default to environment variables
 let config: PhonePeConfig = {
     merchantId: process.env.NEXT_PUBLIC_PHONEPE_MERCHANT_ID || process.env.PHONEPE_MERCHANT_ID || '',
-    saltKey: process.env.NEXT_PUBLIC_PHONEPE_SALT_KEY || process.env.PHONEPE_SALT_KEY || '',
+    saltKey: process.env.PHONEPE_SALT_KEY || '',
     saltIndex: process.env.NEXT_PUBLIC_PHONEPE_SALT_INDEX || process.env.PHONEPE_SALT_INDEX || '1',
     isProduction: process.env.NEXT_PUBLIC_PHONEPE_ENV === 'production' || process.env.PHONEPE_ENV === 'production',
 };
