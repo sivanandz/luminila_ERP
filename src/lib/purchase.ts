@@ -152,6 +152,7 @@ export async function createPurchaseOrder(
     const createdItems: PurchaseOrderItem[] = [];
     for (const item of po.items) {
         const itemRecord = await pb.collection('purchase_order_items').create({
+            po: poData.id,
             purchase_order: poData.id,
             variant: item.variant_id || '',
             description: item.description,
@@ -199,7 +200,7 @@ export async function getPurchaseOrder(id: string): Promise<PurchaseOrder | null
         });
 
         const items = await pb.collection('purchase_order_items').getFullList({
-            filter: `purchase_order="${id}"`,
+            filter: `po="${id}" || purchase_order="${id}"`,
             expand: 'variant,variant.product',
         });
 
@@ -226,7 +227,7 @@ export async function getPurchaseOrder(id: string): Promise<PurchaseOrder | null
             } : undefined,
             items: items.map((item: any) => ({
                 id: item.id,
-                po_id: item.purchase_order,
+                po_id: item.po || item.purchase_order,
                 variant_id: item.variant,
                 description: item.description,
                 hsn_code: item.hsn_code,
@@ -289,7 +290,7 @@ export async function getPurchaseOrders(filters?: {
         const poIds = pos.map(p => p.id);
         let allItems: any[] = [];
         if (poIds.length > 0) {
-            const itemFilter = poIds.map(id => `purchase_order="${id}"`).join(' || ');
+            const itemFilter = poIds.map(id => `(po="${id}" || purchase_order="${id}")`).join(' || ');
             allItems = await pb.collection('purchase_order_items').getFullList({
                 filter: itemFilter,
             });
@@ -298,10 +299,11 @@ export async function getPurchaseOrders(filters?: {
         // Group items by PO
         const itemsByPO = new Map<string, any[]>();
         allItems.forEach(item => {
-            if (!itemsByPO.has(item.purchase_order)) {
-                itemsByPO.set(item.purchase_order, []);
+            const poKey = item.po || item.purchase_order;
+            if (!itemsByPO.has(poKey)) {
+                itemsByPO.set(poKey, []);
             }
-            itemsByPO.get(item.purchase_order)!.push(item);
+            itemsByPO.get(poKey)!.push(item);
         });
 
         return pos.map((po: any) => ({
@@ -323,10 +325,11 @@ export async function getPurchaseOrders(filters?: {
                 id: po.expand.vendor.id,
                 name: po.expand.vendor.name,
                 phone: po.expand.vendor.phone,
+                email: po.expand.vendor.email,
             } : undefined,
             items: (itemsByPO.get(po.id) || []).map((item: any) => ({
                 id: item.id,
-                po_id: item.purchase_order,
+                po_id: item.po || item.purchase_order,
                 variant_id: item.variant,
                 description: item.description || '',
                 unit: item.unit || 'pcs',
@@ -367,6 +370,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
             allocatedGrnNumber = allocatedNumber;
             return pb.collection('goods_received_notes').create({
                 grn_number: allocatedNumber,
+                po: grn.po_id || '',
                 purchase_order: grn.po_id || '',
                 vendor: grn.vendor_id || '',
                 received_date: grn.received_date,
@@ -452,7 +456,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
     if (grn.po_id) {
         try {
             const poItems = await pb.collection('purchase_order_items').getFullList({
-                filter: `purchase_order="${grn.po_id}"`,
+                filter: `po="${grn.po_id}" || purchase_order="${grn.po_id}"`,
             });
 
             const totalOrdered = poItems.reduce((sum: number, i: any) => sum + i.quantity_ordered, 0);
@@ -489,7 +493,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
 export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
     try {
         const grns = await pb.collection('goods_received_notes').getFullList({
-            filter: `purchase_order="${poId}"`,
+            filter: `po="${poId}" || purchase_order="${poId}"`,
             sort: '-received_date',
         });
 
@@ -515,7 +519,7 @@ export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
         return grns.map((grn: any) => ({
             id: grn.id,
             grn_number: grn.grn_number,
-            po_id: grn.purchase_order,
+            po_id: grn.po || grn.purchase_order,
             vendor_id: grn.vendor,
             received_date: grn.received_date,
             received_by: grn.received_by,

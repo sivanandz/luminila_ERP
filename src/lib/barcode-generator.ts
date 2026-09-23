@@ -28,9 +28,10 @@ export function generateBarcodeSVG(sku: string): string {
 export function generateLabelHTML(product: {
     sku: string;
     name: string;
-    base_price: number;
+    base_price?: number;
 }): string {
     const barcodeUrl = generateBarcodeURL(product.sku);
+    const formattedPrice = (Number(product.base_price) || 0).toLocaleString('en-IN');
 
     return `
         <div style="
@@ -50,7 +51,7 @@ export function generateLabelHTML(product: {
                 ${product.sku}
             </div>
             <div style="font-size: 14px; font-weight: bold; color: #0066cc; margin-top: 4px;">
-                ₹${product.base_price.toLocaleString('en-IN')}
+                ₹${formattedPrice}
             </div>
         </div>
     `;
@@ -62,7 +63,7 @@ export function generateLabelHTML(product: {
 export function printLabels(products: Array<{
     sku: string;
     name: string;
-    base_price: number;
+    base_price?: number;
 }>, copies: number = 1): void {
     // Repeat each product for the specified number of copies
     const allProducts = products.flatMap(p => Array(copies).fill(p));
@@ -145,9 +146,10 @@ export function parseSKUFromBarcode(barcodeText: string): string | null {
 export function generateSmallLabelHTML(product: {
     sku: string;
     name: string;
-    base_price: number;
+    base_price?: number;
 }): string {
     const barcodeUrl = generateBarcodeURL(product.sku);
+    const formattedPrice = (Number(product.base_price) || 0).toLocaleString('en-IN');
 
     return `
         <div style="
@@ -165,7 +167,7 @@ export function generateSmallLabelHTML(product: {
             </div>
             <img src="${barcodeUrl}" alt="" style="width: 34mm; height: 10mm; margin: 1mm 0;" />
             <div style="font-size: 7px; font-family: monospace;">${product.sku}</div>
-            <div style="font-size: 10px; font-weight: bold;">₹${product.base_price.toLocaleString('en-IN')}</div>
+            <div style="font-size: 10px; font-weight: bold;">₹${formattedPrice}</div>
         </div>
     `;
 }

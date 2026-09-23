@@ -5,6 +5,7 @@
 
 import { pb } from './pocketbase';
 import { sendMessage, sendFile } from './whatsapp';
+import { isWhatsAppOptedOut } from './whatsapp-crm';
 
 const DEFAULT_SESSION_ID = 'luminila_phone';
 
@@ -45,6 +46,10 @@ export async function sendPaidOrderInvoice(orderId: string): Promise<{ success: 
         const phone = order.customer_phone || order.expand?.customer?.phone;
         if (!phone) {
             return { success: false, error: 'Customer phone number missing from order' };
+        }
+
+        if (await isWhatsAppOptedOut(phone)) {
+            return { success: false, error: 'Customer has opted out of WhatsApp notifications' };
         }
 
         const customerName = order.customer_name || order.expand?.customer?.name || 'Valued Customer';
@@ -94,6 +99,10 @@ export async function sendShippingTracking(
             return { success: false, error: 'Customer phone missing' };
         }
 
+        if (await isWhatsAppOptedOut(phone)) {
+            return { success: false, error: 'Customer has opted out of WhatsApp notifications' };
+        }
+
         const customerName = order.customer_name || order.expand?.customer?.name || 'Valued Customer';
         const orderNo = order.order_number || order.id.slice(0, 8);
         const trackLink = trackingUrl || `https://track.courier.in/${awbNumber}`;
@@ -137,6 +146,10 @@ export async function sendLoyaltyMilestoneAlert(
             return { success: false, error: 'Customer phone missing' };
         }
 
+        if (customer.whatsapp_opt_out || await isWhatsAppOptedOut(customer.phone)) {
+            return { success: false, error: 'Customer has opted out of WhatsApp notifications' };
+        }
+
         const balance = totalBalance ?? customer.loyalty_points ?? 0;
         const tierStr = tierName ? `\n👑 *Current VIP Tier:* ${tierName}` : '';
 
@@ -177,6 +190,10 @@ export async function sendPostDeliveryReviewRequest(
 
         const phone = order.customer_phone || order.expand?.customer?.phone;
         if (!phone) return { success: false, error: 'Customer phone missing' };
+
+        if (await isWhatsAppOptedOut(phone)) {
+            return { success: false, error: 'Customer has opted out of WhatsApp notifications' };
+        }
 
         const customerName = order.customer_name || 'Valued Customer';
 

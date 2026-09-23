@@ -13,7 +13,13 @@
  */
 
 import PocketBase from 'pocketbase';
-import { pb } from '../lib/pocketbase';
+import { pb, setPocketBaseUrl } from '../lib/pocketbase';
+
+const PB_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8091';
+process.env.PB_URL = PB_URL;
+process.env.NEXT_PUBLIC_POCKETBASE_URL = PB_URL;
+setPocketBaseUrl(PB_URL);
+
 import {
     renderMergeTags,
     getHumanizedJitterDelayMs,
@@ -28,8 +34,6 @@ import {
     reconcilePendingPaymentLinks,
 } from '../lib/payment-reconciliation';
 import { isWhatsAppOptedOut, setWhatsAppOptOut } from '../lib/whatsapp-crm';
-
-const PB_URL = process.env.PB_URL || 'http://127.0.0.1:8090';
 
 let passed = 0;
 let failed = 0;
@@ -1350,6 +1354,161 @@ async function runTests() {
 
     } catch (err: any) {
         assert(false, `Test 22 failed: ${err.message}`);
+    }
+
+    // =========================================================================
+    // [Test 23]: Whole-Project Audit (WPA-26..29)
+    //   - WPA-26: Purchase Order & GRN Schema Dual-Mapping & Stock Ingestion
+    //   - WPA-27: Automated WhatsApp Notifications Opt-Out Protection
+    //   - WPA-28: Barcode Label Safe Price Formatting (NaN/undefined resilience)
+    // =========================================================================
+    console.log("\n[Test 23]: Whole-Project Audit (WPA-26..29) Verification");
+    try {
+        const { createPurchaseOrder, getPurchaseOrder, getPurchaseOrders, createGRN, getGRNsForPO } = await import('../lib/purchase');
+        const { generateLabelHTML, generateSmallLabelHTML } = await import('../lib/barcode-generator');
+        const { sendLoyaltyMilestoneAlert, sendPostDeliveryReviewRequest } = await import('../lib/whatsapp-notifications');
+
+        // A. WPA-26: Purchase Order Creation & GRN Stock Ingestion Dual-Mapping
+        // 1. Create a dummy vendor
+        const testVendor = await adminPb.collection('vendors').create({
+            name: `Test Vendor ${Date.now()}`,
+            contact_name: 'Test Supplier',
+            phone: '9876543210',
+            email: 'vendor@test.com',
+        });
+
+        // 2. Create a dummy product and variant
+        const testProduct = await adminPb.collection('products').create({
+            sku: `PO-TEST-PROD-${Date.now()}`,
+            name: 'Gold Chain 22K',
+            is_active: true,
+            base_price: 50000,
+        });
+
+        const testVariant = await adminPb.collection('product_variants').create({
+            product: testProduct.id,
+            variant_name: 'Standard',
+            sku_suffix: 'STD',
+            stock_level: 10,
+        });
+
+        // 3. Create Purchase Order
+        const poResult = await createPurchaseOrder({
+            vendor_id: testVendor.id,
+            status: 'draft',
+            order_date: new Date().toISOString().split('T')[0],
+            subtotal: 5000,
+            gst_amount: 150,
+            shipping_cost: 0,
+            discount_amount: 0,
+            total: 5150,
+            items: [{
+                variant_id: testVariant.id,
+                description: '22K Gold Chain Sample',
+                quantity_ordered: 5,
+                quantity_received: 0,
+                unit: 'PCS',
+                unit_price: 1000,
+                gst_rate: 3,
+                gst_amount: 150,
+                total_price: 5150,
+            }]
+        });
+
+        assert(Boolean(poResult.id), `createPurchaseOrder creates PO with ID (${poResult.id})`);
+        assert(poResult.items.length === 1, "createPurchaseOrder persists items without 400 error");
+
+        // 4. Retrieve PO and verify po / purchase_order linkage
+        const fetchedPO = await getPurchaseOrder(poResult.id!);
+        assert(fetchedPO !== null, "getPurchaseOrder retrieves PO by ID");
+        assert(fetchedPO?.items.length === 1, "getPurchaseOrder retrieves linked PO items");
+        assert(fetchedPO?.items[0].variant_id === testVariant.id, "PO item preserves variant relation");
+
+        // 5. Create GRN (receive 3 items)
+        const grnResult = await createGRN({
+            po_id: poResult.id,
+            vendor_id: testVendor.id,
+            received_date: new Date().toISOString().split('T')[0],
+            received_by: 'Warehouse Admin',
+            notes: 'Test GRN receipt',
+            items: [{
+                po_item_id: poResult.items[0].id,
+                variant_id: testVariant.id,
+                quantity_received: 3,
+                quantity_rejected: 0,
+            }]
+        });
+
+        assert(Boolean(grnResult.id), `createGRN creates GRN with ID (${grnResult.id})`);
+        assert(grnResult.po_id === poResult.id, "createGRN links GRN to PO via po/purchase_order");
+
+        // 6. Verify variant stock level was incremented (10 + 3 = 13)
+        const updatedVariant = await adminPb.collection('product_variants').getOne(testVariant.id);
+        assert(updatedVariant.stock_level === 13, `GRN incremented variant stock from 10 to 13 (actual: ${updatedVariant.stock_level})`);
+
+        // 7. Verify getGRNsForPO retrieves GRNs linked by po/purchase_order
+        const fetchedGRNs = await getGRNsForPO(poResult.id!);
+        assert(fetchedGRNs.length >= 1, "getGRNsForPO retrieves GRNs linked to PO");
+        assert(fetchedGRNs[0].id === grnResult.id, "getGRNsForPO returns exact matching GRN");
+
+        // Cleanup PO and GRN test data
+        try {
+            const grnItems = await adminPb.collection('grn_items').getFullList({ filter: `grn="${grnResult.id}"` });
+            for (const it of grnItems) await adminPb.collection('grn_items').delete(it.id).catch(() => {});
+            await adminPb.collection('goods_received_notes').delete(grnResult.id!).catch(() => {});
+
+            const movements = await adminPb.collection('stock_movements').getFullList({ filter: `reference_id="${grnResult.id}"` });
+            for (const m of movements) await adminPb.collection('stock_movements').delete(m.id).catch(() => {});
+
+            const poItems = await adminPb.collection('purchase_order_items').getFullList({ filter: `po="${poResult.id}" || purchase_order="${poResult.id}"` });
+            for (const it of poItems) await adminPb.collection('purchase_order_items').delete(it.id).catch(() => {});
+            await adminPb.collection('purchase_orders').delete(poResult.id!).catch(() => {});
+
+            await adminPb.collection('product_variants').delete(testVariant.id).catch(() => {});
+            await adminPb.collection('products').delete(testProduct.id).catch(() => {});
+            await adminPb.collection('vendors').delete(testVendor.id).catch(() => {});
+        } catch (cleanupErr) {
+            console.warn('PO test cleanup notice:', cleanupErr);
+        }
+
+        // B. WPA-27: WhatsApp Notifications Opt-Out Protection
+        const testOptOutPhone = '919876599999';
+        await setWhatsAppOptOut(testOptOutPhone);
+        
+        // Review request to opted-out customer must be blocked
+        const dummyOrder = await adminPb.collection('sales_orders').create({
+            customer_name: 'Opted Out Customer',
+            customer_phone: testOptOutPhone,
+            status: 'delivered',
+            order_type: 'sales_order',
+            order_date: new Date().toISOString().split('T')[0],
+            subtotal: 1000,
+            tax_total: 30,
+            discount_total: 0,
+            shipping_charges: 0,
+            total: 1030,
+        });
+
+        const reviewRes = await sendPostDeliveryReviewRequest(dummyOrder.id);
+        assert(reviewRes.success === false, "sendPostDeliveryReviewRequest rejects dispatch to opted-out phone");
+        assert(Boolean(reviewRes.error?.includes('opted out')), "sendPostDeliveryReviewRequest returns opt-out error message");
+
+        await adminPb.collection('sales_orders').delete(dummyOrder.id).catch(() => {});
+        const optOutRecord = await adminPb.collection('whatsapp_opt_outs').getFirstListItem(`phone~"9876599999"`).catch(() => null);
+        if (optOutRecord) await adminPb.collection('whatsapp_opt_outs').delete(optOutRecord.id).catch(() => {});
+
+        // C. WPA-28: Barcode Label Safe Price Formatting (NaN / undefined resilience)
+        const labelHtmlUndefined = generateLabelHTML({ sku: 'NO-PRICE-SKU', name: 'Plain Ring', base_price: undefined });
+        assert(labelHtmlUndefined.includes('₹0'), "generateLabelHTML handles undefined base_price safely without throwing");
+
+        const smallLabelHtmlNull = generateSmallLabelHTML({ sku: 'NULL-PRICE-SKU', name: 'Earrings', base_price: null as any });
+        assert(smallLabelHtmlNull.includes('₹0'), "generateSmallLabelHTML handles null base_price safely without throwing");
+
+        const labelHtmlValid = generateLabelHTML({ sku: 'GOLD-SKU', name: 'Gold Bangle', base_price: 75000 });
+        assert(labelHtmlValid.includes('₹75,000'), "generateLabelHTML correctly formats valid base_price in Indian locale");
+
+    } catch (err: any) {
+        assert(false, `Test 23 failed: ${err.message}`);
     }
 
     console.log("\n==================================================");

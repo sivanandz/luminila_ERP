@@ -1,7 +1,7 @@
 import { pb } from '@/lib/pocketbase';
 import { Product } from '@/types/database';
 
-const SIDECAR_URL = 'http://localhost:21465/api/default';
+const SIDECAR_URL = 'http://127.0.0.1:21465/api/default';
 
 interface WhatsAppProduct {
     id: string;
