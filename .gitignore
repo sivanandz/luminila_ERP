@@ -76,3 +76,4 @@ src-tauri/gen/android/local.properties
 .v2c/
 .video_agent/
 .zcodeignore
+scratch/

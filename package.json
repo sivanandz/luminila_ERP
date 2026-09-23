@@ -13,8 +13,11 @@
     "lint": "eslint",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "tunnel": "node scripts/tunnel.js"
+    "tunnel": "node scripts/tunnel.js",
+    "tunnel:all": "node scripts/tunnel.js --all",
+    "tunnel:pb": "node scripts/tunnel.js --pb",
+    "tunnel:app": "node scripts/tunnel.js --app",
+    "tunnel:wa": "node scripts/tunnel.js --wa"
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0",

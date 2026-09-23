@@ -89,15 +89,29 @@ async function main() {
     console.log(`${CYAN}══════════════════════════════════════════════════════${RESET}\n`);
 
     // 1. PocketBase DB
-    const pbRunning = await checkPort('http://127.0.0.1:8090/api/health');
-    if (pbRunning) {
+    let pbPort = process.env.PB_PORT ? parseInt(process.env.PB_PORT, 10) : 8090;
+    const pbRunning8090 = await checkPort('http://127.0.0.1:8090/api/health');
+    const pbRunning8091 = await checkPort('http://127.0.0.1:8091/api/health');
+
+    if (pbRunning8090) {
+        pbPort = 8090;
         console.log(`${GREEN}[PB]${RESET} PocketBase is already running on http://127.0.0.1:8090`);
+    } else if (pbRunning8091) {
+        pbPort = 8091;
+        console.log(`${GREEN}[PB]${RESET} PocketBase is already running on http://127.0.0.1:8091`);
     } else {
         if (!fs.existsSync(PB_EXE)) {
             console.error(`${RED}[PB] PocketBase executable not found at: ${PB_EXE}${RESET}`);
         } else {
-            console.log(`${GREEN}[PB]${RESET} Starting PocketBase DB server...`);
-            const pbProc = spawn(PB_EXE, ['serve', '--http=0.0.0.0:8090', `--dir=${PB_DATA}`], {
+            // Check if 8090 is occupied by a non-PB process
+            const port8090Blocked = await checkPort('http://127.0.0.1:8090/');
+            if (port8090Blocked && !process.env.PB_PORT) {
+                console.log(`${YELLOW}[PB] Notice: Port 8090 is occupied by a foreign process. Falling back to port 8091.${RESET}`);
+                pbPort = 8091;
+            }
+
+            console.log(`${GREEN}[PB]${RESET} Starting PocketBase DB server on port ${pbPort}...`);
+            const pbProc = spawn(PB_EXE, ['serve', `--http=0.0.0.0:${pbPort}`, `--dir=${PB_DATA}`], {
                 cwd: PB_DIR,
                 stdio: ['ignore', 'pipe', 'pipe']
             });
@@ -107,13 +121,15 @@ async function main() {
             // Wait for PB to become ready
             for (let i = 0; i < 20; i++) {
                 await new Promise(r => setTimeout(r, 250));
-                if (await checkPort('http://127.0.0.1:8090/api/health')) {
-                    console.log(`${GREEN}[PB]${RESET} PocketBase ready! Admin UI: http://127.0.0.1:8090/_/`);
+                if (await checkPort(`http://127.0.0.1:${pbPort}/api/health`)) {
+                    console.log(`${GREEN}[PB]${RESET} PocketBase ready! Admin UI: http://127.0.0.1:${pbPort}/_/`);
                     break;
                 }
             }
         }
     }
+    process.env.PB_PORT = String(pbPort);
+    process.env.NEXT_PUBLIC_POCKETBASE_URL = `http://127.0.0.1:${pbPort}`;
 
     // 2. WhatsApp Sidecar
     const wppRunning = await checkPort('http://127.0.0.1:21465/health');

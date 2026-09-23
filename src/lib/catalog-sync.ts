@@ -1,7 +1,11 @@
 import { pb } from '@/lib/pocketbase';
 import { Product } from '@/types/database';
+import { getWhatsAppUrl } from '@/lib/whatsapp';
 
-const SIDECAR_URL = 'http://127.0.0.1:21465/api/default';
+const SIDECAR_URL = {
+    toString() { return `${getWhatsAppUrl()}/api/default`; },
+    valueOf() { return `${getWhatsAppUrl()}/api/default`; }
+} as unknown as string;
 
 interface WhatsAppProduct {
     id: string;

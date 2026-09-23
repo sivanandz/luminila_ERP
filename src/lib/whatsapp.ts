@@ -6,8 +6,73 @@
  * It provides REST API for WhatsApp Web automation.
  */
 
-// Use 127.0.0.1 for more reliable localhost connections
-const WPPCONNECT_URL = "http://127.0.0.1:21465";
+const DEFAULT_WPPCONNECT_URL = process.env.NEXT_PUBLIC_WPPCONNECT_URL || "http://127.0.0.1:21465";
+
+/**
+ * Get active WhatsApp Sidecar URL
+ * Checks localStorage (WA_CUSTOM_URL), emulator/LAN detection, or fallback
+ */
+export function getWhatsAppUrl(): string {
+    if (typeof window !== "undefined") {
+        const customUrl = localStorage.getItem("WA_CUSTOM_URL");
+        if (customUrl && customUrl.trim()) {
+            return customUrl.trim().replace(/\/+$/, "");
+        }
+        const host = window.location.hostname;
+        const isTunnelHost = host.includes("trycloudflare.com") || host.includes("cloudflare");
+        if (host && host !== "localhost" && host !== "127.0.0.1" && !isTunnelHost) {
+            return `http://${host}:21465`;
+        }
+    }
+    return DEFAULT_WPPCONNECT_URL.replace(/\/+$/, "");
+}
+
+/**
+ * Update the WhatsApp Sidecar URL at runtime
+ */
+export function setWhatsAppUrl(url: string): string {
+    const sanitized = url.trim().replace(/\/+$/, "");
+    if (typeof window !== "undefined") {
+        if (sanitized && sanitized !== DEFAULT_WPPCONNECT_URL) {
+            localStorage.setItem("WA_CUSTOM_URL", sanitized);
+        } else {
+            localStorage.removeItem("WA_CUSTOM_URL");
+        }
+        window.dispatchEvent(new CustomEvent("wa:server-changed", { detail: { url: sanitized || DEFAULT_WPPCONNECT_URL } }));
+    }
+    return sanitized || DEFAULT_WPPCONNECT_URL;
+}
+
+/**
+ * Check if the WhatsApp sidecar is reachable
+ */
+export async function checkWhatsAppStatus(targetUrl?: string): Promise<{ ok: boolean; url: string; isTunnel: boolean; latencyMs?: number; error?: string }> {
+    const urlToCheck = (targetUrl || getWhatsAppUrl()).replace(/\/+$/, "");
+    const isTunnel = urlToCheck.includes("trycloudflare.com") || urlToCheck.includes("cloudflare") || urlToCheck.startsWith("https://");
+    const startTime = Date.now();
+    try {
+        const res = await fetch(`${urlToCheck}/health`, { method: "GET" });
+        return {
+            ok: res.ok,
+            url: urlToCheck,
+            isTunnel,
+            latencyMs: Date.now() - startTime
+        };
+    } catch (err: any) {
+        return {
+            ok: false,
+            url: urlToCheck,
+            isTunnel,
+            error: err?.message || "Connection refused"
+        };
+    }
+}
+
+// Dynamic string coercion for backwards compatibility across existing service functions
+const WPPCONNECT_URL = {
+    toString() { return getWhatsAppUrl(); },
+    valueOf() { return getWhatsAppUrl(); }
+} as unknown as string;
 
 
 interface WPPSession {

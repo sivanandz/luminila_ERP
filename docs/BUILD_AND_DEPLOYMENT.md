@@ -324,13 +324,19 @@ Using a free Cloudflare Tunnel enables end-to-end HTTPS access without port forw
    ```powershell
    winget install Cloudflare.cloudflared
    ```
-2. Launch quick ad-hoc tunnel pointing to PocketBase:
+2. Launch multi-service tunnel (exposing Next.js `:3000`, PocketBase `:8090` / `:8091`, and WhatsApp Sidecar `:21465`):
    ```powershell
-   npm run tunnel
-   # (Or manually: cloudflared tunnel --url http://127.0.0.1:8090)
+   npm run tunnel:all    # Tunnels all 3 services concurrently
+   # Or individual tunnels:
+   npm run tunnel:pb     # PocketBase DB only (auto-detects 8090 or 8091 fallback)
+   npm run tunnel:app    # Next.js web application frontend (:3000) only
+   npm run tunnel:wa     # WhatsApp WPPConnect sidecar (:21465) only
    ```
-3. Copy the output HTTPS tunnel URL (e.g. `https://random-words.trycloudflare.com`).
-4. In the Luminila Android app, open **Menu > Server Settings**, paste the URL, and click **Connect**. The app immediately verifies latency and syncs with the database.
+   *Note: If port 8090 is in use by a background Windows service, the launcher automatically detects the conflict and binds the tunnel to fallback port `8091`.*
+3. Copy the output HTTPS tunnel URLs from the CLI dashboard (e.g. `https://xxxx.trycloudflare.com`).
+4. In the Luminila Android app or remote browser:
+   - For standalone PWA: Open the **Next.js Web App** tunnel URL directly in mobile Chrome/Safari.
+   - For server connection: Open **Menu > Server Settings**, paste the **PocketBase Server URL** and **WhatsApp Sidecar URL**, and click **Save & Connect**. The app verifies latency over the encrypted tunnel.
 
 ---
 
