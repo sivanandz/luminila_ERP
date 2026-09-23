@@ -5,6 +5,7 @@
 
 import { pb } from './pocketbase';
 import { format } from 'date-fns';
+import { normalizeDateRange } from './utils';
 
 // ===========================================
 // TYPES
@@ -67,11 +68,7 @@ function formatDateSafe(dateStr?: string, fmt = 'dd/MM/yyyy'): string {
     return isNaN(d.getTime()) ? '-' : format(d, fmt);
 }
 
-export function normalizeDateRange(startDate: string, endDate: string): { start: string; end: string } {
-    const start = startDate && startDate.length === 10 ? `${startDate} 00:00:00.000Z` : startDate;
-    const end = endDate && endDate.length === 10 ? `${endDate} 23:59:59.999Z` : endDate;
-    return { start, end };
-}
+// normalizeDateRange imported from utils.ts (single source of truth)
 
 // ===========================================
 // SALES REPORT

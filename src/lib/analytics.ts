@@ -267,7 +267,7 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
         // Sales Orders
         try {
             const salesOrders = await pb.collection('sales_orders').getFullList({
-                filter: `created>="${thirtyDaysAgo.toISOString()}" && status="confirmed"`,
+                filter: `created>="${thirtyDaysAgo.toISOString()}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
 
             salesOrders.forEach((order: any) => {
