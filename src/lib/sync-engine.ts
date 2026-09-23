@@ -104,9 +104,12 @@ export async function pullAllProducts(
                             name: product.title,
                         });
                     } else {
+                        const rawPrice = product.variants?.edges?.[0]?.node?.price;
+                        const basePrice = parseFloat(rawPrice || '0') || 0;
                         await pb.collection('products').create({
                             sku: product.handle,
                             name: product.title,
+                            base_price: basePrice,
                             is_active: true,
                         });
                     }
@@ -164,7 +167,7 @@ export async function pullAllProducts(
                         await pb.collection('products').create({
                             sku: product.sku,
                             name: product.name,
-                            base_price: parseFloat(product.price),
+                            base_price: parseFloat(product.price) || 0,
                             is_active: true,
                         });
                     }

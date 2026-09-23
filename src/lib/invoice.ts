@@ -96,6 +96,12 @@ export interface Invoice {
     paid_amount: number;
     notes?: string;
 
+    // E-way Bill Tracking
+    eway_bill_no?: string;
+    eway_bill_date?: string;
+    eway_bill_valid_until?: string;
+    eway_bill_status?: string;
+
     // Items
     items: InvoiceItem[];
 
@@ -334,6 +340,10 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'invoice_numbe
         vehicle_number: invoice.vehicle_number || '',
         payment_terms: invoice.payment_terms || '',
         is_paid: !!invoice.is_paid,
+        eway_bill_no: invoice.eway_bill_no || '',
+        eway_bill_date: invoice.eway_bill_date || '',
+        eway_bill_valid_until: invoice.eway_bill_valid_until || '',
+        eway_bill_status: invoice.eway_bill_status || '',
     };
 
     if (customerId) invoicePayload.customer = customerId;
@@ -462,6 +472,10 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
             is_paid: invoice.is_paid ?? (invoice.status === 'paid'),
             paid_amount: invoice.paid_amount || 0,
             notes: invoice.notes || '',
+            eway_bill_no: invoice.eway_bill_no || undefined,
+            eway_bill_date: invoice.eway_bill_date || undefined,
+            eway_bill_valid_until: invoice.eway_bill_valid_until || undefined,
+            eway_bill_status: invoice.eway_bill_status || undefined,
             items: items.map((item: any) => ({
                 id: item.id,
                 invoice_id: item.invoice,

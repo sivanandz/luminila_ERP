@@ -169,15 +169,16 @@ export async function deleteVariant(id: string): Promise<void> {
 // ===========================================
 
 export async function updateStock(variantId: string, quantityChange: number): Promise<void> {
-    // PB doesn't have atomic increment in update call like SQL 'stock + 1' easily without hooks
-    // But safe enough for single user/local logic to fetch-and-update or use a custom API endpoint if concurrency is high.
-    // For local-first/single POS, fetch-update is acceptable.
     try {
-        const variant = await pb.collection('product_variants').getOne<ProductVariant>(variantId);
-        const newStock = (variant.stock_level || 0) + quantityChange;
-        await pb.collection('product_variants').update(variantId, {
-            stock_level: newStock
-        });
+        if (quantityChange >= 0) {
+            await pb.collection('product_variants').update(variantId, {
+                'stock_level+': quantityChange
+            });
+        } else {
+            await pb.collection('product_variants').update(variantId, {
+                'stock_level-': Math.abs(quantityChange)
+            });
+        }
     } catch (error) {
         console.error('Error updating stock:', error);
         throw error;

@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { enqueueTask } from './concurrency';
 
 // =============================================
 // Types
@@ -77,18 +78,30 @@ export interface LoyaltySettings {
 // Settings
 // =============================================
 
+const DEFAULT_LOYALTY_SETTINGS: LoyaltySettings = {
+    id: 'default',
+    points_per_rupee: 0.1,
+    redemption_value: 0.5,
+    min_redemption_points: 100,
+    max_redemption_percent: 50,
+    points_validity_days: 365,
+    signup_bonus: 50,
+    birthday_bonus: 100,
+    referral_bonus: 100,
+    is_active: true,
+};
+
 let cachedSettings: LoyaltySettings | null = null;
 
-export async function getLoyaltySettings(): Promise<LoyaltySettings | null> {
+export async function getLoyaltySettings(): Promise<LoyaltySettings> {
     if (cachedSettings) return cachedSettings;
 
     try {
         const record = await pb.collection('loyalty_settings').getFirstListItem<LoyaltySettings>('is_active=true');
         cachedSettings = record;
         return record;
-    } catch (error) {
-        console.error('Error fetching loyalty settings:', error);
-        return null;
+    } catch {
+        return DEFAULT_LOYALTY_SETTINGS;
     }
 }
 
@@ -259,41 +272,42 @@ export async function earnPoints(
     referenceType: string,
     referenceId: string
 ): Promise<{ pointsEarned: number; newBalance: number } | null> {
-    const account = await getOrCreateLoyaltyAccount(customerId);
-    if (!account) return null;
+    return enqueueTask(`loyalty_${customerId}`, async () => {
+        const account = await getOrCreateLoyaltyAccount(customerId);
+        if (!account) return null;
 
-    const pointsToEarn = await calculatePointsToEarn(purchaseAmount, account.tier); // account.tier is ID actually in relation unless expanded, but for calculation we need ID or object. PB generic types are tricky.
+        const pointsToEarn = await calculatePointsToEarn(purchaseAmount, account.tier);
 
-    if (pointsToEarn <= 0) return { pointsEarned: 0, newBalance: account.current_balance };
+        if (pointsToEarn <= 0) return { pointsEarned: 0, newBalance: account.current_balance };
 
-    const newBalance = account.current_balance + pointsToEarn;
-    const newTotalEarned = account.total_points_earned + pointsToEarn;
+        try {
+            // Update account atomically
+            const updated = await pb.collection('loyalty_accounts').update(account.id, {
+                'current_balance+': pointsToEarn,
+                'total_points_earned+': pointsToEarn,
+                'lifetime_value+': purchaseAmount,
+                last_activity: new Date().toISOString(),
+            });
 
-    try {
-        // Update account
-        await pb.collection('loyalty_accounts').update(account.id, {
-            current_balance: newBalance,
-            total_points_earned: newTotalEarned,
-            lifetime_value: account.lifetime_value + purchaseAmount,
-            last_activity: new Date().toISOString(),
-        });
+            const newBalance = (updated as any).current_balance;
 
-        // Record transaction
-        await recordTransaction(
-            account.id,
-            'earn',
-            pointsToEarn,
-            newBalance,
-            `Earned from ${referenceType}`,
-            referenceType,
-            referenceId
-        );
+            // Record transaction
+            await recordTransaction(
+                account.id,
+                'earn',
+                pointsToEarn,
+                newBalance,
+                `Earned from ${referenceType}`,
+                referenceType,
+                referenceId
+            );
 
-        return { pointsEarned: pointsToEarn, newBalance };
-    } catch (error) {
-        console.error('Error updating loyalty account:', error);
-        return null;
-    }
+            return { pointsEarned: pointsToEarn, newBalance };
+        } catch (error) {
+            console.error('Error updating loyalty account:', error);
+            return null;
+        }
+    });
 }
 
 export async function redeemPoints(
@@ -302,49 +316,50 @@ export async function redeemPoints(
     referenceType: string,
     referenceId: string
 ): Promise<{ redeemed: boolean; valueApplied: number; newBalance: number } | null> {
-    const account = await getLoyaltyAccount(customerId);
-    if (!account) return null;
+    return enqueueTask(`loyalty_${customerId}`, async () => {
+        const account = await getLoyaltyAccount(customerId);
+        if (!account) return null;
 
-    // Validate
-    if (pointsToRedeem > account.current_balance) {
-        throw new Error('Insufficient points balance');
-    }
+        // Validate
+        if (pointsToRedeem > account.current_balance) {
+            throw new Error('Insufficient points balance');
+        }
 
-    const settings = await getLoyaltySettings();
-    if (!settings) return null;
+        const settings = await getLoyaltySettings();
 
-    if (pointsToRedeem < settings.min_redemption_points) {
-        throw new Error(`Minimum ${settings.min_redemption_points} points required for redemption`);
-    }
+        if (pointsToRedeem < settings.min_redemption_points) {
+            throw new Error(`Minimum ${settings.min_redemption_points} points required for redemption`);
+        }
 
-    const valueApplied = await calculateRedemptionValue(pointsToRedeem);
-    const newBalance = account.current_balance - pointsToRedeem;
-    const newTotalRedeemed = account.total_points_redeemed + pointsToRedeem;
+        const valueApplied = await calculateRedemptionValue(pointsToRedeem);
 
-    try {
-        // Update account
-        await pb.collection('loyalty_accounts').update(account.id, {
-            current_balance: newBalance,
-            total_points_redeemed: newTotalRedeemed,
-            last_activity: new Date().toISOString(),
-        });
+        try {
+            // Update account atomically (guarded by min: 0 constraint against negative balance)
+            const updated = await pb.collection('loyalty_accounts').update(account.id, {
+                'current_balance-': pointsToRedeem,
+                'total_points_redeemed+': pointsToRedeem,
+                last_activity: new Date().toISOString(),
+            });
 
-        // Record transaction (negative points for redemption)
-        await recordTransaction(
-            account.id,
-            'redeem',
-            -pointsToRedeem,
-            newBalance,
-            `Redeemed for ${referenceType}`,
-            referenceType,
-            referenceId
-        );
+            const newBalance = (updated as any).current_balance;
 
-        return { redeemed: true, valueApplied, newBalance };
-    } catch (error) {
-        console.error('Error redeeming loyalty points:', error);
-        return null;
-    }
+            // Record transaction (negative points for redemption)
+            await recordTransaction(
+                account.id,
+                'redeem',
+                -pointsToRedeem,
+                newBalance,
+                `Redeemed for ${referenceType}`,
+                referenceType,
+                referenceId
+            );
+
+            return { redeemed: true, valueApplied, newBalance };
+        } catch (error) {
+            console.error('Error redeeming loyalty points:', error);
+            return null;
+        }
+    });
 }
 
 export async function adjustPoints(

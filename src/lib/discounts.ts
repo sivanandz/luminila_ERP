@@ -44,6 +44,29 @@ export interface DiscountValidation {
 // DISCOUNT CRUD
 // ===========================================
 
+function mapDiscountRecord(d: any): Discount {
+    return {
+        id: d.id,
+        code: d.code,
+        name: d.name || '',
+        description: d.description || '',
+        discount_type: d.discount_type || d.type || 'percentage',
+        value: d.value || 0,
+        max_discount: d.max_discount,
+        min_purchase: d.min_purchase ?? d.min_order_value ?? 0,
+        min_items: d.min_items || 0,
+        applies_to: d.applies_to || 'all',
+        applies_to_ids: d.applies_to_ids,
+        usage_limit: d.usage_limit ?? d.max_uses,
+        per_customer_limit: d.per_customer_limit || 1,
+        used_count: d.used_count || 0,
+        start_date: d.start_date || d.valid_from,
+        end_date: d.end_date || d.valid_until,
+        is_active: d.is_active ?? true,
+        created_at: d.created,
+    };
+}
+
 export async function getDiscounts(activeOnly: boolean = false): Promise<Discount[]> {
     try {
         const filter = activeOnly ? 'is_active=true' : '';
@@ -52,26 +75,7 @@ export async function getDiscounts(activeOnly: boolean = false): Promise<Discoun
             sort: '-created',
         });
 
-        return records.map((d: any) => ({
-            id: d.id,
-            code: d.code,
-            name: d.name,
-            description: d.description,
-            discount_type: d.discount_type,
-            value: d.value,
-            max_discount: d.max_discount,
-            min_purchase: d.min_purchase || 0,
-            min_items: d.min_items || 0,
-            applies_to: d.applies_to || 'all',
-            applies_to_ids: d.applies_to_ids,
-            usage_limit: d.usage_limit,
-            per_customer_limit: d.per_customer_limit || 1,
-            used_count: d.used_count || 0,
-            start_date: d.start_date,
-            end_date: d.end_date,
-            is_active: d.is_active,
-            created_at: d.created,
-        }));
+        return records.map(mapDiscountRecord);
     } catch (error) {
         console.error('Error fetching discounts:', error);
         return [];
@@ -81,26 +85,7 @@ export async function getDiscounts(activeOnly: boolean = false): Promise<Discoun
 export async function getDiscount(id: string): Promise<Discount | null> {
     try {
         const d = await pb.collection('discounts').getOne(id);
-        return {
-            id: d.id,
-            code: d.code,
-            name: d.name,
-            description: d.description,
-            discount_type: d.discount_type,
-            value: d.value,
-            max_discount: d.max_discount,
-            min_purchase: d.min_purchase || 0,
-            min_items: d.min_items || 0,
-            applies_to: d.applies_to || 'all',
-            applies_to_ids: d.applies_to_ids,
-            usage_limit: d.usage_limit,
-            per_customer_limit: d.per_customer_limit || 1,
-            used_count: d.used_count || 0,
-            start_date: d.start_date,
-            end_date: d.end_date,
-            is_active: d.is_active,
-            created_at: d.created,
-        };
+        return mapDiscountRecord(d);
     } catch (error) {
         return null;
     }
@@ -109,26 +94,7 @@ export async function getDiscount(id: string): Promise<Discount | null> {
 export async function getDiscountByCode(code: string): Promise<Discount | null> {
     try {
         const d = await pb.collection('discounts').getFirstListItem(`code="${code.toUpperCase()}"`);
-        return {
-            id: d.id,
-            code: d.code,
-            name: d.name,
-            description: d.description,
-            discount_type: d.discount_type,
-            value: d.value,
-            max_discount: d.max_discount,
-            min_purchase: d.min_purchase || 0,
-            min_items: d.min_items || 0,
-            applies_to: d.applies_to || 'all',
-            applies_to_ids: d.applies_to_ids,
-            usage_limit: d.usage_limit,
-            per_customer_limit: d.per_customer_limit || 1,
-            used_count: d.used_count || 0,
-            start_date: d.start_date,
-            end_date: d.end_date,
-            is_active: d.is_active,
-            created_at: d.created,
-        };
+        return mapDiscountRecord(d);
     } catch (error) {
         return null;
     }
@@ -139,28 +105,27 @@ export async function createDiscount(discount: Omit<Discount, 'id' | 'used_count
         code: discount.code.toUpperCase(),
         name: discount.name,
         description: discount.description || '',
+        type: discount.discount_type,
         discount_type: discount.discount_type,
         value: discount.value,
         max_discount: discount.max_discount,
+        min_order_value: discount.min_purchase,
         min_purchase: discount.min_purchase,
         min_items: discount.min_items,
         applies_to: discount.applies_to,
         applies_to_ids: discount.applies_to_ids,
+        max_uses: discount.usage_limit,
         usage_limit: discount.usage_limit,
         per_customer_limit: discount.per_customer_limit,
         used_count: 0,
+        valid_from: discount.start_date || '',
         start_date: discount.start_date || '',
+        valid_until: discount.end_date || '',
         end_date: discount.end_date || '',
         is_active: discount.is_active,
     });
 
-    return {
-        ...discount,
-        id: d.id,
-        code: discount.code.toUpperCase(),
-        used_count: 0,
-        created_at: d.created,
-    };
+    return mapDiscountRecord(d);
 }
 
 export async function updateDiscount(id: string, updates: Partial<Discount>): Promise<Discount> {
@@ -168,28 +133,24 @@ export async function updateDiscount(id: string, updates: Partial<Discount>): Pr
     if (cleanUpdates.code) {
         cleanUpdates.code = cleanUpdates.code.toUpperCase();
     }
+    if (cleanUpdates.discount_type) {
+        cleanUpdates.type = cleanUpdates.discount_type;
+    }
+    if (cleanUpdates.min_purchase !== undefined) {
+        cleanUpdates.min_order_value = cleanUpdates.min_purchase;
+    }
+    if (cleanUpdates.usage_limit !== undefined) {
+        cleanUpdates.max_uses = cleanUpdates.usage_limit;
+    }
+    if (cleanUpdates.start_date !== undefined) {
+        cleanUpdates.valid_from = cleanUpdates.start_date;
+    }
+    if (cleanUpdates.end_date !== undefined) {
+        cleanUpdates.valid_until = cleanUpdates.end_date;
+    }
 
     const d = await pb.collection('discounts').update(id, cleanUpdates);
-    return {
-        id: d.id,
-        code: d.code,
-        name: d.name,
-        description: d.description,
-        discount_type: d.discount_type,
-        value: d.value,
-        max_discount: d.max_discount,
-        min_purchase: d.min_purchase || 0,
-        min_items: d.min_items || 0,
-        applies_to: d.applies_to || 'all',
-        applies_to_ids: d.applies_to_ids,
-        usage_limit: d.usage_limit,
-        per_customer_limit: d.per_customer_limit || 1,
-        used_count: d.used_count || 0,
-        start_date: d.start_date,
-        end_date: d.end_date,
-        is_active: d.is_active,
-        created_at: d.created,
-    };
+    return mapDiscountRecord(d);
 }
 
 export async function deleteDiscount(id: string): Promise<void> {
@@ -310,22 +271,26 @@ export async function recordDiscountUsage(
         customerId?: string;
         saleId?: string;
         invoiceId?: string;
+        orderId?: string;
     }
 ): Promise<void> {
     try {
-        await pb.collection('discount_usage').create({
+        const payload: Record<string, any> = {
             discount: discountId,
-            customer: options?.customerId || '',
-            sale: options?.saleId || '',
-            invoice: options?.invoiceId || '',
             discount_amount: discountAmount,
+            amount_saved: discountAmount,
             order_value: orderValue,
-        });
+        };
+        if (options?.customerId) payload.customer = options.customerId;
+        if (options?.orderId) payload.order = options.orderId;
+        if (options?.saleId) payload.sale = options.saleId;
+        if (options?.invoiceId) payload.invoice = options.invoiceId;
 
-        // Increment used_count
-        const discount = await pb.collection('discounts').getOne(discountId);
+        await pb.collection('discount_usage').create(payload);
+
+        // Increment used_count atomically
         await pb.collection('discounts').update(discountId, {
-            used_count: (discount.used_count || 0) + 1,
+            'used_count+': 1,
         });
     } catch (error) {
         console.error('Error recording discount usage:', error);
@@ -348,7 +313,7 @@ export async function getDiscountStats(): Promise<{
         const activeCount = allDiscounts.filter((d: any) => d.is_active).length;
 
         const usageRecords = await pb.collection('discount_usage').getFullList();
-        const totalSavings = usageRecords.reduce((sum: number, u: any) => sum + (u.discount_amount || 0), 0);
+        const totalSavings = usageRecords.reduce((sum: number, u: any) => sum + (u.discount_amount || u.amount_saved || 0), 0);
         const usageCount = usageRecords.length;
 
         return {

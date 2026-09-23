@@ -589,10 +589,9 @@ export async function addToExistingInventory(input: {
         }
     }
 
-    // Fallback or non-vendor restock: manual increment and movement record
-    const variant = await pb.collection('product_variants').getOne(input.variantId);
+    // Fallback or non-vendor restock: manual atomic increment and movement record
     await pb.collection('product_variants').update(input.variantId, {
-        stock_level: ((variant as { stock_level?: number }).stock_level || 0) + Math.max(0, input.quantity),
+        'stock_level+': Math.max(0, input.quantity),
     });
 
     await pb.collection('stock_movements').create({

@@ -75,6 +75,41 @@ export function phoneFromChatId(chatId: string): string | null {
 }
 
 /**
+ * Map raw PocketBase record to Customer interface with dual-field resilience
+ */
+export function mapCustomerRecord(result: any): Customer {
+    return {
+        id: result.id,
+        name: result.name,
+        phone: result.phone || null,
+        email: result.email || null,
+        address: result.address || null,
+        city: result.city || null,
+        state: result.state || null,
+        pincode: result.pincode || null,
+        company_name: result.company_name || null,
+        gstin: result.gstin || null,
+        customer_type: result.customer_type || 'retail',
+        loyalty_points: result.loyalty_points || 0,
+        total_spent: result.total_spent || 0,
+        total_orders: result.total_orders || 0,
+        preferred_contact: result.preferred_contact || 'phone',
+        notes: result.notes || null,
+        tags: result.tags || null,
+        source: result.source || 'manual',
+        ring_size: result.ring_size || null,
+        bangle_size: result.bangle_size || null,
+        preferred_metal: result.preferred_metal || null,
+        anniversary_date: result.anniversary_date || result.anniversary || null,
+        birthday_date: result.birthday_date || result.date_of_birth || null,
+        lead_status: result.lead_status || null,
+        assigned_staff: result.assigned_staff || null,
+        created_at: result.created,
+        updated_at: result.updated,
+    };
+}
+
+/**
  * Find customer by phone number
  */
 export async function findCustomerByPhone(phone: string): Promise<Customer | null> {
@@ -90,28 +125,7 @@ export async function findCustomerByPhone(phone: string): Promise<Customer | nul
             `phone~"${normalized}"`
         );
 
-        return {
-            id: result.id,
-            name: result.name,
-            phone: result.phone,
-            email: result.email,
-            address: result.address,
-            city: result.city,
-            state: result.state,
-            pincode: result.pincode,
-            company_name: result.company_name,
-            gstin: result.gstin,
-            customer_type: result.customer_type || 'retail',
-            loyalty_points: result.loyalty_points || 0,
-            total_spent: result.total_spent || 0,
-            total_orders: result.total_orders || 0,
-            preferred_contact: result.preferred_contact || 'phone',
-            notes: result.notes,
-            tags: result.tags,
-            source: result.source || 'manual',
-            created_at: result.created,
-            updated_at: result.updated,
-        };
+        return mapCustomerRecord(result);
     } catch (error) {
         return null;
     }
@@ -136,28 +150,7 @@ export async function createCustomerFromChat(
             customer_type: 'retail',
         });
 
-        return {
-            id: result.id,
-            name: result.name,
-            phone: result.phone,
-            email: result.email,
-            address: result.address,
-            city: result.city,
-            state: result.state,
-            pincode: result.pincode,
-            company_name: result.company_name,
-            gstin: result.gstin,
-            customer_type: result.customer_type || 'retail',
-            loyalty_points: result.loyalty_points || 0,
-            total_spent: result.total_spent || 0,
-            total_orders: result.total_orders || 0,
-            preferred_contact: result.preferred_contact || 'whatsapp',
-            notes: result.notes,
-            tags: result.tags,
-            source: result.source || 'whatsapp',
-            created_at: result.created,
-            updated_at: result.updated,
-        };
+        return mapCustomerRecord(result);
     } catch (error) {
         console.error('Failed to create customer:', error);
         return null;
@@ -262,36 +255,19 @@ export async function updateCustomerCRMProfile(
     }
 ): Promise<Customer | null> {
     try {
-        const updated = await pb.collection('customers').update(customerId, data);
-        return {
-            id: updated.id,
-            name: updated.name,
-            phone: updated.phone,
-            email: updated.email,
-            address: updated.address,
-            city: updated.city,
-            state: updated.state,
-            pincode: updated.pincode,
-            company_name: updated.company_name,
-            gstin: updated.gstin,
-            customer_type: updated.customer_type || 'retail',
-            loyalty_points: updated.loyalty_points || 0,
-            total_spent: updated.total_spent || 0,
-            total_orders: updated.total_orders || 0,
-            preferred_contact: updated.preferred_contact || 'phone',
-            notes: updated.notes,
-            tags: updated.tags,
-            source: updated.source || 'whatsapp',
-            ring_size: updated.ring_size,
-            bangle_size: updated.bangle_size,
-            preferred_metal: updated.preferred_metal,
-            anniversary_date: updated.anniversary_date,
-            birthday_date: updated.birthday_date,
-            lead_status: updated.lead_status,
-            assigned_staff: updated.assigned_staff,
-            created_at: updated.created,
-            updated_at: updated.updated,
-        };
+        const payload: Record<string, any> = { ...data };
+        // Dual-write anniversary and birthday to both canonical and legacy column names
+        if (data.anniversary_date !== undefined) {
+            payload.anniversary = data.anniversary_date;
+            payload.anniversary_date = data.anniversary_date;
+        }
+        if (data.birthday_date !== undefined) {
+            payload.date_of_birth = data.birthday_date;
+            payload.birthday_date = data.birthday_date;
+        }
+
+        const updated = await pb.collection('customers').update(customerId, payload);
+        return mapCustomerRecord(updated);
     } catch (err) {
         console.error('Failed to update customer CRM profile:', err);
         return null;

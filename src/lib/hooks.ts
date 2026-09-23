@@ -373,10 +373,9 @@ export function useSales() {
                         total_price: item.quantity * item.unit_price,
                     });
 
-                    // Update stock level
-                    const variant = await pb.collection('product_variants').getOne(item.variant_id);
+                    // Update stock level atomically
                     await pb.collection('product_variants').update(item.variant_id, {
-                        stock_level: (variant.stock_level || 0) - item.quantity,
+                        'stock_level-': item.quantity,
                     });
 
                     // Log stock movement

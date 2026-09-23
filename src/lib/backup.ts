@@ -10,6 +10,7 @@ interface BackupData {
     version: string;
     createdAt: string;
     tables: {
+        customers?: unknown[];
         products: unknown[];
         product_variants: unknown[];
         vendors: unknown[];
@@ -26,19 +27,21 @@ const BACKUP_VERSION = "1.0.0";
  */
 export async function createBackup(): Promise<BackupData | null> {
     try {
-        const [products, variants, vendors, sales, saleItems, movements] = await Promise.all([
-            pb.collection("products").getFullList(),
-            pb.collection("product_variants").getFullList(),
-            pb.collection("vendors").getFullList(),
-            pb.collection("sales").getFullList(),
-            pb.collection("sale_items").getFullList(),
-            pb.collection("stock_movements").getFullList(),
+        const [customers, products, variants, vendors, sales, saleItems, movements] = await Promise.all([
+            pb.collection("customers").getFullList().catch(() => []),
+            pb.collection("products").getFullList().catch(() => []),
+            pb.collection("product_variants").getFullList().catch(() => []),
+            pb.collection("vendors").getFullList().catch(() => []),
+            pb.collection("sales").getFullList().catch(() => []),
+            pb.collection("sale_items").getFullList().catch(() => []),
+            pb.collection("stock_movements").getFullList().catch(() => []),
         ]);
 
         const backup: BackupData = {
             version: BACKUP_VERSION,
             createdAt: new Date().toISOString(),
             tables: {
+                customers: customers || [],
                 products: products || [],
                 product_variants: variants || [],
                 vendors: vendors || [],
@@ -101,6 +104,7 @@ export async function restoreFromBackup(file: File): Promise<{
     success: boolean;
     message: string;
     restored?: {
+        customers?: number;
         products: number;
         variants: number;
         vendors: number;
@@ -131,6 +135,22 @@ export async function restoreFromBackup(file: File): Promise<{
                 }
             } catch (e) {
                 console.warn(`Failed to restore vendor ${vendor.id}:`, e);
+            }
+        }
+
+        // 1b. Customers (before sales)
+        if (Array.isArray(data.tables.customers)) {
+            for (const customer of data.tables.customers as any[]) {
+                try {
+                    const existing = await pb.collection("customers").getOne(customer.id).catch(() => null);
+                    if (existing) {
+                        await pb.collection("customers").update(customer.id, customer);
+                    } else {
+                        await pb.collection("customers").create(customer);
+                    }
+                } catch (e) {
+                    console.warn(`Failed to restore customer ${customer.id}:`, e);
+                }
             }
         }
 
@@ -208,6 +228,7 @@ export async function restoreFromBackup(file: File): Promise<{
             success: true,
             message: `Backup from ${new Date(data.createdAt).toLocaleDateString()} restored successfully`,
             restored: {
+                customers: (data.tables.customers as any[])?.length || 0,
                 products: data.tables.products.length,
                 variants: data.tables.product_variants.length,
                 vendors: data.tables.vendors.length,

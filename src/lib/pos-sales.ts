@@ -12,6 +12,7 @@
 
 import { pb } from './pocketbase';
 import { createInvoiceFromSale, type Invoice } from './invoice';
+import { enqueueTask } from './concurrency';
 
 // ============================================
 // TYPES
@@ -54,6 +55,7 @@ export interface POSSaleResult {
     invoiceId: string;
     invoiceNumber: string;
     transactionId: string;
+    warnings?: string[];
 }
 
 // ============================================
@@ -67,6 +69,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     const createdSaleItemIds: string[] = [];
     const createdMovementIds: string[] = [];
     const stockDeductions: { variantId: string; quantity: number }[] = [];
+    const warnings: string[] = [];
 
     try {
         // 1. Create sale record
@@ -118,15 +121,51 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                 });
                 createdMovementIds.push(movement.id);
 
-                // Update variant stock level
+                // Update variant stock level atomically
                 try {
-                    const variant = await pb.collection('product_variants').getOne(item.variantId);
                     await pb.collection('product_variants').update(item.variantId, {
-                        stock_level: Math.max(0, (variant as any).stock_level - item.quantity),
+                        'stock_level-': item.quantity,
                     });
                     stockDeductions.push({ variantId: item.variantId, quantity: item.quantity });
-                } catch (stockErr) {
-                    console.warn('Could not update stock level for variant:', item.variantId, stockErr);
+                } catch (stockErr: any) {
+                    const isMinConstraint = stockErr?.data?.data?.stock_level?.code === 'validation_min_number_constraint' ||
+                        String(stockErr?.message).includes('validation_min_number_constraint') ||
+                        stockErr?.status === 400;
+
+                    if (isMinConstraint) {
+                        console.warn(`[pos-sales] Variant ${item.variantId} insufficient stock for quantity ${item.quantity}. Clamping to 0.`);
+
+                        // Clamp variant stock level to 0 so stale positive counts don't persist
+                        await pb.collection('product_variants').update(item.variantId, {
+                            stock_level: 0,
+                        }).catch(() => {});
+
+                        // Documented audit trail in activity_logs
+                        await pb.collection('activity_logs').create({
+                            action: 'INVENTORY_OVERSELL_WARNING',
+                            entity_type: 'product_variants',
+                            entity_id: item.variantId,
+                            description: `CRITICAL INVENTORY NOTICE: POS sale ${transactionId} requested ${item.quantity} units for variant ${item.variantId}, exceeding available stock. Stock was clamped to 0.`,
+                            metadata: JSON.stringify({
+                                variant_id: item.variantId,
+                                sale_id: sale.id,
+                                transaction_id: transactionId,
+                                requested_quantity: item.quantity,
+                                warning: 'validation_min_number_constraint',
+                            }),
+                        }).catch((err) => console.error('Failed to log oversell audit:', err));
+
+                        // Annotate stock movement with discrepancy notice
+                        if (movement?.id) {
+                            await pb.collection('stock_movements').update(movement.id, {
+                                notes: `POS Sale: ${transactionId} [OVERSELL WARNING: requested ${item.quantity}, insufficient stock clamped to 0]`,
+                            }).catch(() => {});
+                        }
+
+                        warnings.push(`Insufficient stock for "${item.name}" (requested ${item.quantity}). Stock clamped to 0.`);
+                    } else {
+                        console.warn('Could not update stock level for variant:', item.variantId, stockErr);
+                    }
                 }
             }
         }
@@ -146,17 +185,17 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
             invoiceId: invoice.id!,
             invoiceNumber: invoice.invoice_number!,
             transactionId,
+            warnings: warnings.length > 0 ? warnings : undefined,
         };
 
     } catch (error) {
         console.error('Error creating POS sale, initiating compensating rollback:', error);
 
-        // Rollback stock deductions
+        // Rollback stock deductions atomically
         for (const deduction of stockDeductions) {
             try {
-                const variant = await pb.collection('product_variants').getOne(deduction.variantId);
                 await pb.collection('product_variants').update(deduction.variantId, {
-                    stock_level: ((variant as any).stock_level || 0) + deduction.quantity,
+                    'stock_level+': deduction.quantity,
                 });
             } catch (err) {
                 console.error(`Rollback error: unable to restore stock for variant ${deduction.variantId}:`, err);
@@ -197,39 +236,30 @@ async function updateShiftTotals(
     amount: number,
     paymentMethod: string
 ): Promise<void> {
-    try {
-        const shift = await pb.collection('cash_register_shifts').getOne(shiftId);
+    return enqueueTask(`shift_${shiftId}`, async () => {
+        try {
+            const updates: Record<string, number> = {};
 
-        const updates: Record<string, number> = {};
+            switch (paymentMethod) {
+                case 'cash':
+                    updates['total_cash_sales+'] = amount;
+                    updates['expected_balance+'] = amount;
+                    break;
+                case 'card':
+                    updates['total_card_sales+'] = amount;
+                    break;
+                case 'upi':
+                case 'phonepe':
+                    updates['total_upi_sales+'] = amount;
+                    break;
+            }
 
-        switch (paymentMethod) {
-            case 'cash':
-                updates.total_cash_sales = ((shift as any).total_cash_sales || 0) + amount;
-                break;
-            case 'card':
-                updates.total_card_sales = ((shift as any).total_card_sales || 0) + amount;
-                break;
-            case 'upi':
-            case 'phonepe':
-                updates.total_upi_sales = ((shift as any).total_upi_sales || 0) + amount;
-                break;
+            await pb.collection('cash_register_shifts').update(shiftId, updates);
+        } catch (error) {
+            console.error('Error updating shift totals:', error);
+            // Don't throw - shift update failure shouldn't fail the sale
         }
-
-        // Update expected balance (opening + cash sales - refunds)
-        if (paymentMethod === 'cash') {
-            updates.expected_balance =
-                ((shift as any).opening_balance || 0) +
-                updates.total_cash_sales -
-                ((shift as any).total_cash_refunds || 0) +
-                ((shift as any).cash_added || 0) -
-                ((shift as any).cash_removed || 0);
-        }
-
-        await pb.collection('cash_register_shifts').update(shiftId, updates);
-    } catch (error) {
-        console.error('Error updating shift totals:', error);
-        // Don't throw - shift update failure shouldn't fail the sale
-    }
+    });
 }
 
 // ============================================

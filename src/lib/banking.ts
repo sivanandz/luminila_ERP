@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { enqueueTask } from './concurrency';
 
 // ==========================================
 // TYPES
@@ -141,43 +142,43 @@ export async function getBankTransactions(
 }
 
 export async function createBankTransaction(transaction: NewBankTransaction): Promise<BankTransaction> {
-    const account = await getBankAccount(transaction.account);
-    if (!account) {
-        throw new Error(`Bank account ${transaction.account} not found`);
-    }
-
-    // Overdraft protection: verify sufficient balance for debits
-    if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
-        if ((account.current_balance || 0) < transaction.amount) {
-            throw new Error(`Insufficient funds: account balance (₹${account.current_balance || 0}) is less than transaction amount (₹${transaction.amount})`);
-        }
-    }
-
-    let record: any = null;
-    try {
-        record = await pb.collection('bank_transactions').create(transaction);
-
-        let newBalance = account.current_balance || 0;
-        if (transaction.type === 'deposit') {
-            newBalance += transaction.amount;
-        } else if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
-            newBalance -= transaction.amount;
+    return enqueueTask(`bank_${transaction.account}`, async () => {
+        const account = await getBankAccount(transaction.account);
+        if (!account) {
+            throw new Error(`Bank account ${transaction.account} not found`);
         }
 
-        await pb.collection('bank_accounts').update(transaction.account, {
-            current_balance: newBalance
-        });
-
-        return record as unknown as BankTransaction;
-    } catch (error) {
-        // Compensating rollback: delete transaction if balance update failed
-        if (record?.id) {
-            await pb.collection('bank_transactions').delete(record.id).catch((delErr) => {
-                console.error('Failed to rollback orphaned bank transaction:', delErr);
-            });
+        // Overdraft protection: verify sufficient balance for debits
+        if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
+            if ((account.current_balance || 0) < transaction.amount) {
+                throw new Error(`Insufficient funds: account balance (₹${account.current_balance || 0}) is less than transaction amount (₹${transaction.amount})`);
+            }
         }
-        throw error;
-    }
+
+        let record: any = null;
+        try {
+            record = await pb.collection('bank_transactions').create(transaction);
+
+            const balanceUpdate: Record<string, number> = {};
+            if (transaction.type === 'deposit') {
+                balanceUpdate['current_balance+'] = transaction.amount;
+            } else if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
+                balanceUpdate['current_balance-'] = transaction.amount;
+            }
+
+            await pb.collection('bank_accounts').update(transaction.account, balanceUpdate);
+
+            return record as unknown as BankTransaction;
+        } catch (error) {
+            // Compensating rollback: delete transaction if balance update failed
+            if (record?.id) {
+                await pb.collection('bank_transactions').delete(record.id).catch((delErr) => {
+                    console.error('Failed to rollback orphaned bank transaction:', delErr);
+                });
+            }
+            throw error;
+        }
+    });
 }
 
 // ==========================================

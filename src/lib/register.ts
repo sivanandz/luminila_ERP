@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { enqueueTask } from './concurrency';
 
 // =============================================
 // Types
@@ -245,30 +246,30 @@ export async function addCashToDrawer(
     reason: string,
     performedBy: string
 ): Promise<boolean> {
-    try {
-        // Record operation
-        await pb.collection('cash_drawer_operations').create({
-            shift: shiftId,
-            operation_type: 'add',
-            amount,
-            reason,
-            performed_by: performedBy,
-            performed_at: new Date().toISOString()
-        });
-
-        // Update shift total
-        const shift = await getShift(shiftId);
-        if (shift) {
-            await pb.collection('cash_register_shifts').update(shiftId, {
-                cash_added: (shift.cash_added || 0) + amount
+    return enqueueTask(`shift_${shiftId}`, async () => {
+        try {
+            // Record operation
+            await pb.collection('cash_drawer_operations').create({
+                shift: shiftId,
+                operation_type: 'add',
+                amount,
+                reason,
+                performed_by: performedBy,
+                performed_at: new Date().toISOString()
             });
-        }
 
-        return true;
-    } catch (error) {
-        console.error('Error adding cash to drawer:', error);
-        return false;
-    }
+            // Update shift total atomically
+            await pb.collection('cash_register_shifts').update(shiftId, {
+                'cash_added+': amount,
+                'expected_balance+': amount
+            });
+
+            return true;
+        } catch (error) {
+            console.error('Error adding cash to drawer:', error);
+            return false;
+        }
+    });
 }
 
 /**
@@ -280,29 +281,29 @@ export async function removeCashFromDrawer(
     reason: string,
     performedBy: string
 ): Promise<boolean> {
-    try {
-        // Record operation
-        await pb.collection('cash_drawer_operations').create({
-            shift: shiftId,
-            operation_type: 'remove',
-            amount,
-            reason,
-            performed_by: performedBy,
-            performed_at: new Date().toISOString()
-        });
-
-        // Update shift total
-        const shift = await getShift(shiftId);
-        if (shift) {
-            await pb.collection('cash_register_shifts').update(shiftId, {
-                cash_removed: (shift.cash_removed || 0) + amount
+    return enqueueTask(`shift_${shiftId}`, async () => {
+        try {
+            // Record operation
+            await pb.collection('cash_drawer_operations').create({
+                shift: shiftId,
+                operation_type: 'remove',
+                amount,
+                reason,
+                performed_by: performedBy,
+                performed_at: new Date().toISOString()
             });
+
+            // Update shift total atomically
+            await pb.collection('cash_register_shifts').update(shiftId, {
+                'cash_removed+': amount,
+                'expected_balance-': amount
+            });
+            return true;
+        } catch (error) {
+            console.error('Error removing cash from drawer:', error);
+            return false;
         }
-        return true;
-    } catch (error) {
-        console.error('Error removing cash from drawer:', error);
-        return false;
-    }
+    });
 }
 
 /**

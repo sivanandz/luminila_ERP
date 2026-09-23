@@ -271,9 +271,8 @@ export async function approveCreditNote(id: string): Promise<void> {
             for (const item of items) {
                 if (item.variant && item.quantity > 0) {
                     try {
-                        const variant = await pb.collection('product_variants').getOne(item.variant);
                         await pb.collection('product_variants').update(item.variant, {
-                            stock_level: ((variant as any).stock_level || 0) + item.quantity
+                            'stock_level+': item.quantity
                         });
 
                         await pb.collection('stock_movements').create({

@@ -515,6 +515,11 @@ export default function POSPage() {
             });
 
             // Handle loyalty points
+            // Surface inventory warnings from the sale (e.g. oversell clamps)
+            if (result.warnings?.length) {
+                result.warnings.forEach(w => toast.warning(w));
+            }
+
             if (selectedCustomerId && pointsToRedeem > 0) {
                 await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
             }
@@ -594,6 +599,11 @@ export default function POSPage() {
             });
 
             // Handle loyalty points
+            // Surface inventory warnings from the sale (e.g. oversell clamps)
+            if (result.warnings?.length) {
+                result.warnings.forEach(w => toast.warning(w));
+            }
+
             if (selectedCustomerId && pointsToRedeem > 0) {
                 await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
             }

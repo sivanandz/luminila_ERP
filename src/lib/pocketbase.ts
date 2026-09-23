@@ -1,7 +1,7 @@
 import PocketBase from 'pocketbase';
 
 // Determine default URL
-const DEFAULT_URL = process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090';
+const DEFAULT_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090';
 
 /**
  * Get active PocketBase base URL

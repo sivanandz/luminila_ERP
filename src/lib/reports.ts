@@ -61,6 +61,12 @@ export interface ReportSummary {
     totalItems: number;
 }
 
+function formatDateSafe(dateStr?: string, fmt = 'dd/MM/yyyy'): string {
+    if (!dateStr) return '-';
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? '-' : format(d, fmt);
+}
+
 // ===========================================
 // SALES REPORT
 // ===========================================
@@ -76,7 +82,7 @@ export async function getSalesReport(
         });
 
         const rows: SalesReportRow[] = invoices.map((inv: any) => ({
-            date: format(new Date(inv.invoice_date), 'dd/MM/yyyy'),
+            date: formatDateSafe(inv.invoice_date, 'dd/MM/yyyy'),
             invoiceNumber: inv.invoice_number,
             customerName: inv.buyer_name,
             customerGstin: inv.buyer_gstin,
@@ -122,7 +128,7 @@ export async function getGSTR1Report(
         invoices.forEach((inv: any) => {
             const row: GSTR1Row = {
                 invoiceNumber: inv.invoice_number,
-                invoiceDate: format(new Date(inv.invoice_date), 'dd-MMM-yyyy'),
+                invoiceDate: formatDateSafe(inv.invoice_date, 'dd-MMM-yyyy'),
                 buyerName: inv.buyer_name,
                 buyerGstin: inv.buyer_gstin || '',
                 placeOfSupply: inv.place_of_supply || inv.buyer_state_code,
@@ -176,17 +182,24 @@ export async function getStockReport(): Promise<{
             expand: 'product',
         });
 
-        const rows: StockReportRow[] = data.map((v: any) => ({
-            productId: v.expand?.product?.id || '',
-            productName: v.expand?.product?.name || 'Unknown',
-            sku: (v.expand?.product?.sku || '') + (v.sku_suffix ? `-${v.sku_suffix}` : ''),
-            variantName: v.variant_name || 'Default',
-            category: v.expand?.product?.category,
-            currentStock: v.stock_level || 0,
-            reorderLevel: v.low_stock_threshold || 10,
-            lastUpdated: v.updated ? format(new Date(v.updated), 'dd/MM/yyyy') : '-',
-            stockValue: (v.stock_level || 0) * (v.cost_price || 0),
-        }));
+        const rows: StockReportRow[] = data.map((v: any) => {
+            const product = v.expand?.product;
+            const costPrice = (product?.cost_price && product.cost_price > 0)
+                ? product.cost_price
+                : (product?.base_price || 0);
+            const stockLevel = v.stock_level || 0;
+            return {
+                productId: product?.id || '',
+                productName: product?.name || 'Unknown',
+                sku: (product?.sku || '') + (v.sku_suffix ? `-${v.sku_suffix}` : ''),
+                variantName: v.variant_name || 'Default',
+                category: product?.category,
+                currentStock: stockLevel,
+                reorderLevel: v.low_stock_threshold || 10,
+                lastUpdated: formatDateSafe(v.updated),
+                stockValue: stockLevel * costPrice,
+            };
+        });
 
         const summary = {
             totalProducts: rows.length,

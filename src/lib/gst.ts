@@ -314,14 +314,39 @@ export function generateEWayBillJSON(
     // Common fields
     const docNumber = isChallan ? document.challan_number : document.invoice_number;
     const docDateRaw = isChallan ? document.challan_date : document.invoice_date;
-    const supplyType = isChallan ? 'O' : 'O'; // Outward
-    const subSupplyType = isChallan ? '8' : '1'; // 8 for 'Others' (Challan), 1 for Supply (Invoice)
+
+    // Supply type: Inward for sales return, Outward for normal supply
+    const isReturn = isChallan && document.challan_type === 'sale_return';
+    const supplyType = isReturn ? 'I' : 'O';
+
+    // Sub-supply type per NIC GST portal codes:
+    // 1=Supply, 4=Job Work, 5=For Own Use/Stock Transfer, 7=Sales Return, 8=Others, 12=Exhibition
+    let subSupplyType = '1';
+    if (isChallan) {
+        switch (document.challan_type) {
+            case 'job_work':
+                subSupplyType = '4';
+                break;
+            case 'stock_transfer':
+                subSupplyType = '5';
+                break;
+            case 'sale_return':
+                subSupplyType = '7';
+                break;
+            case 'exhibition':
+                subSupplyType = '12';
+                break;
+            default:
+                subSupplyType = '8';
+                break;
+        }
+    }
     const docType = isChallan ? 'CHL' : 'INV';
 
     // Mapping Names
     const fromTradeName = isChallan
         ? (document.consignor_name || 'Luminila Jewelry')
-        : 'Luminila Jewelry';
+        : (document.seller_name || 'Luminila Jewelry');
 
     const toTradeName = isChallan
         ? document.consignee_name
@@ -329,9 +354,13 @@ export function generateEWayBillJSON(
 
     const toGstin = (isChallan ? document.consignee_gstin : document.buyer_gstin) || 'URP';
     const toAddr1 = (isChallan ? document.consignee_address : document.buyer_address) || '';
-    const toPlace = (isChallan ? document.place_of_supply : document.place_of_supply) || '';
-    const toPincode = Number((isChallan ? 0 : document.buyer_pincode) || 0) || 100000;
+    const toPlace = (isChallan ? (document.consignee_city || document.place_of_supply) : (document.buyer_city || document.place_of_supply)) || '';
+    const toPincode = Number((isChallan ? (document.consignee_pincode || document.pincode) : (document.buyer_pincode || document.pincode)) || 0) || 560001;
     const toStateCode = Number((isChallan ? document.consignee_state_code : document.buyer_state_code) || 0);
+
+    const fromAddr1 = (isChallan ? document.consignor_address : document.seller_address) || 'Main Street';
+    const fromPlace = (isChallan ? document.consignor_city : document.seller_city) || 'City';
+    const fromPincode = Number((isChallan ? document.consignor_pincode : document.seller_pincode) || 560001) || 560001;
 
     const docDate = new Date(docDateRaw).toLocaleDateString('en-IN', {
         day: '2-digit',
@@ -374,10 +403,10 @@ export function generateEWayBillJSON(
         docDate,
         fromGstin: supplierGstin,
         fromTrdName: fromTradeName,
-        fromAddr1: 'Main Street', // Ideally from settings
+        fromAddr1,
         fromAddr2: '',
-        fromPlace: 'City', // Ideally from settings
-        fromPincode: 560001, // Ideally from settings
+        fromPlace,
+        fromPincode,
         fromStateCode: Number(supplierGstin.substring(0, 2)),
 
         toGstin,

@@ -411,9 +411,8 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
         // Update stock level for the variant
         if (item.variant_id) {
             try {
-                const variant = await pb.collection('product_variants').getOne(item.variant_id);
                 await pb.collection('product_variants').update(item.variant_id, {
-                    stock_level: (variant.stock_level || 0) + item.quantity_received,
+                    'stock_level+': item.quantity_received,
                 });
 
                 // Log stock movement
