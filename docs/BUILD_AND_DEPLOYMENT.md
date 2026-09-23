@@ -279,17 +279,27 @@ Luminila includes a full web application manifest (`public/manifest.json`) and m
 #### Option B: Tauri v2 Standalone APK Compilation
 To compile a native `.apk` binary:
 
-```bash
-# Debug APK:
-npx tauri android build --apk --debug
-
-# Release APK (Unsigned):
-npx tauri android build --apk
+1. **Set Android Environment Variables (PowerShell):**
+```powershell
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:NDK_HOME = "$env:LOCALAPPDATA\Android\Sdk\ndk\28.2.13676358"
 ```
 
+2. **Execute Build:**
+```bash
+# Debug APK:
+npm run tauri:android -- --debug
+
+# Release APK (Unsigned):
+npm run tauri:android
+```
+*(Note: In Tauri v2 CLI, `--apk` is a boolean flag (`--apk true`). Do NOT pass bare `--apk --debug` as `--debug` will be parsed as an invalid argument to `--apk`.)*
+
 > [!WARNING]
-> **Windows exFAT Drive Symlink Limitation:**  
-> If the project workspace is located on an **exFAT** formatted drive (such as an external SSD or USB drive), Windows does not support filesystem symbolic links at the OS kernel level (`Incorrect function. (os error 1)`). To compile the release `.apk`, copy or clone the repository to an **NTFS** partition (e.g. `C:\`), where Windows symlinks and cross-drive Gradle paths are fully supported.
+> **Windows exFAT Drive Symlink Limitation (Critical):**  
+> If the project workspace is located on an **exFAT** formatted drive (such as an external SSD or USB drive), Windows does not support filesystem symbolic links at the OS kernel level (`Incorrect function. (os error 1)`).  
+> During `tauri android build`, Tauri creates a symbolic link from `src-tauri/target/<arch>/debug/libapp_lib.so` to `src-tauri/gen/android/app/src/main/jniLibs/<arch>/libapp_lib.so`. On exFAT volumes, this call fails with `IO error: Incorrect function. (os error 1)`.  
+> **Solution:** Clone or copy the repository to an **NTFS** partition (e.g. `C:\Users\<user>\dev\luminila_inv_mgmt`), where Windows Developer Mode symlinks and cross-directory links are fully supported.
 
 **Output APK Locations:**
 - Debug APK: `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`

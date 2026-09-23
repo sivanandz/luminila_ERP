@@ -13,6 +13,8 @@
     "lint": "eslint",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:android": "tauri android build",
     "tunnel": "node scripts/tunnel.js",
     "tunnel:all": "node scripts/tunnel.js --all",
     "tunnel:pb": "node scripts/tunnel.js --pb",
