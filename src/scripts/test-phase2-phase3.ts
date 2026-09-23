@@ -1511,6 +1511,103 @@ async function runTests() {
         assert(false, `Test 23 failed: ${err.message}`);
     }
 
+    // 24. WPA-30..33: Banking Defaulting, Inter-Account Transfer & Reports Chunking
+    console.log("\n[Test 24]: Whole-Project Audit (WPA-30..33) Verification");
+    try {
+        const { createBankAccount, getBankAccounts, getBankAccount, transferFunds } = await import('../lib/banking');
+        const { fetchInvoiceItemsForInvoices, getSalesReport } = await import('../lib/reports');
+
+        // A. WPA-30: Bank Account Creation Schema Defaulting & Invisibility Protection
+        const testBankAcc = await createBankAccount({
+            account_name: `Safe Bank Test ${Date.now()}`,
+            bank_name: 'Safe Bank India',
+            // opening_balance, current_balance, is_active all omitted
+        });
+
+        assert(Boolean(testBankAcc.id), `createBankAccount succeeds with omitted balances (${testBankAcc.id})`);
+        assert(testBankAcc.opening_balance === 0, "createBankAccount defaults opening_balance to 0");
+        assert(testBankAcc.current_balance === 0, "createBankAccount defaults current_balance to 0");
+        assert(testBankAcc.is_active === true, "createBankAccount defaults is_active to true");
+
+        const activeAccounts = await getBankAccounts();
+        const foundActive = activeAccounts.some(acc => acc.id === testBankAcc.id);
+        assert(foundActive, "New bank account is immediately visible in getBankAccounts()");
+
+        // B. WPA-31: Inter-Account Transfer Double-Entry Ledger & Balance Sync
+        const sourceAcc = await createBankAccount({
+            account_name: `Source Account ${Date.now()}`,
+            opening_balance: 5000,
+            current_balance: 5000,
+        });
+
+        const destAcc = await createBankAccount({
+            account_name: `Dest Account ${Date.now()}`,
+            opening_balance: 1000,
+            current_balance: 1000,
+        });
+
+        const transferRes = await transferFunds(sourceAcc.id, destAcc.id, 2000, 'Inter-branch funds transfer');
+        assert(Boolean(transferRes.sourceTx.id), "transferFunds executes source withdrawal transaction");
+
+        const refreshedSource = await getBankAccount(sourceAcc.id);
+        const refreshedDest = await getBankAccount(destAcc.id);
+        assert(refreshedSource?.current_balance === 3000, `Source balance correctly debited from 5000 to 3000 (actual: ${refreshedSource?.current_balance})`);
+        assert(refreshedDest?.current_balance === 3000, `Destination balance correctly credited from 1000 to 3000 (actual: ${refreshedDest?.current_balance})`);
+
+        // Verify destination ledger contains matching deposit
+        const destTxs = await adminPb.collection('bank_transactions').getFullList({
+            filter: `account="${destAcc.id}" && type="deposit"`
+        });
+        assert(destTxs.length >= 1, "transferFunds automatically posts complementary deposit in destination ledger");
+        assert(destTxs[0].amount === 2000, "Complementary deposit matches transferred amount (₹2,000)");
+
+        // Verify overdraft protection prevents invalid transfer
+        let overdraftBlocked = false;
+        try {
+            await transferFunds(sourceAcc.id, destAcc.id, 10000, 'Illegal overdraft transfer');
+        } catch (err: any) {
+            overdraftBlocked = true;
+            assert(err.message.includes('Insufficient funds'), "Overdraft transfer rejected with Insufficient funds error");
+        }
+        assert(overdraftBlocked, "Overdraft protection blocks deficit transfers");
+
+        // Clean up banking test accounts & transactions
+        await adminPb.collection('bank_transactions').delete(transferRes.sourceTx.id).catch(() => {});
+        for (const tx of destTxs) await adminPb.collection('bank_transactions').delete(tx.id).catch(() => {});
+        await adminPb.collection('bank_accounts').delete(testBankAcc.id).catch(() => {});
+        await adminPb.collection('bank_accounts').delete(sourceAcc.id).catch(() => {});
+        await adminPb.collection('bank_accounts').delete(destAcc.id).catch(() => {});
+
+        // C. WPA-32: Reports Chunked Batch Query URL Safety
+        const emptyItems = await fetchInvoiceItemsForInvoices([]);
+        assert(Array.isArray(emptyItems) && emptyItems.length === 0, "fetchInvoiceItemsForInvoices handles empty array safely");
+
+        // Generate 60 mock IDs to exercise chunking without HTTP URI length limit error
+        const mockIds = Array.from({ length: 60 }, (_, i) => `mockinv${i.toString().padStart(8, '0')}`);
+        const chunkedResult = await fetchInvoiceItemsForInvoices(mockIds);
+        assert(Array.isArray(chunkedResult), "fetchInvoiceItemsForInvoices handles 60+ invoice IDs in chunks without URI overflow");
+
+        // D. WPA-33: Sales Report Flat Record Total Fallback & Status Resolution
+        const testInvoice = await adminPb.collection('invoices').create({
+            invoice_number: `INV-TEST-WPA33-${Date.now()}`,
+            invoice_date: '2026-09-23',
+            total: 14500,
+            status: 'paid',
+            // grand_total and is_paid omitted
+        });
+
+        const salesReport = await getSalesReport('2026-09-23', '2026-09-23');
+        const reportRow = salesReport.rows.find(r => r.invoiceNumber === testInvoice.invoice_number);
+        assert(Boolean(reportRow), "getSalesReport finds newly created test invoice");
+        assert(reportRow?.total === 14500, `getSalesReport falls back to inv.total when grand_total is missing (actual: ${reportRow?.total})`);
+        assert(reportRow?.isPaid === true, "getSalesReport resolves isPaid=true from status='paid'");
+
+        await adminPb.collection('invoices').delete(testInvoice.id).catch(() => {});
+
+    } catch (err: any) {
+        assert(false, `Test 24 failed: ${err.message}`);
+    }
+
     console.log("\n==================================================");
     console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
     console.log("==================================================");

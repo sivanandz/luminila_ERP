@@ -67,6 +67,12 @@ function formatDateSafe(dateStr?: string, fmt = 'dd/MM/yyyy'): string {
     return isNaN(d.getTime()) ? '-' : format(d, fmt);
 }
 
+export function normalizeDateRange(startDate: string, endDate: string): { start: string; end: string } {
+    const start = startDate && startDate.length === 10 ? `${startDate} 00:00:00.000Z` : startDate;
+    const end = endDate && endDate.length === 10 ? `${endDate} 23:59:59.999Z` : endDate;
+    return { start, end };
+}
+
 // ===========================================
 // SALES REPORT
 // ===========================================
@@ -76,22 +82,24 @@ export async function getSalesReport(
     endDate: string
 ): Promise<{ rows: SalesReportRow[]; summary: ReportSummary }> {
     try {
+        const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `invoice_date>="${startDate}" && invoice_date<="${endDate}"`,
+            filter: `invoice_date>="${start}" && invoice_date<="${end}"`,
             sort: '-invoice_date',
+            expand: 'customer',
         });
 
         const rows: SalesReportRow[] = invoices.map((inv: any) => ({
             date: formatDateSafe(inv.invoice_date, 'dd/MM/yyyy'),
             invoiceNumber: inv.invoice_number,
-            customerName: inv.buyer_name,
-            customerGstin: inv.buyer_gstin,
-            taxableValue: inv.taxable_value || 0,
+            customerName: inv.buyer_name || inv.customer_name || inv.expand?.customer?.name || 'Walk-in Customer',
+            customerGstin: inv.buyer_gstin || '',
+            taxableValue: inv.taxable_value || inv.subtotal || 0,
             cgst: inv.cgst_amount || 0,
             sgst: inv.sgst_amount || 0,
             igst: inv.igst_amount || 0,
-            total: inv.grand_total || 0,
-            isPaid: inv.is_paid || false,
+            total: inv.grand_total || inv.total || 0,
+            isPaid: Boolean(inv.is_paid || inv.status === 'paid'),
         }));
 
         const summary: ReportSummary = {
@@ -117,8 +125,9 @@ export async function getGSTR1Report(
     endDate: string
 ): Promise<{ b2b: GSTR1Row[]; b2c: GSTR1Row[]; summary: any }> {
     try {
+        const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `invoice_date>="${startDate}" && invoice_date<="${endDate}" && invoice_type="regular"`,
+            filter: `invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
             sort: 'invoice_date',
         });
 
@@ -126,21 +135,26 @@ export async function getGSTR1Report(
         const b2c: GSTR1Row[] = [];
 
         invoices.forEach((inv: any) => {
+            const invTaxable = inv.taxable_value || inv.subtotal || 0;
+            const invCgst = inv.cgst_amount || 0;
+            const invSgst = inv.sgst_amount || 0;
+            const invIgst = inv.igst_amount || 0;
+
             const row: GSTR1Row = {
                 invoiceNumber: inv.invoice_number,
                 invoiceDate: formatDateSafe(inv.invoice_date, 'dd-MMM-yyyy'),
-                buyerName: inv.buyer_name,
+                buyerName: inv.buyer_name || inv.customer_name || 'Walk-in Customer',
                 buyerGstin: inv.buyer_gstin || '',
-                placeOfSupply: inv.place_of_supply || inv.buyer_state_code,
+                placeOfSupply: inv.place_of_supply || inv.buyer_state_code || '',
                 invoiceType: 'Regular B2B',
-                taxableValue: inv.taxable_value || 0,
-                cgstRate: inv.cgst_amount > 0 ? 1.5 : 0,
-                cgstAmount: inv.cgst_amount || 0,
-                sgstRate: inv.sgst_amount > 0 ? 1.5 : 0,
-                sgstAmount: inv.sgst_amount || 0,
-                igstRate: inv.igst_amount > 0 ? 3 : 0,
-                igstAmount: inv.igst_amount || 0,
-                invoiceValue: inv.grand_total || 0,
+                taxableValue: invTaxable,
+                cgstRate: invCgst > 0 ? (invTaxable > 0 ? Number(((invCgst / invTaxable) * 100).toFixed(2)) : 1.5) : 0,
+                cgstAmount: invCgst,
+                sgstRate: invSgst > 0 ? (invTaxable > 0 ? Number(((invSgst / invTaxable) * 100).toFixed(2)) : 1.5) : 0,
+                sgstAmount: invSgst,
+                igstRate: invIgst > 0 ? (invTaxable > 0 ? Number(((invIgst / invTaxable) * 100).toFixed(2)) : 3) : 0,
+                igstAmount: invIgst,
+                invoiceValue: inv.grand_total || inv.total || 0,
                 reverseCharge: inv.is_reverse_charge ? 'Y' : 'N',
             };
 
@@ -214,6 +228,23 @@ export async function getStockReport(): Promise<{
     }
 }
 
+// Helper to fetch invoice items in chunks to avoid URL length limit overflow (HTTP 414 / 400)
+export async function fetchInvoiceItemsForInvoices(invoiceIds: string[]): Promise<any[]> {
+    if (!invoiceIds || invoiceIds.length === 0) return [];
+    const CHUNK_SIZE = 25; // max 25 IDs per query keeps URL length ~700 chars, well below 2KB/4KB proxy limits
+    const chunks: string[][] = [];
+    for (let i = 0; i < invoiceIds.length; i += CHUNK_SIZE) {
+        chunks.push(invoiceIds.slice(i, i + CHUNK_SIZE));
+    }
+    const results = await Promise.all(
+        chunks.map(chunk => {
+            const filter = chunk.map(id => `invoice="${id}"`).join(' || ');
+            return pb.collection('invoice_items').getFullList({ filter });
+        })
+    );
+    return results.flat();
+}
+
 // ===========================================
 // HSN SUMMARY (for GST filing)
 // ===========================================
@@ -221,23 +252,21 @@ export async function getStockReport(): Promise<{
 export async function getHSNSummary(
     startDate: string,
     endDate: string
-): Promise<{ hsnCode: string; description: string; quantity: number; taxableValue: number; tax: number }[]> {
+): Promise<{ hsnCode: string; description: string; quantity: number; taxableValue: number; tax: number; igst: number; cgst: number; sgst: number }[]> {
     try {
+        const { start, end } = normalizeDateRange(startDate, endDate);
         // Fetch invoice items with date filter through invoice
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `invoice_date>="${startDate}" && invoice_date<="${endDate}"`,
+            filter: `invoice_date>="${start}" && invoice_date<="${end}"`,
         });
 
         const invoiceIds = invoices.map(inv => inv.id);
         if (invoiceIds.length === 0) return [];
 
-        const filter = invoiceIds.map(id => `invoice="${id}"`).join(' || ');
-        const items = await pb.collection('invoice_items').getFullList({
-            filter,
-        });
+        const items = await fetchInvoiceItemsForInvoices(invoiceIds);
 
         // Group by HSN
-        const byHSN = new Map<string, { description: string; quantity: number; taxableValue: number; tax: number }>();
+        const byHSN = new Map<string, { description: string; quantity: number; taxableValue: number; tax: number; igst: number; cgst: number; sgst: number }>();
 
         items.forEach((item: any) => {
             const hsn = item.hsn_code || '7113';
@@ -246,13 +275,23 @@ export async function getHSNSummary(
                 quantity: 0,
                 taxableValue: 0,
                 tax: 0,
+                igst: 0,
+                cgst: 0,
+                sgst: 0,
             };
+
+            const itemIgst = item.igst_amount || 0;
+            const itemCgst = item.cgst_amount || 0;
+            const itemSgst = item.sgst_amount || 0;
 
             byHSN.set(hsn, {
                 description: existing.description,
                 quantity: existing.quantity + (item.quantity || 0),
                 taxableValue: existing.taxableValue + (item.taxable_amount || 0),
-                tax: existing.tax + (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0),
+                tax: existing.tax + itemCgst + itemSgst + itemIgst,
+                igst: existing.igst + itemIgst,
+                cgst: existing.cgst + itemCgst,
+                sgst: existing.sgst + itemSgst,
             });
         });
 
@@ -304,17 +343,17 @@ export async function generateGSTR1JSON(
     gstin: string
 ): Promise<any> {
     try {
+        const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `invoice_date>="${startDate}" && invoice_date<="${endDate}" && invoice_type="regular"`,
+            filter: `invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
             sort: 'invoice_number',
         });
 
-        // Fetch items for all invoices
+        // Fetch items for all invoices in safe URL-length chunks
         const invoiceIds = invoices.map(inv => inv.id);
         let allItems: any[] = [];
         if (invoiceIds.length > 0) {
-            const filter = invoiceIds.map(id => `invoice="${id}"`).join(' || ');
-            allItems = await pb.collection('invoice_items').getFullList({ filter });
+            allItems = await fetchInvoiceItemsForInvoices(invoiceIds);
         }
 
         // Group items by invoice
@@ -460,9 +499,9 @@ export async function generateGSTR1JSON(
                     qty: h.quantity,
                     val: h.taxableValue + h.tax,
                     txval: h.taxableValue,
-                    iamt: 0,
-                    camt: h.tax / 2,
-                    samt: h.tax / 2,
+                    iamt: h.igst,
+                    camt: h.cgst,
+                    samt: h.sgst,
                     csamt: 0
                 }))
             }
