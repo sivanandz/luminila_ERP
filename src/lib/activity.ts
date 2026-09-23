@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { normalizeDateBounds } from './utils';
 
 // ===========================================
 // TYPES
@@ -76,11 +77,12 @@ export async function getActivityLogs(
         if (filters?.entity_id) {
             filterParts.push(`entity_id="${filters.entity_id}"`);
         }
-        if (filters?.startDate) {
-            filterParts.push(`created>="${filters.startDate}"`);
+        const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
+        if (start) {
+            filterParts.push(`created>="${start}"`);
         }
-        if (filters?.endDate) {
-            filterParts.push(`created<="${filters.endDate}"`);
+        if (end) {
+            filterParts.push(`created<="${end}"`);
         }
 
         const page = Math.floor(offset / limit) + 1;

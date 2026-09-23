@@ -5,6 +5,7 @@
 
 import { pb } from './pocketbase';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
+import { normalizeDateBounds } from './utils';
 
 // ===========================================
 // TYPES
@@ -273,11 +274,12 @@ export async function getPurchaseOrders(filters?: {
         if (filters?.vendorId) {
             filterParts.push(`vendor="${filters.vendorId}"`);
         }
-        if (filters?.startDate) {
-            filterParts.push(`order_date>="${filters.startDate}"`);
+        const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
+        if (start) {
+            filterParts.push(`order_date>="${start}"`);
         }
-        if (filters?.endDate) {
-            filterParts.push(`order_date<="${filters.endDate}"`);
+        if (end) {
+            filterParts.push(`order_date<="${end}"`);
         }
 
         const pos = await pb.collection('purchase_orders').getFullList({

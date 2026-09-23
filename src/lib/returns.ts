@@ -5,6 +5,7 @@
 
 import { pb } from './pocketbase';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
+import { normalizeDateBounds } from './utils';
 
 // ===========================================
 // TYPES
@@ -95,11 +96,12 @@ export async function getCreditNotes(filters?: {
         if (filters?.status) {
             filterParts.push(`status="${filters.status}"`);
         }
-        if (filters?.startDate) {
-            filterParts.push(`created>="${filters.startDate}"`);
+        const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
+        if (start) {
+            filterParts.push(`created>="${start}"`);
         }
-        if (filters?.endDate) {
-            filterParts.push(`created<="${filters.endDate}"`);
+        if (end) {
+            filterParts.push(`created<="${end}"`);
         }
 
         const records = await pb.collection('credit_notes').getFullList({

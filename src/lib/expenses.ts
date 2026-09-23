@@ -6,6 +6,7 @@
 import { pb } from './pocketbase';
 import { toast } from 'sonner';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
+import { normalizeDateBounds } from './utils';
 
 // ==========================================
 // TYPES
@@ -71,11 +72,12 @@ export async function getExpenses(filters?: {
     try {
         const filterParts: string[] = [];
 
-        if (filters?.startDate) {
-            filterParts.push(`expense_date>="${filters.startDate}"`);
+        const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
+        if (start) {
+            filterParts.push(`expense_date>="${start}"`);
         }
-        if (filters?.endDate) {
-            filterParts.push(`expense_date<="${filters.endDate}"`);
+        if (end) {
+            filterParts.push(`expense_date<="${end}"`);
         }
         if (filters?.categoryId && filters.categoryId !== 'all') {
             filterParts.push(`category="${filters.categoryId}"`);
@@ -205,6 +207,16 @@ export async function updateExpense(id: string, updates: Partial<Expense>): Prom
             delete cleanUpdates.category_id;
         }
 
+        // Map date to expense_date (PocketBase date field name)
+        if (cleanUpdates.date) {
+            cleanUpdates.expense_date = cleanUpdates.date;
+            delete cleanUpdates.date;
+        }
+
+        if (cleanUpdates.amount !== undefined) {
+            cleanUpdates.amount = Number(cleanUpdates.amount);
+        }
+
         const e = await pb.collection('expenses').update(id, cleanUpdates);
 
         return {
@@ -302,15 +314,16 @@ export async function toggleCategoryStatus(id: string, currentlyActive: boolean)
 export async function getExpenseStats(startDate?: string, endDate?: string): Promise<ExpenseStats> {
     try {
         const filterParts: string[] = [];
-        if (startDate) filterParts.push(`expense_date>="${startDate}"`);
-        if (endDate) filterParts.push(`expense_date<="${endDate}"`);
+        const { start, end } = normalizeDateBounds(startDate, endDate);
+        if (start) filterParts.push(`expense_date>="${start}"`);
+        if (end) filterParts.push(`expense_date<="${end}"`);
 
         const expenses = await pb.collection('expenses').getFullList({
             filter: filterParts.join(' && ') || '',
             expand: 'category',
         });
 
-        const totalAmount = expenses.reduce((sum: number, e: any) => sum + Number(e.amount), 0);
+        const totalAmount = expenses.reduce((sum: number, e: any) => sum + (Number(e.amount) || 0), 0);
         const totalCount = expenses.length;
 
         // Group by category
@@ -318,14 +331,14 @@ export async function getExpenseStats(startDate?: string, endDate?: string): Pro
         expenses.forEach((e: any) => {
             const catName = e.expand?.category?.name || 'Uncategorized';
             const current = categoryMap.get(catName) || 0;
-            categoryMap.set(catName, current + Number(e.amount));
+            categoryMap.set(catName, current + (Number(e.amount) || 0));
         });
 
         const byCategory = Array.from(categoryMap.entries())
             .map(([name, amount]) => ({
                 name,
                 amount,
-                percentage: totalAmount > 0 ? (amount / totalAmount) * 100 : 0
+                percentage: totalAmount > 0 ? Math.round(((amount / totalAmount) * 100) * 100) / 100 : 0
             }))
             .sort((a, b) => b.amount - a.amount);
 

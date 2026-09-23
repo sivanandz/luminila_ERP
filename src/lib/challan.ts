@@ -7,6 +7,7 @@ import { pb } from './pocketbase';
 import { toast } from 'sonner';
 import { getStoreSettings } from './invoice';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
+import { normalizeDateBounds } from './utils';
 
 // ============================================
 // TYPES
@@ -302,11 +303,12 @@ export async function getChallans(filters?: {
         const filterParts: string[] = [];
 
         // Use delivery_date instead of challan_date (actual field name in collection)
-        if (filters?.startDate) {
-            filterParts.push(`delivery_date>="${filters.startDate}"`);
+        const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
+        if (start) {
+            filterParts.push(`delivery_date>="${start}"`);
         }
-        if (filters?.endDate) {
-            filterParts.push(`delivery_date<="${filters.endDate}"`);
+        if (end) {
+            filterParts.push(`delivery_date<="${end}"`);
         }
         if (filters?.status) {
             filterParts.push(`status="${filters.status}"`);

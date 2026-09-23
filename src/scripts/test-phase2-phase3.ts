@@ -1608,6 +1608,62 @@ async function runTests() {
         assert(false, `Test 24 failed: ${err.message}`);
     }
 
+    // 25. WPA-34..36: Date-Range Boundary Normalization, Expense Stats Precision & Update Resiliency
+    console.log("\n[Test 25]: Whole-Project Audit (WPA-34..36) Verification");
+    try {
+        const { getExpenses, getExpenseStats, createExpense, updateExpense, deleteExpense } = await import('../lib/expenses');
+        const { getCreditNotes } = await import('../lib/returns');
+        const { normalizeDateBounds, normalizeDateRange } = await import('../lib/utils');
+
+        // A. WPA-34: Date-Range Boundary Normalization Helper
+        const norm = normalizeDateBounds('2026-09-23', '2026-09-23');
+        assert(norm.start === '2026-09-23 00:00:00.000Z', "normalizeDateBounds expands 10-char startDate to 00:00:00.000Z");
+        assert(norm.end === '2026-09-23 23:59:59.999Z', "normalizeDateBounds expands 10-char endDate to 23:59:59.999Z");
+
+        const normRange = normalizeDateRange('2026-09-01', '2026-09-30');
+        assert(normRange.start === '2026-09-01 00:00:00.000Z' && normRange.end === '2026-09-30 23:59:59.999Z', "normalizeDateRange formats full month boundary");
+
+        // B. WPA-34 & WPA-35: End-Date Inclusion & Expense Stats Precision in Practice
+        // Create an expense with expense_date set to '2026-09-23 15:45:00.000Z'
+        const expRecord = await adminPb.collection('expenses').create({
+            expense_number: `EXP-TEST-${Date.now()}`,
+            expense_date: '2026-09-23 15:45:00.000Z',
+            amount: 1500,
+            payment_mode: 'cash',
+            payee: 'Packaging Vendor',
+            description: 'Test Box Packaging'
+        });
+
+        // Query with single-day filter startDate === endDate === '2026-09-23'
+        const queryResults = await getExpenses({ startDate: '2026-09-23', endDate: '2026-09-23' });
+        const foundExp = queryResults.some(e => e.id === expRecord.id);
+        assert(foundExp, "getExpenses finds expense timestamped mid-day on endDate (no lexicographical drop)");
+
+        // Verify stats calculation with rounded percentages
+        const stats = await getExpenseStats('2026-09-23', '2026-09-23');
+        assert(stats.totalAmount >= 1500, "getExpenseStats includes expenses on endDate");
+        for (const cat of stats.byCategory) {
+            const decCount = (cat.percentage.toString().split('.')[1] || '').length;
+            assert(decCount <= 2, `Category ${cat.name} percentage is rounded to max 2 decimals (${cat.percentage}%)`);
+        }
+
+        // C. WPA-36: Expense Update Date Field Mapping
+        const updatedExp = await updateExpense(expRecord.id, {
+            date: '2026-09-25 10:00:00.000Z',
+            amount: 1800,
+        });
+        assert(Boolean(updatedExp), "updateExpense succeeds");
+        const refreshedDbExp = await adminPb.collection('expenses').getOne(expRecord.id);
+        assert(refreshedDbExp.expense_date.startsWith('2026-09-25'), "updateExpense maps updates.date to PB schema expense_date");
+        assert(refreshedDbExp.amount === 1800, "updateExpense updates numeric amount correctly");
+
+        // Teardown
+        await adminPb.collection('expenses').delete(expRecord.id).catch(() => {});
+
+    } catch (err: any) {
+        assert(false, `Test 25 failed: ${err.message}`);
+    }
+
     console.log("\n==================================================");
     console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
     console.log("==================================================");

@@ -11,6 +11,7 @@ import {
     GST_RATES,
 } from './gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
+import { normalizeDateBounds } from './utils';
 
 // ===========================================
 // TYPES
@@ -519,11 +520,12 @@ export async function getInvoices(filters?: {
     try {
         const filterParts: string[] = [];
 
-        if (filters?.startDate) {
-            filterParts.push(`invoice_date >= "${filters.startDate}"`);
+        const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
+        if (start) {
+            filterParts.push(`invoice_date >= "${start}"`);
         }
-        if (filters?.endDate) {
-            filterParts.push(`invoice_date <= "${filters.endDate}"`);
+        if (end) {
+            filterParts.push(`invoice_date <= "${end}"`);
         }
         if (filters?.buyerName) {
             filterParts.push(`buyer_name ~ "${filters.buyerName}"`);

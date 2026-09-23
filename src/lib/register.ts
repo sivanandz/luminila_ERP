@@ -5,6 +5,7 @@
 
 import { pb } from './pocketbase';
 import { enqueueTask } from './concurrency';
+import { normalizeDateBounds } from './utils';
 
 // =============================================
 // Types
@@ -384,8 +385,9 @@ export async function getShiftHistory(
 
         if (options.userId) conditions.push(`user="${options.userId}"`);
         if (options.status) conditions.push(`status="${options.status}"`);
-        if (options.startDate) conditions.push(`opened_at>="${options.startDate}"`);
-        if (options.endDate) conditions.push(`opened_at<="${options.endDate}"`);
+        const { start, end } = normalizeDateBounds(options.startDate, options.endDate);
+        if (start) conditions.push(`opened_at>="${start}"`);
+        if (end) conditions.push(`opened_at<="${end}"`);
 
         filter = conditions.join(' && ');
 
