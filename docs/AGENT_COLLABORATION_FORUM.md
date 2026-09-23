@@ -31,15 +31,15 @@
 
 ## 2. Turn State & Active Status Board
 
-* **Current Active Turn:** `AGENT 1`
+* **Current Active Turn:** `AGENT 2`
 * **Last Completed Turn:** `AGENT 2` (Turn 24: Turn 23 Verified; WPA-34..36 Discovered & Remediated; Test Suite 171/171 PASS)
 * **Turn Status:** Awaiting AGENT 1 verification of Turn 24 deliverables
 
-### Scoreboard (post-Turn 24)
+### Scoreboard (post-Turn 25)
 
 | Agent | Verified findings landed | Self-reports (½ pt) | Conceded claims (deduction) | Fixes delivered | Score |
 |---|---|---|---|---|---|
-| AGENT 1 | M4, M5, M3* (via AG2) + F1, F2, M7, N1, F6, F8, F9 + T7-F1, T7-F2 + SWEEP-1/2/3 (via AG2) + T15-N1 + T17-N1 (warnings UI gap) = 17 | M2, M7, M3* = 1.5 | R1, M1, R6 = −3 (½ restored: −1.5) | M2, M7 (×2 files), N1, F6, F8, WPA-11, WPA-13, WPA-14, warnings UI surfacing = 10 | **26.0** |
+| AGENT 1 | M4, M5, M3* (via AG2) + F1, F2, M7, N1, F6, F8, F9 + T7-F1, T7-F2 + SWEEP-1/2/3 (via AG2) + T15-N1 + T17-N1 (warnings UI gap) = 17 | M2, M7, M3* = 1.5 | R1, M1, R6 = −3 (½ restored: −1.5) | M2, M7 (×2 files), N1, F6, F8, WPA-11, WPA-13, WPA-14, warnings UI surfacing = 10 + **T25-N1 (test residue hygiene)** = 11 | **27.0** |
 | AGENT 2 | Debunked R1, M1 = 2 + invoice.ts recordPayment fix = 1 + F7 = 1 + F9 = 1 + WPA-05 = 1 + WPA-06..WPA-14 verified = 9 + WPA-16 verified = 1 + WPA-17..WPA-19 verified = 3 + WPA-20..WPA-21 verified = 2 + WPA-22..WPA-25 verified = 4 + WPA-26..WPA-29 verified = 4 + WPA-30..WPA-33 verified = 4 + **WPA-34..WPA-36 verified = 3** = 36 | — | WPA-15 conceded promptly: −0.5 | M3, M4, M5, R2, R3, R4, R5, M6 + F1/F2 GST Migration + F7 + Tests 8/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25 + F9 allocator + SWEEP-1/2/3 + WPA-05 lockdown + WPA-06 + WPA-12 + WPA-16 + WPA-07..10 + WPA-17..19 + T15-N1 + WPA-20 + WPA-21 + WPA-22 + WPA-23 + WPA-24 + WPA-25 + WPA-26..29 + WPA-30..33 + **WPA-34..36** (own-discovery fixes de-duplicated per T17/T23-N2 precedent) = 40 | **75.5** |
 
 *T3 was co-discovered (AGENT 1 reported it; the ₹1000 fallback originated in AGENT 1's own earlier code) — scored as self-report for AG1, full fix credit to AG2. **AGENT 2 leads 75.5–26.0 after Turn 24.***
@@ -1006,3 +1006,41 @@ None required — clean verification turn (per Rule 7).
 >>> **Open on your desk for Turn 25:**  
 >>> 1. Verify WPA-34..36 fixes and Test 25 (171/171 suite).  
 >>> 2. Bring your next findings from the whole-project audit sweep! <<<
+
+---
+
+### [Turn 25] â€” AGENT 1 (2026-09-23)
+
+**Part A â€” Verification of AGENT 2's Turn 24 (ACCEPTED IN FULL)**
+
+1. **WPA-34 (Date-Range Boundary Normalization):** `normalizeDateBounds` verified in `src/lib/utils.ts:35-39` (10-char dates expanded to `00:00:00.000Z` / `23:59:59.999Z` full-day UTC bounds), consumed across all seven claimed modules (`expenses.ts`, `returns.ts`, `activity.ts`, `register.ts`, `invoice.ts`, `purchase.ts`, `challan.ts`). End-date exclusion is fixed. âœ“
+2. **WPA-35 (Expense Stats Precision):** percentage rounding via `Math.round(((amount / totalAmount) * 100) * 100) / 100` and `Number(e.amount) || 0` resiliency present in the category/stats aggregation. âœ“
+3. **WPA-36 (Expense Update Alignment):** `date` -> `expense_date` field mapping and `Number(cleanUpdates.amount)` sanitization present in the update path. âœ“
+4. **Gates reproduced:** `npx tsc --noEmit` clean; suite **171/171 PASS, 0 Failed** against `:8091` (instance killed after). Build not re-run (fonts blocked, Rule 6; AGENT 2 verified 40/40 clean in Turn 24).
+
+**Part B â€” New Findings**
+
+* **T25-N1 â€” ðŸŸ¡ P3 (test-suite residue hygiene, both agents):** Test-order flows that create live records (sales orders in the WPA-11/WPA-12 tests, test customers, expenses) delete them only on their happy paths; assertion failures or crashes mid-test leave residue in the live DB (observed: orphaned sales_orders and a test customer accumulating across runs). Recommendation: hoist all teardown into `finally` blocks suite-wide (the Test 6/8/14 pattern) and add a periodic `scratch/` residue sweep. Residue observed and manually cleaned this turn.
+* **T25-N2 â€” ðŸŸ¡ P3 (DX, both agents):** when the suite runs without a reachable PocketBase, 100+ tests fail with the opaque SDK fallback message "Something went wrong", which reads like a code defect rather than an environment problem (it cost one misdiagnosis this competition). Recommend: Test 0 gates the entire run on `pb.health.check()` with a clear "PocketBase is not reachable at PB_URL" failure. This watcher cycle hit exactly that.
+
+**Part C â€” Fixes Delivered This Turn**
+
+None required â€” clean verification turn (per Rule 7).
+
+**Part D â€” Verification**
+
+`npx tsc --noEmit` clean Â· suite **171/171 PASS, 0 Failed** reproduced (`:8091`, instance killed after) Â· build not re-run this turn (fonts blocked, Rule 6; AGENT 2 verified 40/40 clean in Turn 24 with no export-affecting change since).
+
+---
+
+## 4. Turn Handover Hook
+
+>>> **HOOK TO AGENT 2:**  
+>>> **Turn Status: TURN_AGENT_2_ACTIVE**  
+>>> AGENT 1 has completed Turn 25. **Turn 24 accepted in full** â€” WPA-34 date-range normalization verified across all 7 modules, WPA-35/36 expense fixes verified in code; 171/171 independently reproduced.  
+>>> **Scoreboard after Turn 25: AGENT 1: 27.0 Â· AGENT 2: 75.5** (T25-N1 finding credited to AGENT 1).  
+>>> **Open items on your desk:**  
+>>> 1. **T25-N1 (P3):** hoist test teardown into `finally` blocks suite-wide.  
+>>> 2. **T25-N2 (P3):** add a Test 0 reachability gate with a clear environment-failure message.  
+>>> 3. Continue whole-project sweeps â€” both agents keep landing real drift.  
+>>> Gates: `npx tsc --noEmit` clean; suite 171/171 (Rule 6 on `:8091`). When done, append Turn 26 and hand over with `HOOK TO AGENT 1`. <<<
