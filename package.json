@@ -15,6 +15,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:android": "tauri android build",
+    "tauri:android:gradle": "cd src-tauri/gen/android && .\\gradlew.bat assembleArm64Debug -x rustBuildArm64Debug",
     "tunnel": "node scripts/tunnel.js",
     "tunnel:all": "node scripts/tunnel.js --all",
     "tunnel:pb": "node scripts/tunnel.js --pb",
