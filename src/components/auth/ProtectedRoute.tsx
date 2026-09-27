@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShieldX } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 import { usePermissions, type Resource, type Permission } from "@/hooks/usePermissions";
 import { Button } from "@/components/ui/button";
 
@@ -22,8 +23,11 @@ export function ProtectedRoute({
     redirectTo,
 }: ProtectedRouteProps) {
     const router = useRouter();
-    const { hasPermission, loading, isAdmin } = usePermissions();
+    const { user, isValid } = useAuth();
+    const { hasPermission, loading, isAdmin, permissions } = usePermissions();
     const [authorized, setAuthorized] = useState<boolean | null>(null);
+
+    const hasAnyPermissions = isAdmin || Object.keys(permissions || {}).length > 0;
 
     useEffect(() => {
         if (!loading) {
@@ -49,21 +53,42 @@ export function ProtectedRoute({
             return <>{fallback}</>;
         }
 
+        const isUnauthenticated = !user || !isValid;
+
         return (
             <div className="flex flex-col items-center justify-center h-64 gap-4">
                 <ShieldX className="w-16 h-16 text-red-400" />
-                <h2 className="text-xl font-semibold">Access Denied</h2>
+                <h2 className="text-xl font-semibold">
+                    {isUnauthenticated
+                        ? "Authentication Required"
+                        : !hasAnyPermissions
+                        ? "No Roles Assigned"
+                        : "Access Denied"}
+                </h2>
                 <p className="text-muted-foreground text-center max-w-md">
-                    You don't have permission to access this resource.
-                    Contact your administrator if you believe this is an error.
+                    {isUnauthenticated
+                        ? "Please sign in to access this page."
+                        : !hasAnyPermissions
+                        ? "This account has not been assigned any roles yet. Please assign a role via the administrator account or re-run setup."
+                        : "You don't have permission to access this resource. Contact your administrator if you believe this is an error."}
                 </p>
                 <div className="flex items-center gap-3">
                     <Button variant="outline" onClick={() => router.back()}>
                         Go Back
                     </Button>
-                    <Button onClick={() => router.push('/login')}>
-                        Sign In
-                    </Button>
+                    {isUnauthenticated ? (
+                        <Button onClick={() => router.push('/login')}>
+                            Sign In
+                        </Button>
+                    ) : !hasAnyPermissions ? (
+                        <Button onClick={() => router.push('/setup')}>
+                            Check Setup
+                        </Button>
+                    ) : (
+                        <Button onClick={() => router.push('/')}>
+                            Dashboard
+                        </Button>
+                    )}
                 </div>
             </div>
         );

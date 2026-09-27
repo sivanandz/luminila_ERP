@@ -100,15 +100,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             is_active: true, // Default to active
         });
 
-        // Assign "Admin" role to new store owner
+        // Assign default role: "Admin" for the first user, "Viewer" for subsequent sign-ups
         try {
-            const adminRole = await pb.collection("roles").getFirstListItem('name="Admin"');
+            const usersCount = (await pb.collection("users").getList(1, 1)).totalItems;
+            const targetRoleName = usersCount <= 1 ? "Admin" : "Viewer";
+            const role = await pb.collection("roles").getFirstListItem(`name="${targetRoleName}"`);
             await pb.collection("user_roles").create({
                 user: user.id,
-                role: adminRole.id,
+                role: role.id,
             });
         } catch (e) {
-            console.warn("Could not assign Admin role:", e);
+            console.warn("Could not assign default role:", e);
         }
 
         // Auto-login after registration

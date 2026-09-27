@@ -4,7 +4,8 @@
  */
 import PocketBase from 'pocketbase';
 
-const pb = new PocketBase('http://127.0.0.1:8090');
+const PB_URL = process.env.NEXT_PUBLIC_POCKETBASE_URL || process.env.PB_URL || 'http://127.0.0.1:8090';
+const pb = new PocketBase(PB_URL);
 
 const DEFAULT_ADMIN = {
     email: 'admin@luminila.local',
@@ -14,8 +15,11 @@ const DEFAULT_ADMIN = {
 
 async function main() {
     try {
+        console.log(`Connecting to PocketBase at ${PB_URL}...`);
         console.log("Authenticating as PocketBase Admin...");
-        await pb.admins.authWithPassword('admin@luminila.com', 'password123456');
+        const adminEmail = process.env.PB_ADMIN_EMAIL || 'admin@luminila.com';
+        const adminPass = process.env.PB_ADMIN_PASS || 'password123456';
+        await pb.admins.authWithPassword(adminEmail, adminPass);
         console.log("✓ Logged in!\n");
 
         // Check if user already exists
@@ -37,6 +41,7 @@ async function main() {
             name: DEFAULT_ADMIN.name,
             emailVisibility: true,
             verified: true,
+            is_active: true,
         });
         console.log(`✓ User created: ${user.id}`);
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { pb } from "@/lib/pocketbase";
+import { pb, getPocketBaseUrl } from "@/lib/pocketbase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,11 +31,12 @@ export default function SetupWizardPage() {
     // Database status
     const [dbConnected, setDbConnected] = useState(false);
     const [pbAdminExists, setPbAdminExists] = useState(false);
+    const [pbUrl, setPbUrl] = useState(getPocketBaseUrl());
 
     // Form data
     const [pbAdmin, setPbAdmin] = useState({
         email: "admin@luminila.com",
-        password: "Admin@123456",
+        password: "password123456",
     });
 
     const [appAdmin, setAppAdmin] = useState({
@@ -47,7 +48,17 @@ export default function SetupWizardPage() {
 
     // Check initial status
     useEffect(() => {
+        setPbUrl(getPocketBaseUrl());
         checkStatus();
+
+        const handleServerChange = (e: any) => {
+            if (e?.detail?.url) {
+                setPbUrl(e.detail.url);
+                checkStatus();
+            }
+        };
+        window.addEventListener("pb:server-changed", handleServerChange);
+        return () => window.removeEventListener("pb:server-changed", handleServerChange);
     }, []);
 
     const checkStatus = async () => {
@@ -65,11 +76,15 @@ export default function SetupWizardPage() {
                     router.push("/login");
                     return;
                 }
-            } catch (e) {
-                // Collection might not exist yet or no access
+            } catch (e: any) {
+                // If 403 Forbidden, users collection exists and is already configured
+                if (e?.status === 403) {
+                    router.push("/login");
+                    return;
+                }
             }
 
-            // Check if PB admin exists by trying to list collections
+            // Check if PB admin exists by trying to authenticate
             try {
                 await pb.admins.authWithPassword(pbAdmin.email, pbAdmin.password);
                 setPbAdminExists(true);
@@ -86,53 +101,130 @@ export default function SetupWizardPage() {
     const handleSetupDatabase = async () => {
         setLoading(true);
         try {
-            // Try to create PocketBase admin or login with existing
+            // Try to login as PocketBase admin
             try {
-                // First try to login (admin might already exist)
                 await pb.admins.authWithPassword(pbAdmin.email, pbAdmin.password);
                 toast.success("Connected to PocketBase admin");
             } catch (e) {
-                // Admin doesn't exist with these credentials - this is expected for fresh install
-                // PocketBase auto-creates first admin on first request to /_/
-                toast.info("Please create admin in PocketBase Admin UI first");
-                window.open("http://127.0.0.1:8090/_/", "_blank");
+                toast.info("Please create superuser in PocketBase Admin UI first or verify credentials");
+                window.open(`${pbUrl}/_/`, "_blank");
                 setLoading(false);
                 return;
             }
 
-            // Run schema setup
-            toast.info("Setting up database schema...");
-
-            // Import and run the schema sync (simplified version)
+            // Run schema setup check
+            toast.info("Checking database schema...");
             const collections = await pb.collections.getFullList();
 
             if (collections.length < 10) {
-                toast.info("Please run: npx tsx src/scripts/init-pocketbase.ts");
+                toast.info("Database schema appears empty. Run: npx tsx src/scripts/init-pocketbase.ts");
             }
 
-            // Seed roles if not exist
-            try {
-                await pb.collection("roles").getFirstListItem('name="Admin"');
-            } catch (e) {
-                // Seed default roles
-                const defaultRoles = [
-                    { name: "Admin", description: "Full access", is_system: true, permissions: {} },
-                    { name: "Manager", description: "Operations access", is_system: true, permissions: {} },
-                    { name: "Staff", description: "Basic access", is_system: true, permissions: {} },
-                    { name: "Viewer", description: "Read-only", is_system: true, permissions: {} },
-                ];
-                for (const role of defaultRoles) {
-                    try {
-                        await pb.collection("roles").create(role);
-                    } catch (err) { }
+            // Seed system roles with comprehensive permissions
+            const DEFAULT_ROLES = [
+                {
+                    name: "Admin",
+                    description: "Full access to all features",
+                    is_system: true,
+                    permissions: {
+                        products: ["create", "read", "update", "delete", "print", "export"],
+                        inventory: ["create", "read", "update", "delete", "print", "export"],
+                        sales: ["create", "read", "update", "delete", "print", "export"],
+                        invoices: ["create", "read", "update", "delete", "print", "export"],
+                        customers: ["create", "read", "update", "delete", "print", "export"],
+                        vendors: ["create", "read", "update", "delete", "print", "export"],
+                        purchase_orders: ["create", "read", "update", "delete", "print", "export"],
+                        reports: ["read", "export"],
+                        settings: ["read", "update"],
+                        users: ["create", "read", "update", "delete"],
+                        activity: ["read"],
+                    },
+                },
+                {
+                    name: "Manager",
+                    description: "Manage operations, view reports",
+                    is_system: true,
+                    permissions: {
+                        products: ["create", "read", "update", "print", "export"],
+                        inventory: ["create", "read", "update", "print", "export"],
+                        sales: ["create", "read", "update", "print", "export"],
+                        invoices: ["create", "read", "update", "print", "export"],
+                        customers: ["create", "read", "update", "print", "export"],
+                        vendors: ["create", "read", "update", "print", "export"],
+                        purchase_orders: ["create", "read", "update", "print", "export"],
+                        reports: ["read", "export"],
+                        settings: ["read"],
+                        users: ["read"],
+                        activity: ["read"],
+                    },
+                },
+                {
+                    name: "Staff",
+                    description: "Basic access for daily operations",
+                    is_system: true,
+                    permissions: {
+                        products: ["read"],
+                        inventory: ["read", "update"],
+                        sales: ["create", "read", "print"],
+                        invoices: ["create", "read", "print"],
+                        customers: ["create", "read", "update"],
+                        vendors: ["read"],
+                        purchase_orders: ["read"],
+                        reports: [],
+                        settings: [],
+                        users: [],
+                        activity: ["read"],
+                    },
+                },
+                {
+                    name: "Viewer",
+                    description: "Read-only access for reporting",
+                    is_system: true,
+                    permissions: {
+                        products: ["read"],
+                        inventory: ["read"],
+                        sales: ["read"],
+                        invoices: ["read"],
+                        customers: ["read"],
+                        vendors: ["read"],
+                        purchase_orders: ["read"],
+                        reports: ["read"],
+                        settings: [],
+                        users: [],
+                        activity: ["read"],
+                    },
+                },
+            ];
+
+            let seededCount = 0;
+            const failedRoles: string[] = [];
+            for (const role of DEFAULT_ROLES) {
+                try {
+                    await pb.collection("roles").getFirstListItem(`name="${role.name}"`);
+                } catch (e: any) {
+                    if (e?.status === 404) {
+                        try {
+                            await pb.collection("roles").create(role);
+                            seededCount++;
+                        } catch (err: any) {
+                            failedRoles.push(role.name);
+                        }
+                    }
                 }
-                toast.success("Default roles created");
+            }
+
+            if (failedRoles.length > 0) {
+                toast.error(`Some roles could not be created: ${failedRoles.join(", ")}`);
+            } else if (seededCount > 0) {
+                toast.success(`${seededCount} default roles configured`);
+            } else {
+                toast.success("Default roles already configured");
             }
 
             pb.authStore.clear();
             setPbAdminExists(true);
             setCurrentStep("admin");
-            toast.success("Database setup complete!");
+            toast.success("Database configuration ready!");
         } catch (err: any) {
             toast.error(err.message || "Setup failed");
         } finally {
@@ -156,26 +248,48 @@ export default function SetupWizardPage() {
 
         setLoading(true);
         try {
-            // Login as PB admin to create user
+            // Login as PB admin to create user & assign role
             await pb.admins.authWithPassword(pbAdmin.email, pbAdmin.password);
 
-            // Create app admin user
-            const user = await pb.collection("users").create({
-                email: appAdmin.email,
-                password: appAdmin.password,
-                passwordConfirm: appAdmin.passwordConfirm,
-                name: appAdmin.name,
-                emailVisibility: true,
-                verified: true,
-            });
+            // Create or fetch existing user (idempotency guard)
+            let userRecord: any;
+            try {
+                userRecord = await pb.collection("users").getFirstListItem(`email="${appAdmin.email}"`);
+                toast.info("Existing account found. Ensuring active admin status...");
+            } catch (e: any) {
+                if (e?.status === 404) {
+                    userRecord = await pb.collection("users").create({
+                        email: appAdmin.email,
+                        password: appAdmin.password,
+                        passwordConfirm: appAdmin.passwordConfirm,
+                        name: appAdmin.name,
+                        emailVisibility: true,
+                        verified: true,
+                        is_active: true,
+                    });
+                } else {
+                    throw e;
+                }
+            }
+
+            // Ensure is_active is true
+            if (userRecord && userRecord.is_active === false) {
+                await pb.collection("users").update(userRecord.id, { is_active: true });
+            }
 
             // Assign Admin role
             try {
                 const adminRole = await pb.collection("roles").getFirstListItem('name="Admin"');
-                await pb.collection("user_roles").create({
-                    user: user.id,
-                    role: adminRole.id,
-                });
+                try {
+                    await pb.collection("user_roles").getFirstListItem(`user="${userRecord.id}" && role="${adminRole.id}"`);
+                } catch (roleNotFound: any) {
+                    if (roleNotFound?.status === 404) {
+                        await pb.collection("user_roles").create({
+                            user: userRecord.id,
+                            role: adminRole.id,
+                        });
+                    }
+                }
             } catch (e) {
                 console.warn("Could not assign admin role:", e);
             }
@@ -183,10 +297,14 @@ export default function SetupWizardPage() {
             pb.authStore.clear();
 
             // Auto-login as the new user
-            await pb.collection("users").authWithPassword(appAdmin.email, appAdmin.password);
-
-            setCurrentStep("complete");
-            toast.success("Admin account created!");
+            try {
+                await pb.collection("users").authWithPassword(appAdmin.email, appAdmin.password);
+                setCurrentStep("complete");
+                toast.success("Admin account created and authenticated!");
+            } catch (loginErr) {
+                setCurrentStep("complete");
+                toast.success("Admin account created! Please sign in.");
+            }
         } catch (err: any) {
             toast.error(err.message || "Failed to create admin");
         } finally {
@@ -312,7 +430,7 @@ export default function SetupWizardPage() {
                                             {dbConnected ? "PocketBase Connected" : "PocketBase Not Running"}
                                         </p>
                                         <p className="text-xs text-moonstone">
-                                            {dbConnected ? "http://127.0.0.1:8090" : "Start PocketBase first"}
+                                            {dbConnected ? pbUrl : "Start PocketBase first"}
                                         </p>
                                     </div>
                                 </div>
@@ -353,7 +471,7 @@ export default function SetupWizardPage() {
                                             className="mt-1 bg-bg-navy border-surface-hover"
                                         />
                                         <p className="text-xs text-moonstone/70 mt-1">
-                                            Create this admin at: <a href="http://127.0.0.1:8090/_/" target="_blank" className="text-electric-teal hover:underline">PocketBase Admin UI</a>
+                                            Create this admin at: <a href={`${pbUrl}/_/`} target="_blank" className="text-electric-teal hover:underline">PocketBase Admin UI</a>
                                         </p>
                                     </div>
                                 </>
