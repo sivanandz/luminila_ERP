@@ -17,6 +17,10 @@ export function getPocketBaseUrl(): string {
         // If accessed via a Cloudflare Tunnel (trycloudflare.com), do NOT append :8090 (ports not proxied)
         const host = window.location.hostname;
         const isTunnelHost = host.includes("trycloudflare.com") || host.includes("cloudflare");
+        if (host === "tauri.localhost") {
+            const isAndroid = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("android");
+            return isAndroid ? "http://10.0.2.2:8090" : "http://127.0.0.1:8090";
+        }
         if (host && host !== "localhost" && host !== "127.0.0.1" && !isTunnelHost) {
             return `http://${host}:8090`;
         }

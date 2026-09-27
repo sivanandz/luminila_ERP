@@ -20,6 +20,10 @@ export function getWhatsAppUrl(): string {
         }
         const host = window.location.hostname;
         const isTunnelHost = host.includes("trycloudflare.com") || host.includes("cloudflare");
+        if (host === "tauri.localhost") {
+            const isAndroid = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("android");
+            return isAndroid ? "http://10.0.2.2:21465" : "http://127.0.0.1:21465";
+        }
         if (host && host !== "localhost" && host !== "127.0.0.1" && !isTunnelHost) {
             return `http://${host}:21465`;
         }

@@ -172,7 +172,7 @@ function CreditNoteDetailContent() {
         );
     }
 
-    const config = statusConfig[creditNote.status];
+    const config = statusConfig[creditNote.status] || statusConfig.pending;
     const StatusIcon = config.icon;
 
     return (

@@ -14,13 +14,19 @@ export function formatPrice(price: number): string {
   }).format(price)
 }
 
-export function formatDate(date: string | Date): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
+export function formatDate(date?: string | Date | null): string {
+  if (!date) return '-';
+  try {
+    const d = typeof date === 'string' ? new Date(date) : date;
+    if (!d || isNaN(d.getTime())) return '-';
+    return d.toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch {
+    return '-';
+  }
 }
 
 export function generateId(): string {

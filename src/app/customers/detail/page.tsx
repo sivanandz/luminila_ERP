@@ -220,8 +220,8 @@ function CustomerDetailContent() {
                                 <CardHeader>
                                     <div className="flex justify-between items-start">
                                         <CardTitle className="text-lg">Contact Info</CardTitle>
-                                        <Badge className={typeConfig[customer.customer_type].color}>
-                                            {typeConfig[customer.customer_type].label}
+                                        <Badge className={(typeConfig[customer.customer_type] || typeConfig.retail).color}>
+                                            {(typeConfig[customer.customer_type] || typeConfig.retail).label}
                                         </Badge>
                                     </div>
                                 </CardHeader>

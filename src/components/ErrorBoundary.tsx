@@ -1,7 +1,8 @@
-﻿"use client";
+"use client";
 
 import React, { Component, ErrorInfo, ReactNode } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import { usePathname } from "next/navigation";
 
 interface Props {
   children?: ReactNode;
@@ -13,7 +14,7 @@ interface State {
   error?: Error;
 }
 
-export class ErrorBoundary extends Component<Props, State> {
+class ErrorBoundaryClass extends Component<Props, State> {
   public state: State = {
     hasError: false,
   };
@@ -81,4 +82,15 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return this.props.children;
   }
+}
+
+export { ErrorBoundaryClass };
+
+export function ErrorBoundary({ children, fallback }: Props) {
+  const pathname = usePathname();
+  return (
+    <ErrorBoundaryClass key={pathname} fallback={fallback}>
+      {children}
+    </ErrorBoundaryClass>
+  );
 }

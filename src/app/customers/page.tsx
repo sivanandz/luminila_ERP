@@ -237,7 +237,7 @@ export default function CustomersPage() {
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {filteredCustomers.map((customer) => {
-                            const config = typeConfig[customer.customer_type];
+                            const config = typeConfig[customer.customer_type] || typeConfig.retail;
                             const TypeIcon = config.icon;
                             return (
                                 <Card

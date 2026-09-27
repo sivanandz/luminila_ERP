@@ -68,7 +68,7 @@ export default function VendorsPage() {
     const filteredVendors = vendors.filter((v) => {
         const query = searchQuery.toLowerCase();
         return (
-            v.name.toLowerCase().includes(query) ||
+            (v.name || '').toLowerCase().includes(query) ||
             v.contact_name?.toLowerCase().includes(query) ||
             v.phone?.includes(query)
         );

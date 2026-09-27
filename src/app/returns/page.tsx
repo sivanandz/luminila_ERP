@@ -206,7 +206,7 @@ export default function ReturnsPage() {
                                 </TableHeader>
                                 <TableBody>
                                     {filteredNotes.map((cn) => {
-                                        const config = statusConfig[cn.status];
+                                        const config = statusConfig[cn.status] || statusConfig.pending;
                                         const StatusIcon = config.icon;
                                         return (
                                             <TableRow

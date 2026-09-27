@@ -31,7 +31,8 @@ interface Order {
     order_type: OrderType;
     status: string;
     total: number;
-    created_at: string;
+    created_at?: string;
+    created?: string;
     items?: any[]; // We only fetch basic info here
 }
 
@@ -200,7 +201,7 @@ export default function OrdersPage() {
                                                     </span>
                                                 </td>
                                                 <td className="py-4 px-6 text-xs text-moonstone font-medium">
-                                                    {formatDate(order.created_at)}
+                                                    {formatDate(order.created || order.created_at)}
                                                 </td>
                                                 <td className="py-4 px-6 text-right">
                                                     <button

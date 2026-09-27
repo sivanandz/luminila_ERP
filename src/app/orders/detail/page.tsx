@@ -82,7 +82,7 @@ function OrderDetailContent() {
         <div className="flex flex-col h-full overflow-hidden bg-bg-navy">
             <Header
                 title={`${isEstimate ? 'Estimate' : 'Order'} #${order.order_number}`}
-                subtitle={`Created on ${formatDate(order.created_at)}`}
+                subtitle={`Created on ${formatDate(order.created || (order as any).created_at)}`}
                 action={
                     <div className="flex items-center gap-3">
                         <Button
