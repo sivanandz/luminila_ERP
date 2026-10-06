@@ -12,6 +12,8 @@ import {
     Check,
     Sparkles,
     ChevronRight,
+    Package,
+    PackagePlus,
 } from "lucide-react";
 import { WPPMessage } from "@/lib/whatsapp";
 
@@ -23,6 +25,8 @@ export interface ChatContextMenuProps {
     onAddToCart?: (skuOrName: string) => void;
     onGeneratePayLink?: (detectedAmount?: number) => void;
     onConvertToOrder?: (message: WPPMessage) => void;
+    onAddExistingInventory?: (message: WPPMessage) => void;
+    onCreateProduct?: (message: WPPMessage) => void;
     onSetLeadStatus?: (status: 'new_lead' | 'contacted' | 'quoted' | 'awaiting_payment' | 'won' | 'vip') => void;
     onOpenCustomerCRM?: () => void;
     onQuoteReply?: (message: WPPMessage) => void;
@@ -36,6 +40,8 @@ export function ChatContextMenu({
     onAddToCart,
     onGeneratePayLink,
     onConvertToOrder,
+    onAddExistingInventory,
+    onCreateProduct,
     onSetLeadStatus,
     onOpenCustomerCRM,
     onQuoteReply,
@@ -153,6 +159,38 @@ export function ChatContextMenu({
                     <span>Convert to Sales Order</span>
                 </div>
             </button>
+
+            {/* Add to Existing Inventory */}
+            {onAddExistingInventory && (
+                <button
+                    onClick={() => {
+                        onAddExistingInventory(message);
+                        onClose();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-indigo-500/10 hover:text-indigo-400 transition-colors text-left font-medium"
+                >
+                    <PackagePlus size={14} className="text-indigo-400" />
+                    <div className="flex-1 truncate">
+                        <span>Add to Existing Inventory</span>
+                    </div>
+                </button>
+            )}
+
+            {/* Create New Product */}
+            {onCreateProduct && (
+                <button
+                    onClick={() => {
+                        onCreateProduct(message);
+                        onClose();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-emerald-500/10 hover:text-emerald-400 transition-colors text-left font-medium"
+                >
+                    <Package size={14} className="text-emerald-400" />
+                    <div className="flex-1 truncate">
+                        <span>Create New Product</span>
+                    </div>
+                </button>
+            )}
 
             {/* Lead Status Submenu */}
             <div

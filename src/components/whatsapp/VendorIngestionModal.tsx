@@ -19,9 +19,14 @@ import {
     Tag,
     Loader2,
     CheckCircle2,
+    Building2,
+    Users,
+    Radio,
+    Image as ImageIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getTypeAheadProducts } from "@/lib/products";
+import { getVendors, type Vendor } from "@/lib/vendors";
 import {
     ingestVendorProduct,
     addToExistingInventory,
@@ -40,6 +45,13 @@ export interface VendorIngestionModalProps {
     messageBody: string;
     vendorId?: string;
     vendorName?: string;
+    imageUrl?: string;
+    sourceContext?: {
+        chatName?: string;
+        senderName?: string;
+        isGroup?: boolean;
+        isChannel?: boolean;
+    };
     /** Called after successful ingestion with the new variant id. */
     onIngested?: (result: { productId: string; variantId: string; sku: string }) => void;
 }
@@ -50,6 +62,8 @@ export function VendorIngestionModal({
     messageBody,
     vendorId,
     vendorName,
+    imageUrl,
+    sourceContext,
     onIngested,
 }: VendorIngestionModalProps) {
     const parsed = useMemo(() => (isOpen ? parseVendorOffer(messageBody) : null), [isOpen, messageBody]);
@@ -68,6 +82,17 @@ export function VendorIngestionModal({
     const [submitting, setSubmitting] = useState(false);
     const [ingested, setIngested] = useState<{ sku: string; variantId: string } | null>(null);
 
+    // Vendor Selection
+    const [vendorsList, setVendorsList] = useState<Vendor[]>([]);
+    const [selectedVendorId, setSelectedVendorId] = useState<string>(vendorId || '');
+    const [selectedVendorName, setSelectedVendorName] = useState<string>(vendorName || '');
+
+    // Load registered vendors
+    React.useEffect(() => {
+        if (!isOpen) return;
+        getVendors().then(setVendorsList).catch(() => {});
+    }, [isOpen]);
+
     // Re-run smart extraction each time the modal opens with a new message
     React.useEffect(() => {
         if (!isOpen) return;
@@ -79,7 +104,9 @@ export function VendorIngestionModal({
         setCostPrice(p.price?.toString() || '');
         setQuantity(p.quantity?.toString() || '1');
         setIngested(null);
-    }, [isOpen, messageBody]);
+        setSelectedVendorId(vendorId || '');
+        setSelectedVendorName(vendorName || '');
+    }, [isOpen, messageBody, vendorId, vendorName]);
 
     const suggestedRetail = useMemo(() => {
         const cost = parseFloat(costPrice) || 0;
@@ -100,6 +127,8 @@ export function VendorIngestionModal({
         }
         setSubmitting(true);
         try {
+            const effectiveVendorId = selectedVendorId || vendorId || undefined;
+            const effectiveVendorName = selectedVendorName || vendorName;
             const sku = await generateVendorSku(category || undefined, purity || undefined);
             const result = await ingestVendorProduct({
                 name: name.trim(),
@@ -110,8 +139,9 @@ export function VendorIngestionModal({
                 quantity: parseInt(quantity, 10) || 0,
                 weightGrams: parseFloat(weight) || undefined,
                 purity: purity.trim() || undefined,
-                vendorId: vendorId || undefined,
-                description: `Ingested from vendor WhatsApp chat${vendorName ? ` (${vendorName})` : ''}:\n${messageBody}`,
+                imageUrl: imageUrl || undefined,
+                vendorId: effectiveVendorId,
+                description: `Ingested from WhatsApp ${sourceContext?.chatName ? `[${sourceContext.chatName}] ` : ''}${effectiveVendorName ? `(${effectiveVendorName})` : ''}:\n${messageBody}`,
             });
 
             // Automatically queue barcode tag (spec §8.2)
@@ -147,9 +177,38 @@ export function VendorIngestionModal({
                     </DialogTitle>
                     <DialogDescription className="text-xs">
                         Smart extraction pre-filled the fields below — verify and adjust before ingesting
-                        {vendorName ? ` for ${vendorName}` : ''}.
+                        {selectedVendorName ? ` for ${selectedVendorName}` : ''}.
                     </DialogDescription>
                 </DialogHeader>
+
+                {/* Source attribution banner for group/channel */}
+                {sourceContext?.chatName && (
+                    <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs">
+                        <span className="flex items-center gap-1.5 font-semibold text-primary">
+                            {sourceContext.isChannel ? <Radio size={13} className="text-violet-400" /> : <Users size={13} className="text-sky-400" />}
+                            {sourceContext.chatName}
+                        </span>
+                        {sourceContext.senderName && (
+                            <span className="text-[11px] text-muted-foreground truncate max-w-[150px]">
+                                Sender: {sourceContext.senderName}
+                            </span>
+                        )}
+                    </div>
+                )}
+
+                {/* Image preview if extracted from message */}
+                {imageUrl && (
+                    <div className="flex items-center gap-3 p-2 rounded-lg bg-muted/40 border border-border/60">
+                        <img src={imageUrl} alt="" className="size-12 rounded object-cover border border-border/40 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                                <ImageIcon size={12} className="text-pink-500" />
+                                Product Photo Attached
+                            </p>
+                            <p className="text-[10px] text-muted-foreground truncate">Auto-assigned to product catalog &amp; POS</p>
+                        </div>
+                    </div>
+                )}
 
                 {parsed && (
                     <div className="rounded-lg bg-muted/50 border border-border/60 px-3 py-2 text-[11px] text-muted-foreground leading-relaxed max-h-16 overflow-y-auto">
@@ -184,6 +243,31 @@ export function VendorIngestionModal({
                     </div>
                 ) : (
                     <div className="grid gap-3 py-1">
+                        {/* Vendor Attribution Selector */}
+                        <div className="grid gap-1.5">
+                            <Label htmlFor="vi-vendor" className="text-xs flex items-center gap-1.5">
+                                <Building2 size={12} className="text-muted-foreground" />
+                                Vendor / Supplier
+                            </Label>
+                            <select
+                                id="vi-vendor"
+                                value={selectedVendorId}
+                                onChange={(e) => {
+                                    setSelectedVendorId(e.target.value);
+                                    const v = vendorsList.find(x => x.id === e.target.value);
+                                    setSelectedVendorName(v?.name || '');
+                                }}
+                                className="h-8 rounded-md border border-input bg-background px-2.5 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            >
+                                <option value="">-- No Vendor / General Stock --</option>
+                                {vendorsList.map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                        {v.name}{v.phone ? ` (${v.phone})` : ''}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
                         <div className="grid gap-1.5">
                             <Label htmlFor="vi-name" className="text-xs">Product Name</Label>
                             <Input id="vi-name" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
@@ -250,6 +334,13 @@ export interface AddExistingInventoryModalProps {
     onClose: () => void;
     messageBody: string;
     vendorId?: string;
+    vendorName?: string;
+    sourceContext?: {
+        chatName?: string;
+        senderName?: string;
+        isGroup?: boolean;
+        isChannel?: boolean;
+    };
     onAdded?: (variantId: string, quantity: number) => void;
 }
 
@@ -267,6 +358,8 @@ export function AddExistingInventoryModal({
     onClose,
     messageBody,
     vendorId,
+    vendorName,
+    sourceContext,
     onAdded,
 }: AddExistingInventoryModalProps) {
     const parsed = useMemo(() => (isOpen ? parseVendorOffer(messageBody) : null), [isOpen, messageBody]);
@@ -277,10 +370,25 @@ export function AddExistingInventoryModal({
     const [quantity, setQuantity] = useState(parsed?.quantity?.toString() || '1');
     const [submitting, setSubmitting] = useState(false);
 
+    // Vendor Selection
+    const [vendorsList, setVendorsList] = useState<Vendor[]>([]);
+    const [selectedVendorId, setSelectedVendorId] = useState<string>(vendorId || '');
+    const [selectedVendorName, setSelectedVendorName] = useState<string>(vendorName || '');
+
+    // Load registered vendors
+    React.useEffect(() => {
+        if (!isOpen) return;
+        getVendors().then(setVendorsList).catch(() => {});
+    }, [isOpen]);
+
     // Re-parse the detected quantity each time the modal opens
     React.useEffect(() => {
-        if (isOpen) setQuantity(parseVendorOffer(messageBody).quantity?.toString() || '1');
-    }, [isOpen, messageBody]);
+        if (isOpen) {
+            setQuantity(parseVendorOffer(messageBody).quantity?.toString() || '1');
+            setSelectedVendorId(vendorId || '');
+            setSelectedVendorName(vendorName || '');
+        }
+    }, [isOpen, messageBody, vendorId, vendorName]);
 
     const search = async () => {
         if (query.trim().length < 2) { setResults([]); return; }
@@ -315,11 +423,13 @@ export function AddExistingInventoryModal({
         }
         setSubmitting(true);
         try {
+            const effectiveVendorId = selectedVendorId || vendorId || undefined;
+            const effectiveVendorName = selectedVendorName || vendorName;
             await addToExistingInventory({
                 variantId: selected.id,
                 quantity: parseInt(quantity, 10),
-                vendorId: vendorId || undefined,
-                notes: `Received via vendor WhatsApp chat${parsed?.price ? ` @ ₹${parsed.price}` : ''}`,
+                vendorId: effectiveVendorId,
+                notes: `Received via WhatsApp ${sourceContext?.chatName ? `[${sourceContext.chatName}] ` : ''}${effectiveVendorName ? `(${effectiveVendorName}) ` : ''}${parsed?.price ? `@ ₹${parsed.price}` : ''}`,
             });
             toast.success(`Added ${quantity} × ${selected.fullSku} to inventory`);
             onAdded?.(selected.id, parseInt(quantity, 10));
@@ -345,7 +455,47 @@ export function AddExistingInventoryModal({
                     </DialogDescription>
                 </DialogHeader>
 
+                {/* Source attribution banner for group/channel */}
+                {sourceContext?.chatName && (
+                    <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs">
+                        <span className="flex items-center gap-1.5 font-semibold text-primary">
+                            {sourceContext.isChannel ? <Radio size={13} className="text-violet-400" /> : <Users size={13} className="text-sky-400" />}
+                            {sourceContext.chatName}
+                        </span>
+                        {sourceContext.senderName && (
+                            <span className="text-[11px] text-muted-foreground truncate max-w-[150px]">
+                                Sender: {sourceContext.senderName}
+                            </span>
+                        )}
+                    </div>
+                )}
+
                 <div className="grid gap-3 py-1">
+                    {/* Vendor Attribution Selector */}
+                    <div className="grid gap-1.5">
+                        <Label htmlFor="aei-vendor" className="text-xs flex items-center gap-1.5">
+                            <Building2 size={12} className="text-muted-foreground" />
+                            Vendor / Supplier (for GRN)
+                        </Label>
+                        <select
+                            id="aei-vendor"
+                            value={selectedVendorId}
+                            onChange={(e) => {
+                                setSelectedVendorId(e.target.value);
+                                const v = vendorsList.find(x => x.id === e.target.value);
+                                setSelectedVendorName(v?.name || '');
+                            }}
+                            className="h-8 rounded-md border border-input bg-background px-2.5 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                        >
+                            <option value="">-- No Vendor / Direct Stock Adjustment --</option>
+                            {vendorsList.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                    {v.name}{v.phone ? ` (${v.phone})` : ''}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
                     <div className="relative">
                         <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
                         <Input

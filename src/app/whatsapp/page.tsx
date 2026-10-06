@@ -46,7 +46,9 @@ import {
     Tag,
     ExternalLink,
     Store,
-    RadioTower
+    RadioTower,
+    Users,
+    Radio
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import {
@@ -522,6 +524,14 @@ export default function WhatsAppPage() {
     }>({ isOpen: false, message: null, position: null });
     const [vendorIngestMsg, setVendorIngestMsg] = useState<string | null>(null);
     const [addInventoryMsg, setAddInventoryMsg] = useState<string | null>(null);
+    const [vendorIngestImage, setVendorIngestImage] = useState<string | null>(null);
+    const [ingestSourceContext, setIngestSourceContext] = useState<{
+        chatName?: string;
+        senderName?: string;
+        isGroup?: boolean;
+        isChannel?: boolean;
+    } | null>(null);
+    const [chatFilter, setChatFilter] = useState<'all' | 'vendor' | 'customer' | 'group'>('all');
 
     // Phase 2/3: payments reconciliation, broadcasts, order-intent banner
     const [showBroadcastModal, setShowBroadcastModal] = useState(false);
@@ -1951,17 +1961,71 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             </div>
                         )}
 
+                        {/* Chat Category Filter Tabs */}
+                        <div className="flex items-center gap-1 p-2 border-b border-border bg-background/50 overflow-x-auto text-[11px] no-scrollbar">
+                            <button
+                                onClick={() => setChatFilter('all')}
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 ${
+                                    chatFilter === 'all' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                                }`}
+                            >
+                                All ({chats.length})
+                            </button>
+                            <button
+                                onClick={() => setChatFilter('vendor')}
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 ${
+                                    chatFilter === 'vendor' ? 'bg-indigo-600 text-white' : 'text-muted-foreground hover:bg-muted'
+                                }`}
+                            >
+                                Vendors
+                            </button>
+                            <button
+                                onClick={() => setChatFilter('group')}
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 flex items-center gap-1 ${
+                                    chatFilter === 'group' ? 'bg-sky-600 text-white' : 'text-muted-foreground hover:bg-muted'
+                                }`}
+                            >
+                                <Users size={12} />
+                                Groups &amp; Channels
+                            </button>
+                            <button
+                                onClick={() => setChatFilter('customer')}
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 ${
+                                    chatFilter === 'customer' ? 'bg-emerald-600 text-white' : 'text-muted-foreground hover:bg-muted'
+                                }`}
+                            >
+                                Customers
+                            </button>
+                        </div>
+
                         <div className="flex-1 overflow-y-auto">
-                            {chats.map(chat => (
+                            {chats.filter((c) => {
+                                const isGrp = c.isGroup || c.id.includes('@g.us');
+                                const isChan = c.id.includes('@newsletter');
+                                if (chatFilter === 'group') return isGrp || isChan;
+                                if (chatFilter === 'vendor') return chatTypeMap[c.id] === 'vendor';
+                                if (chatFilter === 'customer') return chatTypeMap[c.id] === 'customer';
+                                return true;
+                            }).map(chat => {
+                                const isGrp = chat.isGroup || chat.id.includes('@g.us');
+                                const isChan = chat.id.includes('@newsletter');
+
+                                return (
                                 <div
                                     key={chat.id}
                                     onClick={() => setSelectedChat(chat.id)}
                                     className={`p-3 border-b border-border cursor-pointer hover:bg-muted/50 flex gap-3 ${selectedChat === chat.id ? 'bg-primary/10 border-l-4 border-l-primary' : ''}`}
                                 >
-                                    {/* Profile Pic */}
-                                    <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center flex-shrink-0 overflow-hidden">
+                                    {/* Profile Pic / Avatar */}
+                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden ${
+                                        isChan ? 'bg-violet-500/15' : isGrp ? 'bg-sky-500/15' : 'bg-muted'
+                                    }`}>
                                         {chat.profilePic ? (
                                             <img src={chat.profilePic} alt="" className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                                        ) : isChan ? (
+                                            <Radio size={18} className="text-violet-400" />
+                                        ) : isGrp ? (
+                                            <Users size={18} className="text-sky-400" />
                                         ) : (
                                             <User size={18} className="text-muted-foreground" />
                                         )}
@@ -1970,7 +2034,15 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         <div className="flex justify-between items-center gap-1.5">
                                             <span className="font-bold text-sm truncate flex items-center gap-1.5">
                                                 {chat.name}
-                                                {chatTypeMap[chat.id] && (
+                                                {isChan ? (
+                                                    <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-violet-500/15 text-violet-400 flex-shrink-0">
+                                                        Channel
+                                                    </span>
+                                                ) : isGrp ? (
+                                                    <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-sky-500/15 text-sky-400 flex-shrink-0">
+                                                        Group
+                                                    </span>
+                                                ) : chatTypeMap[chat.id] ? (
                                                     <span className={`text-[9px] font-bold uppercase px-1 py-px rounded flex-shrink-0 ${
                                                         chatTypeMap[chat.id] === 'vendor' ? 'bg-indigo-500/15 text-indigo-400'
                                                         : chatTypeMap[chat.id] === 'customer' ? 'bg-emerald-500/15 text-emerald-400'
@@ -1978,7 +2050,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                     }`}>
                                                         {chatTypeMap[chat.id]}
                                                     </span>
-                                                )}
+                                                ) : null}
                                             </span>
                                             <span className="text-[10px] text-muted-foreground flex-shrink-0">{new Date(chat.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                                         </div>
@@ -1988,7 +2060,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         )}
                                     </div>
                                 </div>
-                            ))}
+                            );})}
                         </div>
                     </div>
 
@@ -2011,18 +2083,28 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             )}
                                         </div>
                                         <span className="font-bold text-sm">{chats.find(c => c.id === selectedChat)?.name}</span>
-                                        {/* 1-click contact-type toggle (spec §8.1) */}
-                                        <button
-                                            onClick={handleToggleContactType}
-                                            title="Toggle Customer / Vendor / Lead"
-                                            className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded transition-colors ${
-                                                contactType === 'vendor' ? 'bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25'
-                                                : contactType === 'customer' ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
-                                                : 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
-                                            }`}
-                                        >
-                                            {contactType}
-                                        </button>
+                                        {/* Group / Channel indicator or 1-click contact-type toggle (spec §8.1) */}
+                                        {selectedChat.includes('@newsletter') ? (
+                                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 flex items-center gap-1">
+                                                <Radio size={11} /> Channel
+                                            </span>
+                                        ) : (selectedChat.includes('@g.us') || chats.find(c => c.id === selectedChat)?.isGroup) ? (
+                                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 flex items-center gap-1">
+                                                <Users size={11} /> Group
+                                            </span>
+                                        ) : (
+                                            <button
+                                                onClick={handleToggleContactType}
+                                                title="Toggle Customer / Vendor / Lead"
+                                                className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded transition-colors ${
+                                                    contactType === 'vendor' ? 'bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25'
+                                                    : contactType === 'customer' ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
+                                                    : 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
+                                                }`}
+                                            >
+                                                {contactType}
+                                            </button>
+                                        )}
                                     </div>
                                     <div className="flex gap-2">
                                         <label className="text-xs flex items-center gap-1 cursor-pointer">
@@ -2069,6 +2151,11 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                 </button>
                                             )}
                                             <div className={`max-w-[80%] p-3 rounded-xl text-sm ${msg.fromMe ? 'bg-primary text-primary-foreground rounded-br-none' : 'bg-card border border-border rounded-tl-none'}`}>
+                                                {!msg.fromMe && (selectedChat.includes('@g.us') || selectedChat.includes('@newsletter') || chats.find(c => c.id === selectedChat)?.isGroup) && msg.fromName && (
+                                                    <p className="text-[11px] font-bold text-primary mb-1 truncate">
+                                                        {msg.fromName}
+                                                    </p>
+                                                )}
                                                 <MessageContent
                                                     msg={msg}
                                                     onLoadMedia={id => whatsappManager.downloadMedia(id)}
@@ -3110,6 +3197,29 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 onAddToCart={handleContextAddToCart}
                 onGeneratePayLink={handleContextGeneratePayLink}
                 onConvertToOrder={handleContextConvertToOrder}
+                onAddExistingInventory={(msg) => {
+                    const text = msg.caption || msg.body || '';
+                    const activeChatObj = chats.find(c => c.id === selectedChat);
+                    setIngestSourceContext({
+                        chatName: activeChatObj?.name,
+                        senderName: msg.sender?.pushname || msg.sender?.name || (msg as any)?.fromName,
+                        isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
+                        isChannel: selectedChat?.includes('@newsletter'),
+                    });
+                    setAddInventoryMsg(text);
+                }}
+                onCreateProduct={(msg) => {
+                    const text = msg.caption || msg.body || '';
+                    const activeChatObj = chats.find(c => c.id === selectedChat);
+                    setIngestSourceContext({
+                        chatName: activeChatObj?.name,
+                        senderName: msg.sender?.pushname || msg.sender?.name || (msg as any)?.fromName,
+                        isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
+                        isChannel: selectedChat?.includes('@newsletter'),
+                    });
+                    setVendorIngestImage(msg.mediaUrl || null);
+                    setVendorIngestMsg(text);
+                }}
                 onSetLeadStatus={handleContextSetLeadStatus}
                 onOpenCustomerCRM={() => setActivePanel('customer')}
                 onQuoteReply={msg => setReplyText(`> ${msg.body || ''}\n\n`)}
@@ -3120,38 +3230,76 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 isOpen={actionMenu.isOpen}
                 onClose={() => setActionMenu({ isOpen: false, message: null, position: null })}
                 contactType={contactType}
+                isGroupOrChannel={selectedChat?.includes('@g.us') || selectedChat?.includes('@newsletter') || !!chats.find(c => c.id === selectedChat)?.isGroup}
+                isChannel={selectedChat?.includes('@newsletter')}
+                senderName={actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name || (actionMenu.message as any)?.fromName}
+                chatName={chats.find(c => c.id === selectedChat)?.name}
                 position={actionMenu.position}
                 detectedAmount={(() => {
-                    const m = actionMenu.message?.body?.match(/₹?\s*([\d,]{2,7})/);
+                    const m = (actionMenu.message?.caption || actionMenu.message?.body || '').match(/₹?\s*([\d,]{2,7})/);
                     return m ? parseInt(m[1].replace(/,/g, ''), 10) : undefined;
                 })()}
-                detectedSku={extractVariantHints(actionMenu.message?.body || '').sku}
+                detectedSku={extractVariantHints(actionMenu.message?.caption || actionMenu.message?.body || '').sku}
                 onAddToCart={() => handleBroadcastToPOS(actionMenu.message!)}
                 onCreateQuote={() => handleContextConvertToOrder(actionMenu.message!)}
                 onSendPaymentLink={() => handleContextGeneratePayLink(undefined)}
                 onSendProductCard={() => handleSendProductCard(actionMenu.message!)}
-                onAddExistingInventory={() => setAddInventoryMsg(actionMenu.message?.body || '')}
-                onCreateProduct={() => setVendorIngestMsg(actionMenu.message?.body || '')}
+                onAddExistingInventory={() => {
+                    const m = actionMenu.message;
+                    const text = m?.caption || m?.body || '';
+                    const activeChatObj = chats.find(c => c.id === selectedChat);
+                    setIngestSourceContext({
+                        chatName: activeChatObj?.name,
+                        senderName: m?.sender?.pushname || m?.sender?.name || (m as any)?.fromName,
+                        isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
+                        isChannel: selectedChat?.includes('@newsletter'),
+                    });
+                    setAddInventoryMsg(text);
+                }}
+                onCreateProduct={() => {
+                    const m = actionMenu.message;
+                    const text = m?.caption || m?.body || '';
+                    const activeChatObj = chats.find(c => c.id === selectedChat);
+                    setIngestSourceContext({
+                        chatName: activeChatObj?.name,
+                        senderName: m?.sender?.pushname || m?.sender?.name || (m as any)?.fromName,
+                        isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
+                        isChannel: selectedChat?.includes('@newsletter'),
+                    });
+                    setVendorIngestImage(m?.mediaUrl || null);
+                    setVendorIngestMsg(text);
+                }}
                 onAutoBarcodeTag={() => handleAutoBarcodeTag(actionMenu.message!)}
-                onQuoteReply={() => setReplyText(`> ${actionMenu.message?.body || ''}\n\n`)}
+                onQuoteReply={() => setReplyText(`> ${actionMenu.message?.caption || actionMenu.message?.body || ''}\n\n`)}
             />
 
             {/* Vendor Ingestion Modals (spec §8.2) */}
             {vendorIngestMsg !== null && (
                 <VendorIngestionModal
                     isOpen
-                    onClose={() => setVendorIngestMsg(null)}
+                    onClose={() => {
+                        setVendorIngestMsg(null);
+                        setVendorIngestImage(null);
+                        setIngestSourceContext(null);
+                    }}
                     messageBody={vendorIngestMsg}
                     vendorId={contactVendor?.id}
                     vendorName={contactVendor?.name}
+                    imageUrl={vendorIngestImage || undefined}
+                    sourceContext={ingestSourceContext || undefined}
                 />
             )}
             {addInventoryMsg !== null && (
                 <AddExistingInventoryModal
                     isOpen
-                    onClose={() => setAddInventoryMsg(null)}
+                    onClose={() => {
+                        setAddInventoryMsg(null);
+                        setIngestSourceContext(null);
+                    }}
                     messageBody={addInventoryMsg}
                     vendorId={contactVendor?.id}
+                    vendorName={contactVendor?.name}
+                    sourceContext={ingestSourceContext || undefined}
                 />
             )}
 

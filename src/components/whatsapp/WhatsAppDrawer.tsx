@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { MessageCircle, X, Send, Search, Loader2, RefreshCw } from "lucide-react";
+import { MessageCircle, X, Send, Search, Loader2, RefreshCw, Users, Radio } from "lucide-react";
 import { toast } from "sonner";
 import { whatsappManager, getAllChats, getChatMessages, markAsRead, type WPPChat, type WPPMessage } from "@/lib/whatsapp";
 import {
@@ -34,6 +34,7 @@ export function WhatsAppDrawer() {
     const [chats, setChats] = useState<WPPChat[]>([]);
     const [contactTypes, setContactTypes] = useState<Record<string, ContactType>>({});
     const [search, setSearch] = useState("");
+    const [filterMode, setFilterMode] = useState<'all' | 'direct' | 'groups'>('all');
     const [loading, setLoading] = useState(false);
     const [activeChat, setActiveChat] = useState<WPPChat | null>(null);
     const [messages, setMessages] = useState<WPPMessage[]>([]);
@@ -50,6 +51,13 @@ export function WhatsAppDrawer() {
     }>({ isOpen: false, message: null, position: null });
     const [vendorIngestMsg, setVendorIngestMsg] = useState<string | null>(null);
     const [addInventoryMsg, setAddInventoryMsg] = useState<string | null>(null);
+    const [vendorIngestImage, setVendorIngestImage] = useState<string | null>(null);
+    const [ingestSourceContext, setIngestSourceContext] = useState<{
+        chatName?: string;
+        senderName?: string;
+        isGroup?: boolean;
+        isChannel?: boolean;
+    } | null>(null);
     const [activeVendor, setActiveVendor] = useState<{ id: string; name: string } | null>(null);
 
     // Long-press gesture on the drawer transcript
@@ -73,7 +81,7 @@ export function WhatsAppDrawer() {
             const typeMap: Record<string, ContactType> = {};
             for (const s of stored) typeMap[s.chat_id] = s.contact_type as ContactType;
             setContactTypes(typeMap);
-            setChats(sidecarChats.filter((c) => !c.isGroup).sort((a, b) => b.timestamp - a.timestamp));
+            setChats(sidecarChats.sort((a, b) => b.timestamp - a.timestamp));
         } finally {
             setLoading(false);
         }
@@ -199,12 +207,18 @@ export function WhatsAppDrawer() {
     }, [messages, loadingMessages]);
 
     const filteredChats = useMemo(() => {
+        let list = chats;
+        if (filterMode === 'direct') {
+            list = list.filter((c) => !c.isGroup && !c.id.includes('@g.us') && !c.id.includes('@newsletter'));
+        } else if (filterMode === 'groups') {
+            list = list.filter((c) => c.isGroup || c.id.includes('@g.us') || c.id.includes('@newsletter'));
+        }
         const q = search.trim().toLowerCase();
-        if (!q) return chats;
-        return chats.filter(
+        if (!q) return list;
+        return list.filter(
             (c) => c.name.toLowerCase().includes(q) || c.id.includes(q) || (c.lastMessage?.body || '').toLowerCase().includes(q)
         );
-    }, [chats, search]);
+    }, [chats, search, filterMode]);
 
     if (hidden) return null;
 
@@ -257,7 +271,7 @@ export function WhatsAppDrawer() {
                         {!activeChat ? (
                             <>
                                 {/* Search */}
-                                <div className="p-2.5 border-b border-border">
+                                <div className="p-2.5 border-b border-border space-y-2">
                                     <div className="relative">
                                         <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
                                         <input
@@ -266,6 +280,35 @@ export function WhatsAppDrawer() {
                                             placeholder="Search chats…"
                                             className="w-full h-8 pl-8 pr-2 text-xs rounded-lg bg-muted/50 border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                                         />
+                                    </div>
+                                    <div className="flex items-center gap-1 text-[11px]">
+                                        <button
+                                            onClick={() => setFilterMode('all')}
+                                            className={cn(
+                                                'px-2 py-0.5 rounded-full transition-colors font-medium',
+                                                filterMode === 'all' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                                            )}
+                                        >
+                                            All
+                                        </button>
+                                        <button
+                                            onClick={() => setFilterMode('direct')}
+                                            className={cn(
+                                                'px-2 py-0.5 rounded-full transition-colors font-medium',
+                                                filterMode === 'direct' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                                            )}
+                                        >
+                                            Direct
+                                        </button>
+                                        <button
+                                            onClick={() => setFilterMode('groups')}
+                                            className={cn(
+                                                'px-2 py-0.5 rounded-full transition-colors font-medium flex items-center gap-1',
+                                                filterMode === 'groups' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                                            )}
+                                        >
+                                            <Users size={11} /> Groups & Channels
+                                        </button>
                                     </div>
                                 </div>
 
@@ -282,38 +325,53 @@ export function WhatsAppDrawer() {
                                             <span className="text-primary font-semibold"> WhatsApp hub</span>.
                                         </div>
                                     )}
-                                    {filteredChats.map((chat) => (
-                                        <button
-                                            key={chat.id}
-                                            onClick={() => openConversation(chat)}
-                                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-muted/60 border-b border-border/40 text-left transition-colors"
-                                        >
-                                            <span className="size-9 rounded-full bg-primary/15 text-primary flex items-center justify-center text-xs font-bold shrink-0">
-                                                {chat.name.slice(0, 2).toUpperCase()}
-                                            </span>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-1.5">
-                                                    <span className="text-xs font-semibold text-foreground truncate">{chat.name}</span>
-                                                    {contactTypes[chat.id] && (
-                                                        <span className={cn(
-                                                            'text-[9px] font-bold uppercase px-1 py-px rounded',
-                                                            contactTypes[chat.id] === 'vendor' && 'bg-indigo-500/15 text-indigo-400',
-                                                            contactTypes[chat.id] === 'customer' && 'bg-emerald-500/15 text-emerald-400',
-                                                            contactTypes[chat.id] === 'lead' && 'bg-amber-500/15 text-amber-400',
-                                                        )}>
-                                                            {contactTypes[chat.id]}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                <p className="text-[11px] text-muted-foreground truncate">{chat.lastMessage?.body || '—'}</p>
-                                            </div>
-                                            {chat.unreadCount > 0 && (
-                                                <span className="min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
-                                                    {chat.unreadCount}
+                                    {filteredChats.map((chat) => {
+                                        const isGroupChat = chat.isGroup || chat.id.includes('@g.us');
+                                        const isChannelChat = chat.id.includes('@newsletter');
+                                        return (
+                                            <button
+                                                key={chat.id}
+                                                onClick={() => openConversation(chat)}
+                                                className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-muted/60 border-b border-border/40 text-left transition-colors"
+                                            >
+                                                <span className={cn(
+                                                    "size-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
+                                                    isChannelChat ? "bg-amber-500/15 text-amber-500" : isGroupChat ? "bg-blue-500/15 text-blue-500" : "bg-primary/15 text-primary"
+                                                )}>
+                                                    {isChannelChat ? <Radio size={16} /> : isGroupChat ? <Users size={16} /> : chat.name.slice(0, 2).toUpperCase()}
                                                 </span>
-                                            )}
-                                        </button>
-                                    ))}
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className="text-xs font-semibold text-foreground truncate">{chat.name}</span>
+                                                        {isChannelChat ? (
+                                                            <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-amber-500/15 text-amber-500 shrink-0">
+                                                                Channel
+                                                            </span>
+                                                        ) : isGroupChat ? (
+                                                            <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-blue-500/15 text-blue-500 shrink-0">
+                                                                Group
+                                                            </span>
+                                                        ) : contactTypes[chat.id] && (
+                                                            <span className={cn(
+                                                                'text-[9px] font-bold uppercase px-1 py-px rounded',
+                                                                contactTypes[chat.id] === 'vendor' && 'bg-indigo-500/15 text-indigo-400',
+                                                                contactTypes[chat.id] === 'customer' && 'bg-emerald-500/15 text-emerald-400',
+                                                                contactTypes[chat.id] === 'lead' && 'bg-amber-500/15 text-amber-400',
+                                                            )}>
+                                                                {contactTypes[chat.id]}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-[11px] text-muted-foreground truncate">{chat.lastMessage?.body || '—'}</p>
+                                                </div>
+                                                {chat.unreadCount > 0 && (
+                                                    <span className="min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                                                        {chat.unreadCount}
+                                                    </span>
+                                                )}
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                             </>
                         ) : (
@@ -323,21 +381,34 @@ export function WhatsAppDrawer() {
                                     <button onClick={() => setActiveChat(null)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground text-xs">
                                         ←
                                     </button>
-                                    <span className="size-8 rounded-full bg-primary/15 text-primary flex items-center justify-center text-[10px] font-bold">
-                                        {activeChat.name.slice(0, 2).toUpperCase()}
+                                    <span className={cn(
+                                        "size-8 rounded-full flex items-center justify-center text-[10px] font-bold",
+                                        activeChat.id.includes('@newsletter') ? "bg-amber-500/15 text-amber-500" : (activeChat.isGroup || activeChat.id.includes('@g.us')) ? "bg-blue-500/15 text-blue-500" : "bg-primary/15 text-primary"
+                                    )}>
+                                        {activeChat.id.includes('@newsletter') ? <Radio size={14} /> : (activeChat.isGroup || activeChat.id.includes('@g.us')) ? <Users size={14} /> : activeChat.name.slice(0, 2).toUpperCase()}
                                     </span>
                                     <div className="min-w-0 flex-1">
                                         <p className="text-xs font-bold truncate">{activeChat.name}</p>
                                         <p className="text-[10px] text-muted-foreground font-mono">{activeChat.id.split('@')[0]}</p>
                                     </div>
-                                    <span className={cn(
-                                        'text-[9px] font-bold uppercase px-2 py-0.5 rounded',
-                                        currentContactType === 'vendor' && 'bg-indigo-500/15 text-indigo-400',
-                                        currentContactType === 'customer' && 'bg-emerald-500/15 text-emerald-400',
-                                        currentContactType === 'lead' && 'bg-amber-500/15 text-amber-400',
-                                    )}>
-                                        {currentContactType}
-                                    </span>
+                                    {activeChat.id.includes('@newsletter') ? (
+                                        <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/15 text-amber-500">
+                                            Channel
+                                        </span>
+                                    ) : (activeChat.isGroup || activeChat.id.includes('@g.us')) ? (
+                                        <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded bg-blue-500/15 text-blue-500">
+                                            Group
+                                        </span>
+                                    ) : (
+                                        <span className={cn(
+                                            'text-[9px] font-bold uppercase px-2 py-0.5 rounded',
+                                            currentContactType === 'vendor' && 'bg-indigo-500/15 text-indigo-400',
+                                            currentContactType === 'customer' && 'bg-emerald-500/15 text-emerald-400',
+                                            currentContactType === 'lead' && 'bg-amber-500/15 text-amber-400',
+                                        )}>
+                                            {currentContactType}
+                                        </span>
+                                    )}
                                 </div>
 
                                 {/* Transcript with Gesture Context Hook (spec §8.4) */}
@@ -350,33 +421,50 @@ export function WhatsAppDrawer() {
                                             <Loader2 size={14} className="animate-spin" /> Loading…
                                         </div>
                                     )}
-                                    {messages.map((m) => (
-                                        <div
-                                            key={m.id}
-                                            data-msg-id={m.id}
-                                            onContextMenu={(e) => {
-                                                e.preventDefault();
-                                                setActionMenu({
-                                                    isOpen: true,
-                                                    message: m,
-                                                    position: { x: e.clientX, y: e.clientY },
-                                                });
-                                            }}
-                                            className={cn('flex cursor-pointer', m.fromMe ? 'justify-end' : 'justify-start')}
-                                        >
-                                            <div className={cn(
-                                                'max-w-[80%] px-3 py-1.5 rounded-xl text-xs whitespace-pre-wrap break-words transition-opacity hover:opacity-90',
-                                                m.fromMe
-                                                    ? 'bg-emerald-600 text-white rounded-br-sm'
-                                                    : 'bg-card border border-border text-foreground rounded-bl-sm',
-                                            )}>
-                                                {m.body || (m.type !== 'chat' ? `[${m.type}]` : '')}
-                                                <span className={cn('block text-[9px] mt-0.5', m.fromMe ? 'text-white/60' : 'text-muted-foreground')}>
-                                                    {m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}
-                                                </span>
+                                    {messages.map((m) => {
+                                        const isGrpOrChnl = activeChat?.isGroup || activeChat?.id.includes('@g.us') || activeChat?.id.includes('@newsletter');
+                                        const senderLabel = (m as any)?.fromName || (m.sender as any)?.pushname || (m.sender as any)?.name;
+
+                                        return (
+                                            <div
+                                                key={m.id}
+                                                data-msg-id={m.id}
+                                                onContextMenu={(e) => {
+                                                    e.preventDefault();
+                                                    setActionMenu({
+                                                        isOpen: true,
+                                                        message: m,
+                                                        position: { x: e.clientX, y: e.clientY },
+                                                    });
+                                                }}
+                                                className={cn('flex flex-col', m.fromMe ? 'items-end' : 'items-start')}
+                                            >
+                                                {!m.fromMe && isGrpOrChnl && senderLabel && (
+                                                    <span className="text-[10px] font-semibold text-primary mb-0.5 px-1 truncate max-w-[80%]">
+                                                        {senderLabel}
+                                                    </span>
+                                                )}
+                                                <div className={cn(
+                                                    'max-w-[80%] px-3 py-1.5 rounded-xl text-xs whitespace-pre-wrap break-words transition-opacity hover:opacity-90 cursor-pointer',
+                                                    m.fromMe
+                                                        ? 'bg-emerald-600 text-white rounded-br-sm'
+                                                        : 'bg-card border border-border text-foreground rounded-bl-sm',
+                                                )}>
+                                                    {m.mediaUrl && (
+                                                        <img
+                                                            src={m.mediaUrl}
+                                                            alt="Attachment"
+                                                            className="w-full max-h-48 object-cover rounded-lg mb-1.5 border border-border/40"
+                                                        />
+                                                    )}
+                                                    {m.body || m.caption || (m.type !== 'chat' ? `[${m.type}]` : '')}
+                                                    <span className={cn('block text-[9px] mt-0.5', m.fromMe ? 'text-white/60' : 'text-muted-foreground')}>
+                                                        {m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}
+                                                    </span>
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                     <div ref={messagesEndRef} />
                                 </div>
 
@@ -408,35 +496,70 @@ export function WhatsAppDrawer() {
                 isOpen={actionMenu.isOpen}
                 onClose={() => setActionMenu({ isOpen: false, message: null, position: null })}
                 contactType={currentContactType}
+                isGroupOrChannel={activeChat?.isGroup || activeChat?.id.includes('@g.us') || activeChat?.id.includes('@newsletter')}
+                isChannel={activeChat?.id.includes('@newsletter')}
+                senderName={(actionMenu.message as any)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name}
+                chatName={activeChat?.name}
                 position={actionMenu.position}
                 detectedAmount={(() => {
-                    const m = actionMenu.message?.body?.match(/₹?\s*([\d,]{2,7})/);
+                    const text = actionMenu.message?.caption || actionMenu.message?.body || '';
+                    const m = text.match(/₹?\s*([\d,]{2,7})/);
                     return m ? parseInt(m[1].replace(/,/g, ''), 10) : undefined;
                 })()}
-                detectedSku={extractVariantHints(actionMenu.message?.body || '').sku}
+                detectedSku={extractVariantHints(actionMenu.message?.caption || actionMenu.message?.body || '').sku}
                 onAddToCart={() => actionMenu.message && handleBroadcastToPOS(actionMenu.message)}
-                onAddExistingInventory={() => setAddInventoryMsg(actionMenu.message?.body || '')}
-                onCreateProduct={() => setVendorIngestMsg(actionMenu.message?.body || '')}
+                onAddExistingInventory={() => {
+                    const text = actionMenu.message?.caption || actionMenu.message?.body || '';
+                    setIngestSourceContext({
+                        chatName: activeChat?.name,
+                        senderName: (actionMenu.message as any)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name,
+                        isGroup: activeChat?.isGroup || activeChat?.id.includes('@g.us'),
+                        isChannel: activeChat?.id.includes('@newsletter'),
+                    });
+                    setAddInventoryMsg(text);
+                }}
+                onCreateProduct={() => {
+                    const text = actionMenu.message?.caption || actionMenu.message?.body || '';
+                    setIngestSourceContext({
+                        chatName: activeChat?.name,
+                        senderName: (actionMenu.message as any)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name,
+                        isGroup: activeChat?.isGroup || activeChat?.id.includes('@g.us'),
+                        isChannel: activeChat?.id.includes('@newsletter'),
+                    });
+                    setVendorIngestImage(actionMenu.message?.mediaUrl || null);
+                    setVendorIngestMsg(text);
+                }}
                 onAutoBarcodeTag={() => actionMenu.message && handleAutoBarcodeTag(actionMenu.message)}
-                onQuoteReply={() => setDraft(`> ${actionMenu.message?.body || ''}\n\n`)}
+                onQuoteReply={() => setDraft(`> ${actionMenu.message?.caption || actionMenu.message?.body || ''}\n\n`)}
             />
 
             {/* Ingestion Modals */}
             {vendorIngestMsg !== null && (
                 <VendorIngestionModal
                     isOpen
-                    onClose={() => setVendorIngestMsg(null)}
+                    onClose={() => {
+                        setVendorIngestMsg(null);
+                        setVendorIngestImage(null);
+                        setIngestSourceContext(null);
+                    }}
                     messageBody={vendorIngestMsg}
                     vendorId={activeVendor?.id}
                     vendorName={activeVendor?.name}
+                    imageUrl={vendorIngestImage || undefined}
+                    sourceContext={ingestSourceContext || undefined}
                 />
             )}
             {addInventoryMsg !== null && (
                 <AddExistingInventoryModal
                     isOpen
-                    onClose={() => setAddInventoryMsg(null)}
+                    onClose={() => {
+                        setAddInventoryMsg(null);
+                        setIngestSourceContext(null);
+                    }}
                     messageBody={addInventoryMsg}
                     vendorId={activeVendor?.id}
+                    vendorName={activeVendor?.name}
+                    sourceContext={ingestSourceContext || undefined}
                 />
             )}
         </>

@@ -29,6 +29,12 @@ export interface MessageActionMenuProps {
     isOpen: boolean;
     onClose: () => void;
     contactType: ContactType;
+    /** Group, Channel, or Community indicator (spec §8.2) */
+    isGroupOrChannel?: boolean;
+    isChannel?: boolean;
+    /** Sender / Participant attribution in groups */
+    senderName?: string;
+    chatName?: string;
     /** Anchor point for the desktop popover (clientX/clientY). */
     position?: { x: number; y: number } | null;
     /** Pre-extracted amount/SKU shown as chips in the header. */
@@ -51,12 +57,16 @@ export interface MessageActionMenuProps {
  * Context Action Engine (spec §8 / §8.4):
  * - Desktop: glassmorphic popover at the right-click point, keyboard navigable.
  * - Mobile: haptic bottom-sheet with thumb-friendly buttons (pair with useLongPress).
- * Actions are filtered by the chat contact type (customer vs vendor).
+ * Actions are intelligently adapted for vendors, groups, communities, and channels.
  */
 export function MessageActionMenu({
     isOpen,
     onClose,
     contactType,
+    isGroupOrChannel,
+    isChannel,
+    senderName,
+    chatName,
     position,
     detectedAmount,
     detectedSku,
@@ -114,63 +124,74 @@ export function MessageActionMenu({
     if (!isOpen) return null;
 
     const isVendor = contactType === 'vendor';
+    const isGroupContext = !!(isGroupOrChannel || isChannel);
 
+    // Vendor Ingestion Suite (Available in Vendor chats, and across Groups, Communities, & Channels)
+    const vendorActions: MessageAction[] = [
+        onAddExistingInventory && {
+            key: 'add-inventory',
+            label: 'Add to Existing Inventory',
+            icon: <PackagePlus size={15} />,
+            accent: 'text-indigo-500',
+            handler: onAddExistingInventory,
+        },
+        onCreateProduct && {
+            key: 'new-product',
+            label: 'Create New Product from Message',
+            icon: <Package size={15} />,
+            accent: 'text-emerald-500',
+            handler: onCreateProduct,
+        },
+        onAutoBarcodeTag && {
+            key: 'auto-tag',
+            label: 'Auto Barcode Tag',
+            icon: <Tag size={15} />,
+            accent: 'text-amber-500',
+            handler: onAutoBarcodeTag,
+        },
+    ].filter(Boolean) as MessageAction[];
+
+    // Customer Commerce Suite
+    const customerActions: MessageAction[] = [
+        onAddToCart && {
+            key: 'add-cart',
+            label: detectedSku ? `Add ${detectedSku} to POS Cart` : 'Add to POS Cart',
+            icon: <ShoppingCart size={15} />,
+            accent: 'text-primary',
+            handler: onAddToCart,
+        },
+        onCreateQuote && {
+            key: 'quote',
+            label: 'Create Quote / Estimate',
+            icon: <FileText size={15} />,
+            accent: 'text-amber-500',
+            handler: onCreateQuote,
+        },
+        onSendPaymentLink && {
+            key: 'pay-link',
+            label: detectedAmount
+                ? `Send Payment Link (₹${detectedAmount.toLocaleString('en-IN')})`
+                : 'Send Razorpay Payment Link',
+            icon: <CreditCard size={15} />,
+            accent: 'text-blue-500',
+            handler: onSendPaymentLink,
+        },
+        onSendProductCard && {
+            key: 'product-card',
+            label: 'Send Product Card',
+            icon: <ImageIcon size={15} />,
+            accent: 'text-pink-500',
+            handler: onSendProductCard,
+        },
+    ].filter(Boolean) as MessageAction[];
+
+    // Priority ordering: In groups/channels or vendor chats, vendor actions come first.
+    // In groups/channels, both vendor stock updates and customer POS actions are accessible.
     const actions: MessageAction[] = isVendor
-        ? [
-            onAddExistingInventory && {
-                key: 'add-inventory',
-                label: 'Add to Existing Inventory',
-                icon: <PackagePlus size={15} />,
-                accent: 'text-indigo-500',
-                handler: onAddExistingInventory,
-            },
-            onCreateProduct && {
-                key: 'new-product',
-                label: 'Create New Product from Message',
-                icon: <Package size={15} />,
-                accent: 'text-emerald-500',
-                handler: onCreateProduct,
-            },
-            onAutoBarcodeTag && {
-                key: 'auto-tag',
-                label: 'Auto Barcode Tag',
-                icon: <Tag size={15} />,
-                accent: 'text-amber-500',
-                handler: onAutoBarcodeTag,
-            },
-        ].filter(Boolean) as MessageAction[]
-        : [
-            onAddToCart && {
-                key: 'add-cart',
-                label: detectedSku ? `Add ${detectedSku} to POS Cart` : 'Add to POS Cart',
-                icon: <ShoppingCart size={15} />,
-                accent: 'text-primary',
-                handler: onAddToCart,
-            },
-            onCreateQuote && {
-                key: 'quote',
-                label: 'Create Quote / Estimate',
-                icon: <FileText size={15} />,
-                accent: 'text-amber-500',
-                handler: onCreateQuote,
-            },
-            onSendPaymentLink && {
-                key: 'pay-link',
-                label: detectedAmount
-                    ? `Send Payment Link (₹${detectedAmount.toLocaleString('en-IN')})`
-                    : 'Send Razorpay Payment Link',
-                icon: <CreditCard size={15} />,
-                accent: 'text-blue-500',
-                handler: onSendPaymentLink,
-            },
-            onSendProductCard && {
-                key: 'product-card',
-                label: 'Send Product Card',
-                icon: <ImageIcon size={15} />,
-                accent: 'text-pink-500',
-                handler: onSendProductCard,
-            },
-        ].filter(Boolean) as MessageAction[];
+        ? vendorActions
+        : isGroupContext
+        ? [...vendorActions, ...customerActions]
+        : [...customerActions, ...(onAddExistingInventory ? [vendorActions[0]] : [])];
 
     const commonActions: MessageAction[] = [
         onQuoteReply && {
@@ -205,26 +226,49 @@ export function MessageActionMenu({
         </button>
     );
 
+    const badgeLabel = isChannel
+        ? 'Channel'
+        : isGroupContext
+        ? 'Group / Community'
+        : isVendor
+        ? 'Vendor'
+        : contactType === 'lead'
+        ? 'Lead'
+        : 'Customer';
+
+    const badgeStyle = isChannel
+        ? 'bg-violet-500/15 text-violet-400'
+        : isGroupContext
+        ? 'bg-sky-500/15 text-sky-400'
+        : isVendor
+        ? 'bg-indigo-500/15 text-indigo-400'
+        : contactType === 'lead'
+        ? 'bg-amber-500/15 text-amber-400'
+        : 'bg-emerald-500/15 text-emerald-400';
+
     const header = (
         <div className="px-3 py-2 border-b border-border/60 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-                <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                    isVendor ? 'bg-indigo-500/15 text-indigo-400' : 'bg-emerald-500/15 text-emerald-400'
-                }`}>
-                    {isVendor ? 'Vendor' : contactType === 'lead' ? 'Lead' : 'Customer'}
+            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeStyle}`}>
+                    {badgeLabel}
                 </span>
+                {senderName && (
+                    <span className="text-[10px] text-muted-foreground truncate max-w-[90px]" title={senderName}>
+                        {senderName}
+                    </span>
+                )}
                 {detectedAmount && (
                     <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
                         ₹{detectedAmount.toLocaleString('en-IN')}
                     </span>
                 )}
                 {detectedSku && (
-                    <span className="text-[10px] font-mono text-muted-foreground truncate">{detectedSku}</span>
+                    <span className="text-[10px] font-mono text-muted-foreground truncate max-w-[80px]">{detectedSku}</span>
                 )}
             </div>
             <button
                 onClick={onClose}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
                 aria-label="Close actions"
             >
                 <X size={14} />
@@ -234,8 +278,8 @@ export function MessageActionMenu({
 
     // ---- Desktop: glassmorphic popover anchored at the right-click point ----
     if (isDesktop) {
-        const menuWidth = 260;
-        const menuHeight = 340;
+        const menuWidth = 270;
+        const menuHeight = Math.min(480, (actions.length + commonActions.length) * 38 + 60);
         const x = Math.min(position?.x ?? 0, (typeof window !== 'undefined' ? window.innerWidth : 1200) - menuWidth - 16);
         const y = Math.min(position?.y ?? 0, (typeof window !== 'undefined' ? window.innerHeight : 800) - menuHeight - 16);
 
@@ -243,7 +287,7 @@ export function MessageActionMenu({
             <div
                 ref={menuRef}
                 style={{ top: `${y}px`, left: `${x}px` }}
-                className="fixed z-[9999] w-65 rounded-xl bg-card/90 backdrop-blur-xl border border-border/70 shadow-2xl p-1.5 animate-in fade-in zoom-in-95 duration-100 select-none"
+                className="fixed z-[9999] w-[270px] max-h-[480px] overflow-y-auto rounded-xl bg-card/95 backdrop-blur-xl border border-border/80 shadow-2xl p-1.5 animate-in fade-in zoom-in-95 duration-100 select-none"
                 role="menu"
             >
                 {header}
