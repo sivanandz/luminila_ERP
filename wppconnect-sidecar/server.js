@@ -55,20 +55,44 @@ async function cleanSessionTokens(sessionName) {
 
 const app = express();
 const server = http.createServer(app);
+
+// Origin allowlist: the sidecar controls a live WhatsApp account, so arbitrary
+// websites open in the user's browser must not be able to drive it.
+const EXTRA_ORIGINS = (process.env.WPP_ALLOWED_ORIGINS || '')
+    .split(',').map(o => o.trim()).filter(Boolean);
+const TRUSTED_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|tauri\.localhost|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|[a-z0-9-]+\.trycloudflare\.com)(:\d+)?$/i;
+function isAllowedOrigin(origin) {
+    // Same-machine server-to-server calls (Next.js API routes, scripts) send no Origin
+    if (!origin) return true;
+    return TRUSTED_ORIGIN.test(origin) || origin === 'tauri://localhost' || EXTRA_ORIGINS.includes(origin);
+}
+const corsOrigin = (origin, cb) => cb(null, isAllowedOrigin(origin));
+
 const io = new Server(server, {
-    cors: { origin: '*', methods: ['GET', 'POST'] }
+    cors: { origin: corsOrigin, methods: ['GET', 'POST'] }
+});
+
+app.use((req, res, next) => {
+    if (!isAllowedOrigin(req.headers.origin)) {
+        return res.status(403).json({ success: false, error: 'Origin not allowed' });
+    }
+    res.header('Access-Control-Allow-Private-Network', 'true');
+    next();
 });
 
 app.use(cors({
-    origin: '*', // Allow all origins for local sidecar
+    origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true
 }));
 
-// Add Private Network Access header for Chrome
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Private-Network', 'true');
+// Session names become filesystem paths (token dirs are rm -rf'd on reset) - restrict strictly
+const SESSION_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+app.param('session', (req, res, next, value) => {
+    if (!SESSION_NAME.test(value)) {
+        return res.status(400).json({ success: false, error: 'Invalid session name' });
+    }
     next();
 });
 
@@ -102,161 +126,239 @@ app.get('/api/status', (req, res) => {
     sessions.forEach((session, name) => {
         sessionList.push({
             name,
-            connected: session.connected || false,
+            connected: (session.connected && !!session.client) || false,
             qrReady: session.qrReady || false
         });
     });
     res.json({ sessions: sessionList });
 });
 
-// Start new session
-app.post('/api/:session/start', async (req, res) => {
-    const { session } = req.params;
-    const forceNew = req.body?.forceNew === true || req.query?.forceNew === 'true';
+// ---------------------------------------------------------------------------
+// Session lifecycle
+// `client` is only set once WhatsApp is actually logged in (all API endpoints
+// guard on it). `pendingClient` holds the pre-login handle so the Chromium
+// instance can always be closed - otherwise retries leak browsers and lock the
+// profile directory.
+// ---------------------------------------------------------------------------
+const QR_SCAN_TIMEOUT_MS = 5 * 60 * 1000;
+const BROWSER_ARGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--disable-gpu'
+];
 
-    if (forceNew) {
-        console.log(`[${session}] Force clean requested - purging existing session & tokens...`);
-        if (sessions.has(session)) {
-            const existing = sessions.get(session);
-            if (existing && existing.client) {
-                try { await existing.client.close(); } catch (e) { /* ignore */ }
-            }
-            sessions.delete(session);
+function newSessionData() {
+    return { connected: false, qrReady: false, qrCode: null, client: null, pendingClient: null, failed: false, closing: false };
+}
+
+const isCurrent = (name, data) => sessions.get(name) === data;
+
+async function closeSessionData(data) {
+    if (!data) return;
+    data.closing = true;
+    data.connected = false;
+    const handle = data.client || data.pendingClient;
+    if (handle) {
+        let pid = null;
+        try {
+            const browser = handle.page?.browser?.() || handle.browser;
+            pid = browser?.process?.()?.pid;
+        } catch { /* ignore */ }
+
+        try {
+            await Promise.race([
+                handle.close(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+            ]);
+        } catch { /* browser already gone or timed out */ }
+
+        if (pid) {
+            try {
+                process.kill(pid, 'SIGKILL');
+            } catch { /* process exited */ }
         }
-        await cleanSessionTokens(session);
-    } else if (sessions.has(session)) {
-        const existing = sessions.get(session);
-        if (existing && existing.connected && existing.client) {
-            return res.json({ success: true, message: 'Session already exists and is connected' });
-        }
-        // If previous session failed or disconnected, delete it to allow re-initialization
-        console.log(`[${session}] Resetting unready/stale session before restart`);
-        sessions.delete(session);
+        await new Promise(r => setTimeout(r, 600));
     }
+}
+
+function attachClientListeners(names, client) {
+    client.onMessage((message) => {
+        const payload = {
+            id: message.id,
+            from: message.from,
+            to: message.to,
+            body: message.body,
+            type: message.type,
+            timestamp: message.timestamp,
+            isGroupMsg: message.isGroupMsg,
+            sender: message.sender
+        };
+        names.forEach(session => io.emit('message', { session, message: payload }));
+    });
+    client.onAck((ack) => names.forEach(session => io.emit('ack', { session, ack })));
+}
+
+/**
+ * Boots a WPPConnect client and resolves once logged in (or rejects on failure).
+ * Uses waitForLogin:false + manual client.waitForLogin() so the client handle
+ * is available during the QR / pairing-code phase.
+ */
+async function bootSession({ session, sessionData, phoneNumber, onLinkCode, aliasOf }) {
+    const names = aliasOf ? [session, aliasOf] : [session];
+    const emit = (event, extra = {}) => names.forEach(s => io.emit(event, { session: s, ...extra }));
+
+    const markConnected = (client) => {
+        if (!isCurrent(session, sessionData)) return;
+        sessionData.client = client;
+        sessionData.connected = true;
+        sessionData.qrReady = false;
+        sessionData.qrCode = null;
+        if (aliasOf) sessions.set(aliasOf, sessionData);
+        console.log(`[${session}] Logged in`);
+        emit('connected');
+    };
+
+    const markDisconnected = () => {
+        if (!sessionData.connected) return;
+        sessionData.connected = false;
+        emit('disconnected');
+    };
 
     try {
         const wpp = await getWppConnect();
-
-        const sessionData = {
-            connected: false,
-            qrReady: false,
-            qrCode: null,
-            client: null
-        };
-        sessions.set(session, sessionData);
-
-        const sessionUserDataDir = getSessionTokenPath(session);
-
-        wpp.create({
-            session: session,
+        const client = await wpp.create({
+            session,
+            ...(phoneNumber ? { phoneNumber } : {}),
             folderNameToken: TOKENS_BASE_DIR,
-            tokenStore: new wpp.tokenStore.FileTokenStore({
-                path: TOKENS_BASE_DIR,
-            }),
-            catchQR: async (base64Qr, asciiQR, attempts) => {
-                console.log(`[${session}] QR Code generated (attempt ${attempts})`);
-                console.log(`[${session}] QR Length: ${base64Qr ? base64Qr.length : 0}`);
-
-                try {
-                    const matches = base64Qr.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-                    if (matches && matches.length === 3) {
-                        const buffer = Buffer.from(matches[2], 'base64');
-                        fs.writeFileSync(path.join(TOKENS_BASE_DIR, `${session}_qr.png`), buffer);
-                    }
-                } catch (e) {
-                    console.error(`[${session}] Error saving debug QR:`, e.message);
-                }
-
+            tokenStore: new wpp.tokenStore.FileTokenStore({ path: TOKENS_BASE_DIR }),
+            catchQR: (base64Qr, asciiQR, attempts) => {
+                if (!isCurrent(session, sessionData)) return;
+                console.log(`[${session}] QR code generated (attempt ${attempts})`);
                 sessionData.qrCode = base64Qr;
                 sessionData.qrReady = true;
-                io.emit('qrcode', { session, qrCode: base64Qr, attempts });
+                sessionData.connected = false;
+                emit('qrcode', { qrCode: base64Qr, attempts });
             },
-            statusFind: (statusSession) => {
-                console.log(`[${session}] Status: ${statusSession}`);
-                if (statusSession === 'inChat' || statusSession === 'isLogged' || statusSession === 'qrReadSuccess') {
-                    sessionData.connected = true;
-                    sessionData.qrReady = false;
-                    io.emit('connected', { session });
+            catchLinkCode: (code) => {
+                console.log(`[${session}] Pairing code received`);
+                if (onLinkCode) onLinkCode(code);
+            },
+            // statusFind is only used for teardown signals. NOTE: 'inChat' fires
+            // before the QR is scanned, so it is NOT a reliable login signal.
+            statusFind: (status) => {
+                console.log(`[${session}] Status: ${status}`);
+                if (!isCurrent(session, sessionData)) return;
+                if (status === 'disconnectedMobile' || status === 'phoneNotConnected') {
+                    markDisconnected();
                 }
-                if (statusSession === 'notLogged') {
+                if (status === 'browserClose' || status === 'autocloseCalled' || status === 'serverClose') {
                     sessionData.connected = false;
-                }
-                if (statusSession === 'disconnectedMobile' || statusSession === 'phoneNotConnected') {
-                    sessionData.connected = false;
-                    io.emit('disconnected', { session });
-                }
-                if (statusSession === 'browserClose' || statusSession === 'autocloseCalled' || statusSession === 'serverClose') {
-                    sessionData.connected = false;
+                    sessionData.failed = true;
                     sessions.delete(session);
-                    io.emit('disconnected', { session });
+                    if (aliasOf && sessions.get(aliasOf) === sessionData) sessions.delete(aliasOf);
+                    emit('disconnected');
                 }
             },
             headless: true,
             whatsappVersion: null,
             devtools: false,
             useChrome: true,
-            debug: true,
-            logConsole: true,
+            debug: false,
             logQR: false,
-            browserArgs: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--disable-gpu'
-            ],
-            autoClose: 0, // Keep session active until user scans or explicitly closes
+            disableWelcome: true,
+            updatesLog: false,
+            browserArgs: BROWSER_ARGS,
+            autoClose: QR_SCAN_TIMEOUT_MS, // only applies while waiting for scan
             deviceSyncTimeout: 300000,
-            waitForLogin: true,
+            waitForLogin: false,
             puppeteerOptions: {
                 headless: true,
-                userDataDir: sessionUserDataDir,
-                defaultViewport: {
-                    width: 1280,
-                    height: 800
-                },
+                userDataDir: getSessionTokenPath(session),
+                defaultViewport: { width: 1280, height: 800 },
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1280,800'],
             },
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }).then((client) => {
-            sessionData.client = client;
-            sessionData.connected = true;
-
-            // Handle incoming messages
-            client.onMessage((message) => {
-                io.emit('message', {
-                    session,
-                    message: {
-                        id: message.id,
-                        from: message.from,
-                        to: message.to,
-                        body: message.body,
-                        type: message.type,
-                        timestamp: message.timestamp,
-                        isGroupMsg: message.isGroupMsg,
-                        sender: message.sender
-                    }
-                });
-            });
-
-            // Handle ack (message status)
-            client.onAck((ack) => {
-                io.emit('ack', { session, ack });
-            });
-
-            console.log(`[${session}] Client ready`);
-        }).catch((error) => {
-            console.error(`[${session}] Error:`, error);
-            sessions.delete(session);
         });
 
-        res.json({ success: true, message: 'Session starting' });
+        sessionData.pendingClient = client;
+        if (sessionData.closing || !isCurrent(session, sessionData)) {
+            await client.close().catch(() => {});
+            return;
+        }
+        attachClientListeners(names, client);
+
+        const isLogged = await client.waitForLogin();
+        if (!isLogged) throw new Error('Not logged in');
+        markConnected(client);
+
+        // Mirror wppconnect's built-in re-login watcher (skipped with waitForLogin:false):
+        // if the device is unlinked from the phone, fall back to a fresh QR cycle.
+        let relogin = null;
+        client.onStateChange(async () => {
+            if (!isCurrent(session, sessionData) || sessionData.closing) return;
+            const registered = await client.page
+                .evaluate(() => WPP.conn.isRegistered())
+                .catch(() => false);
+            if (registered) {
+                if (!sessionData.connected) markConnected(client);
+                return;
+            }
+            markDisconnected();
+            await new Promise(r => setTimeout(r, 2000));
+            if (!relogin) {
+                relogin = client.waitForLogin()
+                    .then(ok => { if (ok) markConnected(client); })
+                    .catch(() => {})
+                    .finally(() => { relogin = null; });
+            }
+        });
     } catch (error) {
-        console.error('Error starting session:', error);
-        res.status(500).json({ success: false, error: error.message });
+        console.error(`[${session}] Session failed:`, error?.message || error);
+        if (isCurrent(session, sessionData)) {
+            sessions.delete(session);
+            sessionData.failed = true;
+            emit('disconnected');
+        }
+        await closeSessionData(sessionData);
+        throw error;
     }
+}
+
+// Start new session (idempotent: repeated calls never spawn a second browser)
+app.post('/api/:session/start', async (req, res) => {
+    const { session } = req.params;
+    const forceNew = req.body?.forceNew === true || req.query?.forceNew === 'true';
+    const existing = sessions.get(session);
+
+    if (existing && !forceNew && !existing.failed) {
+        if (existing.connected && existing.client) {
+            return res.json({ success: true, status: 'CONNECTED', message: 'Session already connected' });
+        }
+        return res.json({
+            success: true,
+            status: existing.qrReady ? 'QR_CODE' : 'INITIALIZING',
+            qrcode: existing.qrCode,
+            message: 'Session already starting'
+        });
+    }
+
+    if (existing) {
+        sessions.delete(session);
+        await closeSessionData(existing);
+    }
+    if (forceNew) {
+        console.log(`[${session}] Force clean requested - purging tokens`);
+        await cleanSessionTokens(session);
+    }
+
+    const sessionData = newSessionData();
+    sessions.set(session, sessionData);
+    bootSession({ session, sessionData }).catch(() => { /* logged in bootSession */ });
+    res.json({ success: true, status: 'INITIALIZING', message: 'Session starting' });
 });
+
 
 // Get QR code
 app.get('/api/:session/qrcode', async (req, res) => {
@@ -302,7 +404,7 @@ app.get('/api/:session/status', (req, res) => {
 
     res.json({
         exists: true,
-        connected: sessionData.connected || false,
+        connected: (sessionData.connected && !!sessionData.client) || false,
         qrReady: sessionData.qrReady || false
     });
 });
@@ -316,10 +418,9 @@ app.post('/api/:session/logout', async (req, res) => {
     console.log(`[${session}] Logging out...`);
     if (sessionData && sessionData.client) {
         try { await sessionData.client.logout(); } catch (e) { console.warn(`[${session}] Logout warning:`, e.message); }
-        try {
-            await sessionData.client.close();
-            await new Promise(r => setTimeout(r, 1000));
-        } catch (e) { console.warn(`[${session}] Close warning:`, e.message); }
+    }
+    if (sessionData) {
+        await closeSessionData(sessionData);
     }
 
     sessions.delete(session);
@@ -342,13 +443,9 @@ app.post('/api/:session/reset', async (req, res) => {
     console.log(`[${session}] Resetting and purging session completely...`);
 
     const mainData = sessions.get(session);
-    if (mainData && mainData.client) {
-        try { await mainData.client.close(); } catch (e) { /* ignore */ }
-    }
+    if (mainData) await closeSessionData(mainData);
     const phoneData = sessions.get(phoneSession);
-    if (phoneData && phoneData.client) {
-        try { await phoneData.client.close(); } catch (e) { /* ignore */ }
-    }
+    if (phoneData) await closeSessionData(phoneData);
 
     sessions.delete(session);
     sessions.delete(phoneSession);
@@ -375,85 +472,35 @@ app.post('/api/:session/pair-phone', async (req, res) => {
     // Clean up existing phone session if it exists (not the main session!)
     const existingPhoneSession = sessions.get(phoneSession);
     if (existingPhoneSession) {
-        if (existingPhoneSession.client) {
-            try {
-                await existingPhoneSession.client.close();
-            } catch (e) {
-                console.error(`[${phoneSession}] Error closing existing phone session:`, e);
-            }
-        }
         sessions.delete(phoneSession);
+        await closeSessionData(existingPhoneSession);
     }
 
-    // Start new session with phone number
     try {
-        const wpp = await getWppConnect();
-
-        const sessionData = {
-            connected: false,
-            qrReady: false,
-            qrCode: null,
-            client: null
-        };
+        const sessionData = newSessionData();
         sessions.set(phoneSession, sessionData);
 
-        // Create a promise that resolves when pairing code is received
+        let codeResolved = false;
         const codePromise = new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                reject(new Error("Timeout waiting for pairing code (90s)"));
+                if (!codeResolved) reject(new Error("Timeout waiting for pairing code (90s)"));
             }, 90000);
 
-            wpp.create({
+            bootSession({
                 session: phoneSession,
+                sessionData,
                 phoneNumber: cleanPhone,
-                folderNameToken: TOKENS_BASE_DIR,
-                tokenStore: new wpp.tokenStore.FileTokenStore({
-                    path: TOKENS_BASE_DIR,
-                }),
-                catchLinkCode: (code) => {
-                    console.log(`[${phoneSession}] Pairing Code Received: ${code}`);
+                aliasOf: session,
+                onLinkCode: (code) => {
+                    codeResolved = true;
                     clearTimeout(timeout);
                     resolve(code);
-                },
-                statusFind: (statusSession) => {
-                    console.log(`[${phoneSession}] Status: ${statusSession}`);
-                    if (statusSession === 'inChat' || statusSession === 'isLogged' || statusSession === 'qrReadSuccess') {
-                        sessionData.connected = true;
-                        sessions.set(session, sessionData); // Alias to main session
-                        io.emit('connected', { session: phoneSession });
-                        io.emit('connected', { session });
-                    }
-                    if (statusSession === 'disconnectedMobile' || statusSession === 'phoneNotConnected') {
-                        sessionData.connected = false;
-                        io.emit('disconnected', { session: phoneSession });
-                        io.emit('disconnected', { session });
-                    }
-                },
-                headless: true,
-                whatsappVersion: null,
-                useChrome: true,
-                autoClose: 0,
-                deviceSyncTimeout: 300000,
-                browserArgs: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu'
-                ],
-                puppeteerOptions: {
-                    headless: true,
-                    userDataDir: getSessionTokenPath(phoneSession),
                 }
-            }).then((client) => {
-                sessionData.client = client;
-                sessionData.connected = true;
-                sessions.set(session, sessionData); // Alias to main session
-                client.onMessage((message) => {
-                    io.emit('message', { session: phoneSession, message });
-                    io.emit('message', { session, message });
-                });
             }).catch(err => {
-                console.error(`[${phoneSession}] Create Error:`, err);
+                if (!codeResolved) {
+                    clearTimeout(timeout);
+                    reject(err);
+                }
             });
         });
 
@@ -471,20 +518,9 @@ app.post('/api/:session/pair-phone', async (req, res) => {
 app.post('/api/:session/close', async (req, res) => {
     const { session } = req.params;
     const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        sessions.delete(session);
-        return res.json({ success: true, message: 'Session closed' });
-    }
-
-    try {
-        await sessionData.client.close();
-        sessions.delete(session);
-        res.json({ success: true, message: 'Session closed successfully' });
-    } catch (error) {
-        sessions.delete(session);
-        res.json({ success: true, message: 'Session force closed' });
-    }
+    sessions.delete(session);
+    if (sessionData) await closeSessionData(sessionData);
+    res.json({ success: true, message: 'Session closed successfully' });
 });
 
 

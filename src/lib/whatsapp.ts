@@ -1184,26 +1184,16 @@ export async function requestPairingCode(sessionId: string, phone: string): Prom
 }
 
 export class WhatsAppManager {
-    private sessionId: string;
+    private sessionId: string = "luminila";
     private pollInterval: NodeJS.Timeout | null = null;
     private messageCallback: ((messages: WPPMessage[]) => void) | null = null;
 
     constructor(sessionId: string = "luminila") {
-        // Try to restore session ID from localStorage for persistence across page refreshes
-        if (typeof window !== 'undefined' && window.localStorage) {
-            const storedSessionId = localStorage.getItem('wpp_session_id');
-            this.sessionId = storedSessionId || sessionId;
-        } else {
-            this.sessionId = sessionId;
-        }
+        this.sessionId = sessionId || "luminila";
     }
 
     setSessionId(id: string) {
-        this.sessionId = id;
-        // Persist to localStorage for page refresh persistence
-        if (typeof window !== 'undefined' && window.localStorage) {
-            localStorage.setItem('wpp_session_id', id);
-        }
+        this.sessionId = id || "luminila";
     }
 
     /** Public read access to the active session id. */

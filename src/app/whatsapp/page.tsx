@@ -1030,10 +1030,10 @@ export default function WhatsAppPage() {
             if (response && response.code) {
                 setPairingCode(response.code);
                 // Switch manager to the phone-specific session for proper status polling
-                whatsappManager.setSessionId(response.session);
                 const phonePoll = setInterval(async () => {
                     const status = await whatsappManager.getStatus();
                     if (status === "CONNECTED") {
+                        whatsappManager.setSessionId("luminila");
                         setSessionStatus("connected");
                         setPairingCode(null);
                         setQrCode(null);
