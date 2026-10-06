@@ -140,6 +140,22 @@ async function main() {
                     break;
                 }
             }
+
+            // Auto-provision bootstrap superuser on cold start if 0 superusers exist
+            try {
+                const { DatabaseSync } = require('node:sqlite');
+                const dbPath = path.join(PB_DATA, 'data.db');
+                if (fs.existsSync(dbPath)) {
+                    const db = new DatabaseSync(dbPath, { readOnly: true });
+                    const row = db.prepare('SELECT count(*) as count FROM _superusers').get();
+                    db.close();
+                    if (row && row.count === 0) {
+                        const { execFileSync } = require('child_process');
+                        execFileSync(PB_EXE, ['superuser', 'upsert', 'admin@luminila.local', 'LuminilaInit2026!', `--dir=${PB_DATA}`]);
+                        console.log(`${GREEN}[PB]${RESET} Bootstrap superuser initialized for seamless setup wizard.`);
+                    }
+                }
+            } catch { /* ignore if schema is still migrating */ }
         }
     }
     process.env.PB_PORT = String(pbPort);
