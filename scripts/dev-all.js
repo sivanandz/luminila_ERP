@@ -167,14 +167,20 @@ async function main() {
 
     // 3. Next.js Frontend
     console.log(`${CYAN}[NEXT]${RESET} Starting Next.js frontend on http://localhost:3000...`);
+    const nextBin = path.join(ROOT_DIR, 'node_modules', 'next', 'dist', 'bin', 'next');
     const isWin = process.platform === 'win32';
-    const npxCmd = isWin ? 'npx.cmd' : 'npx';
-    const nextProc = spawn(npxCmd, ['next', 'dev'], {
-        cwd: ROOT_DIR,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: isWin,
-        env: { ...process.env }
-    });
+    const nextProc = fs.existsSync(nextBin)
+        ? spawn(process.execPath, [nextBin, 'dev'], {
+            cwd: ROOT_DIR,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env }
+        })
+        : spawn(isWin ? 'npx.cmd' : 'npx', ['next', 'dev'], {
+            cwd: ROOT_DIR,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: isWin,
+            env: { ...process.env }
+        });
     children.push(nextProc);
     pipeOutput(nextProc, '[NEXT]', CYAN);
 
