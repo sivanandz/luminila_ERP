@@ -809,16 +809,17 @@ export default function WhatsAppPage() {
         setLoadingCustomer(true);
         try {
             const chatInfo = chats.find(c => c.id === selectedChat);
-            if (chatInfo) {
-                const newCustomer = await createCustomerFromChat(chatInfo.name, selectedChat);
-                if (newCustomer) {
-                    setCustomer(newCustomer);
-                    alert("Customer profile created!");
-                }
+            const chatName = chatInfo?.name || selectedChat.split('@')[0] || 'WhatsApp Customer';
+            const newCustomer = await createCustomerFromChat(chatName, selectedChat);
+            if (newCustomer) {
+                setCustomer(newCustomer);
+                setAddedToast("Customer profile created!");
+                setTimeout(() => setAddedToast(null), 3000);
             }
         } catch (error) {
             console.error("Error creating customer:", error);
-            alert("Failed to create customer profile");
+            setAddedToast("Failed to create customer profile");
+            setTimeout(() => setAddedToast(null), 3000);
         } finally {
             setLoadingCustomer(false);
         }
@@ -1342,7 +1343,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
         if (next === 'vendor') {
             if (contactVendor) links.vendor = contactVendor.id;
             else {
-                const ctx = await resolveContact(selectedChat, chats.find(c => c.id === selectedChat)?.name);
+                const ctx = await resolveContact(selectedChat, chats.find(c => c.id === selectedChat)?.name, { autoCreateLead: false });
                 if (ctx.vendor) {
                     links.vendor = ctx.vendor.id;
                     setContactVendor({ id: ctx.vendor.id, name: ctx.vendor.company_name || ctx.vendor.name });

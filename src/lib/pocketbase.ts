@@ -35,6 +35,29 @@ export const pb = new PocketBase(getPocketBaseUrl());
 pb.autoCancellation(false);
 
 /**
+ * Ensure PocketBase client authStore is hydrated from browser localStorage
+ */
+export function ensureAuth(): boolean {
+    if (typeof window !== "undefined" && !pb.authStore.isValid) {
+        try {
+            const raw = localStorage.getItem("pocketbase_auth");
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed.token) {
+                    pb.authStore.save(parsed.token, parsed.record || parsed.model);
+                    return true;
+                }
+            }
+        } catch { /* ignore parsing errors */ }
+    }
+    return pb.authStore.isValid;
+}
+
+if (typeof window !== "undefined") {
+    ensureAuth();
+}
+
+/**
  * Update the PocketBase server URL at runtime
  * Persists to localStorage and notifies subscribers
  */

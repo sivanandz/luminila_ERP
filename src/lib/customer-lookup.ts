@@ -2,7 +2,7 @@
  * Customer Lookup - Links WhatsApp chats to customers table using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, ensureAuth } from './pocketbase';
 
 // Customer type from database
 export interface Customer {
@@ -155,20 +155,44 @@ export async function createCustomerFromChat(
     chatId: string,
     phone?: string
 ): Promise<Customer | null> {
+    ensureAuth();
+
+    if (!pb.authStore.isValid) {
+        console.warn('Cannot create customer from chat: user is unauthenticated');
+        return null;
+    }
+
     const phoneNumber = phone || phoneFromChatId(chatId);
+    let formattedPhone = '';
+    if (phoneNumber) {
+        const digits = phoneNumber.replace(/\D/g, '');
+        const last10 = digits.length > 10 && digits.startsWith('91') ? digits.slice(-10) : digits;
+        formattedPhone = last10.length === 10 ? `+91${last10}` : (digits ? `+${digits}` : '');
+    }
+
+    // Return existing customer if one already matches this phone
+    if (formattedPhone) {
+        const existing = await findCustomerByPhone(formattedPhone);
+        if (existing) return existing;
+    }
+
+    const cleanName = (chatName || '').trim();
+    const safeName = cleanName || (formattedPhone ? `WhatsApp Lead (${formattedPhone})` : 'WhatsApp Lead');
 
     try {
         const result = await pb.collection('customers').create({
-            name: chatName,
-            phone: phoneNumber ? `+91${phoneNumber}` : '',
+            name: safeName,
+            phone: formattedPhone,
             source: 'whatsapp',
             preferred_contact: 'whatsapp',
             customer_type: 'retail',
+            lead_status: 'new_lead',
+            is_active: true,
         });
 
         return mapCustomerRecord(result);
-    } catch (error) {
-        console.error('Failed to create customer:', error);
+    } catch (error: any) {
+        console.error('Failed to create customer:', error?.data || error?.message || error);
         return null;
     }
 }

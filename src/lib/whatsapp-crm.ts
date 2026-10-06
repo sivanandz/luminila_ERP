@@ -132,7 +132,15 @@ export async function findVendorByPhone(phone: string): Promise<ContactContext['
  * Resolve a WhatsApp chat id to customer / vendor / new lead.
  * Unrecognized numbers get a `customers` record with lead_source 'whatsapp'.
  */
-export async function resolveContact(chatId: string, chatName?: string): Promise<ContactContext> {
+export async function resolveContact(
+    chatId: string,
+    chatName?: string,
+    opts: { autoCreateLead?: boolean } = { autoCreateLead: true }
+): Promise<ContactContext> {
+    if (chatId.endsWith('@g.us') || chatId.endsWith('@newsletter')) {
+        return { type: 'lead', customer: null };
+    }
+
     const phone = phoneFromChatId(chatId) || '';
 
     const vendor = await findVendorByPhone(chatId);
@@ -140,6 +148,10 @@ export async function resolveContact(chatId: string, chatName?: string): Promise
 
     const customer = phone ? await findCustomerByPhone(phone) : null;
     if (customer) return { type: 'customer', customer };
+
+    if (!opts.autoCreateLead) {
+        return { type: 'lead', customer: null };
+    }
 
     const lead = await createCustomerFromChat(chatName || 'WhatsApp Lead', chatId, phone || undefined);
     return { type: 'lead', customer: lead };
