@@ -171,9 +171,9 @@ app.post('/api/:session/start', async (req, res) => {
                 sessionData.qrReady = true;
                 io.emit('qrcode', { session, qrCode: base64Qr, attempts });
             },
-            statusFind: (statusSession, session) => {
+            statusFind: (statusSession) => {
                 console.log(`[${session}] Status: ${statusSession}`);
-                if (statusSession === 'inChat' || statusSession === 'isLogged') {
+                if (statusSession === 'inChat' || statusSession === 'isLogged' || statusSession === 'qrReadSuccess') {
                     sessionData.connected = true;
                     sessionData.qrReady = false;
                     io.emit('connected', { session });
@@ -181,13 +181,18 @@ app.post('/api/:session/start', async (req, res) => {
                 if (statusSession === 'notLogged') {
                     sessionData.connected = false;
                 }
-                if (statusSession === 'browserClose' || statusSession === 'autocloseCalled') {
+                if (statusSession === 'disconnectedMobile' || statusSession === 'phoneNotConnected') {
+                    sessionData.connected = false;
+                    io.emit('disconnected', { session });
+                }
+                if (statusSession === 'browserClose' || statusSession === 'autocloseCalled' || statusSession === 'serverClose') {
                     sessionData.connected = false;
                     sessions.delete(session);
                     io.emit('disconnected', { session });
                 }
             },
             headless: true,
+            whatsappVersion: null,
             devtools: false,
             useChrome: true,
             debug: true,
@@ -201,11 +206,11 @@ app.post('/api/:session/start', async (req, res) => {
                 '--no-first-run',
                 '--disable-gpu'
             ],
-            autoClose: 180000, // 3 minutes to scan QR code
-            deviceSyncTimeout: 180000,
+            autoClose: 0, // Keep session active until user scans or explicitly closes
+            deviceSyncTimeout: 300000,
             waitForLogin: true,
             puppeteerOptions: {
-                headless: 'new',
+                headless: true,
                 userDataDir: sessionUserDataDir,
                 defaultViewport: {
                     width: 1280,
@@ -256,7 +261,8 @@ app.post('/api/:session/start', async (req, res) => {
 // Get QR code
 app.get('/api/:session/qrcode', async (req, res) => {
     const { session } = req.params;
-    const sessionData = sessions.get(session);
+    const phoneSession = `${session}_phone`;
+    const sessionData = sessions.get(session) || sessions.get(phoneSession);
 
     if (!sessionData) {
         return res.status(404).json({ success: false, error: 'Session not found' });
@@ -272,7 +278,8 @@ app.get('/api/:session/qrcode', async (req, res) => {
 // Get QR code as image
 app.get('/api/:session/qrcode/image', async (req, res) => {
     const { session } = req.params;
-    const sessionData = sessions.get(session);
+    const phoneSession = `${session}_phone`;
+    const sessionData = sessions.get(session) || sessions.get(phoneSession);
 
     if (!sessionData || !sessionData.qrCode) {
         return res.status(404).send('QR not ready');
@@ -286,16 +293,17 @@ app.get('/api/:session/qrcode/image', async (req, res) => {
 // Check session status
 app.get('/api/:session/status', (req, res) => {
     const { session } = req.params;
-    const sessionData = sessions.get(session);
+    const phoneSession = `${session}_phone`;
+    const sessionData = sessions.get(session) || sessions.get(phoneSession);
 
     if (!sessionData) {
-        return res.json({ exists: false, connected: false });
+        return res.json({ exists: false, connected: false, qrReady: false });
     }
 
     res.json({
         exists: true,
-        connected: sessionData.connected,
-        qrReady: sessionData.qrReady
+        connected: sessionData.connected || false,
+        qrReady: sessionData.qrReady || false
     });
 });
 
@@ -409,17 +417,23 @@ app.post('/api/:session/pair-phone', async (req, res) => {
                 },
                 statusFind: (statusSession) => {
                     console.log(`[${phoneSession}] Status: ${statusSession}`);
-                    if (statusSession === 'inChat' || statusSession === 'isLogged') {
+                    if (statusSession === 'inChat' || statusSession === 'isLogged' || statusSession === 'qrReadSuccess') {
                         sessionData.connected = true;
                         sessions.set(session, sessionData); // Alias to main session
                         io.emit('connected', { session: phoneSession });
                         io.emit('connected', { session });
                     }
+                    if (statusSession === 'disconnectedMobile' || statusSession === 'phoneNotConnected') {
+                        sessionData.connected = false;
+                        io.emit('disconnected', { session: phoneSession });
+                        io.emit('disconnected', { session });
+                    }
                 },
                 headless: true,
+                whatsappVersion: null,
                 useChrome: true,
-                autoClose: 180000,
-                deviceSyncTimeout: 180000,
+                autoClose: 0,
+                deviceSyncTimeout: 300000,
                 browserArgs: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
@@ -427,7 +441,7 @@ app.post('/api/:session/pair-phone', async (req, res) => {
                     '--disable-gpu'
                 ],
                 puppeteerOptions: {
-                    headless: 'new',
+                    headless: true,
                     userDataDir: getSessionTokenPath(phoneSession),
                 }
             }).then((client) => {

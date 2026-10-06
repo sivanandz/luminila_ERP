@@ -519,6 +519,7 @@ export default function WhatsAppPage() {
     const [contactVendor, setContactVendor] = useState<{ id: string; name: string } | null>(null);
     const [chatTypeMap, setChatTypeMap] = useState<Record<string, ContactType>>({});
     const chatRecordRef = useRef<string | null>(null);
+    const connectPollRef = useRef<NodeJS.Timeout | null>(null);
     const [actionMenu, setActionMenu] = useState<{
         isOpen: boolean;
         message: WPPMessage | null;
@@ -664,6 +665,10 @@ export default function WhatsAppPage() {
                     setSessionStatus("qr");
                     const qr = await whatsappManager.getQR();
                     if (qr) setQrCode(qr);
+                } else if (status === "INITIALIZING") {
+                    setSessionStatus((prev) => (prev === "connected" ? "connected" : "connecting"));
+                } else if (status === "DISCONNECTED") {
+                    setSessionStatus((prev) => (prev === "connecting" ? "connecting" : "disconnected"));
                 }
             }
         };
@@ -953,19 +958,20 @@ export default function WhatsAppPage() {
 
 
     const handleConnect = async (forceClean = false) => {
+        if (connectPollRef.current) clearInterval(connectPollRef.current);
         setSessionStatus("connecting");
         whatsappManager.setSessionId("luminila");
         setQrCode(null);
         setPairingCode(null);
         const started = await whatsappManager.connect(forceClean);
         if (started) {
-            const pollInterval = setInterval(async () => {
+            connectPollRef.current = setInterval(async () => {
                 const status = await whatsappManager.getStatus();
                 if (status === "CONNECTED") {
                     setSessionStatus("connected");
                     setQrCode(null);
                     setPairingCode(null);
-                    clearInterval(pollInterval);
+                    if (connectPollRef.current) clearInterval(connectPollRef.current);
                     loadExistingChats();
                 } else if (status === "QR_CODE") {
                     setSessionStatus("qr");
@@ -973,8 +979,12 @@ export default function WhatsAppPage() {
                     if (qr) {
                         setQrCode(qr);
                     }
+                } else if (status === "INITIALIZING") {
+                    setSessionStatus("connecting");
                 }
             }, 1000);
+        } else {
+            setSessionStatus("disconnected");
         }
     };
 
@@ -982,6 +992,7 @@ export default function WhatsAppPage() {
         if (!confirm("Are you sure you want to completely reset and clear stored WhatsApp session credentials? You will be prompted to scan a fresh QR code.")) {
             return;
         }
+        if (connectPollRef.current) clearInterval(connectPollRef.current);
         setSessionStatus("connecting");
         setQrCode(null);
         setPairingCode(null);
@@ -994,6 +1005,7 @@ export default function WhatsAppPage() {
     };
 
     const handleDisconnect = async () => {
+        if (connectPollRef.current) clearInterval(connectPollRef.current);
         try {
             await whatsappManager.disconnect();
         } catch (e) {

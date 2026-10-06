@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { pb } from "@/lib/pocketbase";
+import { pb, autoDiscoverPocketBase } from "@/lib/pocketbase";
 import type { AuthModel } from "pocketbase";
 
 interface AuthContextType {
@@ -55,8 +55,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setIsLoading(false);
         };
 
-        // Initialize from stored auth
-        updateAuthState(pb.authStore.model);
+        // Initialize from stored auth after verifying connection
+        autoDiscoverPocketBase().finally(() => {
+            updateAuthState(pb.authStore.model);
+        });
 
         // Subscribe to auth changes
         const unsubscribe = pb.authStore.onChange(async (token, model) => {
@@ -69,21 +71,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const login = async (email: string, password: string) => {
-        const authData = await pb.collection("users").authWithPassword(email, password);
+        let authData: any = null;
+        let isSuperuser = false;
 
-        // Check is_active custom field (if verified is not used)
-        if (authData.record.is_active === false) {
+        // Ensure active PocketBase server is reachable
+        await autoDiscoverPocketBase();
+
+        try {
+            authData = await pb.collection("users").authWithPassword(email, password);
+        } catch (userErr: any) {
+            // If connection failed without status code, try discovering port again
+            if (!userErr.status) {
+                await autoDiscoverPocketBase();
+            }
+            // Fallback: check if it's a superuser account
+            try {
+                authData = await pb.collection("_superusers").authWithPassword(email, password);
+                isSuperuser = true;
+            } catch {
+                throw userErr;
+            }
+        }
+
+        // Check is_active custom field (for regular users)
+        if (!isSuperuser && authData?.record?.is_active === false) {
             pb.authStore.clear();
             throw new Error("Account is inactive");
         }
 
         // Update last_login
-        try {
-            await pb.collection("users").update(authData.record.id, {
-                last_login: new Date()
-            });
-        } catch (err) {
-            console.error("Failed to update last_login:", err);
+        if (!isSuperuser && authData?.record?.id) {
+            try {
+                await pb.collection("users").update(authData.record.id, {
+                    last_login: new Date()
+                });
+            } catch (err) {
+                console.error("Failed to update last_login:", err);
+            }
         }
     };
 

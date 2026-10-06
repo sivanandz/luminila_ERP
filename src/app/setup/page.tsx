@@ -132,10 +132,15 @@ export default function SetupWizardPage() {
             setDbConnected(health.code === 200);
 
             try {
-                const users = await pb.collection("users").getList(1, 1);
-                if (users.totalItems > 0) {
-                    router.push("/login");
-                    return;
+                const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+                const isForce = searchParams?.get("force") === "true" || searchParams?.get("reset") === "true";
+
+                if (!isForce) {
+                    const users = await pb.collection("users").getList(1, 1);
+                    if (users.totalItems > 0) {
+                        router.push("/login");
+                        return;
+                    }
                 }
             } catch {
                 // Cold start 403 or empty, stay on wizard
@@ -191,15 +196,21 @@ export default function SetupWizardPage() {
             let authenticatedWithBootstrap = false;
 
             try {
-                const authData = await pb.collection("_superusers").authWithPassword("admin@luminila.local", "LuminilaInit2026!");
+                const authData = await pb.collection("_superusers").authWithPassword("admin@luminila.local", "Luminila2026!");
                 superuserRecord = authData.record;
                 authenticatedWithBootstrap = true;
             } catch {
                 try {
-                    const authData = await pb.collection("_superusers").authWithPassword(formData.adminEmail, formData.adminPassword);
+                    const authData = await pb.collection("_superusers").authWithPassword("admin@luminila.local", "LuminilaInit2026!");
                     superuserRecord = authData.record;
+                    authenticatedWithBootstrap = true;
                 } catch {
-                    throw new Error("Unable to authenticate superuser. Ensure PocketBase is running via npm run dev.");
+                    try {
+                        const authData = await pb.collection("_superusers").authWithPassword(formData.adminEmail, formData.adminPassword);
+                        superuserRecord = authData.record;
+                    } catch {
+                        throw new Error("Unable to authenticate superuser. Ensure PocketBase is running via npm run dev.");
+                    }
                 }
             }
 

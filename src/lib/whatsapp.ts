@@ -203,8 +203,7 @@ export async function getSessionStatus(sessionId: string): Promise<WPPSession["s
         const data = await response.json();
         if (data.connected) return "CONNECTED";
         if (data.qrReady) return "QR_CODE";
-        // If session exists but not connected and no QR, it's stale - treat as disconnected
-        // This allows the Connect button to appear again
+        if (data.exists) return "INITIALIZING";
         return "DISCONNECTED";
     } catch {
         return "DISCONNECTED";

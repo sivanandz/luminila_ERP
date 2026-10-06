@@ -115,12 +115,25 @@ export default function LoginPage() {
                             ) : null}
                             Sign In
                         </Button>
+
+                        <div className="pt-1">
+                            <button
+                                type="button"
+                                onClick={() => setFormData({ email: "admin@luminila.local", password: "Luminila2026!" })}
+                                className="w-full text-xs text-muted-foreground hover:text-primary transition-colors py-1.5 px-3 rounded-lg border border-dashed border-border/80 hover:border-primary/50 bg-muted/30 hover:bg-muted/60 flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                                <Sparkles className="w-3.5 h-3.5 text-primary" />
+                                <span>Fill Default Admin: <strong className="text-foreground">admin@luminila.local</strong></span>
+                            </button>
+                        </div>
                     </form>
 
-                    <div className="mt-6 text-center">
-                        <Link href="/setup" className="text-muted-foreground hover:text-primary transition-colors text-sm font-medium">
-                            First time here? Run initial setup
-                        </Link>
+                    <div className="mt-6 text-center space-y-2">
+                        <div>
+                            <Link href="/setup?force=true" className="text-muted-foreground hover:text-primary transition-colors text-xs font-medium">
+                                First time here or need to reconfigure? Run initial setup wizard
+                            </Link>
+                        </div>
                     </div>
                 </div>
 
