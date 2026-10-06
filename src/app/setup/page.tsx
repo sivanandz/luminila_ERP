@@ -21,7 +21,6 @@ import {
     ShieldCheck,
     Check,
 } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
 
 type SetupStep = "welcome" | "config" | "complete";
 
@@ -102,7 +101,6 @@ const DEFAULT_ROLES = [
 
 export default function SetupWizardPage() {
     const router = useRouter();
-    const { login } = useAuth();
 
     const [currentStep, setCurrentStep] = useState<SetupStep>("welcome");
     const [loading, setLoading] = useState(false);
@@ -205,20 +203,7 @@ export default function SetupWizardPage() {
                 }
             }
 
-            // 2. If authenticated via bootstrap credentials, seamlessly update superuser to user's real credentials
-            if (authenticatedWithBootstrap && superuserRecord) {
-                try {
-                    await pb.collection("_superusers").update(superuserRecord.id, {
-                        email: formData.adminEmail,
-                        password: formData.adminPassword,
-                        passwordConfirm: formData.adminPassword,
-                    });
-                } catch (updateErr) {
-                    console.warn("Notice: superuser update:", updateErr);
-                }
-            }
-
-            // 3. Seed Default System Roles
+            // 2. Seed Default System Roles
             const roleMap: Record<string, string> = {};
             for (const role of DEFAULT_ROLES) {
                 try {
@@ -237,7 +222,7 @@ export default function SetupWizardPage() {
                 }
             }
 
-            // 4. Create or Update Application Admin User
+            // 3. Create or Update Application Admin User
             let userRecord: { id: string } | null = null;
             try {
                 const existing = await pb.collection("users").getFirstListItem(`email="${formData.adminEmail}"`);
@@ -265,7 +250,7 @@ export default function SetupWizardPage() {
                 }
             }
 
-            // 5. Link User to Admin Role in user_roles
+            // 4. Link User to Admin Role in user_roles
             const adminRoleId = roleMap["Admin"];
             if (adminRoleId && userRecord?.id) {
                 try {
@@ -287,7 +272,7 @@ export default function SetupWizardPage() {
                 }
             }
 
-            // 6. Seed Initial Store Settings
+            // 5. Seed Initial Store Settings
             if (formData.storeName) {
                 const initialSettings = [
                     { key: "store_name", value: formData.storeName, category: "general" },
@@ -310,20 +295,26 @@ export default function SetupWizardPage() {
                 }
             }
 
-            // 7. Clear superuser credentials from client auth store
-            pb.authStore.clear();
+            // 6. Update superuser credentials to match chosen admin (done last so token remains valid)
+            if (authenticatedWithBootstrap && superuserRecord) {
+                try {
+                    await pb.collection("_superusers").update(superuserRecord.id, {
+                        email: formData.adminEmail,
+                        password: formData.adminPassword,
+                        passwordConfirm: formData.adminPassword,
+                    });
+                } catch (updateErr) {
+                    console.warn("Notice: superuser update:", updateErr);
+                }
+            }
 
-            // 8. Auto-Login directly into Application (Zero secondary login required)
+            // 7. Auto-Login directly into Application (Zero secondary login required)
+            pb.authStore.clear();
             try {
-                await login(formData.adminEmail, formData.adminPassword);
+                await pb.collection("users").authWithPassword(formData.adminEmail, formData.adminPassword);
                 toast.success("System initialized and logged in!");
             } catch (authErr) {
-                console.warn("Direct login fallback using client authWithPassword:", authErr);
-                try {
-                    await pb.collection("users").authWithPassword(formData.adminEmail, formData.adminPassword);
-                } catch {
-                    // Fallback to manual entry if needed
-                }
+                console.warn("Direct login notice:", authErr);
             }
 
             setCurrentStep("complete");

@@ -186,12 +186,12 @@ async function main() {
     const nextBin = path.join(ROOT_DIR, 'node_modules', 'next', 'dist', 'bin', 'next');
     const isWin = process.platform === 'win32';
     const nextProc = fs.existsSync(nextBin)
-        ? spawn(process.execPath, [nextBin, 'dev'], {
+        ? spawn(process.execPath, [nextBin, 'dev', '--webpack'], {
             cwd: ROOT_DIR,
             stdio: ['ignore', 'pipe', 'pipe'],
             env: { ...process.env }
         })
-        : spawn(isWin ? 'npx.cmd' : 'npx', ['next', 'dev'], {
+        : spawn(isWin ? 'npx.cmd' : 'npx', ['next', 'dev', '--webpack'], {
             cwd: ROOT_DIR,
             stdio: ['ignore', 'pipe', 'pipe'],
             shell: isWin,
