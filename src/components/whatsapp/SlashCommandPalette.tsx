@@ -167,6 +167,15 @@ _Not sure? You can measure inner diameter with a ruler or request an adjustable 
     }, [cleanQuery]);
 
     // Keyboard navigation
+    const executeCommand = (cmd: SlashCommand) => {
+        if (cmd.snippet) {
+            onSelectSnippet(cmd.snippet);
+        } else if (onTriggerAction) {
+            onTriggerAction(cmd.id);
+        }
+        onClose();
+    };
+
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (!isOpen || filtered.length === 0) return;
@@ -191,18 +200,9 @@ _Not sure? You can measure inner diameter with a ruler or request an adjustable 
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [isOpen, filtered, selectedIndex]);
+    }, [isOpen, filtered, selectedIndex, executeCommand, onClose]);
 
     if (!isOpen || filtered.length === 0) return null;
-
-    const executeCommand = (cmd: SlashCommand) => {
-        if (cmd.snippet) {
-            onSelectSnippet(cmd.snippet);
-        } else if (onTriggerAction) {
-            onTriggerAction(cmd.id);
-        }
-        onClose();
-    };
 
     return (
         <div className="absolute bottom-full mb-2 left-0 w-80 max-h-72 rounded-xl bg-card/95 backdrop-blur-md border border-border/80 shadow-2xl p-1.5 z-50 overflow-y-auto animate-in fade-in slide-in-from-bottom-2 duration-150">

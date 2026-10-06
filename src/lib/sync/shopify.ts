@@ -287,7 +287,7 @@ export async function syncProductsFromShopify(
 ): Promise<{ created: number; updated: number; errors: string[] }> {
   const products = await fetchAllShopifyProducts();
   const errors: string[] = [];
-  let created = 0;
+  const created = 0;
   let updated = 0;
 
   for (let i = 0; i < products.length; i++) {

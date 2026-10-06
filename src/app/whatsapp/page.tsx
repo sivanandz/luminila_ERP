@@ -153,6 +153,67 @@ interface ImageMatch {
 
 // --- Components ---
 
+function QuotedBlock({ msg }: { msg: Message }) {
+    if (!msg.quotedMsg) return null;
+
+    const isMediaQuote = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.quotedMsg.type);
+
+    const handleQuoteClick = () => {
+        if (msg.quotedMsg?.id) {
+            const quotedId = msg.quotedMsg.id;
+            let quotedElement = document.getElementById(`msg-${quotedId}`);
+
+            if (!quotedElement) {
+                quotedElement = document.querySelector(`[data-msg-id="${CSS.escape(quotedId)}"]`) as HTMLElement;
+            }
+
+            if (quotedElement) {
+                quotedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                quotedElement.classList.add('ring-2', 'ring-primary');
+                setTimeout(() => quotedElement?.classList.remove('ring-2', 'ring-primary'), 2000);
+            } else {
+                console.log('Quoted message not found:', quotedId);
+            }
+        }
+    };
+
+    return (
+        <div
+            onClick={handleQuoteClick}
+            className={`mb-2 border-l-2 pl-2 py-1 text-xs rounded cursor-pointer hover:opacity-80 transition-opacity flex gap-2 ${msg.fromMe ? 'border-primary-foreground/50 bg-primary/20' : 'border-primary/50 bg-muted/50'}`}
+        >
+            {isMediaQuote && msg.quotedMsg.type === 'image' && (
+                <div className="w-10 h-10 flex-shrink-0 rounded overflow-hidden bg-muted">
+                    {msg.quotedMsg.mediaUrl ? (
+                        <img
+                            src={msg.quotedMsg.mediaUrl}
+                            alt=""
+                            className="w-full h-full object-cover"
+                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        />
+                    ) : (
+                        <ImageIcon size={16} className="w-full h-full p-2 text-muted-foreground" />
+                    )}
+                </div>
+            )}
+
+            <div className="flex-1 min-w-0">
+                {msg.quotedMsg.sender && (
+                    <p className="font-semibold opacity-80 truncate">{msg.quotedMsg.sender}</p>
+                )}
+                <p className="opacity-70 line-clamp-2">
+                    {isMediaQuote && msg.quotedMsg.type !== 'image'
+                        ? `📎 ${msg.quotedMsg.type === 'ptt' ? 'Voice message' : msg.quotedMsg.type === 'video' ? 'Video' : msg.quotedMsg.type === 'document' ? 'Document' : msg.quotedMsg.type}`
+                        : isMediaQuote && msg.quotedMsg.type === 'image'
+                            ? (msg.quotedMsg.caption || '📷 Photo')
+                            : (msg.quotedMsg.body || msg.quotedMsg.caption || '')
+                    }
+                </p>
+            </div>
+        </div>
+    );
+}
+
 function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     msg: Message;
     onLoadMedia?: (messageId: string) => Promise<string | null>;
@@ -344,77 +405,11 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const hasLinks = msg.body && urlRegex.test(msg.body);
 
-    // Helper to render the quoted message block
-    const QuotedBlock = () => {
-        if (!msg.quotedMsg) return null;
-
-        const isMediaQuote = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.quotedMsg.type);
-
-        // Handle click to scroll to quoted message
-        const handleQuoteClick = () => {
-            if (msg.quotedMsg?.id) {
-                // Try to find element by ID (IDs may contain special chars)
-                const quotedId = msg.quotedMsg.id;
-                let quotedElement = document.getElementById(`msg-${quotedId}`);
-
-                // Fallback: search by data attribute if direct ID doesn't work
-                if (!quotedElement) {
-                    quotedElement = document.querySelector(`[data-msg-id="${CSS.escape(quotedId)}"]`) as HTMLElement;
-                }
-
-                if (quotedElement) {
-                    quotedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    quotedElement.classList.add('ring-2', 'ring-primary');
-                    setTimeout(() => quotedElement?.classList.remove('ring-2', 'ring-primary'), 2000);
-                } else {
-                    console.log('Quoted message not found:', quotedId);
-                }
-            }
-        };
-
-        return (
-            <div
-                onClick={handleQuoteClick}
-                className={`mb-2 border-l-2 pl-2 py-1 text-xs rounded cursor-pointer hover:opacity-80 transition-opacity flex gap-2 ${msg.fromMe ? 'border-primary-foreground/50 bg-primary/20' : 'border-primary/50 bg-muted/50'}`}
-            >
-                {/* Image thumbnail for media quotes */}
-                {isMediaQuote && msg.quotedMsg.type === 'image' && (
-                    <div className="w-10 h-10 flex-shrink-0 rounded overflow-hidden bg-muted">
-                        {msg.quotedMsg.mediaUrl ? (
-                            <img
-                                src={msg.quotedMsg.mediaUrl}
-                                alt=""
-                                className="w-full h-full object-cover"
-                                onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                            />
-                        ) : (
-                            <ImageIcon size={16} className="w-full h-full p-2 text-muted-foreground" />
-                        )}
-                    </div>
-                )}
-
-                <div className="flex-1 min-w-0">
-                    {msg.quotedMsg.sender && (
-                        <p className="font-semibold opacity-80 truncate">{msg.quotedMsg.sender}</p>
-                    )}
-                    <p className="opacity-70 line-clamp-2">
-                        {isMediaQuote && msg.quotedMsg.type !== 'image'
-                            ? `📎 ${msg.quotedMsg.type === 'ptt' ? 'Voice message' : msg.quotedMsg.type === 'video' ? 'Video' : msg.quotedMsg.type === 'document' ? 'Document' : msg.quotedMsg.type}`
-                            : isMediaQuote && msg.quotedMsg.type === 'image'
-                                ? (msg.quotedMsg.caption || '📷 Photo')
-                                : (msg.quotedMsg.body || msg.quotedMsg.caption || '')
-                        }
-                    </p>
-                </div>
-            </div>
-        );
-    };
-
     if (hasLinks) {
         const parts = msg.body.split(urlRegex);
         return (
             <div>
-                <QuotedBlock />
+                <QuotedBlock msg={msg} />
                 <p className="text-sm leading-relaxed">
                     {parts.map((part, i) =>
                         urlRegex.test(part) ? (
@@ -431,7 +426,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
 
     return (
         <div>
-            <QuotedBlock />
+            <QuotedBlock msg={msg} />
             <p className="text-sm leading-relaxed">{msg.body}</p>
         </div>
     );
@@ -1276,7 +1271,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
         setChatTypeMap(prev => ({ ...prev, [selectedChat]: next }));
 
         // Link relations when retagging
-        let links: { customer?: string; vendor?: string } = {};
+        const links: { customer?: string; vendor?: string } = {};
         if (next === 'customer' && customer) links.customer = customer.id;
         if (next === 'vendor') {
             if (contactVendor) links.vendor = contactVendor.id;

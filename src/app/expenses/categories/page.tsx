@@ -24,21 +24,16 @@ export default function ExpenseCategoriesPage() {
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [newCategory, setNewCategory] = useState({ name: "", description: "" });
 
-    useEffect(() => {
-        loadData();
-    }, []);
-
     const loadData = async () => {
         setLoading(true);
-        // Note: We need a method to get ALL categories including inactive ones for management
-        // But getCategories() only returns active. We'll modify or just use what we have for now.
-        // For management, we usually see all. I'll assume getCategories returns all or I'll fix lib later.
-        // Actually, looking at expenses.ts, getCategories only returns active.
-        // I should fix expenses.ts to have an option, but for now let's just show active.
         const data = await getCategories();
         setCategories(data);
         setLoading(false);
     };
+
+    useEffect(() => {
+        loadData();
+    }, []);
 
     const handleCreate = async () => {
         if (!newCategory.name) return;

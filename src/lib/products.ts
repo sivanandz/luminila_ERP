@@ -63,7 +63,7 @@ export async function getProducts(filters?: {
     activeOnly?: boolean;
 }): Promise<Product[]> {
     try {
-        let filterParts: string[] = [];
+        const filterParts: string[] = [];
         if (filters?.activeOnly !== false) { // Default to true
             filterParts.push('is_active=true');
         }

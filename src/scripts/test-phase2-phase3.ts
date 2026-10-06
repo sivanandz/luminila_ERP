@@ -53,8 +53,12 @@ async function runTests() {
     console.log("Running WhatsApp Phase 2 & 3 Automated Test Suite");
     console.log("==================================================");
 
-    const adminEmail = process.env.PB_ADMIN_EMAIL || 'admin@luminila.com';
-    const adminPass = process.env.PB_ADMIN_PASSWORD || 'password123456';
+    const adminEmail = process.env.PB_ADMIN_EMAIL;
+    const adminPass = process.env.PB_ADMIN_PASSWORD;
+    if (!adminEmail || !adminPass) {
+        console.error("Set PB_ADMIN_EMAIL and PB_ADMIN_PASSWORD (throwaway test PocketBase only).");
+        process.exit(2);
+    }
 
     // Authenticate shared pb instance for authenticated collection rules
     try {
@@ -78,6 +82,31 @@ async function runTests() {
         console.error(`Error details: ${err?.message || err}\n`);
         process.exit(1);
     }
+
+    // Fixtures: seed minimal records on an empty (fresh-install) DB; removed at the end.
+    const fixtureCleanup: { col: string; id: string }[] = [];
+    const fixturePb = new PocketBase(PB_URL);
+    fixturePb.autoCancellation(false);
+    await fixturePb.collection('_superusers').authWithPassword(adminEmail, adminPass);
+    if ((await fixturePb.collection('users').getList(1, 1)).totalItems === 0) {
+        const pw = `Fx-${Date.now()}-Aa1!`;
+        const u = await fixturePb.collection('users').create({
+            email: `fixture-${Date.now()}@example.test`, password: pw, passwordConfirm: pw, name: 'Fixture User', is_active: true,
+        });
+        fixtureCleanup.push({ col: 'users', id: u.id });
+    }
+    if ((await fixturePb.collection('product_variants').getList(1, 1)).totalItems === 0) {
+        const p = await fixturePb.collection('products').create({
+            sku: `FIXTURE-${Date.now()}`, name: 'Fixture Item', is_active: true, base_price: 1000,
+        });
+        fixtureCleanup.push({ col: 'products', id: p.id });
+        const v = await fixturePb.collection('product_variants').create({
+            product: p.id, variant_name: 'Standard', sku_suffix: 'FX', stock_level: 10,
+        });
+        fixtureCleanup.push({ col: 'product_variants', id: v.id });
+    }
+
+    const fixtureUserId = (await fixturePb.collection('users').getList(1, 1)).items[0].id;
 
     // 1. Anti-Ban Jitter Range
     console.log("\n[Test 1] Anti-Ban Jitter Slot Calculation (8,000 - 22,000 ms)");
@@ -488,8 +517,8 @@ async function runTests() {
             shiftId = shifts.items[0].id;
         } else {
             const newShift = await adminPb.collection('cash_register_shifts').create({
-                opened_by: (adminPb.authStore.model as any)?.id || 'admin',
-                opening_cash: 1000,
+                user: fixtureUserId,
+                opening_balance: 1000,
                 status: 'open',
                 opened_at: new Date().toISOString(),
             });
@@ -542,7 +571,7 @@ async function runTests() {
         if (posResult.saleId) await adminPb.collection('sales').delete(posResult.saleId).catch(() => {});
 
     } catch (err: any) {
-        assert(false, `Test 11 failed: ${err.message}`);
+        console.error(err.url || err.response?.url || JSON.stringify(err.response)); assert(false, `Test 11 failed: ${err.message}`);
     }
 
     // 12. SWEEP-2 & SWEEP-3: Delivery Challans & Credit Notes Full GST Field Persistence
@@ -1073,8 +1102,8 @@ async function runTests() {
             shiftId = shifts.items[0].id;
         } else {
             const newShift = await adminPb.collection('cash_register_shifts').create({
-                opened_by: (adminPb.authStore.model as any)?.id || 'admin',
-                opening_cash: 1000,
+                user: fixtureUserId,
+                opening_balance: 1000,
                 status: 'open',
                 opened_at: new Date().toISOString(),
             });
@@ -1129,7 +1158,7 @@ async function runTests() {
             await adminPb.collection('product_variants').update(v.id, { stock_level: originalStock });
         }
     } catch (err: any) {
-        assert(false, `Test 20 failed: ${err.message}`);
+        console.error(err.url || err.response?.url || JSON.stringify(err.response)); assert(false, `Test 20 failed: ${err.message}`);
     }
 
     // 21. WPA-20 & WPA-21: Stock Valuation & Discounts Service Parity
@@ -1794,6 +1823,10 @@ async function runTests() {
 
     } catch (err: any) {
         assert(false, `Test 26 failed: ${err.message}`);
+    }
+
+    for (const { col, id } of fixtureCleanup.reverse()) {
+        await fixturePb.collection(col).delete(id).catch(() => {});
     }
 
     console.log("\n==================================================");

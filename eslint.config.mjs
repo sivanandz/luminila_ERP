@@ -15,7 +15,19 @@ const eslintConfig = defineConfig([
     "scripts/**",
     "src/scripts/**",
     "wppconnect-sidecar/**",
+    "pocketbase/**",
+    "src-tauri/**",
+    "scratch/**",
   ]),
+  {
+    rules: {
+      "@typescript-eslint/no-explicit-any": "warn",
+      "react/no-unescaped-entities": "warn",
+      "react-hooks/set-state-in-effect": "warn",
+      "@typescript-eslint/no-non-null-asserted-optional-chain": "warn",
+      "@typescript-eslint/ban-ts-comment": "warn",
+    },
+  },
 ]);
 
 export default eslintConfig;

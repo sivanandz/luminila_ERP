@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { pb } from "@/lib/pocketbase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,19 +9,17 @@ import { toast } from "sonner";
 import { Eye, EyeOff, Loader2, Sparkles } from "lucide-react";
 
 import { useAuth } from "@/contexts/AuthContext";
+import Link from "next/link";
 
 export default function LoginPage() {
     const router = useRouter();
-    const { login, register } = useAuth();
-    const [isLogin, setIsLogin] = useState(true);
+    const { login } = useAuth();
     const [loading, setLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
 
     const [formData, setFormData] = useState({
         email: "",
         password: "",
-        passwordConfirm: "",
-        name: "",
     });
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -30,30 +27,9 @@ export default function LoginPage() {
         setLoading(true);
 
         try {
-            if (isLogin) {
-                // Login via AuthContext
-                await login(formData.email, formData.password);
-                toast.success("Welcome back!");
-                router.push("/");
-            } else {
-                // Register via AuthContext (auto-assigns Admin role & auto-logins)
-                if (formData.password !== formData.passwordConfirm) {
-                    toast.error("Passwords do not match");
-                    setLoading(false);
-                    return;
-                }
-
-                if (formData.password.length < 8) {
-                    toast.error("Password must be at least 8 characters");
-                    setLoading(false);
-                    return;
-                }
-
-                await register(formData.email, formData.password, formData.name);
-
-                toast.success("Store account created successfully with Admin access!");
-                router.push("/");
-            }
+            await login(formData.email, formData.password);
+            toast.success("Welcome back!");
+            router.push("/");
         } catch (err: any) {
             console.error("Auth error:", err);
             let message = err?.response?.message || err?.message || "Authentication failed";
@@ -90,25 +66,10 @@ export default function LoginPage() {
                 {/* Card */}
                 <div className="bg-surface-card/50 backdrop-blur-xl border border-surface-hover rounded-2xl p-8 shadow-2xl">
                     <h2 className="text-xl font-semibold text-white mb-6">
-                        {isLogin ? "Sign in to your account" : "Create new account"}
+                        Sign in to your account
                     </h2>
 
                     <form onSubmit={handleSubmit} className="space-y-4">
-                        {!isLogin && (
-                            <div>
-                                <Label htmlFor="name" className="text-moonstone">Full Name</Label>
-                                <Input
-                                    id="name"
-                                    type="text"
-                                    placeholder="John Doe"
-                                    value={formData.name}
-                                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                                    className="mt-1 bg-bg-navy border-surface-hover focus:border-electric-teal"
-                                    required={!isLogin}
-                                />
-                            </div>
-                        )}
-
                         <div>
                             <Label htmlFor="email" className="text-moonstone">Email</Label>
                             <Input
@@ -144,21 +105,6 @@ export default function LoginPage() {
                             </div>
                         </div>
 
-                        {!isLogin && (
-                            <div>
-                                <Label htmlFor="passwordConfirm" className="text-moonstone">Confirm Password</Label>
-                                <Input
-                                    id="passwordConfirm"
-                                    type="password"
-                                    placeholder="••••••••"
-                                    value={formData.passwordConfirm}
-                                    onChange={(e) => setFormData({ ...formData, passwordConfirm: e.target.value })}
-                                    className="mt-1 bg-bg-navy border-surface-hover focus:border-electric-teal"
-                                    required={!isLogin}
-                                />
-                            </div>
-                        )}
-
                         <Button
                             type="submit"
                             disabled={loading}
@@ -167,20 +113,14 @@ export default function LoginPage() {
                             {loading ? (
                                 <Loader2 className="w-4 h-4 animate-spin mr-2" />
                             ) : null}
-                            {isLogin ? "Sign In" : "Create Account"}
+                            Sign In
                         </Button>
                     </form>
 
                     <div className="mt-6 text-center">
-                        <button
-                            type="button"
-                            onClick={() => setIsLogin(!isLogin)}
-                            className="text-moonstone hover:text-electric-teal transition-colors text-sm"
-                        >
-                            {isLogin
-                                ? "Don't have an account? Sign up"
-                                : "Already have an account? Sign in"}
-                        </button>
+                        <Link href="/setup" className="text-moonstone hover:text-electric-teal transition-colors text-sm">
+                            First time here? Run initial setup
+                        </Link>
                     </div>
                 </div>
 

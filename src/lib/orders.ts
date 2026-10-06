@@ -274,7 +274,7 @@ export async function generateInvoiceFromOrder(orderId: string) {
  */
 export async function getOrders(type?: OrderType, status?: OrderStatus) {
     try {
-        let filterParts: string[] = [];
+        const filterParts: string[] = [];
         if (type) filterParts.push(`order_type="${type}"`);
         if (status) filterParts.push(`status="${status}"`);
 

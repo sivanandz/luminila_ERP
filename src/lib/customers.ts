@@ -72,7 +72,7 @@ export async function getCustomers(filters?: {
     hasPhone?: boolean;
 }): Promise<Customer[]> {
     try {
-        let filterParts: string[] = [];
+        const filterParts: string[] = [];
 
         if (filters?.type) {
             filterParts.push(`customer_type="${filters.type}"`);

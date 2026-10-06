@@ -10,7 +10,6 @@ interface AuthContextType {
     isAdmin: boolean;
     isLoading: boolean;
     login: (email: string, password: string) => Promise<void>;
-    register: (email: string, password: string, name: string) => Promise<void>;
     logout: () => void;
 }
 
@@ -20,7 +19,6 @@ const AuthContext = createContext<AuthContextType>({
     isAdmin: false,
     isLoading: true,
     login: async () => { },
-    register: async () => { },
     logout: () => { },
 });
 
@@ -89,34 +87,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    const register = async (email: string, password: string, name: string) => {
-        // Create user
-        const user = await pb.collection("users").create({
-            email,
-            password,
-            passwordConfirm: password,
-            name,
-            emailVisibility: true,
-            is_active: true, // Default to active
-        });
-
-        // Assign default role: "Admin" for the first user, "Viewer" for subsequent sign-ups
-        try {
-            const usersCount = (await pb.collection("users").getList(1, 1)).totalItems;
-            const targetRoleName = usersCount <= 1 ? "Admin" : "Viewer";
-            const role = await pb.collection("roles").getFirstListItem(`name="${targetRoleName}"`);
-            await pb.collection("user_roles").create({
-                user: user.id,
-                role: role.id,
-            });
-        } catch (e) {
-            console.warn("Could not assign default role:", e);
-        }
-
-        // Auto-login after registration
-        await pb.collection("users").authWithPassword(email, password);
-    };
-
     const logout = () => {
         pb.authStore.clear();
     };
@@ -124,7 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 
     return (
-        <AuthContext.Provider value={{ user, isValid, isAdmin, isLoading, login, register, logout }}>
+        <AuthContext.Provider value={{ user, isValid, isAdmin, isLoading, login, logout }}>
             {children}
         </AuthContext.Provider>
     );

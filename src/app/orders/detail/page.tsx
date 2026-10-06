@@ -14,7 +14,7 @@ import {
     MapPin,
     CreditCard
 } from "lucide-react";
-import { useEffect, useState, Suspense } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getOrderDetails, convertEstimateToOrder, generateInvoiceFromOrder } from "@/lib/orders";
 import { toast } from "sonner";
@@ -28,13 +28,7 @@ function OrderDetailContent() {
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
 
-    useEffect(() => {
-        if (id) {
-            fetchOrder();
-        }
-    }, [id]);
-
-    async function fetchOrder() {
+    const fetchOrder = useCallback(async () => {
         if (!id) return;
         setLoading(true);
         const data = await getOrderDetails(id);
@@ -45,7 +39,13 @@ function OrderDetailContent() {
             router.push('/orders');
         }
         setLoading(false);
-    }
+    }, [id, router]);
+
+    useEffect(() => {
+        if (id) {
+            fetchOrder();
+        }
+    }, [id, fetchOrder]);
 
     const handleConvert = async () => {
         if (!order) return;

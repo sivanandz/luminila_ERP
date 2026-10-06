@@ -35,8 +35,8 @@ export default function SetupWizardPage() {
 
     // Form data
     const [pbAdmin, setPbAdmin] = useState({
-        email: "admin@luminila.com",
-        password: "password123456",
+        email: "",
+        password: "",
     });
 
     const [appAdmin, setAppAdmin] = useState({
@@ -86,6 +86,7 @@ export default function SetupWizardPage() {
 
             // Check if PB admin exists by trying to authenticate
             try {
+                if (!pbAdmin.email || !pbAdmin.password) throw new Error("no credentials yet");
                 await pb.admins.authWithPassword(pbAdmin.email, pbAdmin.password);
                 setPbAdminExists(true);
                 pb.authStore.clear(); // Clear admin auth
@@ -117,7 +118,7 @@ export default function SetupWizardPage() {
             const collections = await pb.collections.getFullList();
 
             if (collections.length < 10) {
-                toast.info("Database schema appears empty. Run: npx tsx src/scripts/init-pocketbase.ts");
+                toast.info("Database schema appears empty. Restart PocketBase so bundled migrations apply (npm run dev).");
             }
 
             // Seed system roles with comprehensive permissions

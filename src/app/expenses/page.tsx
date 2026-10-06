@@ -67,15 +67,6 @@ export default function ExpensesPage() {
         reference_number: ""
     });
 
-    useEffect(() => {
-        loadData();
-    }, [selectedCategory, dateRange]);
-
-    // Initial load for categories
-    useEffect(() => {
-        getCategories().then(setCategories);
-    }, []);
-
     const loadData = async () => {
         setLoading(true);
         const [expenseData, statsData] = await Promise.all([
@@ -91,6 +82,15 @@ export default function ExpensesPage() {
         setStats(statsData);
         setLoading(false);
     };
+
+    useEffect(() => {
+        loadData();
+    }, [selectedCategory, dateRange]);
+
+    // Initial load for categories
+    useEffect(() => {
+        getCategories().then(setCategories);
+    }, []);
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
