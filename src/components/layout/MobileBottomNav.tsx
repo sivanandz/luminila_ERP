@@ -30,9 +30,9 @@ export function MobileBottomNav({
     const [serverModalOpen, setServerModalOpen] = useState(false);
     const [driveModalOpen, setDriveModalOpen] = useState(false);
 
-    // Hide bottom nav on specific fullscreen pages like login or full pos camera modal if needed
-    const isLoginPage = pathname === "/login";
-    if (isLoginPage) return null;
+    // Hide bottom nav on specific fullscreen pages like login or setup
+    const isAuthOrSetup = pathname === "/login" || pathname === "/setup" || pathname?.startsWith("/login/") || pathname?.startsWith("/setup/");
+    if (isAuthOrSetup) return null;
 
     const navTabs = [
         { href: "/", label: "Home", icon: LayoutDashboard },

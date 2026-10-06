@@ -233,6 +233,10 @@ export function Sidebar() {
         return "??";
     };
 
+    if (pathname === "/login" || pathname === "/setup" || pathname?.startsWith("/login/") || pathname?.startsWith("/setup/")) {
+        return null;
+    }
+
     return (
         <aside className="hidden md:flex md:w-64 lg:w-72 bg-card border-r flex-col h-full shrink-0 z-30 select-none">
             {/* Logo */}

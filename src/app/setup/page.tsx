@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { pb, getPocketBaseUrl } from "@/lib/pocketbase";
+import { pb, getPocketBaseUrl, autoDiscoverPocketBase } from "@/lib/pocketbase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -64,6 +64,10 @@ export default function SetupWizardPage() {
     const checkStatus = async () => {
         setChecking(true);
         try {
+            // Auto-discover active PocketBase instance (e.g. if 8090 is occupied by a foreign process)
+            const activeUrl = await autoDiscoverPocketBase();
+            setPbUrl(activeUrl);
+
             // Check if PocketBase is running
             const health = await pb.health.check();
             setDbConnected(health.code === 200);
@@ -76,12 +80,8 @@ export default function SetupWizardPage() {
                     router.push("/login");
                     return;
                 }
-            } catch (e: any) {
-                // If 403 Forbidden, users collection exists and is already configured
-                if (e?.status === 403) {
-                    router.push("/login");
-                    return;
-                }
+            } catch {
+                // In cold start, unauthenticated listing returns 403/error, proceed with setup wizard
             }
 
             // Check if PB admin exists by trying to authenticate
@@ -319,92 +319,97 @@ export default function SetupWizardPage() {
 
     if (checking) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-bg-navy via-bg-deep to-bg-navy">
+            <div className="min-h-screen flex items-center justify-center bg-background">
                 <div className="text-center">
-                    <Loader2 className="w-8 h-8 animate-spin text-electric-teal mx-auto mb-4" />
-                    <p className="text-moonstone">Checking system status...</p>
+                    <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-4" />
+                    <p className="text-muted-foreground text-sm font-medium">Checking system status...</p>
                 </div>
             </div>
         );
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-bg-navy via-bg-deep to-bg-navy p-4">
+        <div className="min-h-screen flex items-center justify-center bg-background p-4 relative">
             {/* Background decoration */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-electric-teal/5 rounded-full blur-3xl" />
-                <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-royal-purple/5 rounded-full blur-3xl" />
+                <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-3xl" />
+                <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-primary/5 rounded-full blur-3xl" />
             </div>
 
-            <div className="w-full max-w-lg relative">
+            <div className="w-full max-w-lg relative z-10">
                 {/* Logo */}
                 <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-electric-teal to-royal-purple mb-4">
-                        <Sparkles className="w-8 h-8 text-white" />
+                    <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 mb-4 shadow-lg shadow-primary/5">
+                        <Sparkles className="w-8 h-8 text-primary" />
                     </div>
-                    <h1 className="text-3xl font-bold text-white font-manrope">Luminila Setup</h1>
-                    <p className="text-moonstone mt-1">First-time configuration wizard</p>
+                    <h1 className="text-3xl font-bold text-foreground tracking-tight">Luminila Setup</h1>
+                    <p className="text-muted-foreground mt-1 text-sm">First-time configuration wizard</p>
                 </div>
 
                 {/* Progress Steps */}
                 <div className="flex items-center justify-center gap-2 mb-8">
-                    {["welcome", "database", "admin", "complete"].map((step, index) => (
-                        <div key={step} className="flex items-center">
-                            <div
-                                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors ${currentStep === step
-                                    ? "bg-electric-teal text-primary-foreground"
-                                    : ["welcome", "database", "admin", "complete"].indexOf(currentStep) > index
-                                        ? "bg-electric-teal/30 text-electric-teal"
-                                        : "bg-surface-hover text-moonstone"
+                    {["welcome", "database", "admin", "complete"].map((step, index) => {
+                        const stepIndex = ["welcome", "database", "admin", "complete"].indexOf(currentStep);
+                        const isCurrent = currentStep === step;
+                        const isDone = stepIndex > index;
+                        return (
+                            <div key={step} className="flex items-center">
+                                <div
+                                    className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold transition-all border ${
+                                        isCurrent
+                                            ? "bg-primary text-primary-foreground border-primary shadow-md shadow-primary/20 scale-105"
+                                            : isDone
+                                                ? "bg-primary/20 text-primary border-primary/30"
+                                                : "bg-muted text-muted-foreground border-border"
                                     }`}
-                            >
-                                {["welcome", "database", "admin", "complete"].indexOf(currentStep) > index ? (
-                                    <CheckCircle className="w-4 h-4" />
-                                ) : (
-                                    index + 1
+                                >
+                                    {isDone ? (
+                                        <CheckCircle className="w-4 h-4" />
+                                    ) : (
+                                        index + 1
+                                    )}
+                                </div>
+                                {index < 3 && (
+                                    <div className={`w-8 h-0.5 mx-1 transition-colors ${
+                                        stepIndex > index ? "bg-primary/40" : "bg-border"
+                                    }`} />
                                 )}
                             </div>
-                            {index < 3 && (
-                                <div className={`w-8 h-0.5 mx-1 ${["welcome", "database", "admin", "complete"].indexOf(currentStep) > index
-                                    ? "bg-electric-teal/30"
-                                    : "bg-surface-hover"
-                                    }`} />
-                            )}
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
 
                 {/* Card */}
-                <div className="bg-surface-card/50 backdrop-blur-xl border border-surface-hover rounded-2xl p-8 shadow-2xl">
+                <div className="bg-card border border-border rounded-2xl p-8 shadow-2xl">
                     {/* Welcome Step */}
                     {currentStep === "welcome" && (
                         <div className="text-center space-y-6">
-                            <div className="w-16 h-16 rounded-2xl bg-electric-teal/10 flex items-center justify-center mx-auto">
-                                <Sparkles className="w-8 h-8 text-electric-teal" />
+                            <div className="w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto">
+                                <Sparkles className="w-8 h-8 text-primary" />
                             </div>
                             <div>
-                                <h2 className="text-xl font-semibold text-white mb-2">Welcome to Luminila</h2>
-                                <p className="text-moonstone">
+                                <h2 className="text-xl font-semibold text-foreground mb-2">Welcome to Luminila</h2>
+                                <p className="text-muted-foreground text-sm">
                                     Let's set up your inventory management system. This wizard will help you configure the database and create your admin account.
                                 </p>
                             </div>
                             <div className="space-y-3 text-left">
-                                <div className="flex items-center gap-3 p-3 rounded-lg bg-surface-hover/50">
-                                    <Database className="w-5 h-5 text-electric-teal" />
-                                    <span className="text-sm text-moonstone">Configure database connection</span>
+                                <div className="flex items-center gap-3 p-3.5 rounded-xl bg-muted/50 border border-border/50">
+                                    <Database className="w-5 h-5 text-primary" />
+                                    <span className="text-sm text-foreground font-medium">Configure database connection</span>
                                 </div>
-                                <div className="flex items-center gap-3 p-3 rounded-lg bg-surface-hover/50">
-                                    <User className="w-5 h-5 text-royal-purple" />
-                                    <span className="text-sm text-moonstone">Create your admin account</span>
+                                <div className="flex items-center gap-3 p-3.5 rounded-xl bg-muted/50 border border-border/50">
+                                    <User className="w-5 h-5 text-primary" />
+                                    <span className="text-sm text-foreground font-medium">Create your admin account</span>
                                 </div>
-                                <div className="flex items-center gap-3 p-3 rounded-lg bg-surface-hover/50">
-                                    <Shield className="w-5 h-5 text-green-400" />
-                                    <span className="text-sm text-moonstone">Set up roles and permissions</span>
+                                <div className="flex items-center gap-3 p-3.5 rounded-xl bg-muted/50 border border-border/50">
+                                    <Shield className="w-5 h-5 text-emerald-400" />
+                                    <span className="text-sm text-foreground font-medium">Set up roles and permissions</span>
                                 </div>
                             </div>
                             <Button
                                 onClick={() => setCurrentStep("database")}
-                                className="w-full bg-gradient-to-r from-electric-teal to-royal-purple hover:opacity-90 text-white"
+                                className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold h-11 shadow-md shadow-primary/20"
                             >
                                 Get Started
                                 <ArrowRight className="w-4 h-4 ml-2" />
@@ -416,21 +421,21 @@ export default function SetupWizardPage() {
                     {currentStep === "database" && (
                         <div className="space-y-6">
                             <div className="text-center">
-                                <div className="w-12 h-12 rounded-xl bg-electric-teal/10 flex items-center justify-center mx-auto mb-4">
-                                    <Database className="w-6 h-6 text-electric-teal" />
+                                <div className="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
+                                    <Database className="w-6 h-6 text-primary" />
                                 </div>
-                                <h2 className="text-xl font-semibold text-white">Database Setup</h2>
+                                <h2 className="text-xl font-semibold text-foreground">Database Setup</h2>
                             </div>
 
                             {/* Connection Status */}
-                            <div className={`p-4 rounded-lg border ${dbConnected ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
+                            <div className={`p-4 rounded-xl border ${dbConnected ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-destructive/10 border-destructive/30 text-destructive"}`}>
                                 <div className="flex items-center gap-3">
-                                    <Server className={`w-5 h-5 ${dbConnected ? "text-green-400" : "text-red-400"}`} />
+                                    <Server className="w-5 h-5" />
                                     <div>
-                                        <p className={`font-medium ${dbConnected ? "text-green-400" : "text-red-400"}`}>
+                                        <p className="font-medium text-sm">
                                             {dbConnected ? "PocketBase Connected" : "PocketBase Not Running"}
                                         </p>
-                                        <p className="text-xs text-moonstone">
+                                        <p className="text-xs text-muted-foreground font-mono mt-0.5">
                                             {dbConnected ? pbUrl : "Start PocketBase first"}
                                         </p>
                                     </div>
@@ -438,14 +443,14 @@ export default function SetupWizardPage() {
                             </div>
 
                             {!dbConnected && (
-                                <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                                <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30">
                                     <div className="flex items-start gap-3">
                                         <AlertTriangle className="w-5 h-5 text-amber-400 mt-0.5" />
-                                        <div className="text-sm text-moonstone">
+                                        <div className="text-sm text-muted-foreground">
                                             <p className="font-medium text-amber-400 mb-1">Start PocketBase</p>
                                             <p>Run this command in terminal:</p>
-                                            <code className="block mt-2 p-2 bg-bg-navy rounded text-xs">
-                                                npm run dev:all
+                                            <code className="block mt-2 p-2 bg-background border border-border rounded text-xs font-mono text-foreground">
+                                                npm run dev
                                             </code>
                                         </div>
                                     </div>
@@ -455,34 +460,36 @@ export default function SetupWizardPage() {
                             {dbConnected && (
                                 <>
                                     <div>
-                                        <Label className="text-moonstone">PocketBase Admin Email</Label>
+                                        <Label className="text-foreground text-sm font-medium">PocketBase Admin Email</Label>
                                         <Input
                                             type="email"
+                                            placeholder="admin@luminila.local"
                                             value={pbAdmin.email}
                                             onChange={(e) => setPbAdmin({ ...pbAdmin, email: e.target.value })}
-                                            className="mt-1 bg-bg-navy border-surface-hover"
+                                            className="mt-1.5 bg-background border-input"
                                         />
                                     </div>
                                     <div>
-                                        <Label className="text-moonstone">PocketBase Admin Password</Label>
+                                        <Label className="text-foreground text-sm font-medium">PocketBase Admin Password</Label>
                                         <Input
                                             type="password"
+                                            placeholder="••••••••••••"
                                             value={pbAdmin.password}
                                             onChange={(e) => setPbAdmin({ ...pbAdmin, password: e.target.value })}
-                                            className="mt-1 bg-bg-navy border-surface-hover"
+                                            className="mt-1.5 bg-background border-input"
                                         />
-                                        <p className="text-xs text-moonstone/70 mt-1">
-                                            Create this admin at: <a href={`${pbUrl}/_/`} target="_blank" className="text-electric-teal hover:underline">PocketBase Admin UI</a>
+                                        <p className="text-xs text-muted-foreground mt-1.5">
+                                            Create this superuser at: <a href={`${pbUrl}/_/`} target="_blank" className="text-primary hover:underline font-medium">PocketBase Admin UI</a>
                                         </p>
                                     </div>
                                 </>
                             )}
 
-                            <div className="flex gap-3">
+                            <div className="flex gap-3 pt-2">
                                 <Button
                                     variant="outline"
                                     onClick={() => setCurrentStep("welcome")}
-                                    className="flex-1"
+                                    className="flex-1 border-border"
                                 >
                                     <ArrowLeft className="w-4 h-4 mr-2" />
                                     Back
@@ -490,7 +497,7 @@ export default function SetupWizardPage() {
                                 <Button
                                     onClick={dbConnected ? handleSetupDatabase : checkStatus}
                                     disabled={loading}
-                                    className="flex-1 bg-gradient-to-r from-electric-teal to-royal-purple hover:opacity-90"
+                                    className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-md shadow-primary/20"
                                 >
                                     {loading ? (
                                         <Loader2 className="w-4 h-4 animate-spin mr-2" />
@@ -506,59 +513,59 @@ export default function SetupWizardPage() {
                     {currentStep === "admin" && (
                         <div className="space-y-6">
                             <div className="text-center">
-                                <div className="w-12 h-12 rounded-xl bg-royal-purple/10 flex items-center justify-center mx-auto mb-4">
-                                    <User className="w-6 h-6 text-royal-purple" />
+                                <div className="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
+                                    <User className="w-6 h-6 text-primary" />
                                 </div>
-                                <h2 className="text-xl font-semibold text-white">Create Admin Account</h2>
-                                <p className="text-moonstone text-sm mt-1">This will be your main login for the app</p>
+                                <h2 className="text-xl font-semibold text-foreground">Create Admin Account</h2>
+                                <p className="text-muted-foreground text-sm mt-1">This will be your main login for the app</p>
                             </div>
 
                             <div>
-                                <Label className="text-moonstone">Full Name</Label>
+                                <Label className="text-foreground text-sm font-medium">Full Name</Label>
                                 <Input
                                     type="text"
-                                    placeholder="John Doe"
+                                    placeholder="Store Admin"
                                     value={appAdmin.name}
                                     onChange={(e) => setAppAdmin({ ...appAdmin, name: e.target.value })}
-                                    className="mt-1 bg-bg-navy border-surface-hover"
+                                    className="mt-1.5 bg-background border-input"
                                 />
                             </div>
                             <div>
-                                <Label className="text-moonstone">Email</Label>
+                                <Label className="text-foreground text-sm font-medium">Email</Label>
                                 <Input
                                     type="email"
                                     placeholder="admin@yourstore.com"
                                     value={appAdmin.email}
                                     onChange={(e) => setAppAdmin({ ...appAdmin, email: e.target.value })}
-                                    className="mt-1 bg-bg-navy border-surface-hover"
+                                    className="mt-1.5 bg-background border-input"
                                 />
                             </div>
                             <div>
-                                <Label className="text-moonstone">Password</Label>
+                                <Label className="text-foreground text-sm font-medium">Password</Label>
                                 <Input
                                     type="password"
                                     placeholder="Min 8 characters"
                                     value={appAdmin.password}
                                     onChange={(e) => setAppAdmin({ ...appAdmin, password: e.target.value })}
-                                    className="mt-1 bg-bg-navy border-surface-hover"
+                                    className="mt-1.5 bg-background border-input"
                                 />
                             </div>
                             <div>
-                                <Label className="text-moonstone">Confirm Password</Label>
+                                <Label className="text-foreground text-sm font-medium">Confirm Password</Label>
                                 <Input
                                     type="password"
                                     placeholder="Repeat password"
                                     value={appAdmin.passwordConfirm}
                                     onChange={(e) => setAppAdmin({ ...appAdmin, passwordConfirm: e.target.value })}
-                                    className="mt-1 bg-bg-navy border-surface-hover"
+                                    className="mt-1.5 bg-background border-input"
                                 />
                             </div>
 
-                            <div className="flex gap-3">
+                            <div className="flex gap-3 pt-2">
                                 <Button
                                     variant="outline"
                                     onClick={() => setCurrentStep("database")}
-                                    className="flex-1"
+                                    className="flex-1 border-border"
                                 >
                                     <ArrowLeft className="w-4 h-4 mr-2" />
                                     Back
@@ -566,7 +573,7 @@ export default function SetupWizardPage() {
                                 <Button
                                     onClick={handleCreateAdmin}
                                     disabled={loading}
-                                    className="flex-1 bg-gradient-to-r from-electric-teal to-royal-purple hover:opacity-90"
+                                    className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-md shadow-primary/20"
                                 >
                                     {loading ? (
                                         <Loader2 className="w-4 h-4 animate-spin mr-2" />
@@ -581,22 +588,22 @@ export default function SetupWizardPage() {
                     {/* Complete Step */}
                     {currentStep === "complete" && (
                         <div className="text-center space-y-6">
-                            <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto">
-                                <CheckCircle className="w-8 h-8 text-green-400" />
+                            <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center mx-auto">
+                                <CheckCircle className="w-8 h-8 text-emerald-400" />
                             </div>
                             <div>
-                                <h2 className="text-xl font-semibold text-white mb-2">Setup Complete!</h2>
-                                <p className="text-moonstone">
+                                <h2 className="text-xl font-semibold text-foreground mb-2">Setup Complete!</h2>
+                                <p className="text-muted-foreground text-sm">
                                     Your Luminila inventory management system is ready to use.
                                 </p>
                             </div>
-                            <div className="p-4 rounded-lg bg-surface-hover/50 text-left">
-                                <p className="text-sm text-moonstone mb-2">Your admin account:</p>
-                                <p className="text-white font-medium">{appAdmin.email}</p>
+                            <div className="p-4 rounded-xl bg-muted/50 border border-border text-left">
+                                <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Your admin account</p>
+                                <p className="text-foreground font-medium font-mono text-sm">{appAdmin.email}</p>
                             </div>
                             <Button
                                 onClick={handleComplete}
-                                className="w-full bg-gradient-to-r from-electric-teal to-royal-purple hover:opacity-90"
+                                className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold h-11 shadow-md shadow-primary/20"
                             >
                                 Go to Dashboard
                                 <ArrowRight className="w-4 h-4 ml-2" />
@@ -606,7 +613,7 @@ export default function SetupWizardPage() {
                 </div>
 
                 {/* Footer */}
-                <p className="text-center text-moonstone/50 text-sm mt-6">
+                <p className="text-center text-muted-foreground/60 text-xs mt-6">
                     &copy; {new Date().getFullYear()} Luminila. All rights reserved.
                 </p>
             </div>

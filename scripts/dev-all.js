@@ -28,10 +28,24 @@ const BOLD = '\x1b[1m';
 
 const children = [];
 
-function checkPort(url, timeoutMs = 1500) {
+function isServerListening(url, timeoutMs = 1500) {
     return new Promise((resolve) => {
-        const req = http.get(url, { timeout: timeoutMs }, (res) => {
-            resolve(res.statusCode >= 200 && res.statusCode < 500);
+        const req = http.get(url, { timeout: timeoutMs }, () => {
+            // Any response code means a server is listening on this port
+            resolve(true);
+        });
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => {
+            req.destroy();
+            resolve(false);
+        });
+    });
+}
+
+function isPocketBaseHealthy(port, timeoutMs = 1500) {
+    return new Promise((resolve) => {
+        const req = http.get(`http://127.0.0.1:${port}/api/health`, { timeout: timeoutMs }, (res) => {
+            resolve(res.statusCode === 200);
         });
         req.on('error', () => resolve(false));
         req.on('timeout', () => {
@@ -90,8 +104,8 @@ async function main() {
 
     // 1. PocketBase DB
     let pbPort = process.env.PB_PORT ? parseInt(process.env.PB_PORT, 10) : 8090;
-    const pbRunning8090 = await checkPort('http://127.0.0.1:8090/api/health');
-    const pbRunning8091 = await checkPort('http://127.0.0.1:8091/api/health');
+    const pbRunning8090 = await isPocketBaseHealthy(8090);
+    const pbRunning8091 = await isPocketBaseHealthy(8091);
 
     if (pbRunning8090) {
         pbPort = 8090;
@@ -103,9 +117,9 @@ async function main() {
         if (!fs.existsSync(PB_EXE)) {
             console.error(`${RED}[PB] PocketBase executable not found at: ${PB_EXE}${RESET}`);
         } else {
-            // Check if 8090 is occupied by a non-PB process
-            const port8090Blocked = await checkPort('http://127.0.0.1:8090/');
-            if (port8090Blocked && !process.env.PB_PORT) {
+            // Check if 8090 is occupied by a foreign process (e.g. Wondershare or other service)
+            const port8090Occupied = await isServerListening('http://127.0.0.1:8090/');
+            if (port8090Occupied && !process.env.PB_PORT) {
                 console.log(`${YELLOW}[PB] Notice: Port 8090 is occupied by a foreign process. Falling back to port 8091.${RESET}`);
                 pbPort = 8091;
             }
@@ -121,7 +135,7 @@ async function main() {
             // Wait for PB to become ready
             for (let i = 0; i < 20; i++) {
                 await new Promise(r => setTimeout(r, 250));
-                if (await checkPort(`http://127.0.0.1:${pbPort}/api/health`)) {
+                if (await isPocketBaseHealthy(pbPort)) {
                     console.log(`${GREEN}[PB]${RESET} PocketBase ready! Admin UI: http://127.0.0.1:${pbPort}/_/`);
                     break;
                 }
@@ -131,8 +145,13 @@ async function main() {
     process.env.PB_PORT = String(pbPort);
     process.env.NEXT_PUBLIC_POCKETBASE_URL = `http://127.0.0.1:${pbPort}`;
 
+    // Ensure .env.local stays in sync with chosen PocketBase port
+    try {
+        fs.writeFileSync(path.join(ROOT_DIR, '.env.local'), `# PocketBase Configuration\nNEXT_PUBLIC_POCKETBASE_URL=http://127.0.0.1:${pbPort}\n`);
+    } catch { /* ignore */ }
+
     // 2. WhatsApp Sidecar
-    const wppRunning = await checkPort('http://127.0.0.1:21465/health');
+    const wppRunning = await isServerListening('http://127.0.0.1:21465/health');
     if (wppRunning) {
         console.log(`${MAGENTA}[WPP]${RESET} WhatsApp Sidecar is already running on http://127.0.0.1:21465`);
     } else {
@@ -148,10 +167,12 @@ async function main() {
 
     // 3. Next.js Frontend
     console.log(`${CYAN}[NEXT]${RESET} Starting Next.js frontend on http://localhost:3000...`);
-    const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    const isWin = process.platform === 'win32';
+    const npxCmd = isWin ? 'npx.cmd' : 'npx';
     const nextProc = spawn(npxCmd, ['next', 'dev'], {
         cwd: ROOT_DIR,
         stdio: ['ignore', 'pipe', 'pipe'],
+        shell: isWin,
         env: { ...process.env }
     });
     children.push(nextProc);

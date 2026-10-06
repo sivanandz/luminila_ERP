@@ -60,6 +60,39 @@ export function setPocketBaseUrl(url: string): string {
 }
 
 /**
+ * Auto-discover active PocketBase server on localhost if default port (8090)
+ * is blocked or occupied by a foreign application (e.g. Wondershare).
+ */
+export async function autoDiscoverPocketBase(): Promise<string> {
+    const current = getPocketBaseUrl();
+    try {
+        const res = await pb.health.check();
+        if (res.code === 200) return current;
+    } catch {
+        // Current URL failed, probe alternative ports on localhost
+        if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+            const candidatePorts = [8091, 8090, 8092];
+            for (const port of candidatePorts) {
+                const candidateUrl = `http://127.0.0.1:${port}`;
+                if (candidateUrl === current) continue;
+                try {
+                    const testPb = new PocketBase(candidateUrl);
+                    testPb.autoCancellation(false);
+                    const health = await testPb.health.check();
+                    if (health.code === 200) {
+                        setPocketBaseUrl(candidateUrl);
+                        return candidateUrl;
+                    }
+                } catch {
+                    // Port not responding
+                }
+            }
+        }
+    }
+    return current;
+}
+
+/**
  * Escape user-supplied strings before interpolating them into
  * PocketBase filter expressions. Prevents filter injection by
  * escaping double-quotes and backslashes.
