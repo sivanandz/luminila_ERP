@@ -860,7 +860,6 @@ export async function getProfilePicture(sessionId: string, contactId: string): P
  */
 export async function downloadMedia(sessionId: string, messageId: string): Promise<string | null> {
     try {
-        console.log('[WPP] Downloading media for message:', messageId);
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/download-media`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -868,20 +867,17 @@ export async function downloadMedia(sessionId: string, messageId: string): Promi
         });
 
         if (!response.ok) {
-            console.error('[WPP] Download media failed:', response.status);
+            // Media expired, removed, or not available from WhatsApp servers
             return null;
         }
 
-        const data = await response.json();
-        if (!data.success) {
-            console.error('[WPP] Download media error:', data.error);
+        const data = await response.json().catch(() => null);
+        if (!data || !data.success) {
             return null;
         }
 
-        console.log('[WPP] Media downloaded, has URL:', !!data.mediaUrl);
         return data.mediaUrl || null;
-    } catch (e) {
-        console.error('[WPP] Download media exception:', e);
+    } catch {
         return null;
     }
 }

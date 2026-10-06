@@ -707,7 +707,7 @@ app.get('/api/:session/profile-pic/:contactId', async (req, res) => {
     }
 });
 
-// Download media from message - CLEAN REWRITE
+// Download media from message
 app.post('/api/:session/download-media', async (req, res) => {
     const { session } = req.params;
     const { messageId } = req.body;
@@ -722,11 +722,40 @@ app.post('/api/:session/download-media', async (req, res) => {
     }
 
     try {
-        // Get the base64 content directly using downloadMedia with ID
-        const base64Content = await sessionData.client.downloadMedia(messageId);
+        let base64Content = null;
+        let downloadErr = null;
+
+        try {
+            base64Content = await sessionData.client.downloadMedia(messageId);
+        } catch (err) {
+            downloadErr = err;
+        }
+
+        // Secondary fallback: if client.downloadMedia threw, check if page is alive and try evaluate
+        if (!base64Content && sessionData.client.page && !sessionData.client.page.isClosed()) {
+            try {
+                base64Content = await sessionData.client.page.evaluate(async (id) => {
+                    try {
+                        if (window.WPP?.chat?.downloadMedia) {
+                            const blob = await window.WPP.chat.downloadMedia(id);
+                            if (blob && window.WPP?.util?.blobToBase64) {
+                                return await window.WPP.util.blobToBase64(blob);
+                            }
+                        }
+                    } catch {
+                        // ignore inside browser evaluate
+                    }
+                    return null;
+                }, messageId);
+            } catch {
+                // ignore fallback error
+            }
+        }
 
         if (!base64Content) {
-            return res.json({ success: false, error: 'No media content returned' });
+            const reason = downloadErr?.message || 'Media not found or expired on WhatsApp';
+            console.log(`[${session}] Media unavailable for message ${messageId}: ${reason}`);
+            return res.status(404).json({ success: false, error: reason });
         }
 
         // Get mimetype from message
@@ -749,13 +778,14 @@ app.post('/api/:session/download-media', async (req, res) => {
         } else if (Buffer.isBuffer(base64Content)) {
             dataUri = `data:${mimetype};base64,${base64Content.toString('base64')}`;
         } else {
-            return res.json({ success: false, error: 'Unknown media format' });
+            return res.status(404).json({ success: false, error: 'Unknown media format' });
         }
 
         res.json({ success: true, mediaUrl: dataUri, mimetype });
     } catch (error) {
-        console.error(`[${session}] Download media error:`, error.message);
-        res.status(500).json({ success: false, error: error.message });
+        const errorMsg = error?.message || 'Failed to download media';
+        console.warn(`[${session}] Download media error:`, errorMsg);
+        res.status(404).json({ success: false, error: errorMsg });
     }
 });
 
