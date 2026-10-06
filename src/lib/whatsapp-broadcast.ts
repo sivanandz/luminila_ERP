@@ -360,3 +360,209 @@ export async function getCampaignQueueSnapshot(campaign?: string): Promise<{ que
         return { queued: 0, sentToday: 0 };
     }
 }
+
+// ============================================================================
+// Multi-Product Catalog Broadcasting (Groups, Communities, Channels & Status)
+// ============================================================================
+
+export interface BroadcastProductItem {
+    id: string;
+    name: string;
+    sku: string;
+    price: number;
+    stock?: number;
+    category?: string;
+    image?: string | null;
+    hsn_code?: string;
+}
+
+export interface BroadcastProductDestinations {
+    status?: boolean; // WhatsApp Status / Stories
+    channelIds?: string[]; // WhatsApp Channels (...@newsletter)
+    groupIds?: string[]; // Groups & Community Announcements (...@g.us)
+    customerSegments?: AudienceSegment[]; // Safe customer cohort queue
+}
+
+export interface BroadcastProductOptions {
+    products: BroadcastProductItem[];
+    destinations: BroadcastProductDestinations;
+    campaignTitle?: string;
+    announcementNote?: string;
+    callToAction?: string;
+    includeImages?: boolean;
+    createdBy?: string;
+}
+
+export interface BroadcastProductResult {
+    statusPosted: boolean;
+    channelsSent: number;
+    groupsSent: number;
+    customersQueued: number;
+    totalRecipients: number;
+    errors: string[];
+}
+
+/** Formats a rich multi-product showcase message for WhatsApp */
+export function formatProductCatalogBroadcastMessage(
+    products: BroadcastProductItem[],
+    options?: {
+        title?: string;
+        note?: string;
+        callToAction?: string;
+    }
+): string {
+    const title = options?.title?.trim() || "✨ *Luminila — New Arrivals & Inventory Update* ✨";
+    const note = options?.note?.trim() ? `\n📢 *Note:* ${options.note.trim()}\n` : "";
+    const cta = options?.callToAction?.trim() || "💬 *To order or reserve, reply with the SKU or product name!*";
+
+    const itemsText = products.map((p, index) => {
+        const priceStr = `₹${p.price.toLocaleString("en-IN")}`;
+        const stockStr = typeof p.stock === 'number'
+            ? (p.stock > 0 ? `In Stock (${p.stock} units)` : "Made to Order")
+            : "Available";
+        const catStr = p.category ? ` | ${p.category}` : "";
+        return `*${index + 1}. ${p.name}*
+🏷️ SKU: \`${p.sku}\`${catStr}
+💰 Price: *${priceStr}*
+📦 Availability: ${stockStr}`;
+    }).join("\n\n");
+
+    return `${title}
+${note}
+${itemsText}
+
+${cta}
+
+📍 *Luminila Jewelry ERP*`;
+}
+
+/**
+ * Broadcast multiple inventory products simultaneously to:
+ * 1. WhatsApp Status (Ephemeral 24-hr Story)
+ * 2. WhatsApp Channels (@newsletter)
+ * 3. WhatsApp Groups & Community Announcements (@g.us)
+ * 4. Opted-in Customer Broadcast Queues (with humanized anti-ban jitter)
+ */
+export async function broadcastProductsToDestinations(
+    options: BroadcastProductOptions
+): Promise<BroadcastProductResult> {
+    const result: BroadcastProductResult = {
+        statusPosted: false,
+        channelsSent: 0,
+        groupsSent: 0,
+        customersQueued: 0,
+        totalRecipients: 0,
+        errors: [],
+    };
+
+    const { products, destinations } = options;
+    if (!products || products.length === 0) {
+        result.errors.push("No products selected for broadcasting");
+        return result;
+    }
+
+    const messageText = formatProductCatalogBroadcastMessage(products, {
+        title: options.campaignTitle,
+        note: options.announcementNote,
+        callToAction: options.callToAction,
+    });
+
+    const primaryProductWithImage = products.find((p) => !!p.image);
+    const primaryImage = primaryProductWithImage?.image || null;
+
+    // 1. POST TO WHATSAPP STATUS (STORIES)
+    if (destinations.status) {
+        try {
+            let anyStatusSuccess = false;
+            // If images should be included, post individual product story images
+            if (options.includeImages !== false) {
+                const productsWithImages = products.filter((p) => !!p.image);
+                for (const prod of productsWithImages) {
+                    try {
+                        const caption = `✨ *${prod.name}*\n🏷️ SKU: ${prod.sku} | 💰 ₹${prod.price.toLocaleString("en-IN")}\n${options.announcementNote ? options.announcementNote + '\n' : ''}Reply to order!`;
+                        const ok = await whatsappManager.sendStatusImage(prod.image!, caption);
+                        if (ok) anyStatusSuccess = true;
+                    } catch (storyImgErr) {
+                        console.warn('[broadcast] failed to send status image:', storyImgErr);
+                    }
+                }
+            }
+
+            // Always post the comprehensive catalog text summary as a status story
+            const summarySnippet = `${options.campaignTitle || '✨ New Arrivals Update ✨'}\n${products.length} fresh designs just landed:\n${products.map(p => `• ${p.name} (₹${p.price.toLocaleString('en-IN')})`).slice(0, 5).join('\n')}${products.length > 5 ? `\n+ ${products.length - 5} more pieces` : ''}\n\nReply to view or reserve!`;
+            const okText = await whatsappManager.sendStatusText(summarySnippet);
+            if (okText || anyStatusSuccess) {
+                result.statusPosted = true;
+                result.totalRecipients += 1;
+            }
+        } catch (err) {
+            result.errors.push(`Status post failed: ${(err as Error)?.message}`);
+        }
+    }
+
+    // 2. BROADCAST TO WHATSAPP CHANNELS (@newsletter)
+    if (destinations.channelIds && destinations.channelIds.length > 0) {
+        for (const channelId of destinations.channelIds) {
+            try {
+                let sent = false;
+                if (options.includeImages !== false && primaryImage) {
+                    sent = await whatsappManager.sendImage(channelId, primaryImage, messageText, 'catalog.jpg');
+                }
+                if (!sent) {
+                    sent = await whatsappManager.sendMessage(channelId, messageText);
+                }
+                if (sent) {
+                    result.channelsSent++;
+                    result.totalRecipients++;
+                } else {
+                    result.errors.push(`Channel ${channelId} delivery failed`);
+                }
+            } catch (err) {
+                result.errors.push(`Channel ${channelId} error: ${(err as Error)?.message}`);
+            }
+        }
+    }
+
+    // 3. BROADCAST TO WHATSAPP GROUPS & COMMUNITY ANNOUNCEMENTS (@g.us)
+    if (destinations.groupIds && destinations.groupIds.length > 0) {
+        for (const groupId of destinations.groupIds) {
+            try {
+                let sent = false;
+                if (options.includeImages !== false && primaryImage) {
+                    sent = await whatsappManager.sendImage(groupId, primaryImage, messageText, 'catalog.jpg');
+                }
+                if (!sent) {
+                    sent = await whatsappManager.sendMessage(groupId, messageText);
+                }
+                if (sent) {
+                    result.groupsSent++;
+                    result.totalRecipients++;
+                } else {
+                    result.errors.push(`Group ${groupId} delivery failed`);
+                }
+            } catch (err) {
+                result.errors.push(`Group ${groupId} error: ${(err as Error)?.message}`);
+            }
+        }
+    }
+
+    // 4. QUEUE TO CUSTOMER BROADCAST LISTS (if requested)
+    if (destinations.customerSegments && destinations.customerSegments.length > 0) {
+        for (const segment of destinations.customerSegments) {
+            try {
+                const queueRes = await queueCampaign({
+                    campaign: `${options.campaignTitle || 'Product Catalog'} (${segment})`,
+                    template: messageText,
+                    segment,
+                    createdBy: options.createdBy,
+                });
+                result.customersQueued += queueRes.queued;
+                result.totalRecipients += queueRes.queued;
+            } catch (err) {
+                result.errors.push(`Segment ${segment} queue failed: ${(err as Error)?.message}`);
+            }
+        }
+    }
+
+    return result;
+}

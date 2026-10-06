@@ -27,8 +27,10 @@ import {
     Trash2,
     Save,
     Loader2,
-    ScanBarcode
+    ScanBarcode,
+    Share2,
 } from "lucide-react";
+import { ProductBroadcastModal } from "@/components/whatsapp/ProductBroadcastModal";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -112,6 +114,17 @@ export default function InventoryPage() {
     const scanInputRef = useRef<HTMLInputElement>(null);
     const [scanMode, setScanMode] = useState<'text' | 'camera'>('text');
     const [scanNotFoundSku, setScanNotFoundSku] = useState<string | null>(null);
+
+    // Multi-Product WhatsApp Broadcast state
+    const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+    const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+    const [broadcastProductsList, setBroadcastProductsList] = useState<Product[]>([]);
+
+    const toggleSelectProduct = (id: string) => {
+        setSelectedProductIds((prev) =>
+            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+        );
+    };
 
     const router = useRouter();
 
@@ -488,6 +501,19 @@ export default function InventoryPage() {
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => {
+                                    const list = selectedProductIds.length > 0
+                                        ? products.filter(p => selectedProductIds.includes(p.id))
+                                        : filteredProducts.slice(0, 5);
+                                    setBroadcastProductsList(list);
+                                    setShowBroadcastModal(true);
+                                }}
+                                className="bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-emerald-500/30 transition-colors font-semibold text-xs"
+                                title="Broadcast products to WhatsApp Status, Channels & Groups"
+                            >
+                                <Share2 size={16} /> Broadcast {selectedProductIds.length > 0 ? `(${selectedProductIds.length})` : 'Products'}
+                            </button>
                             <button onClick={fetchProducts} className="bg-surface-navy text-moonstone hover:text-white h-10 px-4 rounded-lg flex items-center gap-2 border border-surface-hover"><RefreshCw size={16} /> Sync</button>
                             <button onClick={() => setShowScanDialog(true)} className="bg-primary/20 text-primary h-10 px-4 rounded-lg flex items-center gap-2 border border-primary/30"><ScanBarcode size={16} /> Scan</button>
                             <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept=".csv" className="hidden" />
@@ -500,42 +526,71 @@ export default function InventoryPage() {
                         <div className="flex justify-center p-12"><Loader2 className="animate-spin text-primary" size={40} /></div>
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                            {filteredProducts.map((product) => (
-                                <div key={product.id} className="bg-surface-navy rounded-xl border border-surface-hover p-4 group hover:border-primary/50 transition-colors shadow-sm">
-                                    <div className="aspect-square bg-bg-navy rounded-lg mb-4 flex items-center justify-center relative overflow-hidden group-hover:shadow-inner border border-surface-hover/50">
-                                        {product.image ? (
-                                            <div className="w-full h-full bg-cover bg-center transition-transform group-hover:scale-105 duration-500" style={{ backgroundImage: `url(${product.image})` }} />
-                                        ) : (
-                                            <Package size={48} className="text-surface-hover/50" />
-                                        )}
-                                        <div className="absolute inset-0 bg-bg-navy/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[2px]">
-                                            <button onClick={() => {
-                                                setNewProduct({
-                                                    name: product.name,
-                                                    sku: product.sku,
-                                                    category: product.categoryId || "",
-                                                    base_price: String(product.price),
-                                                    stock: String(product.stock),
-                                                    hsn_code: product.hsn_code || "7117",
-                                                    image_url: product.image || "",
-                                                });
-                                                setIsEditMode(true);
-                                                setEditingProductId(product.id);
-                                                setShowAddDialog(true);
-                                            }} className="bg-primary text-primary-foreground p-2 rounded-lg hover:scale-110"><Edit size={18} /></button>
-                                            <button onClick={() => handleDeleteProduct(product.id)} className="bg-red-500 text-white p-2 rounded-lg hover:scale-110"><Trash2 size={18} /></button>
+                            {filteredProducts.map((product) => {
+                                const isSelected = selectedProductIds.includes(product.id);
+                                return (
+                                    <div
+                                        key={product.id}
+                                        className={`bg-surface-navy rounded-xl border p-4 group transition-all shadow-sm relative ${
+                                            isSelected ? 'border-emerald-500 ring-1 ring-emerald-500/40' : 'border-surface-hover hover:border-primary/50'
+                                        }`}
+                                    >
+                                        {/* Multi-Select Checkbox */}
+                                        <div className="absolute top-2 left-2 z-20">
+                                            <input
+                                                type="checkbox"
+                                                checked={isSelected}
+                                                onChange={() => toggleSelectProduct(product.id)}
+                                                className="size-4 rounded border-surface-hover accent-emerald-500 cursor-pointer shadow bg-bg-navy/80"
+                                                title="Select for WhatsApp broadcast or bulk actions"
+                                            />
+                                        </div>
+
+                                        <div className="aspect-square bg-bg-navy rounded-lg mb-4 flex items-center justify-center relative overflow-hidden group-hover:shadow-inner border border-surface-hover/50">
+                                            {product.image ? (
+                                                <div className="w-full h-full bg-cover bg-center transition-transform group-hover:scale-105 duration-500" style={{ backgroundImage: `url(${product.image})` }} />
+                                            ) : (
+                                                <Package size={48} className="text-surface-hover/50" />
+                                            )}
+                                            <div className="absolute inset-0 bg-bg-navy/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[2px]">
+                                                <button
+                                                    onClick={() => {
+                                                        setBroadcastProductsList([product]);
+                                                        setShowBroadcastModal(true);
+                                                    }}
+                                                    title="Broadcast this product to WhatsApp Status, Channels & Groups"
+                                                    className="bg-emerald-600 text-white p-2 rounded-lg hover:scale-110 transition-transform"
+                                                >
+                                                    <Share2 size={18} />
+                                                </button>
+                                                <button onClick={() => {
+                                                    setNewProduct({
+                                                        name: product.name,
+                                                        sku: product.sku,
+                                                        category: product.categoryId || "",
+                                                        base_price: String(product.price),
+                                                        stock: String(product.stock),
+                                                        hsn_code: product.hsn_code || "7117",
+                                                        image_url: product.image || "",
+                                                    });
+                                                    setIsEditMode(true);
+                                                    setEditingProductId(product.id);
+                                                    setShowAddDialog(true);
+                                                }} className="bg-primary text-primary-foreground p-2 rounded-lg hover:scale-110"><Edit size={18} /></button>
+                                                <button onClick={() => handleDeleteProduct(product.id)} className="bg-red-500 text-white p-2 rounded-lg hover:scale-110"><Trash2 size={18} /></button>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <p className="text-[10px] font-bold text-primary uppercase tracking-wider mb-0.5">{product.sku}</p>
+                                            <h3 className="text-white font-bold text-sm truncate">{product.name}</h3>
+                                            <div className="flex justify-between items-center mt-2">
+                                                <span className="text-white font-mono">{formatPrice(product.price)}</span>
+                                                <span className={`text-xs px-2 py-1 rounded ${product.stock > 5 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>Stock: {product.stock}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-bold text-primary uppercase tracking-wider mb-0.5">{product.sku}</p>
-                                        <h3 className="text-white font-bold text-sm truncate">{product.name}</h3>
-                                        <div className="flex justify-between items-center mt-2">
-                                            <span className="text-white font-mono">{formatPrice(product.price)}</span>
-                                            <span className={`text-xs px-2 py-1 rounded ${product.stock > 5 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>Stock: {product.stock}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                 </div>
@@ -618,6 +673,53 @@ export default function InventoryPage() {
                     </div>
                 </DialogContent>
             </Dialog>
+
+            {/* Floating Selection Toolbar for WhatsApp Broadcast & Bulk Actions */}
+            {selectedProductIds.length > 0 && (
+                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-surface-navy/95 border border-primary/50 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-4 backdrop-blur-md animate-in fade-in slide-in-from-bottom-4">
+                    <div className="flex items-center gap-2">
+                        <span className="size-6 rounded-full bg-primary/20 text-primary flex items-center justify-center text-xs font-bold">
+                            {selectedProductIds.length}
+                        </span>
+                        <span className="text-xs font-semibold">
+                            {selectedProductIds.length} item{selectedProductIds.length === 1 ? '' : 's'} selected
+                        </span>
+                    </div>
+                    <div className="h-4 w-px bg-surface-hover" />
+                    <Button
+                        size="sm"
+                        onClick={() => {
+                            const list = products.filter(p => selectedProductIds.includes(p.id));
+                            setBroadcastProductsList(list);
+                            setShowBroadcastModal(true);
+                        }}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold gap-1.5 h-8 px-3"
+                    >
+                        <Share2 size={14} />
+                        Broadcast to WhatsApp / Social
+                    </Button>
+                    <button
+                        onClick={() => setSelectedProductIds(filteredProducts.map(p => p.id))}
+                        className="text-xs text-moonstone hover:text-white px-2 py-1 transition-colors"
+                    >
+                        Select All ({filteredProducts.length})
+                    </button>
+                    <button
+                        onClick={() => setSelectedProductIds([])}
+                        className="text-xs text-muted-foreground hover:text-white px-2 py-1 transition-colors"
+                    >
+                        Clear
+                    </button>
+                </div>
+            )}
+
+            {/* Product Broadcast Modal */}
+            <ProductBroadcastModal
+                isOpen={showBroadcastModal}
+                onClose={() => setShowBroadcastModal(false)}
+                initialSelectedProducts={broadcastProductsList}
+                onBroadcastSuccess={() => setSelectedProductIds([])}
+            />
         </div>
     );
 }

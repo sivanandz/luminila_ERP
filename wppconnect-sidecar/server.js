@@ -1382,7 +1382,7 @@ app.post('/api/:session/send-text-storie', async (req, res) => {
 // Send image status
 app.post('/api/:session/send-image-storie', async (req, res) => {
     const { session } = req.params;
-    const { base64, caption } = req.body;
+    const { base64, imageUrl, caption } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -1390,7 +1390,11 @@ app.post('/api/:session/send-image-storie', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.sendImageStatus(base64, { caption });
+        const content = base64 || imageUrl;
+        if (!content) {
+            return res.status(400).json({ success: false, error: 'base64 or imageUrl is required' });
+        }
+        const result = await sessionData.client.sendImageStatus(content, { caption });
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });

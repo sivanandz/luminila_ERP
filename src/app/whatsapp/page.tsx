@@ -48,7 +48,8 @@ import {
     Store,
     RadioTower,
     Users,
-    Radio
+    Radio,
+    Share2,
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import {
@@ -72,6 +73,7 @@ import { ChatContextMenu } from "@/components/whatsapp/ChatContextMenu";
 import { SlashCommandPalette } from "@/components/whatsapp/SlashCommandPalette";
 import { RazorpayPaymentModal } from "@/components/whatsapp/RazorpayPaymentModal";
 import { WhatsAppCatalogSyncModal } from "@/components/whatsapp/WhatsAppCatalogSyncModal";
+import { ProductBroadcastModal } from "@/components/whatsapp/ProductBroadcastModal";
 import { updateCustomerCRMProfile, setCustomerLeadStatus } from "@/lib/customer-lookup";
 import { sendPaidOrderInvoice } from "@/lib/whatsapp-notifications";
 import { ingestWhatsAppCatalogOrder } from "@/lib/whatsapp-order-ingestion";
@@ -535,6 +537,7 @@ export default function WhatsAppPage() {
 
     // Phase 2/3: payments reconciliation, broadcasts, order-intent banner
     const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+    const [showProductBroadcastModal, setShowProductBroadcastModal] = useState(false);
     const [orderBannerMsg, setOrderBannerMsg] = useState<Message | null>(null);
 
     // Payment link reconciliation (spec §7) + broadcast queue drain (spec §11)
@@ -1828,6 +1831,15 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                     >
                                         <RadioTower size={13} />
                                         <span className="hidden sm:inline">Broadcast</span>
+                                    </button>
+                                    <button
+                                        onClick={() => setShowProductBroadcastModal(true)}
+                                        className="text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-500 px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium transition-colors border border-emerald-500/20"
+                                        title="Broadcast inventory products to WhatsApp Status, Channels, Groups & Communities"
+                                        aria-label="Broadcast Products to WhatsApp"
+                                    >
+                                        <Share2 size={13} />
+                                        <span className="hidden sm:inline">Product Drop</span>
                                     </button>
                                     {sessionStatus === "connected" && !loadingChats && (
                                         <button
@@ -3307,6 +3319,12 @@ _Your order will be confirmed and processed immediately upon successful payment.
             <BroadcastComposerModal
                 isOpen={showBroadcastModal}
                 onClose={() => setShowBroadcastModal(false)}
+            />
+
+            {/* Multi-Product Catalog Broadcaster (Groups, Communities, Channels & Status) */}
+            <ProductBroadcastModal
+                isOpen={showProductBroadcastModal}
+                onClose={() => setShowProductBroadcastModal(false)}
             />
 
             {/* Razorpay Payment Link Modal */}

@@ -221,23 +221,74 @@ export async function closeSession(sessionId: string): Promise<boolean> {
 export async function sendImage(
     sessionId: string,
     chatId: string,
-    base64Image: string,
+    base64OrUrl: string,
     caption?: string,
     filename?: string
 ): Promise<boolean> {
     try {
+        const isUrl = base64OrUrl.startsWith('http://') || base64OrUrl.startsWith('https://') || base64OrUrl.startsWith('/');
+        const payload = isUrl
+            ? { phone: chatId, imageUrl: base64OrUrl, filename: filename || "image.jpg", caption: caption || "" }
+            : { phone: chatId, base64: base64OrUrl, filename: filename || "image.jpg", caption: caption || "" };
+
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-image`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                phone: chatId,
-                base64: base64Image,
-                filename: filename || "image.jpg",
-                caption: caption || ""
-            })
+            body: JSON.stringify(payload)
         });
         const data = await response.json();
         return data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Send text status / story (24hr ephemeral post)
+ */
+export async function sendStatusText(
+    sessionId: string,
+    text: string,
+    options?: { backgroundColor?: string; font?: number }
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-text-storie`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                text,
+                backgroundColor: options?.backgroundColor || '#1f2937',
+                font: options?.font || 1
+            })
+        });
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Send image status / story (24hr ephemeral post)
+ */
+export async function sendStatusImage(
+    sessionId: string,
+    base64OrUrl: string,
+    caption?: string
+): Promise<boolean> {
+    try {
+        const isUrl = base64OrUrl.startsWith('http://') || base64OrUrl.startsWith('https://') || base64OrUrl.startsWith('/');
+        const payload = isUrl
+            ? { imageUrl: base64OrUrl, caption: caption || "" }
+            : { base64: base64OrUrl, caption: caption || "" };
+
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-image-storie`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        return !!data.success;
     } catch {
         return false;
     }
@@ -1193,9 +1244,16 @@ export class WhatsAppManager {
         return sendOrderConfirmation(this.sessionId, phone, order);
     }
 
-    // New methods added from audit
-    async sendImage(chatId: string, base64: string, caption?: string, filename?: string): Promise<boolean> {
-        return sendImage(this.sessionId, chatId, base64, caption, filename);
+    async sendImage(chatId: string, base64OrUrl: string, caption?: string, filename?: string): Promise<boolean> {
+        return sendImage(this.sessionId, chatId, base64OrUrl, caption, filename);
+    }
+
+    async sendStatusText(text: string, options?: { backgroundColor?: string; font?: number }): Promise<boolean> {
+        return sendStatusText(this.sessionId, text, options);
+    }
+
+    async sendStatusImage(base64OrUrl: string, caption?: string): Promise<boolean> {
+        return sendStatusImage(this.sessionId, base64OrUrl, caption);
     }
 
     async sendFile(chatId: string, base64: string, filename: string, caption?: string): Promise<boolean> {
