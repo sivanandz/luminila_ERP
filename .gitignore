@@ -66,8 +66,12 @@ pocketbase/pb_data/*
 backup_*/
 
 # Specific ignores
-wppconnect-sidecar/tokens
-wppconnect-sidecar/userData
+wppconnect-sidecar/tokens/
+wppconnect-sidecar/tokens/**
+wppconnect-sidecar/userData/
+wppconnect-sidecar/*.png
+wppconnect-sidecar/debug_qr.png
+.luminila/
 src-tauri/binaries/
 src-tauri/gen/android/local.properties
 

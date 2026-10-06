@@ -952,12 +952,12 @@ export default function WhatsAppPage() {
     };
 
 
-    const handleConnect = async () => {
+    const handleConnect = async (forceClean = false) => {
         setSessionStatus("connecting");
         whatsappManager.setSessionId("luminila");
         setQrCode(null);
         setPairingCode(null);
-        const started = await whatsappManager.connect();
+        const started = await whatsappManager.connect(forceClean);
         if (started) {
             const pollInterval = setInterval(async () => {
                 const status = await whatsappManager.getStatus();
@@ -976,6 +976,21 @@ export default function WhatsAppPage() {
                 }
             }, 1000);
         }
+    };
+
+    const handleResetSession = async () => {
+        if (!confirm("Are you sure you want to completely reset and clear stored WhatsApp session credentials? You will be prompted to scan a fresh QR code.")) {
+            return;
+        }
+        setSessionStatus("connecting");
+        setQrCode(null);
+        setPairingCode(null);
+        try {
+            await whatsappManager.resetSession();
+        } catch (e) {
+            console.error("Reset error:", e);
+        }
+        await handleConnect(true);
     };
 
     const handleDisconnect = async () => {
@@ -1851,13 +1866,22 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         </button>
                                     )}
                                     {sessionStatus === "disconnected" && (
-                                        <button onClick={handleConnect} className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded">Connect</button>
+                                        <>
+                                            <button onClick={() => handleConnect(false)} className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded hover:opacity-90">Connect</button>
+                                            <button onClick={handleResetSession} className="text-xs bg-muted hover:bg-secondary text-muted-foreground px-2 py-1 rounded" title="Wipe local session tokens for fresh QR code">Clean Login</button>
+                                        </>
                                     )}
                                     {sessionStatus === "connected" && (
-                                        <button onClick={handleDisconnect} className="text-xs bg-secondary px-2 py-1 rounded">Log Out</button>
+                                        <>
+                                            <button onClick={handleResetSession} className="text-xs bg-muted hover:bg-destructive/10 text-muted-foreground hover:text-destructive border border-border px-2 py-1 rounded" title="Wipe session and relogin fresh">Reset</button>
+                                            <button onClick={handleDisconnect} className="text-xs bg-secondary hover:bg-secondary/80 px-2 py-1 rounded">Log Out</button>
+                                        </>
                                     )}
                                     {(sessionStatus === "qr" || sessionStatus === "connecting") && (
-                                        <button onClick={handleDisconnect} className="text-xs bg-muted hover:bg-destructive/10 text-destructive border border-destructive/20 px-2 py-1 rounded">Cancel</button>
+                                        <>
+                                            <button onClick={handleResetSession} className="text-xs bg-muted hover:bg-destructive/10 text-destructive border border-destructive/20 px-2 py-1 rounded" title="Reset session files">Reset</button>
+                                            <button onClick={handleDisconnect} className="text-xs bg-muted hover:bg-destructive/10 text-destructive border border-destructive/20 px-2 py-1 rounded">Cancel</button>
+                                        </>
                                     )}
                                 </div>
                             </div>

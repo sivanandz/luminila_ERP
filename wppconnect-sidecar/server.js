@@ -9,11 +9,49 @@ const http = require('http');
 const { Server } = require('socket.io');
 const QRCode = require('qrcode');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 // Configuration
 const PORT = process.env.WPPCONNECT_PORT || 21465;
 const SECRET_KEY = process.env.WPPCONNECT_SECRET || 'luminila-secret-key';
+
+// Tokens directory: securely stored in user home to prevent git contamination and exFAT volume locks
+const TOKENS_BASE_DIR = process.env.WPP_TOKENS_DIR || path.join(os.homedir(), '.luminila', 'wpp_tokens');
+try {
+    if (!fs.existsSync(TOKENS_BASE_DIR)) {
+        fs.mkdirSync(TOKENS_BASE_DIR, { recursive: true });
+    }
+} catch (e) {
+    console.error('Failed to initialize tokens directory:', e.message);
+}
+
+function getSessionTokenPath(sessionName) {
+    return path.join(TOKENS_BASE_DIR, sessionName);
+}
+
+async function cleanSessionTokens(sessionName) {
+    const sessionPath = getSessionTokenPath(sessionName);
+    const dataJson = path.join(TOKENS_BASE_DIR, `${sessionName}.data.json`);
+    const qrPng = path.join(TOKENS_BASE_DIR, `${sessionName}_qr.png`);
+    for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+            if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+            }
+            if (fs.existsSync(dataJson)) {
+                fs.rmSync(dataJson, { force: true });
+            }
+            if (fs.existsSync(qrPng)) {
+                fs.rmSync(qrPng, { force: true });
+            }
+            break;
+        } catch (e) {
+            await new Promise(r => setTimeout(r, 600));
+        }
+    }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -74,8 +112,19 @@ app.get('/api/status', (req, res) => {
 // Start new session
 app.post('/api/:session/start', async (req, res) => {
     const { session } = req.params;
+    const forceNew = req.body?.forceNew === true || req.query?.forceNew === 'true';
 
-    if (sessions.has(session)) {
+    if (forceNew) {
+        console.log(`[${session}] Force clean requested - purging existing session & tokens...`);
+        if (sessions.has(session)) {
+            const existing = sessions.get(session);
+            if (existing && existing.client) {
+                try { await existing.client.close(); } catch (e) { /* ignore */ }
+            }
+            sessions.delete(session);
+        }
+        await cleanSessionTokens(session);
+    } else if (sessions.has(session)) {
         const existing = sessions.get(session);
         if (existing && existing.connected && existing.client) {
             return res.json({ success: true, message: 'Session already exists and is connected' });
@@ -96,9 +145,14 @@ app.post('/api/:session/start', async (req, res) => {
         };
         sessions.set(session, sessionData);
 
+        const sessionUserDataDir = getSessionTokenPath(session);
+
         wpp.create({
             session: session,
-            folderNameToken: 'tokens', // Persist session tokens to local folder
+            folderNameToken: TOKENS_BASE_DIR,
+            tokenStore: new wpp.tokenStore.FileTokenStore({
+                path: TOKENS_BASE_DIR,
+            }),
             catchQR: async (base64Qr, asciiQR, attempts) => {
                 console.log(`[${session}] QR Code generated (attempt ${attempts})`);
                 console.log(`[${session}] QR Length: ${base64Qr ? base64Qr.length : 0}`);
@@ -107,8 +161,7 @@ app.post('/api/:session/start', async (req, res) => {
                     const matches = base64Qr.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
                     if (matches && matches.length === 3) {
                         const buffer = Buffer.from(matches[2], 'base64');
-                        fs.writeFileSync('debug_qr.png', buffer);
-                        console.log(`[${session}] Saved debug_qr.png`);
+                        fs.writeFileSync(path.join(TOKENS_BASE_DIR, `${session}_qr.png`), buffer);
                     }
                 } catch (e) {
                     console.error(`[${session}] Error saving debug QR:`, e.message);
@@ -153,6 +206,7 @@ app.post('/api/:session/start', async (req, res) => {
             waitForLogin: true,
             puppeteerOptions: {
                 headless: 'new',
+                userDataDir: sessionUserDataDir,
                 defaultViewport: {
                     width: 1280,
                     height: 800
@@ -248,41 +302,56 @@ app.get('/api/:session/status', (req, res) => {
 // Logout session
 app.post('/api/:session/logout', async (req, res) => {
     const { session } = req.params;
-    const sessionData = sessions.get(session);
+    const phoneSession = `${session}_phone`;
+    const sessionData = sessions.get(session) || sessions.get(phoneSession);
 
-    if (!sessionData || !sessionData.client) {
-        return res.json({ success: true, message: 'Session not found or already logged out' });
-    }
-
-    try {
-        console.log(`[${session}] Logging out...`);
-        if (sessionData.client) {
-            try { await sessionData.client.logout(); } catch (e) { console.warn(`[${session}] Logout warning:`, e.message); }
-            try {
-                await sessionData.client.close();
-                await new Promise(r => setTimeout(r, 2000)); // Wait for browser to die
-            } catch (e) { console.warn(`[${session}] Close warning:`, e.message); }
-        }
-        sessions.delete(session);
-
-        // Force clear tokens
+    console.log(`[${session}] Logging out...`);
+    if (sessionData && sessionData.client) {
+        try { await sessionData.client.logout(); } catch (e) { console.warn(`[${session}] Logout warning:`, e.message); }
         try {
-            const tokenPath = `./tokens/${session}`;
-            if (fs.existsSync(tokenPath)) {
-                console.log(`[${session}] Cleaning up tokens...`);
-                fs.rmSync(tokenPath, { recursive: true, force: true });
-            }
-        } catch (e) {
-            console.error(`[${session}] Token cleanup error:`, e.message);
-        }
-
-        console.log(`[${session}] Logged out and cleaned up successfully`);
-        res.json({ success: true, message: 'Logged out successfully' });
-    } catch (error) {
-        console.error(`[${session}] Logout connection error:`, error.message);
-        sessions.delete(session);
-        res.json({ success: true, message: 'Session cleared' });
+            await sessionData.client.close();
+            await new Promise(r => setTimeout(r, 1000));
+        } catch (e) { console.warn(`[${session}] Close warning:`, e.message); }
     }
+
+    sessions.delete(session);
+    sessions.delete(phoneSession);
+
+    await cleanSessionTokens(session);
+    await cleanSessionTokens(phoneSession);
+
+    io.emit('disconnected', { session });
+    io.emit('disconnected', { session: phoneSession });
+
+    console.log(`[${session}] Logged out and cleaned up successfully`);
+    res.json({ success: true, message: 'Logged out successfully' });
+});
+
+// Reset session completely (force clean without waiting for client)
+app.post('/api/:session/reset', async (req, res) => {
+    const { session } = req.params;
+    const phoneSession = `${session}_phone`;
+    console.log(`[${session}] Resetting and purging session completely...`);
+
+    const mainData = sessions.get(session);
+    if (mainData && mainData.client) {
+        try { await mainData.client.close(); } catch (e) { /* ignore */ }
+    }
+    const phoneData = sessions.get(phoneSession);
+    if (phoneData && phoneData.client) {
+        try { await phoneData.client.close(); } catch (e) { /* ignore */ }
+    }
+
+    sessions.delete(session);
+    sessions.delete(phoneSession);
+
+    await cleanSessionTokens(session);
+    await cleanSessionTokens(phoneSession);
+
+    io.emit('disconnected', { session });
+    io.emit('disconnected', { session: phoneSession });
+
+    res.json({ success: true, message: 'Session reset and all stored tokens cleared' });
 });
 
 // Request Pairing Code (Phone Number Login)
@@ -329,7 +398,10 @@ app.post('/api/:session/pair-phone', async (req, res) => {
             wpp.create({
                 session: phoneSession,
                 phoneNumber: cleanPhone,
-                folderNameToken: 'tokens',
+                folderNameToken: TOKENS_BASE_DIR,
+                tokenStore: new wpp.tokenStore.FileTokenStore({
+                    path: TOKENS_BASE_DIR,
+                }),
                 catchLinkCode: (code) => {
                     console.log(`[${phoneSession}] Pairing Code Received: ${code}`);
                     clearTimeout(timeout);
@@ -354,7 +426,10 @@ app.post('/api/:session/pair-phone', async (req, res) => {
                     '--disable-dev-shm-usage',
                     '--disable-gpu'
                 ],
-                puppeteerOptions: { headless: 'new' }
+                puppeteerOptions: {
+                    headless: 'new',
+                    userDataDir: getSessionTokenPath(phoneSession),
+                }
             }).then((client) => {
                 sessionData.client = client;
                 sessionData.connected = true;
@@ -375,25 +450,6 @@ app.post('/api/:session/pair-phone', async (req, res) => {
         console.error(`[${phoneSession}] Pairing request error:`, error);
         sessions.delete(phoneSession);
         res.status(500).json({ success: false, error: error.message || 'Failed to generate code' });
-    }
-});
-
-// Logout session (keeps session files for reconnection)
-app.post('/api/:session/logout', async (req, res) => {
-    const { session } = req.params;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not found' });
-    }
-
-    try {
-        await sessionData.client.logout();
-        sessionData.connected = false;
-        sessions.delete(session);
-        res.json({ success: true, message: 'Logged out successfully' });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
     }
 });
 

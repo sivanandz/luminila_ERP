@@ -69,6 +69,7 @@ export function Header({ title, subtitle, action, children }: HeaderProps) {
                             <Search size={18} />
                         </div>
                         <input
+                            suppressHydrationWarning
                             className="bg-card border border-border text-foreground text-xs md:text-sm rounded-lg block w-full pl-9 py-2 md:py-2.5 pr-4 focus:ring-1 focus:ring-primary placeholder-muted-foreground transition-all"
                             placeholder="Search..."
                             type="text"

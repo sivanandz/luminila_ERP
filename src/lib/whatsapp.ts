@@ -139,11 +139,12 @@ export async function checkWPPConnectStatus(): Promise<boolean> {
 /**
  * Start a new WhatsApp session
  */
-export async function startSession(sessionId: string): Promise<WPPSession | null> {
+export async function startSession(sessionId: string, forceNew = false): Promise<WPPSession | null> {
     try {
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/start`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ forceNew }),
         });
 
         if (!response.ok) throw new Error("Failed to start session");
@@ -157,6 +158,22 @@ export async function startSession(sessionId: string): Promise<WPPSession | null
     } catch (err) {
         console.error("Failed to start WhatsApp session:", err);
         return null;
+    }
+}
+
+/**
+ * Reset and clear WhatsApp session tokens completely
+ */
+export async function resetSession(sessionId: string): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/reset`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+        return response.ok;
+    } catch (err) {
+        console.error("Failed to reset WhatsApp session:", err);
+        return false;
     }
 }
 
@@ -1195,14 +1212,20 @@ export class WhatsAppManager {
         return this.sessionId;
     }
 
-    async connect(): Promise<boolean> {
-        const session = await startSession(this.sessionId);
+    async connect(forceNew = false): Promise<boolean> {
+        const session = await startSession(this.sessionId, forceNew);
         return !!session;
     }
 
     async disconnect(): Promise<void> {
         await closeSession(this.sessionId);
         this.stopPolling();
+    }
+
+    async resetSession(): Promise<boolean> {
+        const ok = await resetSession(this.sessionId);
+        this.stopPolling();
+        return ok;
     }
 
     async getStatus(): Promise<WPPSession["status"]> {
