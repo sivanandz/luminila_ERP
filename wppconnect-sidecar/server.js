@@ -140,7 +140,7 @@ app.get('/api/status', (req, res) => {
 // instance can always be closed - otherwise retries leak browsers and lock the
 // profile directory.
 // ---------------------------------------------------------------------------
-const QR_SCAN_TIMEOUT_MS = 5 * 60 * 1000;
+const QR_SCAN_TIMEOUT_MS = 10 * 60 * 1000;
 const BROWSER_ARGS = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -179,9 +179,10 @@ async function closeSessionData(data) {
         } catch { /* ignore */ }
 
         try {
+            // Allow Chromium enough time to flush SQLite/IndexedDB session cache cleanly
             await Promise.race([
                 handle.close(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
             ]);
         } catch { /* browser already gone or timed out */ }
 
@@ -293,7 +294,6 @@ async function bootSession({ session, sessionData, phoneNumber, onLinkCode, alia
                 headless: true,
                 userDataDir: getSessionTokenPath(session),
                 defaultViewport: { width: 1280, height: 800 },
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1280,800'],
             },
         });
 
@@ -407,15 +407,35 @@ app.get('/api/:session/qrcode/image', async (req, res) => {
     res.send(qrBuffer);
 });
 
-// Check session status
+// Check session status (auto-boots from disk if profile exists)
 app.get('/api/:session/status', (req, res) => {
     const { session } = req.params;
-    const sessionData = sessions.get(session);
+    let sessionData = sessions.get(session);
 
     if (!sessionData) {
+        const tokenPath = getSessionTokenPath(session);
+        // If an existing Chromium profile exists on disk, auto-boot it
+        if (fs.existsSync(path.join(tokenPath, 'Default'))) {
+            console.log(`[${session}] Auto-restoring session from disk on status check...`);
+            sessionData = newSessionData();
+            sessions.set(session, sessionData);
+            bootSession({ session, sessionData }).catch(err => {
+                console.warn(`[${session}] Auto-start failed:`, err?.message || err);
+            });
+            return res.json({
+                exists: true,
+                connected: false,
+                status: 'INITIALIZING',
+                qrReady: false,
+                linkingPhone: false,
+                pairingCode: null
+            });
+        }
+
         return res.json({
             exists: false,
             connected: false,
+            status: 'DISCONNECTED',
             qrReady: false,
             linkingPhone: false,
             pairingCode: null
@@ -425,6 +445,7 @@ app.get('/api/:session/status', (req, res) => {
     res.json({
         exists: true,
         connected: (sessionData.connected && !!sessionData.client) || false,
+        status: sessionData.connected ? 'CONNECTED' : (sessionData.qrReady ? 'QR_CODE' : (sessionData.linkingPhone ? 'LINKING_PHONE' : 'INITIALIZING')),
         qrReady: sessionData.qrReady || false,
         linkingPhone: sessionData.linkingPhone || false,
         pairingCode: sessionData.pairingCode || null,
@@ -2340,6 +2361,30 @@ app.post('/api/:session/send-order', async (req, res) => {
 });
 
 
+// Auto-restore saved sessions on startup
+async function autoRestoreSavedSessions() {
+    try {
+        if (!fs.existsSync(TOKENS_BASE_DIR)) return;
+        const entries = fs.readdirSync(TOKENS_BASE_DIR, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.isDirectory() && SESSION_NAME.test(entry.name)) {
+                const sessionName = entry.name;
+                const tokenPath = path.join(TOKENS_BASE_DIR, sessionName);
+                if (fs.existsSync(path.join(tokenPath, 'Default'))) {
+                    console.log(`[${sessionName}] Found existing session profile on disk, auto-restoring...`);
+                    const sessionData = newSessionData();
+                    sessions.set(sessionName, sessionData);
+                    bootSession({ session: sessionName, sessionData }).catch(err => {
+                        console.warn(`[${sessionName}] Auto-restore failed:`, err?.message || err);
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Error auto-restoring sessions:', e.message);
+    }
+}
+
 process.on('SIGTERM', () => process.emit('SIGINT'));
 
 // Start server
@@ -2347,4 +2392,5 @@ server.listen(PORT, '127.0.0.1', () => {
     console.log(`WPPConnect Sidecar running on http://127.0.0.1:${PORT}`);
     console.log('Health check: /health');
     console.log('API docs: /api/status');
+    autoRestoreSavedSessions();
 });

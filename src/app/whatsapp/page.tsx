@@ -521,6 +521,7 @@ export default function WhatsAppPage() {
     const [chatTypeMap, setChatTypeMap] = useState<Record<string, ContactType>>({});
     const chatRecordRef = useRef<string | null>(null);
     const connectPollRef = useRef<NodeJS.Timeout | null>(null);
+    const autoConnectAttempted = useRef(false);
     const [actionMenu, setActionMenu] = useState<{
         isOpen: boolean;
         message: WPPMessage | null;
@@ -676,7 +677,10 @@ export default function WhatsAppPage() {
                         setSessionStatus((prev) => (prev === "connected" ? "connected" : "connecting"));
                     }
                 } else if (status === "DISCONNECTED") {
-                    if (!pairingCode) {
+                    if (!autoConnectAttempted.current) {
+                        autoConnectAttempted.current = true;
+                        whatsappManager.connect(false).catch(() => {});
+                    } else if (!pairingCode) {
                         setSessionStatus((prev) => (prev === "connecting" ? "connecting" : "disconnected"));
                     }
                 }
