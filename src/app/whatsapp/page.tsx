@@ -447,6 +447,7 @@ export default function WhatsAppPage() {
     const [loginMethod, setLoginMethod] = useState<'qr' | 'phone'>('qr');
     const [phoneNumber, setPhoneNumber] = useState('918884377789');
     const [pairingLoading, setPairingLoading] = useState(false);
+    const phonePollRef = React.useRef<NodeJS.Timeout | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
     const [chats, setChats] = useState<ChatListItem[]>([]);
     const [loadingChats, setLoadingChats] = useState(false);
@@ -660,22 +661,37 @@ export default function WhatsAppPage() {
                 const status = await whatsappManager.getStatus();
                 if (status === "CONNECTED") {
                     setSessionStatus("connected");
+                    setPairingCode(null);
+                    if (phonePollRef.current) {
+                        clearInterval(phonePollRef.current);
+                        phonePollRef.current = null;
+                    }
                     loadExistingChats();
                 } else if (status === "QR_CODE") {
                     setSessionStatus("qr");
                     const qr = await whatsappManager.getQR();
                     if (qr) setQrCode(qr);
                 } else if (status === "INITIALIZING") {
-                    setSessionStatus((prev) => (prev === "connected" ? "connected" : "connecting"));
+                    if (!pairingCode) {
+                        setSessionStatus((prev) => (prev === "connected" ? "connected" : "connecting"));
+                    }
                 } else if (status === "DISCONNECTED") {
-                    setSessionStatus((prev) => (prev === "connecting" ? "connecting" : "disconnected"));
+                    if (!pairingCode) {
+                        setSessionStatus((prev) => (prev === "connecting" ? "connecting" : "disconnected"));
+                    }
                 }
             }
         };
         checkServer();
         const interval = setInterval(checkServer, 10000);
-        return () => clearInterval(interval);
-    }, [loadExistingChats]);
+        return () => {
+            clearInterval(interval);
+            if (phonePollRef.current) {
+                clearInterval(phonePollRef.current);
+                phonePollRef.current = null;
+            }
+        };
+    }, [loadExistingChats, pairingCode]);
 
     // Chat Selection
     useEffect(() => {
@@ -1006,6 +1022,10 @@ export default function WhatsAppPage() {
 
     const handleDisconnect = async () => {
         if (connectPollRef.current) clearInterval(connectPollRef.current);
+        if (phonePollRef.current) {
+            clearInterval(phonePollRef.current);
+            phonePollRef.current = null;
+        }
         try {
             await whatsappManager.disconnect();
         } catch (e) {
@@ -1019,28 +1039,34 @@ export default function WhatsAppPage() {
 
     const handleRequestPairingCode = async () => {
         if (!phoneNumber) {
-            setPairingCode(null); // Clear any old code
+            setPairingCode(null);
             return;
         }
         const cleanPhone = phoneNumber.replace(/\D/g, "");
         setPairingLoading(true);
-        setPairingCode(null); // Clear previous code while loading
+        setPairingCode(null);
+        if (phonePollRef.current) {
+            clearInterval(phonePollRef.current);
+            phonePollRef.current = null;
+        }
         try {
             const response = await whatsappManager.requestPairingCode(cleanPhone);
             if (response && response.code) {
                 setPairingCode(response.code);
-                // Switch manager to the phone-specific session for proper status polling
-                const phonePoll = setInterval(async () => {
+                phonePollRef.current = setInterval(async () => {
                     const status = await whatsappManager.getStatus();
                     if (status === "CONNECTED") {
+                        if (phonePollRef.current) {
+                            clearInterval(phonePollRef.current);
+                            phonePollRef.current = null;
+                        }
                         whatsappManager.setSessionId("luminila");
                         setSessionStatus("connected");
                         setPairingCode(null);
                         setQrCode(null);
-                        clearInterval(phonePoll);
                         loadExistingChats();
                     }
-                }, 1500);
+                }, 2000);
             } else {
                 setPairingCode(null);
             }
@@ -1906,7 +1932,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             )}
                         </div>
 
-                        {sessionStatus === "qr" && (
+                        {(sessionStatus === "qr" || !!pairingCode) && (
                             <div className="p-6 flex flex-col items-center justify-center flex-1 space-y-4">
                                 {/* Login Method Tabs */}
                                 <div className="flex bg-muted rounded-lg p-1 mb-4 w-full max-w-[250px]">
@@ -1997,7 +2023,13 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                 </div>
 
                                                 <button
-                                                    onClick={() => setPairingCode(null)}
+                                                    onClick={() => {
+                                                        setPairingCode(null);
+                                                        if (phonePollRef.current) {
+                                                            clearInterval(phonePollRef.current);
+                                                            phonePollRef.current = null;
+                                                        }
+                                                    }}
                                                     className="mt-6 text-xs text-muted-foreground hover:text-primary underline"
                                                 >
                                                     Back to Phone Entry

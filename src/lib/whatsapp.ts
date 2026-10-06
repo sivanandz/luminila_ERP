@@ -202,6 +202,7 @@ export async function getSessionStatus(sessionId: string): Promise<WPPSession["s
 
         const data = await response.json();
         if (data.connected) return "CONNECTED";
+        if (data.linkingPhone || data.pairingCode) return "QR_CODE";
         if (data.qrReady) return "QR_CODE";
         if (data.exists) return "INITIALIZING";
         return "DISCONNECTED";
@@ -1177,7 +1178,7 @@ export async function requestPairingCode(sessionId: string, phone: string): Prom
             body: JSON.stringify({ phone })
         });
         const data = await response.json();
-        return data.success ? { code: data.code, session: data.phoneSession } : null;
+        return data.success ? { code: data.code, session: data.session || data.phoneSession || sessionId } : null;
     } catch {
         return null;
     }

@@ -151,7 +151,17 @@ const BROWSER_ARGS = [
 ];
 
 function newSessionData() {
-    return { connected: false, qrReady: false, qrCode: null, client: null, pendingClient: null, failed: false, closing: false };
+    return {
+        connected: false,
+        qrReady: false,
+        qrCode: null,
+        linkingPhone: false,
+        pairingCode: null,
+        client: null,
+        pendingClient: null,
+        failed: false,
+        closing: false
+    };
 }
 
 const isCurrent = (name, data) => sessions.get(name) === data;
@@ -243,8 +253,13 @@ async function bootSession({ session, sessionData, phoneNumber, onLinkCode, alia
                 emit('qrcode', { qrCode: base64Qr, attempts });
             },
             catchLinkCode: (code) => {
-                console.log(`[${session}] Pairing code received`);
+                console.log(`[${session}] Pairing code received: ${code}`);
+                sessionData.pairingCode = code;
+                sessionData.linkingPhone = true;
+                sessionData.connected = false;
+                sessionData.qrReady = false;
                 if (onLinkCode) onLinkCode(code);
+                emit('pairingCode', { code });
             },
             // statusFind is only used for teardown signals. NOTE: 'inChat' fires
             // before the QR is scanned, so it is NOT a reliable login signal.
@@ -291,6 +306,8 @@ async function bootSession({ session, sessionData, phoneNumber, onLinkCode, alia
 
         const isLogged = await client.waitForLogin();
         if (!isLogged) throw new Error('Not logged in');
+        sessionData.linkingPhone = false;
+        sessionData.pairingCode = null;
         markConnected(client);
 
         // Mirror wppconnect's built-in re-login watcher (skipped with waitForLogin:false):
@@ -363,8 +380,7 @@ app.post('/api/:session/start', async (req, res) => {
 // Get QR code
 app.get('/api/:session/qrcode', async (req, res) => {
     const { session } = req.params;
-    const phoneSession = `${session}_phone`;
-    const sessionData = sessions.get(session) || sessions.get(phoneSession);
+    const sessionData = sessions.get(session);
 
     if (!sessionData) {
         return res.status(404).json({ success: false, error: 'Session not found' });
@@ -380,8 +396,7 @@ app.get('/api/:session/qrcode', async (req, res) => {
 // Get QR code as image
 app.get('/api/:session/qrcode/image', async (req, res) => {
     const { session } = req.params;
-    const phoneSession = `${session}_phone`;
-    const sessionData = sessions.get(session) || sessions.get(phoneSession);
+    const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.qrCode) {
         return res.status(404).send('QR not ready');
@@ -395,17 +410,25 @@ app.get('/api/:session/qrcode/image', async (req, res) => {
 // Check session status
 app.get('/api/:session/status', (req, res) => {
     const { session } = req.params;
-    const phoneSession = `${session}_phone`;
-    const sessionData = sessions.get(session) || sessions.get(phoneSession);
+    const sessionData = sessions.get(session);
 
     if (!sessionData) {
-        return res.json({ exists: false, connected: false, qrReady: false });
+        return res.json({
+            exists: false,
+            connected: false,
+            qrReady: false,
+            linkingPhone: false,
+            pairingCode: null
+        });
     }
 
     res.json({
         exists: true,
         connected: (sessionData.connected && !!sessionData.client) || false,
-        qrReady: sessionData.qrReady || false
+        qrReady: sessionData.qrReady || false,
+        linkingPhone: sessionData.linkingPhone || false,
+        pairingCode: sessionData.pairingCode || null,
+        qrcode: sessionData.qrCode || null
     });
 });
 
@@ -460,25 +483,36 @@ app.post('/api/:session/reset', async (req, res) => {
 });
 
 // Request Pairing Code (Phone Number Login)
-// Uses a separate session name to avoid interfering with QR login
 app.post('/api/:session/pair-phone', async (req, res) => {
     const { session } = req.params;
     const { phone } = req.body;
-    const phoneSession = `${session}_phone`; // Use separate session for phone login
 
     const cleanPhone = String(phone || '').replace(/\D/g, '');
-    console.log(`[${phoneSession}] Link Phone Request: ${cleanPhone} (raw: ${phone})`);
+    console.log(`[${session}] Link Phone Request: ${cleanPhone} (raw: ${phone})`);
 
-    // Clean up existing phone session if it exists (not the main session!)
-    const existingPhoneSession = sessions.get(phoneSession);
-    if (existingPhoneSession) {
-        sessions.delete(phoneSession);
-        await closeSessionData(existingPhoneSession);
+    if (!cleanPhone || cleanPhone.length < 8) {
+        return res.status(400).json({ success: false, error: 'Invalid phone number' });
     }
+
+    // Clean up ANY existing session for this session (and legacy _phone)
+    const existing = sessions.get(session);
+    if (existing) {
+        sessions.delete(session);
+        await closeSessionData(existing);
+    }
+    const legacyPhone = sessions.get(`${session}_phone`);
+    if (legacyPhone) {
+        sessions.delete(`${session}_phone`);
+        await closeSessionData(legacyPhone);
+    }
+
+    // Clean stored tokens so phone pairing starts completely clean without picking up stale locks
+    await cleanSessionTokens(session);
 
     try {
         const sessionData = newSessionData();
-        sessions.set(phoneSession, sessionData);
+        sessionData.linkingPhone = true;
+        sessions.set(session, sessionData);
 
         let codeResolved = false;
         const codePromise = new Promise((resolve, reject) => {
@@ -487,10 +521,9 @@ app.post('/api/:session/pair-phone', async (req, res) => {
             }, 90000);
 
             bootSession({
-                session: phoneSession,
+                session,
                 sessionData,
                 phoneNumber: cleanPhone,
-                aliasOf: session,
                 onLinkCode: (code) => {
                     codeResolved = true;
                     clearTimeout(timeout);
@@ -505,11 +538,11 @@ app.post('/api/:session/pair-phone', async (req, res) => {
         });
 
         const code = await codePromise;
-        res.json({ success: true, code, phoneSession });
+        res.json({ success: true, code, session });
 
     } catch (error) {
-        console.error(`[${phoneSession}] Pairing request error:`, error);
-        sessions.delete(phoneSession);
+        console.error(`[${session}] Pairing request error:`, error);
+        sessions.delete(session);
         res.status(500).json({ success: false, error: error.message || 'Failed to generate code' });
     }
 });
