@@ -53,6 +53,19 @@ async function cleanSessionTokens(sessionName) {
     }
 }
 
+function removeStaleProfileLocks(sessionName) {
+    const sessionPath = getSessionTokenPath(sessionName);
+    const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+    for (const lock of lockFiles) {
+        const lockPath = path.join(sessionPath, lock);
+        try {
+            if (fs.existsSync(lockPath)) {
+                fs.unlinkSync(lockPath);
+            }
+        } catch { /* ignore */ }
+    }
+}
+
 const app = express();
 const server = http.createServer(app);
 
@@ -239,6 +252,7 @@ async function bootSession({ session, sessionData, phoneNumber, onLinkCode, alia
     };
 
     try {
+        removeStaleProfileLocks(session);
         const wpp = await getWppConnect();
         const client = await wpp.create({
             session,
@@ -287,7 +301,7 @@ async function bootSession({ session, sessionData, phoneNumber, onLinkCode, alia
             disableWelcome: true,
             updatesLog: false,
             browserArgs: BROWSER_ARGS,
-            autoClose: QR_SCAN_TIMEOUT_MS, // only applies while waiting for scan
+            autoClose: 0, // 0 disables auto-closing the browser on idle or sync
             deviceSyncTimeout: 300000,
             waitForLogin: false,
             puppeteerOptions: {
@@ -310,25 +324,23 @@ async function bootSession({ session, sessionData, phoneNumber, onLinkCode, alia
         sessionData.pairingCode = null;
         markConnected(client);
 
-        // Mirror wppconnect's built-in re-login watcher (skipped with waitForLogin:false):
-        // if the device is unlinked from the phone, fall back to a fresh QR cycle.
-        let relogin = null;
-        client.onStateChange(async () => {
+        // Stabilized connection state watcher: avoids abrupt disconnects on temporary network pings
+        client.onStateChange(async (state) => {
             if (!isCurrent(session, sessionData) || sessionData.closing) return;
+            console.log(`[${session}] Connection state: ${state}`);
+            // Wait 5 seconds to let WhatsApp Web stabilize before evaluating connection status
+            await new Promise(r => setTimeout(r, 5000));
+            if (!isCurrent(session, sessionData) || sessionData.closing) return;
+
             const registered = await client.page
-                .evaluate(() => WPP.conn.isRegistered())
-                .catch(() => false);
-            if (registered) {
-                if (!sessionData.connected) markConnected(client);
-                return;
-            }
-            markDisconnected();
-            await new Promise(r => setTimeout(r, 2000));
-            if (!relogin) {
-                relogin = client.waitForLogin()
-                    .then(ok => { if (ok) markConnected(client); })
-                    .catch(() => {})
-                    .finally(() => { relogin = null; });
+                ?.evaluate(() => window.WPP?.conn?.isRegistered?.() ?? true)
+                .catch(() => null);
+
+            if (registered === false) {
+                console.warn(`[${session}] Connection dropped / device unlinked`);
+                markDisconnected();
+            } else if (registered === true && !sessionData.connected) {
+                markConnected(client);
             }
         });
     } catch (error) {
@@ -408,20 +420,27 @@ app.get('/api/:session/qrcode/image', async (req, res) => {
 });
 
 // Check session status (auto-boots from disk if profile exists)
+const bootingSessions = new Set();
+
 app.get('/api/:session/status', (req, res) => {
     const { session } = req.params;
     let sessionData = sessions.get(session);
 
     if (!sessionData) {
         const tokenPath = getSessionTokenPath(session);
-        // If an existing Chromium profile exists on disk, auto-boot it
-        if (fs.existsSync(path.join(tokenPath, 'Default'))) {
+        // If an existing Chromium profile exists on disk and not already booting
+        if (fs.existsSync(path.join(tokenPath, 'Default')) && !bootingSessions.has(session)) {
             console.log(`[${session}] Auto-restoring session from disk on status check...`);
+            bootingSessions.add(session);
             sessionData = newSessionData();
             sessions.set(session, sessionData);
-            bootSession({ session, sessionData }).catch(err => {
-                console.warn(`[${session}] Auto-start failed:`, err?.message || err);
-            });
+            bootSession({ session, sessionData })
+                .catch(err => {
+                    console.warn(`[${session}] Auto-start failed:`, err?.message || err);
+                })
+                .finally(() => {
+                    bootingSessions.delete(session);
+                });
             return res.json({
                 exists: true,
                 connected: false,
