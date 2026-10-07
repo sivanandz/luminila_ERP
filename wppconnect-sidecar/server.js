@@ -2388,8 +2388,13 @@ async function autoRestoreSavedSessions() {
         for (const entry of entries) {
             if (entry.isDirectory() && SESSION_NAME.test(entry.name)) {
                 const sessionName = entry.name;
+                // Ignore legacy _phone dirs if primary session exists
+                if (sessionName.endsWith('_phone') && fs.existsSync(path.join(TOKENS_BASE_DIR, sessionName.replace('_phone', '')))) {
+                    continue;
+                }
                 const tokenPath = path.join(TOKENS_BASE_DIR, sessionName);
-                if (fs.existsSync(path.join(tokenPath, 'Default'))) {
+                const idbPath = path.join(tokenPath, 'Default', 'IndexedDB', 'https_web.whatsapp.com_0.indexeddb.leveldb');
+                if (fs.existsSync(idbPath)) {
                     console.log(`[${sessionName}] Found existing session profile on disk, auto-restoring...`);
                     const sessionData = newSessionData();
                     sessions.set(sessionName, sessionData);

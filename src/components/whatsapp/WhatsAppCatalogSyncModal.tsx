@@ -92,7 +92,7 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
         setStatusMessage(null);
 
         try {
-            const res = await batchSyncCatalog(toSync, "luminila_phone", (cur, total) => {
+            const res = await batchSyncCatalog(toSync, "luminila", (cur, total) => {
                 setProgress({ current: cur, total });
             });
 
@@ -110,7 +110,7 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
     const handleSyncSingle = async (p: WhatsAppProductItem) => {
         setSyncing(true);
         try {
-            const res = await syncProductToWhatsApp(p, "luminila_phone");
+            const res = await syncProductToWhatsApp(p, "luminila");
             if (res.success) {
                 setStatusMessage(`Successfully synced "${p.name}" to WhatsApp Catalog!`);
                 await loadProducts();

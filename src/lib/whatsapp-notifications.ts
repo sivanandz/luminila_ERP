@@ -7,7 +7,7 @@ import { pb } from './pocketbase';
 import { sendMessage, sendFile } from './whatsapp';
 import { isWhatsAppOptedOut } from './whatsapp-crm';
 
-const DEFAULT_SESSION_ID = 'luminila_phone';
+const DEFAULT_SESSION_ID = 'luminila';
 
 /**
  * Format currency in Indian numbering system

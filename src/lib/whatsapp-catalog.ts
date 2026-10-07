@@ -6,7 +6,7 @@
 import { pb } from './pocketbase';
 import { createCatalogProduct, deleteCatalogProduct, getCatalogProducts } from './whatsapp';
 
-const DEFAULT_SESSION_ID = 'luminila_phone';
+const DEFAULT_SESSION_ID = 'luminila';
 
 export interface CatalogSyncResult {
     total: number;
