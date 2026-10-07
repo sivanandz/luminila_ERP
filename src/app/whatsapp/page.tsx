@@ -50,6 +50,10 @@ import {
     Users,
     Radio,
     Share2,
+    ShieldCheck,
+    ShieldAlert,
+    Lock,
+    Unlock,
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import {
@@ -98,6 +102,9 @@ import {
 import { startPaymentReconciler } from "@/lib/payment-reconciliation";
 import { processBroadcastQueue } from "@/lib/whatsapp-broadcast";
 import { BroadcastComposerModal } from "@/components/whatsapp/BroadcastComposerModal";
+import { AdminApprovalModal } from "@/components/whatsapp/AdminApprovalModal";
+import { getWhatsAppBinding, type WhatsAppBinding } from "@/lib/whatsapp-binding";
+import { useAuth } from "@/contexts/AuthContext";
 
 // --- Types ---
 
@@ -537,6 +544,18 @@ export default function WhatsAppPage() {
         isChannel?: boolean;
     } | null>(null);
     const [chatFilter, setChatFilter] = useState<'all' | 'vendor' | 'customer' | 'group'>('all');
+
+    // WhatsApp Admin Account Binding & Protected Lock State
+    const { user, isAdmin } = useAuth();
+    const [binding, setBinding] = useState<WhatsAppBinding | null>(null);
+    const [approvalModalOpen, setApprovalModalOpen] = useState(false);
+    const [approvalModalMode, setApprovalModalMode] = useState<"approval" | "bind" | "details">("approval");
+    const [pendingActionType, setPendingActionType] = useState<"unbind" | "reset" | "disconnect">("unbind");
+
+    // Load WhatsApp Admin Binding status on mount and when connection status changes
+    useEffect(() => {
+        getWhatsAppBinding().then((b) => setBinding(b));
+    }, [sessionStatus]);
 
     // Phase 2/3: payments reconciliation, broadcasts, order-intent banner
     const [showBroadcastModal, setShowBroadcastModal] = useState(false);
@@ -1009,10 +1028,7 @@ export default function WhatsAppPage() {
         }
     };
 
-    const handleResetSession = async () => {
-        if (!confirm("Are you sure you want to completely reset and clear stored WhatsApp session credentials? You will be prompted to scan a fresh QR code.")) {
-            return;
-        }
+    const executeResetSession = async () => {
         if (connectPollRef.current) clearInterval(connectPollRef.current);
         setSessionStatus("connecting");
         setQrCode(null);
@@ -1025,7 +1041,20 @@ export default function WhatsAppPage() {
         await handleConnect(true);
     };
 
-    const handleDisconnect = async () => {
+    const handleResetSession = async () => {
+        if (binding?.isBound) {
+            setPendingActionType("reset");
+            setApprovalModalMode("approval");
+            setApprovalModalOpen(true);
+            return;
+        }
+        if (!confirm("Are you sure you want to completely reset and clear stored WhatsApp session credentials? You will be prompted to scan a fresh QR code.")) {
+            return;
+        }
+        await executeResetSession();
+    };
+
+    const executeDisconnect = async () => {
         if (connectPollRef.current) clearInterval(connectPollRef.current);
         if (phonePollRef.current) {
             clearInterval(phonePollRef.current);
@@ -1039,6 +1068,24 @@ export default function WhatsAppPage() {
         setSessionStatus("disconnected");
         setQrCode(null);
         setPairingCode(null);
+    };
+
+    const handleDisconnect = async () => {
+        if (binding?.isBound) {
+            setPendingActionType("disconnect");
+            setApprovalModalMode("approval");
+            setApprovalModalOpen(true);
+            return;
+        }
+        await executeDisconnect();
+    };
+
+    const handleApprovalSuccess = async (approver: { id: string; email: string; name: string }) => {
+        if (pendingActionType === "reset") {
+            await executeResetSession();
+        } else if (pendingActionType === "disconnect") {
+            await executeDisconnect();
+        }
     };
 
 
@@ -1822,7 +1869,38 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
-            <Header title="WhatsApp Concierge" subtitle="Chat & Create Orders" />
+            <Header
+                title="WhatsApp Concierge"
+                subtitle="Chat & Create Orders"
+                action={
+                    binding?.isBound ? (
+                        <button
+                            onClick={() => {
+                                setApprovalModalMode("details");
+                                setApprovalModalOpen(true);
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all shadow-sm"
+                            title={`Locked to Admin: ${binding.boundAdminEmail}. Click to manage or unbind.`}
+                        >
+                            <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                            <span className="hidden sm:inline">Admin Bound:</span>
+                            <span className="max-w-[130px] truncate">{binding.boundAdminName || binding.boundAdminEmail}</span>
+                        </button>
+                    ) : (
+                        <button
+                            onClick={() => {
+                                setApprovalModalMode("bind");
+                                setApprovalModalOpen(true);
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-amber-500/10 text-amber-500 border border-amber-500/25 hover:bg-amber-500/20 transition-all"
+                            title="Unbound instance. Click to bind to an Admin account to secure connection."
+                        >
+                            <ShieldAlert className="w-4 h-4 text-amber-500" />
+                            <span className="hidden sm:inline">Bind to Admin</span>
+                        </button>
+                    )
+                }
+            />
 
             <div className="flex-1 overflow-hidden p-6 pb-2">
                 {/* Server Status */}
@@ -1908,6 +1986,36 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             <RefreshCw size={12} />
                                         </button>
                                     )}
+
+                                    {/* Admin Binding Indicator & Fast Lock Status */}
+                                    {binding?.isBound ? (
+                                        <button
+                                            onClick={() => {
+                                                setApprovalModalMode("details");
+                                                setApprovalModalOpen(true);
+                                            }}
+                                            className="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/30 px-2 py-1 rounded flex items-center gap-1 transition-colors"
+                                            title={`Protected: Bound to Admin ${binding.boundAdminEmail}. Click to view details or request unbind.`}
+                                        >
+                                            <ShieldCheck size={12} className="text-emerald-500" />
+                                            <span className="hidden sm:inline font-medium">Bound:</span>
+                                            <span className="font-semibold max-w-[80px] truncate">{binding.boundAdminName || binding.boundAdminEmail}</span>
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={() => {
+                                                setApprovalModalMode("bind");
+                                                setApprovalModalOpen(true);
+                                            }}
+                                            className="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/30 px-2 py-1 rounded flex items-center gap-1 transition-colors"
+                                            title="Click to bind this WhatsApp instance to a designated Admin account to prevent unauthorized unbinding or disconnection."
+                                        >
+                                            <ShieldAlert size={12} />
+                                            <span className="hidden sm:inline">Bind to Admin</span>
+                                            <span className="sm:hidden">Bind</span>
+                                        </button>
+                                    )}
+
                                     {sessionStatus === "disconnected" && (
                                         <>
                                             <button onClick={() => handleConnect(false)} className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded hover:opacity-90">Connect</button>
@@ -3419,6 +3527,18 @@ _Your order will be confirmed and processed immediately upon successful payment.
             <WhatsAppCatalogSyncModal
                 isOpen={showCatalogSyncModal}
                 onClose={() => setShowCatalogSyncModal(false)}
+            />
+
+            {/* WhatsApp Admin Account Binding & Approval Modal */}
+            <AdminApprovalModal
+                isOpen={approvalModalOpen}
+                onClose={() => setApprovalModalOpen(false)}
+                mode={approvalModalMode}
+                actionType={pendingActionType}
+                binding={binding}
+                connectedPhone={phoneNumber ? `+${phoneNumber}` : undefined}
+                onApprovalSuccess={handleApprovalSuccess}
+                onBindingUpdated={(newBinding) => setBinding(newBinding)}
             />
         </div>
     );
