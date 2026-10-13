@@ -14,6 +14,7 @@ export interface PBRecord {
     updated: string;
     collectionId?: string;
     collectionName?: string;
+    account_email?: string;
 }
 
 // ===========================================
@@ -27,9 +28,20 @@ export interface Product extends PBRecord {
     category?: string;
     base_price: number;
     cost_price?: number;
+    channel_prices?: Record<string, number>;
     image_url?: string;
     barcode?: string;
     is_active: boolean;
+    // Jewelry Specifications (Vyapar / BIS Aligned)
+    gross_weight?: number;
+    net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    wastage_percent?: number;
+    huid_code?: string;
 }
 
 export interface ProductVariant extends PBRecord {
@@ -37,6 +49,7 @@ export interface ProductVariant extends PBRecord {
     variant_name: string;
     sku_suffix?: string;
     price_adjustment: number;
+    channel_prices?: Record<string, number>;
     stock_level: number;
     low_stock_threshold: number;
     size?: string;
@@ -44,6 +57,16 @@ export interface ProductVariant extends PBRecord {
     material?: string;
     shopify_inventory_id?: string;
     woocommerce_product_id?: number;
+    // Jewelry Specifications (Overrides Product level if variant-specific)
+    gross_weight?: number;
+    net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    wastage_percent?: number;
+    huid_code?: string;
     expand?: {
         product?: Product;
     };
@@ -53,7 +76,7 @@ export interface ProductVariant extends PBRecord {
 // SALES COLLECTIONS
 // ===========================================
 
-export type SalesChannel = 'pos' | 'shopify' | 'woocommerce' | 'whatsapp';
+export type SalesChannel = 'pos' | 'shopify' | 'woocommerce' | 'whatsapp' | 'wholesale' | 'exhibition' | 'marketplace' | 'other' | (string & {});
 export type OrderStatus = 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
 
 export interface Sale extends PBRecord {
@@ -77,13 +100,22 @@ export interface SaleItem extends PBRecord {
     quantity: number;
     unit_price: number;
     total_price: number;
+    gross_weight?: number;
+    net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    wastage_percent?: number;
+    huid_code?: string;
 }
 
 // ===========================================
 // STOCK
 // ===========================================
 
-export type MovementType = 'sale' | 'purchase' | 'adjustment' | 'return' | 'sync';
+export type MovementType = 'sale' | 'purchase' | 'adjustment' | 'return' | 'sync' | 'manufacturing';
 
 export interface StockMovement extends PBRecord {
     variant: string; // Relation → product_variants
@@ -91,6 +123,45 @@ export interface StockMovement extends PBRecord {
     quantity: number;
     reference_id?: string;
     source?: string;
+    notes?: string;
+}
+
+export interface ManufacturingTransaction extends PBRecord {
+    order_number: string;
+    artisan_name: string;
+    order_date: string;
+    status: 'draft' | 'in_progress' | 'completed' | 'cancelled';
+    total_raw_material_cost: number;
+    total_overhead_cost: number;
+    gross_production_cost: number;
+    scrap_recovery_credit: number;
+    net_production_cost: number;
+    input_metal_grams: number;
+    output_metal_grams: number;
+    scrap_metal_grams: number;
+    melting_loss_grams: number;
+    melting_loss_percent: number;
+    allowed_tolerance_percent: number;
+    is_within_tolerance: boolean;
+    notes?: string;
+}
+
+export interface Cheque extends PBRecord {
+    cheque_number: string;
+    direction: 'received' | 'issued';
+    party_id?: string;
+    party_name: string;
+    bank_name: string;
+    branch_name?: string;
+    cheque_date: string;
+    amount: number;
+    status: 'open' | 'deposited' | 'cleared' | 'bounced' | 'cancelled';
+    deposit_date?: string;
+    clearing_date?: string;
+    target_bank_account_id?: string;
+    target_bank_account_name?: string;
+    bounce_reason?: string;
+    bounce_penalty_charge?: number;
     notes?: string;
 }
 
@@ -159,6 +230,14 @@ export interface SalesOrderItem extends PBRecord {
     tax_rate: number;
     discount_amount: number;
     total: number;
+    gross_weight?: number;
+    net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    huid_code?: string;
 }
 
 // ===========================================
@@ -232,6 +311,15 @@ export interface CartItem {
     variant: ProductVariant & { expand?: { product?: Product } };
     quantity: number;
     unit_price: number;
+    gross_weight?: number;
+    net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    wastage_percent?: number;
+    huid_code?: string;
 }
 
 export interface Cart {
