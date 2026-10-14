@@ -5,8 +5,8 @@ import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { formatPrice, formatDate } from "@/lib/utils";
 import {
-    Filter,
-    Download,
+
+
     Search,
     Eye,
     Truck,
@@ -15,12 +15,14 @@ import {
     XCircle,
     ShoppingBag,
     FileText,
-    Plus
+    Plus,
+    ScanBarcode,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getOrders, OrderType } from "@/lib/orders";
+import { getOrders, OrderType, SalesOrderItem } from "@/lib/orders";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+import { BarcodeScanDispatchModal, OrderItemSummary } from "@/components/orders/BarcodeScanDispatchModal";
 
 // Define the Order interface locally matching the DB response
 interface Order {
@@ -33,7 +35,7 @@ interface Order {
     total: number;
     created_at?: string;
     created?: string;
-    items?: any[]; // We only fetch basic info here
+    items?: SalesOrderItem[]; // We only fetch basic info here
 }
 
 function getStatusBadge(status: string) {
@@ -64,8 +66,12 @@ export default function OrdersPage() {
     const [activeTab, setActiveTab] = useState<OrderType | 'all'>('all');
     const [searchQuery, setSearchQuery] = useState("");
 
+    const [scanModalOpen, setScanModalOpen] = useState(false);
+    const [selectedOrderForScan, setSelectedOrderForScan] = useState<OrderItemSummary | null>(null);
+
     useEffect(() => {
         fetchOrders();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchOrders is recreated every render and sets state, so adding it to deps would cause an infinite refetch loop; the effect intentionally refetches only when activeTab changes
     }, [activeTab]);
 
     async function fetchOrders() {
@@ -94,6 +100,17 @@ export default function OrdersPage() {
             >
                 <div className="flex items-center gap-3">
                     <Button
+                        variant="outline"
+                        onClick={() => {
+                            setSelectedOrderForScan(null);
+                            setScanModalOpen(true);
+                        }}
+                        className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300 font-bold"
+                    >
+                        <ScanBarcode size={16} className="mr-2 text-emerald-400" />
+                        Scan AWB & Dispatch
+                    </Button>
+                    <Button
                         onClick={() => router.push('/orders/create')}
                     >
                         <Plus size={16} className="mr-2" />
@@ -106,10 +123,10 @@ export default function OrdersPage() {
                 {/* Tabs & Filters */}
                 <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6">
                     <div className="flex items-center gap-1 bg-surface-navy p-1 rounded-lg border border-surface-hover">
-                        {['all', 'sales_order', 'estimate'].map((tab) => (
+                        {(['all', 'sales_order', 'estimate'] as const).map((tab) => (
                             <button
                                 key={tab}
-                                onClick={() => setActiveTab(tab as any)}
+                                onClick={() => setActiveTab(tab)}
                                 className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${activeTab === tab
                                     ? 'bg-primary text-primary-foreground shadow-lg'
                                     : 'text-moonstone hover:text-white hover:bg-white/5'
@@ -204,12 +221,32 @@ export default function OrdersPage() {
                                                     {formatDate(order.created || order.created_at)}
                                                 </td>
                                                 <td className="py-4 px-6 text-right">
-                                                    <button
-                                                        onClick={() => router.push(`/orders/detail?id=${order.id}`)}
-                                                        className="text-moonstone hover:text-white p-2 hover:bg-bg-navy rounded-lg transition-colors"
-                                                    >
-                                                        <Eye size={18} />
-                                                    </button>
+                                                    <div className="flex items-center justify-end gap-1">
+                                                        <button
+                                                            onClick={() => {
+                                                                setSelectedOrderForScan({
+                                                                    id: order.id,
+                                                                    order_number: order.order_number,
+                                                                    customer_name: order.customer_name,
+                                                                    customer_phone: order.customer_phone,
+                                                                    status: order.status,
+                                                                    total: order.total,
+                                                                });
+                                                                setScanModalOpen(true);
+                                                            }}
+                                                            className="text-moonstone hover:text-emerald-400 p-2 hover:bg-bg-navy rounded-lg transition-colors"
+                                                            title="Scan AWB Barcode & Send WhatsApp"
+                                                        >
+                                                            <ScanBarcode size={18} />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => router.push(`/orders/detail?id=${order.id}`)}
+                                                            className="text-moonstone hover:text-white p-2 hover:bg-bg-navy rounded-lg transition-colors"
+                                                            title="View Order Details"
+                                                        >
+                                                            <Eye size={18} />
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         );
@@ -220,6 +257,14 @@ export default function OrdersPage() {
                     )}
                 </div>
             </div>
+
+            {/* Quick Barcode Scanner Station Modal */}
+            <BarcodeScanDispatchModal
+                open={scanModalOpen}
+                onOpenChange={setScanModalOpen}
+                preselectedOrder={selectedOrderForScan}
+                onDispatched={fetchOrders}
+            />
         </div>
     );
 }

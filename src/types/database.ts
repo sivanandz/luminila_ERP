@@ -355,7 +355,7 @@ export interface ChannelBufferRule extends PBRecord {
 export interface ShipmentRecord extends PBRecord {
     order_id: string;
     invoice_id?: string;
-    carrier: 'delhivery' | 'shiprocket' | 'bluedart' | 'dtdc' | 'other';
+    carrier: 'delhivery' | 'shiprocket' | 'bluedart' | 'dtdc' | 'st_courier' | 'other';
     awb_number: string;
     shipping_status: 'created' | 'manifested' | 'picked_up' | 'in_transit' | 'out_for_delivery' | 'delivered' | 'rto' | 'cancelled';
     cod_amount: number;
