@@ -42,6 +42,12 @@ export interface Product extends PBRecord {
     making_charges_type?: 'per_gram' | 'fixed' | 'percent';
     wastage_percent?: number;
     huid_code?: string;
+    // Imitation / Fashion Jewelry Attributes (Vasy.ai Aligned)
+    imitation_craft?: string;
+    plating_type?: string;
+    occasion?: string;
+    base_metal?: string;
+    stone_type?: string;
 }
 
 export interface ProductVariant extends PBRecord {
@@ -67,6 +73,12 @@ export interface ProductVariant extends PBRecord {
     making_charges_type?: 'per_gram' | 'fixed' | 'percent';
     wastage_percent?: number;
     huid_code?: string;
+    // Imitation / Fashion Jewelry Attributes
+    imitation_craft?: string;
+    plating_type?: string;
+    occasion?: string;
+    base_metal?: string;
+    stone_type?: string;
     expand?: {
         product?: Product;
     };
@@ -328,3 +340,68 @@ export interface Cart {
     discount: number;
     total: number;
 }
+
+// ===========================================
+// OMNICHANNEL & LOGISTICS (Vasy.ai Aligned)
+// ===========================================
+
+export interface ChannelBufferRule extends PBRecord {
+    channel: 'shopify' | 'woocommerce' | 'whatsapp' | 'pos' | 'amazon' | 'other';
+    safety_buffer_quantity: number;
+    is_frozen: boolean;
+    auto_freeze_on_low_stock: boolean;
+}
+
+export interface ShipmentRecord extends PBRecord {
+    order_id: string;
+    invoice_id?: string;
+    carrier: 'delhivery' | 'shiprocket' | 'bluedart' | 'dtdc' | 'other';
+    awb_number: string;
+    shipping_status: 'created' | 'manifested' | 'picked_up' | 'in_transit' | 'out_for_delivery' | 'delivered' | 'rto' | 'cancelled';
+    cod_amount: number;
+    weight_grams: number;
+    box_dimensions?: string; // e.g. "10x8x4 cm"
+    tracking_url?: string;
+    manifest_id?: string;
+}
+
+export interface DispatchManifest extends PBRecord {
+    manifest_number: string;
+    carrier: string;
+    dispatch_date: string;
+    total_packages: number;
+    total_cod_amount: number;
+    driver_name?: string;
+    driver_phone?: string;
+    status: 'draft' | 'handed_over' | 'completed';
+}
+
+export interface ReturnQcInspection extends PBRecord {
+    order_id: string;
+    invoice_id: string;
+    customer_id?: string;
+    customer_name: string;
+    return_reason: string;
+    qc_grade: 'restock_grade_a' | 'karigar_repair' | 'damaged_writeoff';
+    qc_notes?: string;
+    inspected_by?: string;
+    inspection_date: string;
+    restocked_variant_id?: string;
+    restocked_quantity: number;
+    salvage_scrap_grams?: number;
+    credit_note_id?: string;
+}
+
+export interface CrossBorderExportInvoice extends PBRecord {
+    invoice_id: string;
+    currency: 'USD' | 'GBP' | 'EUR' | 'AED' | 'CAD' | 'AUD' | 'SGD';
+    exchange_rate: number; // FX rate to INR
+    foreign_subtotal: number;
+    foreign_grand_total: number;
+    is_lut_export: boolean; // Letter of Undertaking (0% GST)
+    lut_arn_number?: string;
+    port_code?: string;
+    shipping_bill_number?: string;
+    shipping_bill_date?: string;
+}
+
