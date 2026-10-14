@@ -8,36 +8,59 @@ const BarcodeScanner = dynamic(
     () => import("@/components/pos/BarcodeScanner").then((mod) => mod.BarcodeScanner),
     { ssr: false, loading: () => <div className="h-48 bg-surface-navy rounded-lg animate-pulse flex items-center justify-center text-moonstone">Loading camera...</div> }
 );
-import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
 import { formatPrice } from "@/lib/utils";
 import {
     Search,
     Plus,
     Upload,
-    Download,
+
     RefreshCw,
-    MoreVertical,
+
     Package,
-    Printer,
+
     Edit,
     AlertTriangle,
-    Copy,
-    CopyPlus,
+
+
     Trash2,
-    Save,
+
     Loader2,
     ScanBarcode,
     Share2,
+    MapPin,
+    Camera,
+    Sparkles,
+    CheckCircle2,
+
+
+    ChevronDown,
+    ChevronUp,
 } from "lucide-react";
 import { ProductBroadcastModal } from "@/components/whatsapp/ProductBroadcastModal";
+import { ProductPhotoTaggingModal, type ShotType } from "@/components/inventory/ProductPhotoTaggingModal";
+import { DiscrepancyModal } from "@/components/inventory/DiscrepancyModal";
+import { getDiscrepancyStats } from "@/lib/discrepancies";
+import { ChannelPricingInput } from "@/components/pricing/ChannelPricingInput";
+import { getChannelPrice } from "@/lib/channel-pricing";
+import { MobileScanner } from "@/lib/mobile-scanner";
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
+    getSKUTaxonomies,
+    loadSKUTaxonomies,
+    subscribeSKUTaxonomies,
+    type SKUTaxonomies,
+    generateParentSKU,
+    generateChildSKU,
+    generateWholesaleSKU,
+    deriveHSNCode,
+} from "@/lib/sku-generator";
+import {
+
+
+
+
+
+
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,18 +80,19 @@ import {
 } from "@/components/ui/select";
 import { getCategories, createCategory, type Category } from "@/lib/categories";
 import { getAttributes, type ProductAttribute } from "@/lib/attributes";
-import { printLabels, parseSKUFromBarcode } from "@/lib/barcode-generator";
+import { parseSKUFromBarcode } from "@/lib/barcode-generator";
 import {
     getProducts,
     createProduct,
     updateProduct,
     deleteProduct,
-    updateStock,
+
     createVariant,
     getProductVariants,
     updateVariant,
-    type Product as PBProduct,
-    type ProductWithVariant
+    STORAGE_LOCATIONS,
+    type Product as PbProduct,
+    type ProductVariant,
 } from "@/lib/products";
 import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
@@ -82,21 +106,34 @@ interface Product {
     categoryId?: string; // ID
     material?: string;
     price: number;
+    channel_prices?: Record<string, number>;
     stock: number;
     image: string | null;
     hsn_code?: string;
+    location?: string;
+}
+
+// PocketBase product row as returned by getProducts(), which queries with
+// expand: 'category', so the expanded category record carries the display name.
+interface ProductRecordWithCategory extends PbProduct {
+    expand?: {
+        category?: {
+            name?: string;
+        };
+    };
 }
 
 export default function InventoryPage() {
     const [selectedCategory, setSelectedCategory] = useState("All");
+    const [selectedLocation, setSelectedLocation] = useState("All");
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [, setError] = useState<string | null>(null);
     const [showAddDialog, setShowAddDialog] = useState(false);
     const [formLoading, setFormLoading] = useState(false);
     const [categories, setCategories] = useState<Category[]>([]);
-    const [attributes, setAttributes] = useState<ProductAttribute[]>([]);
-    const [attributeValues, setAttributeValues] = useState<Record<string, string>>({});
+    const [, setAttributes] = useState<ProductAttribute[]>([]);
+
     const [showImportDialog, setShowImportDialog] = useState(false);
     const [importData, setImportData] = useState<Record<string, string>[]>([]);
     const [importLoading, setImportLoading] = useState(false);
@@ -110,7 +147,7 @@ export default function InventoryPage() {
     const [showScanDialog, setShowScanDialog] = useState(false);
     const [scanQuery, setScanQuery] = useState("");
     const [scanResult, setScanResult] = useState<Product | null>(null);
-    const [scanStockInput, setScanStockInput] = useState("1");
+    const [, setScanStockInput] = useState("1");
     const scanInputRef = useRef<HTMLInputElement>(null);
     const [scanMode, setScanMode] = useState<'text' | 'camera'>('text');
     const [scanNotFoundSku, setScanNotFoundSku] = useState<string | null>(null);
@@ -126,7 +163,7 @@ export default function InventoryPage() {
         );
     };
 
-    const router = useRouter();
+
 
     // Form state
     const [newProduct, setNewProduct] = useState({
@@ -134,17 +171,66 @@ export default function InventoryPage() {
         sku: "",
         category: "",
         base_price: "",
+        channel_prices: {} as Record<string, number>,
         stock: "",
-        hsn_code: "7117",
+        hsn_code: "71179010",
         image_url: "",
+        location: "Showcase Tray A",
     });
 
-    // Handle Scan Logic
-    const handleScanSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!scanQuery.trim()) return;
+    // Product Photo Tagging Modal State
+    const [showPhotoModal, setShowPhotoModal] = useState(false);
+    const [productShotType, setProductShotType] = useState<ShotType>("HERO");
 
-        const normalizedQuery = scanQuery.trim().toUpperCase();
+    // Stock Discrepancy & Quarantine Modal State
+    const [showDiscrepancyModal, setShowDiscrepancyModal] = useState(false);
+    const [selectedDiscrepancyProduct, setSelectedDiscrepancyProduct] = useState<{
+        id: string;
+        name: string;
+        sku: string;
+        stock: number;
+        variant_id?: string;
+    } | null>(null);
+    const [activeDiscrepanciesCount, setActiveDiscrepanciesCount] = useState<number>(0);
+
+    const loadDiscrepancyCount = async () => {
+        try {
+            const stats = await getDiscrepancyStats();
+            setActiveDiscrepanciesCount(stats.totalUnitsQuarantined);
+        } catch {
+            // ignore
+        }
+    };
+
+    // Master Jewelry SKU Generator State
+    const [showSkuArchitect, setShowSkuArchitect] = useState(false);
+    const [skuGenre, setSkuGenre] = useState("TMP");
+    const [skuCategory, setSkuCategory] = useState("NEC");
+    const [skuSubcat, setSkuSubcat] = useState("CHK");
+    const [skuPlating, setSkuPlating] = useState("MG");
+    const [skuColor, setSkuColor] = useState("RB");
+    const [skuSize, setSkuSize] = useState("STD");
+    const [skuPackagingTier, setSkuPackagingTier] = useState("EA");
+    const [skuBaseMetal, setSkuBaseMetal] = useState("BR");
+    const [skuStone, setSkuStone] = useState("KP");
+    const [nextSkuSeq, setNextSkuSeq] = useState(1);
+    const [skuTaxonomies, setSkuTaxonomies] = useState<SKUTaxonomies>(getSKUTaxonomies());
+
+    useEffect(() => {
+        loadSKUTaxonomies().then(setSkuTaxonomies);
+        const unsubscribe = subscribeSKUTaxonomies(setSkuTaxonomies);
+        return () => unsubscribe();
+    }, []);
+
+    // Handle Scan Logic. `overrideQuery` lets the camera path pass the scanned code
+    // directly, because a setScanQuery() in the same event is not visible to this
+    // render's closure yet.
+    const handleScanSubmit = (e: Pick<React.FormEvent, "preventDefault">, overrideQuery?: string) => {
+        e.preventDefault();
+        const rawQuery = (overrideQuery ?? scanQuery).trim();
+        if (!rawQuery) return;
+
+        const normalizedQuery = rawQuery.toUpperCase();
         const extractedSku = parseSKUFromBarcode(normalizedQuery) || normalizedQuery;
 
         const found = products.find(p =>
@@ -159,21 +245,37 @@ export default function InventoryPage() {
             setScanNotFoundSku(null);
         } else {
             setScanResult(null);
-            setScanNotFoundSku(scanQuery.trim().toUpperCase());
+            setScanNotFoundSku(normalizedQuery);
         }
     };
+
+    // Context-aware hardware barcode scanner routing for Inventory
+    useEffect(() => {
+        if (showAddDialog) {
+            // Priority 70: When product creation/edit modal is open, scan fills the SKU code
+            const unregister = MobileScanner.registerContext("inventory_form", (result) => {
+                setNewProduct(prev => ({ ...prev, sku: result.barcode }));
+                toast.success(`Scanned Barcode to SKU: ${result.barcode}`);
+                return true;
+            }, 70);
+            return () => unregister();
+        } else if (!showScanDialog && !showDiscrepancyModal && !showBroadcastModal) {
+            // Priority 50: When on main inventory table, scan performs instant product lookup
+            const unregister = MobileScanner.registerContext("inventory_search", (result) => {
+                setShowScanDialog(true);
+                setScanQuery(result.barcode);
+                handleScanSubmit({ preventDefault: () => {} }, result.barcode);
+                return true;
+            }, 50);
+            return () => unregister();
+        }
+    }, [showAddDialog, showScanDialog, showDiscrepancyModal, showBroadcastModal, products]);
 
     // Update stock from scanner
     const handleScanStockUpdate = async (change: number) => {
         if (!scanResult) return;
 
         try {
-            const newStock = scanResult.stock + change;
-            if (newStock < 0) {
-                toast.error("Stock cannot be negative");
-                return;
-            }
-
             // Find variant to update
             const variants = await getProductVariants(scanResult.id);
             // Try to match variant by SKU or take first
@@ -181,21 +283,23 @@ export default function InventoryPage() {
             if (!variant && variants.length > 0) variant = variants[0];
 
             if (variant) {
-                // Use service to update stock (PB doesn't support atomic increment easily yet, we do read-write in updateStock)
-                // Use direct update here since we calculated newStock locally
-                await updateVariant(variant.id, { stock_level: newStock });
-
-                // Update local list
-                setProducts(prev => prev.map(p =>
-                    p.id === scanResult.id ? { ...p, stock: newStock } : p
-                ));
-                setScanResult(prev => prev ? { ...prev, stock: newStock } : null);
-
-                toast.success(`Stock updated to ${newStock}`);
-
-                if (change > 0) {
-                    // Optional auto-clear
+                // scanResult.stock is the product-wide aggregate across all variants,
+                // so the write must target the variant's own stock_level, not the aggregate.
+                const newVariantStock = (variant.stock_level || 0) + change;
+                if (newVariantStock < 0) {
+                    toast.error("Stock cannot be negative");
+                    return;
                 }
+
+                await updateVariant(variant.id, { stock_level: newVariantStock });
+
+                // Update local list: product `stock` is the aggregate, so it shifts by `change`
+                setProducts(prev => prev.map(p =>
+                    p.id === scanResult.id ? { ...p, stock: p.stock + change } : p
+                ));
+                setScanResult(prev => prev ? { ...prev, stock: prev.stock + change } : null);
+
+                toast.success(`Stock updated to ${scanResult.stock + change}`);
             } else {
                 toast.error("Could not find variant record to update.");
             }
@@ -205,19 +309,65 @@ export default function InventoryPage() {
         }
     };
 
-    // Auto-generate SKU
-    const generateSKU = (categoryName: string, attrVals: Record<string, string>) => {
-        if (!categoryName) return;
-        const catPrefix = categoryName.substring(0, 3).toUpperCase();
-        const attrCodes = Object.values(attrVals)
-            .filter(v => v && v.length > 0)
-            .map(v => v.substring(0, 2).toUpperCase())
-            .slice(0, 3)
-            .join('');
-        const timestamp = Date.now().toString(36).toUpperCase().slice(-4);
-        const sku = `${catPrefix}-${attrCodes || 'XX'}-${timestamp}`;
-        setNewProduct(prev => ({ ...prev, sku }));
+    // Derive the next SKU sequence for a genre+category+subcategory prefix from the
+    // highest already-issued sequence across ALL product rows (soft-deleted rows keep
+    // their SKU), so a regenerated SKU never collides with an existing one.
+    // `fallbackSeq` is used only when the lookup itself fails.
+    const computeNextSkuSequence = async (prefix: string, fallbackSeq: number): Promise<number> => {
+        let nextSeq = 1;
+        try {
+            const rows = await pb.collection('products').getFullList({
+                filter: pb.filter("sku ~ {:prefix}", { prefix }),
+                fields: 'sku',
+            });
+            const seqRegex = new RegExp(`^${prefix}(\\d{5})`);
+            rows.forEach(row => {
+                const match = String(row.sku || '').toUpperCase().match(seqRegex);
+                if (match) nextSeq = Math.max(nextSeq, parseInt(match[1], 10) + 1);
+            });
+            return nextSeq;
+        } catch (err) {
+            console.error("SKU sequence lookup failed, using fallback sequence", err);
+            return Math.max(1, fallbackSeq);
+        }
     };
+
+    // Auto-generate Architectural SKU according to Spec
+    const handleApplyGeneratedSKU = async () => {
+        // Dictionary codes only (A-Z0-9): used both as the pb.filter bound value
+        // and as the literal regex anchor below.
+        const prefix = `${skuGenre}${skuCategory}${skuSubcat}`.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        const nextSeq = await computeNextSkuSequence(prefix, products.length + 1);
+        const parent = generateParentSKU(skuGenre, skuCategory, skuSubcat, nextSeq);
+        const child = generateChildSKU(parent, skuPlating, skuColor, skuSize);
+        const finalSKU = generateWholesaleSKU(child, skuPackagingTier);
+        const derivedHsn = deriveHSNCode(skuCategory, skuBaseMetal, skuStone);
+
+        const genreLabel = skuTaxonomies.genres.find(g => g.code === skuGenre)?.label.split(" ")[0] || "";
+        const catLabel = skuTaxonomies.categories.find(c => c.code === skuCategory)?.label || "";
+        const subLabel = skuTaxonomies.subcategories.find(s => s.code === skuSubcat)?.label || "";
+        const autoName = `${genreLabel} ${catLabel} ${subLabel}`.trim();
+
+        setNewProduct(prev => ({
+            ...prev,
+            sku: finalSKU,
+            hsn_code: derivedHsn,
+            name: prev.name ? prev.name : autoName,
+            category: catLabel || prev.category,
+        }));
+        toast.success(`Generated Architectural SKU: ${finalSKU} (HSN: ${derivedHsn})`);
+    };
+
+    // Keep the Architect preview's sequence in sync with the DB (see computeNextSkuSequence)
+    useEffect(() => {
+        if (!showSkuArchitect) return;
+        let cancelled = false;
+        const prefix = `${skuGenre}${skuCategory}${skuSubcat}`.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        computeNextSkuSequence(prefix, products.length + 1).then(seq => {
+            if (!cancelled) setNextSkuSeq(seq);
+        });
+        return () => { cancelled = true; };
+    }, [showSkuArchitect, skuGenre, skuCategory, skuSubcat, products]);
 
     // Fetch products
     const fetchProducts = async () => {
@@ -225,7 +375,7 @@ export default function InventoryPage() {
             setLoading(true);
             setError(null);
 
-            const fetchedProducts = await getProducts();
+            const fetchedProducts: ProductRecordWithCategory[] = await getProducts();
 
             // Map PB data to UI Product interface
             // We need to fetch variants to get stock levels. 
@@ -244,11 +394,11 @@ export default function InventoryPage() {
             // Or better: store total stock on Product record as a cached field.
             // For now, let's fetch all variants and map them. It's safe for < 200 products.
 
-            const allVariants = await pb.collection('product_variants').getFullList();
-            const variantMap = new Map(); // productId -> sum stock
-            const variantMaterialMap = new Map(); // productId -> material
+            const allVariants = await pb.collection('product_variants').getFullList<ProductVariant>();
+            const variantMap = new Map<string, number>(); // productId -> sum stock
+            const variantMaterialMap = new Map<string, string>(); // productId -> material
 
-            allVariants.forEach((v: any) => {
+            allVariants.forEach((v) => {
                 const pid = v.product;
                 const currentStock = variantMap.get(pid) || 0;
                 variantMap.set(pid, currentStock + (v.stock_level || 0));
@@ -258,7 +408,7 @@ export default function InventoryPage() {
                 }
             });
 
-            const mappedProducts: Product[] = fetchedProducts.map((p: any) => {
+            const mappedProducts: Product[] = fetchedProducts.map((p) => {
                 const catName = p.expand?.category?.name || "Uncategorized";
                 return {
                     id: p.id,
@@ -267,17 +417,19 @@ export default function InventoryPage() {
                     category: p.category ? catName : "Uncategorized",
                     categoryId: p.category,
                     price: p.base_price,
+                    channel_prices: p.channel_prices || {},
                     stock: variantMap.get(p.id) || 0,
                     material: variantMaterialMap.get(p.id),
-                    image: p.image_url,
-                    hsn_code: p.hsn_code
+                    image: p.image_data || p.image_url || null,
+                    hsn_code: p.hsn_code,
+                    location: p.location || "Showcase Tray A",
                 };
             });
 
             setProducts(mappedProducts);
-        } catch (err: any) {
+        } catch (err) {
             console.error("Fetch error:", err);
-            setError(err.message || "Failed to load products");
+            setError((err instanceof Error ? err.message : String(err)) || "Failed to load products");
         } finally {
             setLoading(false);
         }
@@ -285,16 +437,22 @@ export default function InventoryPage() {
 
     useEffect(() => {
         fetchProducts();
+        loadDiscrepancyCount();
         getCategories().then(setCategories);
         getAttributes().then(setAttributes);
 
         // Realtime subscription
         pb.collection('products').subscribe('*', fetchProducts);
         pb.collection('product_variants').subscribe('*', fetchProducts);
+        pb.collection('stock_discrepancies').subscribe('*', () => {
+            fetchProducts();
+            loadDiscrepancyCount();
+        });
 
         return () => {
             pb.collection('products').unsubscribe('*');
             pb.collection('product_variants').unsubscribe('*');
+            pb.collection('stock_discrepancies').unsubscribe('*');
         };
     }, []);
 
@@ -315,22 +473,34 @@ export default function InventoryPage() {
                 } catch (e) { console.error("Cat create failed", e) }
             }
 
+            const productPayload: Omit<PbProduct, "id" | "created" | "updated"> = {
+                name: newProduct.name,
+                sku: newProduct.sku,
+                category: categoryId,
+                base_price: parseFloat(newProduct.base_price) || 0,
+                channel_prices: newProduct.channel_prices || {},
+                hsn_code: newProduct.hsn_code,
+                image_url: newProduct.image_url && newProduct.image_url.startsWith('http') ? newProduct.image_url : '',
+                image_data: newProduct.image_url || '',
+                location: newProduct.location || "Showcase Tray A",
+                is_active: true
+            };
+
             if (isEditMode && editingProductId) {
                 // Update
-                await updateProduct(editingProductId, {
-                    name: newProduct.name,
-                    sku: newProduct.sku,
-                    category: categoryId,
-                    base_price: parseFloat(newProduct.base_price) || 0,
-                    hsn_code: newProduct.hsn_code,
-                    image_url: newProduct.image_url
-                });
+                await updateProduct(editingProductId, productPayload);
 
-                // Update stock (find first variant)
+                // Update stock (find first variant).
+                // `newProduct.stock` holds the product-wide aggregate (the dialog prefills it
+                // that way), so apply only the user's delta to the first variant instead of
+                // overwriting it with the aggregate.
                 const variants = await getProductVariants(editingProductId);
+                const desiredTotal = parseInt(newProduct.stock) || 0;
+                const currentTotal = products.find(p => p.id === editingProductId)?.stock ?? desiredTotal;
+                const stockDelta = desiredTotal - currentTotal;
                 if (variants.length > 0) {
                     await updateVariant(variants[0].id, {
-                        stock_level: parseInt(newProduct.stock) || 0,
+                        stock_level: Math.max(0, (variants[0].stock_level || 0) + stockDelta),
                         variant_name: newProduct.sku
                     });
                 } else {
@@ -344,15 +514,7 @@ export default function InventoryPage() {
                 toast.success("Product updated");
             } else {
                 // Create
-                const product = await createProduct({
-                    name: newProduct.name,
-                    sku: newProduct.sku,
-                    category: categoryId,
-                    base_price: parseFloat(newProduct.base_price) || 0,
-                    hsn_code: newProduct.hsn_code,
-                    image_url: newProduct.image_url,
-                    is_active: true
-                });
+                const product = await createProduct(productPayload);
 
                 // Create default variant
                 await createVariant({
@@ -364,11 +526,11 @@ export default function InventoryPage() {
             }
 
             setShowAddDialog(false);
-            setNewProduct({ name: '', sku: '', category: 'Earrings', base_price: '', stock: '', hsn_code: '7117', image_url: '' });
+            setNewProduct({ name: '', sku: '', category: 'Earrings', base_price: '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A' });
             fetchProducts();
-        } catch (err: any) {
+        } catch (err) {
             console.error('Error saving product:', err);
-            toast.error('Failed to save: ' + err.message);
+            toast.error('Failed to save: ' + (err instanceof Error ? err.message : String(err)));
         } finally {
             setFormLoading(false);
             setIsEditMode(false);
@@ -382,7 +544,7 @@ export default function InventoryPage() {
             await deleteProduct(id);
             toast.success("Product deleted");
             fetchProducts();
-        } catch (err) {
+        } catch {
             toast.error("Failed to delete product");
         }
     };
@@ -444,7 +606,7 @@ export default function InventoryPage() {
                     stock_level: stock
                 });
                 success++;
-            } catch (e) {
+            } catch {
                 errors++;
             }
         }
@@ -458,7 +620,9 @@ export default function InventoryPage() {
 
 
     const filteredProducts = products.filter(product => {
-        return selectedCategory === "All" || product.category === selectedCategory || product.categoryId === selectedCategory;
+        const matchesCategory = selectedCategory === "All" || product.category === selectedCategory || product.categoryId === selectedCategory;
+        const matchesLocation = selectedLocation === "All" || (product.location || "Showcase Tray A") === selectedLocation;
+        return matchesCategory && matchesLocation;
     });
 
     return (
@@ -478,8 +642,8 @@ export default function InventoryPage() {
                 <div className="max-w-7xl mx-auto flex flex-col gap-8">
                     {/* Filters */}
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                        <div className="flex items-center gap-3 flex-1">
-                            <div className="relative group max-w-sm flex-1">
+                        <div className="flex items-center gap-3 flex-1 flex-wrap">
+                            <div className="relative group max-w-sm flex-1 min-w-[200px]">
                                 <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-moonstone">
                                     <Search size={20} />
                                 </div>
@@ -494,10 +658,24 @@ export default function InventoryPage() {
                                 />
                             </div>
                             <div className="flex bg-surface-navy p-1 rounded-lg border border-surface-hover overflow-x-auto max-w-md">
-                                <button onClick={() => setSelectedCategory("All")} className={`px-4 py-1.5 text-xs font-bold rounded-md whitespace-nowrap ${selectedCategory === "All" ? "bg-bg-navy text-white" : "text-moonstone"}`}>All</button>
+                                <button onClick={() => setSelectedCategory("All")} className={`px-4 py-1.5 text-xs font-bold rounded-md whitespace-nowrap ${selectedCategory === "All" ? "bg-bg-navy text-white" : "text-moonstone"}`}>All Categories</button>
                                 {categories.map(cat => (
                                     <button key={cat.id} onClick={() => setSelectedCategory(cat.name)} className={`px-4 py-1.5 text-xs font-bold rounded-md whitespace-nowrap ${selectedCategory === cat.name ? "bg-bg-navy text-white" : "text-moonstone"}`}>{cat.name}</button>
                                 ))}
+                            </div>
+                            {/* InvenTree Physical Location Filter */}
+                            <div className="flex items-center gap-1.5 bg-surface-navy px-3 py-1.5 rounded-lg border border-surface-hover">
+                                <MapPin size={14} className="text-gold shrink-0" />
+                                <select
+                                    value={selectedLocation}
+                                    onChange={(e) => setSelectedLocation(e.target.value)}
+                                    className="bg-transparent text-xs font-semibold text-white border-none focus:outline-none cursor-pointer"
+                                >
+                                    <option value="All" className="bg-surface-navy text-white">All Locations</option>
+                                    {STORAGE_LOCATIONS.map(loc => (
+                                        <option key={loc} value={loc} className="bg-surface-navy text-white">{loc}</option>
+                                    ))}
+                                </select>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -513,6 +691,22 @@ export default function InventoryPage() {
                                 title="Broadcast products to WhatsApp Status, Channels & Groups"
                             >
                                 <Share2 size={16} /> Broadcast {selectedProductIds.length > 0 ? `(${selectedProductIds.length})` : 'Products'}
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setSelectedDiscrepancyProduct(null);
+                                    setShowDiscrepancyModal(true);
+                                }}
+                                className="bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-amber-500/40 transition-colors font-semibold text-xs relative"
+                                title="Manage Damaged, Missing, and Vendor Replacement Items"
+                            >
+                                <AlertTriangle size={16} className="text-amber-400" />
+                                <span>Quarantine / Replacements</span>
+                                {activeDiscrepanciesCount > 0 && (
+                                    <span className="bg-amber-400 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full ml-1">
+                                        {activeDiscrepanciesCount}
+                                    </span>
+                                )}
                             </button>
                             <button onClick={fetchProducts} className="bg-surface-navy text-moonstone hover:text-white h-10 px-4 rounded-lg flex items-center gap-2 border border-surface-hover"><RefreshCw size={16} /> Sync</button>
                             <button onClick={() => setShowScanDialog(true)} className="bg-primary/20 text-primary h-10 px-4 rounded-lg flex items-center gap-2 border border-primary/30"><ScanBarcode size={16} /> Scan</button>
@@ -563,15 +757,32 @@ export default function InventoryPage() {
                                                 >
                                                     <Share2 size={18} />
                                                 </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedDiscrepancyProduct({
+                                                            id: product.id,
+                                                            name: product.name,
+                                                            sku: product.sku,
+                                                            stock: product.stock,
+                                                        });
+                                                        setShowDiscrepancyModal(true);
+                                                    }}
+                                                    title="Flag Damaged, Missing, or Send to Vendor for Replacement"
+                                                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 p-2 rounded-lg hover:scale-110 transition-transform font-bold"
+                                                >
+                                                    <AlertTriangle size={18} />
+                                                </button>
                                                 <button onClick={() => {
                                                     setNewProduct({
                                                         name: product.name,
                                                         sku: product.sku,
                                                         category: product.categoryId || "",
                                                         base_price: String(product.price),
+                                                        channel_prices: product.channel_prices || {},
                                                         stock: String(product.stock),
                                                         hsn_code: product.hsn_code || "7117",
                                                         image_url: product.image || "",
+                                                        location: product.location || "Showcase Tray A",
                                                     });
                                                     setIsEditMode(true);
                                                     setEditingProductId(product.id);
@@ -581,10 +792,33 @@ export default function InventoryPage() {
                                             </div>
                                         </div>
                                         <div>
-                                            <p className="text-[10px] font-bold text-primary uppercase tracking-wider mb-0.5">{product.sku}</p>
+                                            <div className="flex items-center justify-between mb-0.5">
+                                                <p className="text-[10px] font-bold text-primary uppercase tracking-wider">{product.sku}</p>
+                                                <div className="flex items-center gap-1 text-[10px] font-medium text-amber-300/90 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                                                    <MapPin size={10} className="text-gold shrink-0" />
+                                                    <span className="truncate max-w-[100px]">{product.location || 'Showcase Tray A'}</span>
+                                                </div>
+                                            </div>
                                             <h3 className="text-white font-bold text-sm truncate">{product.name}</h3>
                                             <div className="flex justify-between items-center mt-2">
-                                                <span className="text-white font-mono">{formatPrice(product.price)}</span>
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    <span className="text-white font-mono font-bold">{formatPrice(product.price)}</span>
+                                                    {product.channel_prices?.whatsapp && Number(product.channel_prices.whatsapp) > 0 && (
+                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold" title={`WhatsApp Price: ₹${Number(product.channel_prices.whatsapp).toLocaleString('en-IN')}`}>
+                                                            WA: ₹{Number(product.channel_prices.whatsapp).toLocaleString('en-IN')}
+                                                        </span>
+                                                    )}
+                                                    {(product.channel_prices?.website || product.channel_prices?.shopify) && (
+                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 font-semibold" title={`Website Price: ₹${Number(product.channel_prices.website || product.channel_prices.shopify).toLocaleString('en-IN')}`}>
+                                                            Web: ₹{Number(product.channel_prices.website || product.channel_prices.shopify).toLocaleString('en-IN')}
+                                                        </span>
+                                                    )}
+                                                    {product.channel_prices?.wholesale && Number(product.channel_prices.wholesale) > 0 && (
+                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold" title={`B2B Wholesale Price: ₹${Number(product.channel_prices.wholesale).toLocaleString('en-IN')}`}>
+                                                            B2B: ₹{Number(product.channel_prices.wholesale).toLocaleString('en-IN')}
+                                                        </span>
+                                                    )}
+                                                </div>
                                                 <span className={`text-xs px-2 py-1 rounded ${product.stock > 5 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>Stock: {product.stock}</span>
                                             </div>
                                         </div>
@@ -598,29 +832,395 @@ export default function InventoryPage() {
 
             {/* Add Dialog */}
             <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-                <DialogContent className="bg-surface-navy border-surface-hover text-white">
-                    <DialogHeader><DialogTitle>{isEditMode ? 'Edit Product' : 'Add Product'}</DialogTitle></DialogHeader>
-                    <div className="grid gap-4 py-4">
-                        <div className="grid grid-cols-2 gap-4">
-                            <div><Label>Name</Label><Input value={newProduct.name} onChange={e => setNewProduct({ ...newProduct, name: e.target.value })} className="bg-bg-navy border-surface-hover" /></div>
-                            <div><Label>SKU</Label><Input value={newProduct.sku} onChange={e => setNewProduct({ ...newProduct, sku: e.target.value })} className="bg-bg-navy border-surface-hover" /></div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div><Label>Category</Label>
-                                <Select value={newProduct.category || ""} onValueChange={v => setNewProduct({ ...newProduct, category: v || "" })}>
-                                    <SelectTrigger className="bg-bg-navy border-surface-hover"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        {categories.map(c => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}
-                                    </SelectContent>
-                                </Select>
+                <DialogContent className="bg-surface-navy/98 backdrop-blur-2xl border-surface-hover/80 text-white max-w-4xl sm:max-w-4xl lg:max-w-5xl max-h-[min(94vh,calc(100dvh-1.5rem))] overflow-y-auto p-5 sm:p-6 shadow-2xl custom-scrollbar">
+                    <DialogHeader>
+                        <DialogTitle className="text-lg font-bold flex items-center justify-between">
+                            <span>{isEditMode ? 'Edit Product' : 'Add Jewelry Product'}</span>
+                            <span className="text-xs font-mono font-normal text-moonstone bg-bg-navy/80 px-2.5 py-0.5 rounded-full border border-surface-hover">
+                                Non-Precious Jewelry ERP
+                            </span>
+                        </DialogTitle>
+                    </DialogHeader>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 py-1 items-start">
+                        {/* Left Column: Visual Assets & SKU Architecture (5 cols) */}
+                        <div className="lg:col-span-5 flex flex-col gap-3.5">
+                            {/* 1. Photo Tagging Card (3 Acquisition Channels: Gallery / Live Camera / WhatsApp) */}
+                            <div className="bg-bg-navy/80 border border-primary/25 rounded-xl p-3.5 flex flex-col gap-2.5">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <Camera className="text-primary size-4" />
+                                        <span className="font-semibold text-xs text-white uppercase tracking-wider">Product Photo Tagging</span>
+                                    </div>
+                                    <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                        ANTI-FRAUD READY
+                                    </span>
+                                </div>
+
+                                {newProduct.image_url ? (
+                                    <div className="flex items-center gap-3 bg-surface-navy/70 p-2.5 rounded-lg border border-surface-hover/60">
+                                        <div className="size-16 rounded-lg overflow-hidden border-2 border-primary/50 bg-black/40 shrink-0 relative group shadow-md">
+                                            {/* eslint-disable-next-line @next/next/no-img-element -- preview source is a canvas.toDataURL data URL with inherently dynamic dimensions, so next/image sizing props do not map */}
+                                            <img src={newProduct.image_url} alt="Product Tagged" className="w-full h-full object-cover" />
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold truncate">
+                                                <CheckCircle2 size={13} className="shrink-0" /> Photo Bound
+                                            </div>
+                                            <p className="text-[10px] text-moonstone truncate mt-0.5 font-mono">
+                                                {newProduct.sku ? `${newProduct.sku}_${productShotType}.webp` : 'Canonical Image'}
+                                            </p>
+                                            <div className="flex gap-2 mt-1.5">
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => setShowPhotoModal(true)}
+                                                    className="h-6 text-[11px] px-2 border-primary/40 text-primary hover:bg-primary/20"
+                                                >
+                                                    Change Photo
+                                                </Button>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => setNewProduct(prev => ({ ...prev, image_url: "" }))}
+                                                    className="h-6 text-[11px] px-2 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                                                >
+                                                    Remove
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPhotoModal(true)}
+                                        className="w-full border-2 border-dashed border-primary/40 hover:border-primary bg-primary/5 hover:bg-primary/10 rounded-xl p-3 transition-all flex items-center justify-between group cursor-pointer text-left"
+                                    >
+                                        <div className="flex items-center gap-2.5">
+                                            <div className="size-9 rounded-lg bg-primary/20 text-primary flex items-center justify-center group-hover:scale-105 transition-transform shrink-0">
+                                                <Camera size={16} />
+                                            </div>
+                                            <div>
+                                                <div className="text-xs font-semibold text-white group-hover:text-primary transition-colors flex items-center gap-1.5">
+                                                    Acquire Photo
+                                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-primary/20 text-primary">Required</span>
+                                                </div>
+                                                <div className="text-[10px] text-moonstone truncate mt-0.5">
+                                                    Gallery • Camera • WhatsApp
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="px-2.5 py-1 rounded-lg bg-primary/20 text-primary text-[11px] font-semibold group-hover:bg-primary group-hover:text-black transition-all shrink-0">
+                                            Select
+                                        </div>
+                                    </button>
+                                )}
                             </div>
-                            <div><Label>Price</Label><Input type="number" value={newProduct.base_price} onChange={e => setNewProduct({ ...newProduct, base_price: e.target.value })} className="bg-bg-navy border-surface-hover" /></div>
+
+                            {/* 2. Master Jewelry SKU Architecture Engine */}
+                            <div className="border border-surface-hover/70 rounded-xl overflow-hidden bg-bg-navy/40">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowSkuArchitect(!showSkuArchitect)}
+                                    className="w-full px-3.5 py-2.5 bg-surface-navy/70 hover:bg-surface-navy flex items-center justify-between text-left transition-colors"
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <Sparkles className="size-3.5 text-gold" />
+                                        <div>
+                                            <div className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                                                SKU Architecture Engine
+                                                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-normal">
+                                                    Hierarchical
+                                                </span>
+                                            </div>
+                                            <div className="text-[10px] text-moonstone truncate">
+                                                Auto 14/21-char Parent/Child & statutory HSN 7117
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <a
+                                            href="/settings?tab=sku_taxonomies"
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="text-[10px] font-semibold text-primary hover:underline bg-primary/10 px-1.5 py-0.5 rounded border border-primary/20 transition-all hover:bg-primary/20"
+                                        >
+                                            ⚙️ Manage
+                                        </a>
+                                        {showSkuArchitect ? <ChevronUp size={15} className="text-moonstone" /> : <ChevronDown size={15} className="text-moonstone" />}
+                                    </div>
+                                </button>
+
+                                {showSkuArchitect && (
+                                    <div className="p-3 space-y-2.5 border-t border-surface-hover/40 bg-bg-navy/90 text-xs">
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Style Genre</Label>
+                                                <Select value={skuGenre} onValueChange={val => setSkuGenre(val || "TMP")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.genres.map((g, idx) => (
+                                                            <SelectItem key={`${g.code}-${idx}`} value={g.code} className="text-xs">
+                                                                {g.code} - {g.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Category</Label>
+                                                <Select value={skuCategory} onValueChange={(val) => {
+                                                    const v = val || "NEC";
+                                                    setSkuCategory(v);
+                                                    const matchedCat = skuTaxonomies.categories.find(c => c.code === v);
+                                                    if (matchedCat) setNewProduct(prev => ({ ...prev, category: matchedCat.label }));
+                                                }}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.categories.map((c, idx) => (
+                                                            <SelectItem key={`${c.code}-${idx}`} value={c.code} className="text-xs">
+                                                                {c.code} - {c.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Subcategory</Label>
+                                                <Select value={skuSubcat} onValueChange={val => setSkuSubcat(val || "CHK")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.subcategories.map((s, idx) => (
+                                                            <SelectItem key={`${s.code}-${idx}`} value={s.code} className="text-xs">
+                                                                {s.code} - {s.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Plating Finish</Label>
+                                                <Select value={skuPlating} onValueChange={val => setSkuPlating(val || "MG")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.platings.map((p, idx) => (
+                                                            <SelectItem key={`${p.code}-${idx}`} value={p.code} className="text-xs">
+                                                                {p.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Primary Color</Label>
+                                                <Select value={skuColor} onValueChange={val => setSkuColor(val || "RB")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.colors.map((c, idx) => (
+                                                            <SelectItem key={`${c.code}-${idx}`} value={c.code} className="text-xs">
+                                                                {c.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Size / Sizing</Label>
+                                                <Select value={skuSize} onValueChange={val => setSkuSize(val || "STD")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.sizes.map((s, idx) => (
+                                                            <SelectItem key={`${s.code}-${idx}`} value={s.code} className="text-xs">
+                                                                {s.code} - {s.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Packaging Tier</Label>
+                                                <Select value={skuPackagingTier} onValueChange={val => setSkuPackagingTier(val || "EA")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.packagingTiers.map((t, idx) => (
+                                                            <SelectItem key={`${t.suffix}-${idx}`} value={t.suffix} className="text-xs">
+                                                                {t.suffix} - {t.label} (x{t.multiplier})
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-surface-hover/30">
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Base Metal Substrate</Label>
+                                                <Select value={skuBaseMetal} onValueChange={val => setSkuBaseMetal(val || "BR")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.baseMetals.map((m, idx) => (
+                                                            <SelectItem key={`${m.code}-${idx}`} value={m.code} className="text-xs">
+                                                                {m.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div>
+                                                <Label className="text-[10px] text-moonstone">Stone / Embellishment</Label>
+                                                <Select value={skuStone} onValueChange={val => setSkuStone(val || "KP")}>
+                                                    <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {skuTaxonomies.stones.map((s, idx) => (
+                                                            <SelectItem key={`${s.code}-${idx}`} value={s.code} className="text-xs">
+                                                                {s.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-surface-navy p-2.5 rounded-lg border border-primary/30 flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="text-[9px] text-moonstone uppercase font-bold tracking-wider">Preview Generated SKU</div>
+                                                <div className="text-xs font-mono font-bold text-primary truncate mt-0.5">
+                                                    {generateWholesaleSKU(generateChildSKU(generateParentSKU(skuGenre, skuCategory, skuSubcat, nextSkuSeq), skuPlating, skuColor, skuSize), skuPackagingTier)}
+                                                </div>
+                                                <div className="text-[10px] text-amber-300 font-mono">
+                                                    HSN {deriveHSNCode(skuCategory, skuBaseMetal, skuStone)} (3% GST)
+                                                </div>
+                                            </div>
+                                            <Button
+                                                type="button"
+                                                onClick={handleApplyGeneratedSKU}
+                                                className="bg-gold text-bg-navy hover:bg-gold/90 font-bold text-[11px] h-7 px-3 shrink-0"
+                                            >
+                                                Apply
+                                            </Button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 3. Statutory HSN Code & Compliance */}
+                            <div className="bg-bg-navy/60 border border-surface-hover/70 rounded-xl p-3 flex items-center justify-between gap-3">
+                                <div className="flex-1 min-w-0">
+                                    <Label className="text-[11px] text-moonstone">Statutory HSN Code (3% GST)</Label>
+                                    <Input
+                                        value={newProduct.hsn_code}
+                                        onChange={e => setNewProduct({ ...newProduct, hsn_code: e.target.value })}
+                                        className="bg-bg-navy border-surface-hover text-xs h-8 font-mono text-amber-300 mt-1"
+                                        placeholder="71179010"
+                                    />
+                                </div>
+                                {!showSkuArchitect && (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() => setShowSkuArchitect(true)}
+                                        className="text-[11px] h-8 border-gold/40 text-gold hover:bg-gold/10 gap-1 shrink-0 self-end"
+                                    >
+                                        <Sparkles size={12} /> Auto SKU Spec
+                                    </Button>
+                                )}
+                            </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div><Label>Stock</Label><Input type="number" value={newProduct.stock} onChange={e => setNewProduct({ ...newProduct, stock: e.target.value })} className="bg-bg-navy border-surface-hover" /></div>
-                            <div><Label>Generate SKU</Label><Button variant="outline" onClick={() => generateSKU(newProduct.category, attributeValues)} className="w-full">Generate</Button></div>
+
+                        {/* Right Column: Core Attributes, Pricing Engine, Inventory & Save (7 cols) */}
+                        <div className="lg:col-span-7 flex flex-col gap-3.5">
+                            {/* Product Identity */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <Label className="text-xs">Product Name</Label>
+                                    <Input
+                                        value={newProduct.name}
+                                        onChange={e => setNewProduct({ ...newProduct, name: e.target.value })}
+                                        placeholder="e.g. Temple Choker Kemp Ruby"
+                                        className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"
+                                    />
+                                </div>
+                                <div>
+                                    <Label className="text-xs">SKU Code</Label>
+                                    <Input
+                                        value={newProduct.sku}
+                                        onChange={e => setNewProduct({ ...newProduct, sku: e.target.value })}
+                                        placeholder="TMPNECCHK00001-MGRBSTD"
+                                        className="bg-bg-navy border-surface-hover font-mono text-sm h-9 text-primary font-semibold mt-1"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Category & Base Price */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <Label className="text-xs">Category</Label>
+                                    <Select value={newProduct.category || ""} onValueChange={v => setNewProduct({ ...newProduct, category: v || "" })}>
+                                        <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue placeholder="Select Category" /></SelectTrigger>
+                                        <SelectContent>
+                                            {categories.map(c => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div>
+                                    <Label className="text-xs">Base Retail Price (₹)</Label>
+                                    <Input
+                                        type="number"
+                                        value={newProduct.base_price}
+                                        onChange={e => setNewProduct({ ...newProduct, base_price: e.target.value })}
+                                        placeholder="1499"
+                                        className="bg-bg-navy border-surface-hover text-sm h-9 font-mono mt-1 font-semibold"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Multi-Channel Custom Pricing Engine */}
+                            <ChannelPricingInput
+                                basePrice={parseFloat(newProduct.base_price) || 0}
+                                channelPrices={newProduct.channel_prices || {}}
+                                onChange={(cp) => setNewProduct(prev => ({ ...prev, channel_prices: cp }))}
+                                onBasePriceChange={(bp) => setNewProduct(prev => ({ ...prev, base_price: String(bp) }))}
+                            />
+
+                            {/* Stock & Storage Location */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <Label className="text-xs">Stock Level</Label>
+                                    <Input
+                                        type="number"
+                                        value={newProduct.stock}
+                                        onChange={e => setNewProduct({ ...newProduct, stock: e.target.value })}
+                                        placeholder="10"
+                                        className="bg-bg-navy border-surface-hover text-sm h-9 font-mono mt-1"
+                                    />
+                                </div>
+                                <div>
+                                    <Label className="flex items-center gap-1.5 text-xs"><MapPin size={13} className="text-gold" /> Storage Location</Label>
+                                    <Select value={newProduct.location || "Showcase Tray A"} onValueChange={v => setNewProduct({ ...newProduct, location: v || "Showcase Tray A" })}>
+                                        <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            {STORAGE_LOCATIONS.map(loc => <SelectItem key={loc} value={loc}>{loc}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+
+                            {/* Primary Action Button */}
+                            <Button
+                                onClick={handleAddProduct}
+                                disabled={formLoading}
+                                className="mt-1 h-10 font-bold bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg cursor-pointer"
+                            >
+                                {formLoading ? 'Saving Product...' : (isEditMode ? 'Update Product' : 'Save & Tag Product')}
+                            </Button>
                         </div>
-                        <Button onClick={handleAddProduct} disabled={formLoading} className="mt-4">{formLoading ? 'Saving...' : 'Save Product'}</Button>
                     </div>
                 </DialogContent>
             </Dialog>
@@ -631,7 +1231,7 @@ export default function InventoryPage() {
                     <DialogHeader><DialogTitle>Scan Stock</DialogTitle></DialogHeader>
                     <div className="flex flex-col gap-4">
                         {scanMode === 'camera' ? (
-                            <BarcodeScanner onScan={(res) => { setScanQuery(res); handleScanSubmit({ preventDefault: () => { } } as any); setScanMode('text'); }} onError={console.error} />
+                            <BarcodeScanner onScan={(res) => { setScanQuery(res); handleScanSubmit({ preventDefault: () => { } }, res); setScanMode('text'); }} onError={console.error} />
                         ) : (
                             <Input
                                 ref={scanInputRef}
@@ -719,6 +1319,35 @@ export default function InventoryPage() {
                 onClose={() => setShowBroadcastModal(false)}
                 initialSelectedProducts={broadcastProductsList}
                 onBroadcastSuccess={() => setSelectedProductIds([])}
+            />
+
+            {/* Product Photo Tagging Modal (Gallery / Camera Viewfinder / WhatsApp Vendor Media) */}
+            <ProductPhotoTaggingModal
+                isOpen={showPhotoModal}
+                onClose={() => setShowPhotoModal(false)}
+                initialShotType={productShotType}
+                productSku={newProduct.sku}
+                productName={newProduct.name}
+                onPhotoSelected={(imageData, shotType) => {
+                    setNewProduct(prev => ({ ...prev, image_url: imageData }));
+                    setProductShotType(shotType);
+                    setShowPhotoModal(false);
+                    toast.success(`Photo tagged as [${shotType}] shot successfully!`);
+                }}
+            />
+
+            {/* Stock Discrepancies, Quarantine & Vendor Replacements Modal */}
+            <DiscrepancyModal
+                isOpen={showDiscrepancyModal}
+                onClose={() => {
+                    setShowDiscrepancyModal(false);
+                    setSelectedDiscrepancyProduct(null);
+                }}
+                preselectedProduct={selectedDiscrepancyProduct}
+                onStockUpdated={() => {
+                    fetchProducts();
+                    loadDiscrepancyCount();
+                }}
             />
         </div>
     );

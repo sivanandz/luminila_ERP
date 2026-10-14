@@ -5,21 +5,43 @@ import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import {
-    Calendar as CalendarIcon,
+
     Search,
     Plus,
     Trash2,
     Save,
     User,
-    ChevronLeft,
+
     CheckCircle,
-    FileText
+    FileText,
+    ScanBarcode
 } from "lucide-react";
+import { QuickBarcodeScanModal, type ScannedItemPayload } from "@/components/common/QuickBarcodeScanModal";
+import { MobileScanner } from "@/lib/mobile-scanner";
 import { toast } from "sonner";
 import { formatPrice } from "@/lib/utils";
 import { createOrder, OrderType, OrderStatus, OrderItemInput } from "@/lib/orders";
 import { searchCustomers, Customer } from "@/lib/customers";
 import { pb } from "@/lib/pocketbase";
+import { type Product, type ProductVariant } from "@/lib/products";
+
+// Product search dropdown result: Product/ProductVariant records narrowed
+// to the fields this page reads.
+interface ProductVariantOption {
+    id: string;
+    sku_suffix?: string;
+    size?: string;
+    color?: string;
+    material?: string;
+    price_adjustment: number;
+}
+
+interface ProductSearchResult {
+    id: string;
+    name: string;
+    base_price: number;
+    variants: ProductVariantOption[];
+}
 
 export default function CreateOrderPage() {
     const router = useRouter();
@@ -29,7 +51,7 @@ export default function CreateOrderPage() {
     const [orderType, setOrderType] = useState<OrderType>('estimate');
     const [orderDate, setOrderDate] = useState(new Date().toISOString().split('T')[0]);
     const [validUntil, setValidUntil] = useState<string>('');
-    const [status, setStatus] = useState<OrderStatus>('draft');
+    const [status] = useState<OrderStatus>('draft');
 
     // Customer State
     const [searchQuery, setSearchQuery] = useState("");
@@ -40,8 +62,9 @@ export default function CreateOrderPage() {
     // Items State
     const [items, setItems] = useState<OrderItemInput[]>([]);
     const [productSearch, setProductSearch] = useState("");
-    const [productResults, setProductResults] = useState<any[]>([]);
+    const [productResults, setProductResults] = useState<ProductSearchResult[]>([]);
     const [showProductResults, setShowProductResults] = useState(false);
+    const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
 
     // Financials
     const [subtotal, setSubtotal] = useState(0);
@@ -64,6 +87,7 @@ export default function CreateOrderPage() {
             disc += item.discount_amount || 0;
         });
 
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- totals are intentionally mirrored into state from items for save and display; deriving them during render would be a state-flow refactor, not a lint fix
         setSubtotal(sub);
         setTaxTotal(tax);
         setDiscountTotal(disc);
@@ -91,20 +115,20 @@ export default function CreateOrderPage() {
         const timeoutId = setTimeout(async () => {
             if (productSearch.length > 2) {
                 try {
-                    const products = await pb.collection('products').getFullList({
+                    const products = await pb.collection('products').getFullList<Product>({
                         filter: `name~"${productSearch}"`,
                     });
-                    const productIds = products.map((p: any) => p.id);
-                    let variants: any[] = [];
+                    const productIds = products.map((p) => p.id);
+                    let variants: ProductVariant[] = [];
                     if (productIds.length > 0) {
                         const variantFilter = productIds.map(id => `product="${id}"`).join(' || ');
-                        variants = await pb.collection('product_variants').getFullList({ filter: variantFilter });
+                        variants = await pb.collection('product_variants').getFullList<ProductVariant>({ filter: variantFilter });
                     }
-                    const data = products.map((p: any) => ({
+                    const data = products.map((p) => ({
                         id: p.id,
                         name: p.name,
                         base_price: p.base_price,
-                        variants: variants.filter((v: any) => v.product === p.id).map((v: any) => ({
+                        variants: variants.filter((v) => v.product === p.id).map((v) => ({
                             id: v.id,
                             sku_suffix: v.sku_suffix,
                             size: v.size,
@@ -133,7 +157,7 @@ export default function CreateOrderPage() {
         setShowResults(false);
     };
 
-    const handleAddItem = (product: any, variant: any) => {
+    const handleAddItem = (product: ProductSearchResult, variant: ProductVariantOption) => {
         const price = product.base_price + (variant.price_adjustment || 0);
         const newItem: OrderItemInput = {
             product_id: product.id,
@@ -151,7 +175,70 @@ export default function CreateOrderPage() {
         setShowProductResults(false);
     };
 
-    const updateItem = (index: number, field: keyof OrderItemInput, value: any) => {
+    const handleScannedItem = (payload: ScannedItemPayload) => {
+        if (!payload.product) {
+            toast.error(`Barcode "${payload.barcode}" not found in catalog`);
+            return;
+        }
+
+        const prodResult: ProductSearchResult = {
+            id: payload.product.id,
+            name: payload.product.name,
+            base_price: payload.product.base_price,
+            variants: payload.variant ? [{
+                id: payload.variant.id,
+                sku_suffix: '',
+                size: payload.variant.size,
+                color: payload.variant.color,
+                material: payload.variant.material,
+                price_adjustment: payload.variant.price_adjustment || 0
+            }] : [{
+                id: 'default',
+                price_adjustment: 0
+            }]
+        };
+
+        handleAddItem(prodResult, prodResult.variants[0]);
+        toast.success(`Scanned & added: ${payload.product.name}`);
+    };
+
+    // Scoped scanner listener: directly adds scanned items to this sales order
+    useEffect(() => {
+        const unregister = MobileScanner.registerContext("orders_entry", async (result) => {
+            try {
+                const prod = await pb.collection("products").getFirstListItem(`sku="${result.barcode}" || barcode="${result.barcode}"`);
+                if (prod) {
+                    const variants = await pb.collection("product_variants").getList(1, 1, {
+                        filter: `product="${prod.id}"`,
+                    });
+                    const v = variants.items[0];
+                    handleScannedItem({
+                        barcode: result.barcode,
+                        product: {
+                            id: prod.id,
+                            name: prod.name,
+                            sku: prod.sku,
+                            base_price: prod.base_price,
+                        },
+                        variant: v ? {
+                            id: v.id,
+                            size: v.size,
+                            color: v.color,
+                            material: v.material,
+                        } : undefined
+                    });
+                } else {
+                    toast.error(`Barcode "${result.barcode}" not found in catalog`);
+                }
+            } catch {
+                toast.error(`Barcode "${result.barcode}" not found in catalog`);
+            }
+            return true; // Stop propagation
+        }, 60);
+        return () => unregister();
+    }, [items]);
+
+    const updateItem = (index: number, field: keyof OrderItemInput, value: number) => {
         const newItems = [...items];
         const item = { ...newItems[index], [field]: value };
 
@@ -370,23 +457,34 @@ export default function CreateOrderPage() {
                         <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover flex-1">
                             <div className="flex items-center justify-between mb-6">
                                 <h3 className="text-white font-bold text-lg">Order Items</h3>
-                                <div className="relative w-64">
-                                    <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-moonstone">
-                                        <Plus size={16} />
-                                    </div>
-                                    <input
-                                        type="text"
-                                        placeholder="Add Item..."
-                                        value={productSearch}
-                                        onChange={(e) => setProductSearch(e.target.value)}
-                                        className="input bg-bg-navy border-surface-hover w-full pl-9 h-10 text-sm text-white focus:w-80 transition-all"
-                                    />
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setShowBarcodeScanner(true)}
+                                        className="h-10 px-3 bg-bg-navy border-surface-hover hover:border-primary/50 text-primary flex items-center gap-1.5"
+                                    >
+                                        <ScanBarcode size={16} />
+                                        <span>Scan Barcode</span>
+                                    </Button>
+                                    <div className="relative w-64">
+                                        <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-moonstone">
+                                            <Plus size={16} />
+                                        </div>
+                                        <input
+                                            type="text"
+                                            placeholder="Add Item..."
+                                            value={productSearch}
+                                            onChange={(e) => setProductSearch(e.target.value)}
+                                            className="input bg-bg-navy border-surface-hover w-full pl-9 h-10 text-sm text-white focus:w-80 transition-all"
+                                        />
                                     {showProductResults && productResults.length > 0 && (
                                         <div className="absolute top-full right-0 mt-2 w-96 bg-surface-navy border border-surface-hover rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
                                             {productResults.map(product => (
                                                 <div key={product.id}>
                                                     {product.variants.length > 0 ? (
-                                                        product.variants.map((v: any) => (
+                                                        product.variants.map((v) => (
                                                             <div
                                                                 key={v.id}
                                                                 onClick={() => handleAddItem(product, v)}
@@ -412,6 +510,7 @@ export default function CreateOrderPage() {
                                     )}
                                 </div>
                             </div>
+                        </div>
 
                             {items.length === 0 ? (
                                 <div className="border-2 border-dashed border-surface-hover rounded-xl p-12 text-center text-moonstone/50">
@@ -514,6 +613,13 @@ export default function CreateOrderPage() {
                     </div>
                 </div>
             </div>
+
+            <QuickBarcodeScanModal
+                open={showBarcodeScanner}
+                onOpenChange={setShowBarcodeScanner}
+                title="Scan Sales Order Item"
+                onItemScanned={handleScannedItem}
+            />
         </div>
     );
 }

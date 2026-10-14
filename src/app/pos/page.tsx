@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import { useAuth } from "@/contexts/AuthContext";
 import { Header } from "@/components/layout";
 import { Receipt } from "@/components/pos/Receipt";
@@ -21,10 +22,16 @@ import {
     CameraOff,
     Printer,
     Clock,
-    DollarSign,
+
     LogOut,
     Gift,
     Star,
+    PauseCircle,
+    History,
+    User,
+
+    Tag,
+    Store,
 } from "lucide-react";
 import {
     Dialog,
@@ -36,29 +43,44 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { usePOSShortcuts } from "@/hooks/use-pos-shortcuts";
+import { getCustomers, type Customer, getTierDiscountPercent } from "@/lib/customers";
 import {
     openShift,
     closeShift,
     getCurrentShift,
     calculateChange,
-    recordTender,
+
     type CashRegisterShift,
 } from "@/lib/register";
 import {
     earnPoints,
     calculatePointsToEarn,
     getLoyaltyAccount,
+    getLoyaltySettings,
     calculateMaxRedeemablePoints,
     calculateRedemptionValue,
     redeemPoints,
     type LoyaltyAccount,
 } from "@/lib/loyalty";
 import { createPOSSale } from "@/lib/pos-sales";
-import { getTypeAheadProducts, getProducts, type ProductWithVariant, type Product } from "@/lib/products";
-import { pb } from "@/lib/pocketbase";
+import { getTypeAheadProducts, type ProductVariant } from "@/lib/products";
+import { pb, sanitizeFilter } from "@/lib/pocketbase";
+import { ClientResponseError } from "pocketbase";
 import { subscribeRemoteCartItems, type POSCartBroadcastItem } from "@/lib/whatsapp-crm";
 import { POSWhatsAppWidget, sendPOSReceiptViaWhatsApp } from "@/components/pos/POSWhatsAppWidget";
 import { toast } from "sonner";
+import {
+    getChannelPrice,
+    getConfiguredChannels,
+    loadConfiguredChannels,
+    type SalesChannelDef,
+    isUpiDiscountEnabled,
+    setUpiDiscountEnabled,
+    DEFAULT_UPI_DISCOUNT_THRESHOLD,
+} from "@/lib/channel-pricing";
+import { MobileScanner } from "@/lib/mobile-scanner";
 
 
 // Dynamically import BarcodeScanner to avoid SSR issues with html5-qrcode
@@ -82,10 +104,16 @@ interface CartItem {
     name: string;
     variant: string;
     price: number;
+    basePrice?: number;
+    priceAdjustment?: number;
+    channelPrices?: Record<string, number>;
     quantity: number;
+    stock?: number;
     remarks?: string;
     productId?: string;  // PocketBase product ID
     variantId?: string;  // PocketBase variant ID
+    image?: string | null;
+    hsn_code?: string;
 }
 
 // Product type for POS (simpler than ProductWithVariant for cart)
@@ -96,7 +124,22 @@ interface POSProduct {
     name: string;
     variant: string;
     price: number;
+    basePrice?: number;
+    priceAdjustment?: number;
+    channelPrices?: Record<string, number>;
     stock: number;
+    image?: string | null;
+    hsn_code?: string;
+}
+
+export interface HeldCart {
+    id: string;
+    name: string;
+    timestamp: string;
+    items: CartItem[];
+    customer: Customer | null;
+    discount: number;
+    channel?: string;
 }
 
 export default function POSPage() {
@@ -106,13 +149,37 @@ export default function POSPage() {
     const [scannerEnabled, setScannerEnabled] = useState(false);
     const [discount, setDiscount] = useState(0);
     const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
+    const [upiDiscountEnabled, setUpiDiscountState] = useState<boolean>(() => isUpiDiscountEnabled());
     const [isProcessing, setIsProcessing] = useState(false);
+    // Synchronous re-entrancy guard for processSale: state updates lag re-renders,
+    // so key-repeat/double-tap checkout must be rejected via a ref instead.
+    const isProcessingRef = useRef(false);
+
+    // Sync external toggle events (e.g. from Settings or WhatsApp Widget)
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const custom = e as CustomEvent<{ enabled: boolean }>;
+            if (custom.detail) setUpiDiscountState(custom.detail.enabled);
+        };
+        window.addEventListener("luminila:upi-discount-toggled", handler);
+        return () => window.removeEventListener("luminila:upi-discount-toggled", handler);
+    }, []);
+
+    // Anti-Fraud Visual Match Audit State (Spec §4.2)
+    const [antiFraudAuditItem, setAntiFraudAuditItem] = useState<{
+        name: string;
+        sku: string;
+        price: number;
+        image: string | null;
+        hsn: string;
+        timestamp: string;
+    } | null>(null);
 
     // Products state
-    const [products, setProducts] = useState<POSProduct[]>([]);
+
     const [searchResults, setSearchResults] = useState<POSProduct[]>([]);
     const [quickAddProducts, setQuickAddProducts] = useState<POSProduct[]>([]);
-    const [isLoadingProducts, setIsLoadingProducts] = useState(false);
+    const [, setIsLoadingProducts] = useState(false);
     const [lastTransaction, setLastTransaction] = useState<{
         id: string;
         invoiceNumber?: string;
@@ -127,6 +194,74 @@ export default function POSPage() {
     const [showReceipt, setShowReceipt] = useState(false);
     const [showPhonePeModal, setShowPhonePeModal] = useState(false);
     const receiptRef = useRef<HTMLDivElement>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+
+    // Customer Selection & Wholesale Tiers State (BillWiz & InvenTree)
+    const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+    const [showCustomerModal, setShowCustomerModal] = useState(false);
+    const [customerSearchQuery, setCustomerSearchQuery] = useState("");
+    const [customerList, setCustomerList] = useState<Customer[]>([]);
+    const [isLoadingCustomers, setIsLoadingCustomers] = useState(false);
+
+    // Sales Channel Selection State (Custom Channel Pricing)
+    const [selectedChannel, setSelectedChannel] = useState<string>("pos");
+    const selectedChannelRef = useRef<string>("pos");
+    const [availableChannels, setAvailableChannels] = useState<SalesChannelDef[]>(getConfiguredChannels());
+
+    useEffect(() => {
+        loadConfiguredChannels().then(setAvailableChannels).catch(console.error);
+    }, []);
+
+    const handleChannelChange = (newChannel: string) => {
+        setSelectedChannel(newChannel);
+        selectedChannelRef.current = newChannel;
+        // Recalculate price of all items in cart according to the newly selected channel
+        setCart(prev => prev.map(item => {
+            const prodData = {
+                base_price: item.basePrice !== undefined ? item.basePrice : item.price,
+                channel_prices: item.channelPrices,
+            };
+            const updatedPrice = getChannelPrice(prodData, newChannel, item.priceAdjustment || 0);
+            return {
+                ...item,
+                price: updatedPrice,
+            };
+        }));
+        // Update quick-add products display prices
+        setQuickAddProducts(prev => prev.map(p => {
+            const prodData = {
+                base_price: p.basePrice !== undefined ? p.basePrice : p.price,
+                channel_prices: p.channelPrices,
+            };
+            return {
+                ...p,
+                price: getChannelPrice(prodData, newChannel, p.priceAdjustment || 0),
+            };
+        }));
+        // Update search results display prices
+        setSearchResults(prev => prev.map(p => {
+            const prodData = {
+                base_price: p.basePrice !== undefined ? p.basePrice : p.price,
+                channel_prices: p.channelPrices,
+            };
+            return {
+                ...p,
+                price: getChannelPrice(prodData, newChannel, p.priceAdjustment || 0),
+            };
+        }));
+        const channelName = availableChannels.find(c => c.id === newChannel)?.name || newChannel;
+        toast.info(`Switched active sales channel to "${channelName}"`);
+    };
+
+    // Cart Hold & Resume State (F8)
+    const [heldCarts, setHeldCarts] = useState<HeldCart[]>([]);
+    const [showHeldCartsModal, setShowHeldCartsModal] = useState(false);
+
+    // Line-Item Rate & Wholesale Override State (F4)
+    const [showPriceOverrideModal, setShowPriceOverrideModal] = useState(false);
+    const [overrideItem, setOverrideItem] = useState<CartItem | null>(null);
+    const [overridePriceInput, setOverridePriceInput] = useState("");
+    const [overrideDiscountInput, setOverrideDiscountInput] = useState("0");
 
     // Cash Register / Shift State
     const [currentShift, setCurrentShift] = useState<CashRegisterShift | null>(null);
@@ -197,9 +332,14 @@ export default function POSPage() {
             setCurrentShift(shift);
             setShowOpenShiftDialog(false);
             setOpeningBalance("");
-        } catch (error: any) {
+        } catch (error) {
             console.error("Error opening shift:", error);
-            const errorMsg = error?.response?.data?.opening_balance?.message || error?.message || "Failed to open shift";
+            const errorMsg =
+                error instanceof ClientResponseError
+                    ? error.response?.data?.opening_balance?.message || error.message || "Failed to open shift"
+                    : error instanceof Error
+                      ? error.message || "Failed to open shift"
+                      : "Failed to open shift";
             alert(errorMsg);
         } finally {
             setShiftLoading(false);
@@ -230,20 +370,28 @@ export default function POSPage() {
     useEffect(() => {
         const loadQuickAddProducts = async () => {
             try {
-                const variants = await pb.collection('product_variants').getList(1, 8, {
+                const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 8, {
                     expand: 'product',
                     sort: '-created',
                 });
-                const posProducts: POSProduct[] = variants.items.map((v: any) => {
+                const posProducts: POSProduct[] = variants.items.map((v) => {
                     const p = v.expand?.product;
+                    const basePrice = p?.base_price || 0;
+                    const channelPrices = p?.channel_prices;
+                    const priceAdjustment = v.price_adjustment || 0;
                     return {
                         id: v.id,
                         productId: v.product,
                         sku: p?.sku ? `${p.sku}${v.sku_suffix ? '-' + v.sku_suffix : ''}` : v.id,
                         name: p?.name || 'Unknown Product',
                         variant: v.variant_name || 'Default',
-                        price: (p?.base_price || 0) + (v.price_adjustment || 0),
+                        price: getChannelPrice({ base_price: basePrice, channel_prices: channelPrices }, selectedChannelRef.current, priceAdjustment),
+                        basePrice,
+                        priceAdjustment,
+                        channelPrices,
                         stock: v.stock_level || 0,
+                        image: p?.image_data || p?.image_url || null,
+                        hsn_code: p?.hsn_code || "71179010",
                     };
                 }).filter((p: POSProduct) => p.name !== 'Unknown Product');
                 setQuickAddProducts(posProducts);
@@ -264,15 +412,24 @@ export default function POSPage() {
             setIsLoadingProducts(true);
             try {
                 const results = await getTypeAheadProducts(searchQuery);
-                const posProducts: POSProduct[] = results.map(p => ({
-                    id: p.variant_id,
-                    productId: p.id,
-                    sku: p.full_sku,
-                    name: p.name,
-                    variant: p.variant_name,
-                    price: p.price,
-                    stock: p.stock,
-                }));
+                const posProducts: POSProduct[] = results.map(p => {
+                    const basePrice = p.base_price ?? p.price;
+                    const priceAdjustment = p.price_adjustment ?? 0;
+                    return {
+                        id: p.variant_id,
+                        productId: p.id,
+                        sku: p.full_sku,
+                        name: p.name,
+                        variant: p.variant_name,
+                        price: getChannelPrice({ base_price: basePrice, channel_prices: p.channel_prices }, selectedChannelRef.current, priceAdjustment),
+                        basePrice,
+                        priceAdjustment,
+                        channelPrices: p.channel_prices,
+                        stock: p.stock,
+                        image: p.image_data || p.image_url || null,
+                        hsn_code: p.hsn_code || "71179010",
+                    };
+                });
                 setSearchResults(posProducts);
             } catch (err) {
                 console.error('Error searching products:', err);
@@ -289,23 +446,60 @@ export default function POSPage() {
         console.log("Scanned barcode:", code);
 
         try {
-            // Search by SKU or barcode
-            const variants = await pb.collection('product_variants').getList(1, 1, {
-                filter: `product.sku~"${code}" || sku_suffix~"${code}" || product.barcode="${code}"`,
+            // Sanitize the raw scanner payload before it is interpolated into the
+            // filter — arbitrary QR/DataMatrix content must not break or inject it.
+            const safe = sanitizeFilter(code);
+
+            // Exact matches first: bare variant suffix, product barcode, or a full
+            // variant SKU ("<parent sku>-<suffix>"). Fuzzy contains-matching here
+            // could resolve a scan to an arbitrary variant with the wrong price.
+            let filter = `sku_suffix="${safe}" || product.barcode="${safe}"`;
+            const sep = code.lastIndexOf('-');
+            if (sep > 0 && sep < code.length - 1) {
+                filter += ` || (product.sku="${sanitizeFilter(code.slice(0, sep))}" && sku_suffix="${sanitizeFilter(code.slice(sep + 1))}")`;
+            }
+            const exact = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+                filter,
                 expand: 'product',
+                sort: 'sku_suffix',
             });
 
-            if (variants.items.length > 0) {
-                const v = variants.items[0] as any;
+            let v: ProductVariant | undefined;
+            if (exact.items.length > 0) {
+                v = exact.items[0];
+            } else {
+                // Parent-SKU scan (label without a suffix): exact parent match with a
+                // deterministic variant order instead of an arbitrary fuzzy pick.
+                const byParentSku = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+                    filter: `product.sku="${safe}"`,
+                    expand: 'product',
+                    sort: 'sku_suffix',
+                });
+                v = byParentSku.items[0];
+            }
+
+            if (v) {
                 const p = v.expand?.product;
+                const stock = v.stock_level ?? 0;
+                if (stock <= 0) {
+                    toast.error(`"${p?.name || code}" is out of stock (0 available).`);
+                    return;
+                }
+                const basePrice = p?.base_price || 0;
+                const priceAdjustment = v.price_adjustment || 0;
                 const posProduct: POSProduct = {
                     id: v.id,
                     productId: v.product,
                     sku: p?.sku ? `${p.sku}${v.sku_suffix ? '-' + v.sku_suffix : ''}` : v.id,
                     name: p?.name || 'Unknown Product',
                     variant: v.variant_name || 'Default',
-                    price: (p?.base_price || 0) + (v.price_adjustment || 0),
-                    stock: v.stock_level || 0,
+                    price: getChannelPrice({ base_price: basePrice, channel_prices: p?.channel_prices }, selectedChannelRef.current, priceAdjustment),
+                    basePrice,
+                    priceAdjustment,
+                    channelPrices: p?.channel_prices,
+                    stock: stock,
+                    image: p?.image_data || p?.image_url || null,
+                    hsn_code: p?.hsn_code || "71179010",
                 };
                 addToCart(posProduct);
             } else {
@@ -315,16 +509,28 @@ export default function POSPage() {
         } catch (err) {
             console.error('Barcode scan error:', err);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- addToCart is a stable useCallback (empty deps) declared below this callback, so it never changes identity and listing it here would evaluate the binding before initialization (TDZ)
     }, []);
 
     // Add item to cart
     const addToCart = useCallback((product: POSProduct) => {
+        if (product.stock !== undefined && product.stock <= 0) {
+            toast.error(`"${product.name}" is out of stock (0 available).`);
+            return;
+        }
+
+        let maxStockReached = false;
         setCart((prev) => {
             const existing = prev.find((item) => item.sku === product.sku);
+            const availableStock = product.stock ?? existing?.stock;
             if (existing) {
+                if (availableStock !== undefined && existing.quantity >= availableStock) {
+                    maxStockReached = true;
+                    return prev;
+                }
                 return prev.map((item) =>
                     item.sku === product.sku
-                        ? { ...item, quantity: item.quantity + 1 }
+                        ? { ...item, quantity: item.quantity + 1, stock: availableStock }
                         : item
                 );
             }
@@ -336,27 +542,66 @@ export default function POSPage() {
                     name: product.name,
                     variant: product.variant,
                     price: product.price,
+                    basePrice: product.basePrice,
+                    priceAdjustment: product.priceAdjustment,
+                    channelPrices: product.channelPrices,
                     quantity: 1,
+                    stock: product.stock,
                     productId: product.productId,
                     variantId: product.id,
+                    image: product.image || null,
+                    hsn_code: product.hsn_code || "71179010",
                 },
             ];
         });
+
+        if (maxStockReached) {
+            toast.warning(`Maximum available stock reached for "${product.name}" (${product.stock} available).`);
+            return;
+        }
+
+        // Trigger anti-fraud visual match audit
+        setAntiFraudAuditItem({
+            name: product.name,
+            sku: product.sku,
+            price: product.price,
+            image: product.image || null,
+            hsn: product.hsn_code || "71179010",
+            timestamp: new Date().toLocaleTimeString(),
+        });
+
         setSearchQuery("");
         setShowSearch(false);
     }, []);
 
+    // Hardware wedge barcode scanner listener (auto-detects USB/Bluetooth barcode guns)
+    useEffect(() => {
+        if (showCustomerModal || showPriceOverrideModal || showHeldCartsModal || showPhonePeModal) {
+            return;
+        }
+        const unsubscribe = MobileScanner.registerContext("pos_billing", (result) => {
+            handleBarcodeScan(result.barcode);
+            return true;
+        }, 40);
+        return () => unsubscribe();
+    }, [handleBarcodeScan, showCustomerModal, showPriceOverrideModal, showHeldCartsModal, showPhonePeModal]);
+
     // Update quantity
     const updateQuantity = (id: string, delta: number) => {
-        setCart((prev) =>
-            prev
+        setCart((prev) => {
+            const target = prev.find((item) => item.id === id);
+            if (target && delta > 0 && target.stock !== undefined && target.quantity + delta > target.stock) {
+                toast.warning(`Maximum available stock reached for "${target.name}" (${target.stock} available).`);
+                return prev;
+            }
+            return prev
                 .map((item) =>
                     item.id === id
                         ? { ...item, quantity: Math.max(0, item.quantity + delta) }
                         : item
                 )
-                .filter((item) => item.quantity > 0)
-        );
+                .filter((item) => item.quantity > 0);
+        });
     };
 
     // Remove item
@@ -379,6 +624,9 @@ export default function POSPage() {
         setDiscount(0);
         setPaymentMethod(null);
         setShowPhonePeModal(false);
+        // Reset loyalty redemption so it can never carry into the next sale
+        setPointsToRedeem(0);
+        setRedemptionValue(0);
     };
 
     // Remote "Add to POS Cart" from WhatsApp surfaces (spec §8.3)
@@ -387,9 +635,11 @@ export default function POSPage() {
             setCart((prev) => {
                 const existing = prev.find((c) => c.sku === item.sku);
                 if (existing) {
+                    const targetQty = existing.quantity + (item.quantity || 1);
+                    const clampedQty = existing.stock !== undefined ? Math.min(targetQty, existing.stock) : targetQty;
                     return prev.map((c) =>
                         c.sku === item.sku
-                            ? { ...c, quantity: c.quantity + (item.quantity || 1) }
+                            ? { ...c, quantity: clampedQty }
                             : c
                     );
                 }
@@ -423,14 +673,19 @@ export default function POSPage() {
 
     // Update points calculations when total or customer changes
     useEffect(() => {
+        // Guard against out-of-order responses: a slow fetch for a previous
+        // customer/cart state must never overwrite the current one's data.
+        let cancelled = false;
         const updateLoyaltyCalculations = async () => {
             if (selectedCustomerId) {
                 const account = await getLoyaltyAccount(selectedCustomerId);
+                if (cancelled) return;
                 setLoyaltyAccount(account);
                 if (account && subtotal > 0) {
                     const earnablePoints = await calculatePointsToEarn(subtotal - discountAmount, account.tier);
-                    setPointsToEarn(earnablePoints);
                     const maxPoints = await calculateMaxRedeemablePoints(subtotal - discountAmount, account.current_balance);
+                    if (cancelled) return;
+                    setPointsToEarn(earnablePoints);
                     setMaxRedeemablePoints(maxPoints);
                 }
             } else {
@@ -440,19 +695,23 @@ export default function POSPage() {
             }
         };
         updateLoyaltyCalculations();
+        return () => { cancelled = true; };
     }, [selectedCustomerId, subtotal, discountAmount]);
 
     // Update redemption value when points to redeem changes
     useEffect(() => {
+        let cancelled = false;
         const updateRedemption = async () => {
             if (pointsToRedeem > 0) {
                 const value = await calculateRedemptionValue(pointsToRedeem);
+                if (cancelled) return;
                 setRedemptionValue(value);
             } else {
                 setRedemptionValue(0);
             }
         };
         updateRedemption();
+        return () => { cancelled = true; };
     }, [pointsToRedeem]);
 
     // Print receipt
@@ -479,9 +738,179 @@ export default function POSPage() {
         }
     };
 
+    // Customer live search
+    useEffect(() => {
+        if (!showCustomerModal) return;
+        const fetchCusts = async () => {
+            setIsLoadingCustomers(true);
+            try {
+                const list = await getCustomers({ search: customerSearchQuery });
+                setCustomerList(list);
+            } catch (err) {
+                console.error("Error fetching customers for POS:", err);
+            } finally {
+                setIsLoadingCustomers(false);
+            }
+        };
+        const t = setTimeout(fetchCusts, 200);
+        return () => clearTimeout(t);
+    }, [customerSearchQuery, showCustomerModal]);
+
+    const handleSelectCustomer = (cust: Customer) => {
+        setSelectedCustomer(cust);
+        setSelectedCustomerId(cust.id);
+        // A redemption belongs to the previously selected customer — never carry it over
+        setPointsToRedeem(0);
+        setRedemptionValue(0);
+        setShowCustomerModal(false);
+
+        const tierDiscount = getTierDiscountPercent(cust.tier, cust.customer_type);
+        if (tierDiscount > 0) {
+            setDiscount(tierDiscount);
+            toast.success(`Applied ${tierDiscount}% ${cust.tier || cust.customer_type} wholesale discount!`);
+        } else {
+            toast.info(`Selected customer: ${cust.name}`);
+        }
+    };
+
+    const handleClearCustomer = () => {
+        setSelectedCustomer(null);
+        setSelectedCustomerId(null);
+        setPointsToRedeem(0);
+        setRedemptionValue(0);
+        setDiscount(0);
+        toast.info("Switched to Walk-in Customer");
+    };
+
+    const handleParkCart = () => {
+        if (cart.length === 0) {
+            if (heldCarts.length > 0) {
+                setShowHeldCartsModal(true);
+            } else {
+                toast.error("Cart is empty. Nothing to park.");
+            }
+            return;
+        }
+
+        const newHeld: HeldCart = {
+            id: generateId(),
+            name: selectedCustomer ? selectedCustomer.name : `Walk-in (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+            timestamp: new Date().toISOString(),
+            items: [...cart],
+            customer: selectedCustomer,
+            discount: discount,
+            channel: selectedChannel,
+        };
+
+        setHeldCarts(prev => [newHeld, ...prev]);
+        clearCart();
+        setSelectedCustomer(null);
+        setSelectedCustomerId(null);
+        toast.success(`Parked cart for ${newHeld.name} (${newHeld.items.length} items)`);
+    };
+
+    const handleResumeCart = (heldId: string) => {
+        const target = heldCarts.find(h => h.id === heldId);
+        if (!target) return;
+        setCart(target.items);
+        setSelectedCustomer(target.customer);
+        setSelectedCustomerId(target.customer?.id || null);
+        setDiscount(target.discount || 0);
+        if (target.channel) {
+            setSelectedChannel(target.channel);
+            selectedChannelRef.current = target.channel;
+        }
+        // Held carts don't store a redemption — never carry one over
+        setPointsToRedeem(0);
+        setRedemptionValue(0);
+        setHeldCarts(prev => prev.filter(h => h.id !== heldId));
+        setShowHeldCartsModal(false);
+        toast.success(`Resumed cart for ${target.name}!`);
+    };
+
+    const handleDeleteHeldCart = (heldId: string) => {
+        setHeldCarts(prev => prev.filter(h => h.id !== heldId));
+        toast.info("Deleted parked cart");
+    };
+
+    const handleOpenPriceOverride = (item?: CartItem) => {
+        const target = item || (cart.length > 0 ? cart[cart.length - 1] : null);
+        if (!target) {
+            toast.error("Add an item to cart first to override price");
+            return;
+        }
+        setOverrideItem(target);
+        setOverridePriceInput(target.price.toString());
+        setOverrideDiscountInput("0");
+        setShowPriceOverrideModal(true);
+    };
+
+    const handleApplyPriceOverride = () => {
+        if (!overrideItem) return;
+        const newPrice = parseFloat(overridePriceInput);
+        const discPct = parseFloat(overrideDiscountInput) || 0;
+        if (isNaN(newPrice) || newPrice < 0) {
+            toast.error("Invalid price value");
+            return;
+        }
+        const finalPrice = discPct > 0 ? Math.round(newPrice * (1 - discPct / 100)) : newPrice;
+        setCart(prev => prev.map(c => c.id === overrideItem.id ? { ...c, price: finalPrice } : c));
+        setShowPriceOverrideModal(false);
+        toast.success(`Updated rate for ${overrideItem.name} to ₹${formatPrice(finalPrice)}`);
+    };
+
+    // Keyboard Shortcuts Listener (BillWiz feature)
+    usePOSShortcuts({
+        onSearchFocus: () => {
+            setShowSearch(true);
+            setTimeout(() => {
+                searchInputRef.current?.focus();
+            }, 50);
+        },
+        onCustomerModal: () => {
+            setShowCustomerModal(prev => !prev);
+        },
+        onPriceOverride: () => {
+            handleOpenPriceOverride();
+        },
+        onHoldCart: () => {
+            handleParkCart();
+        },
+        onTenderPay: () => {
+            if (cart.length > 0) {
+                if (!paymentMethod) setPaymentMethod('cash');
+                toast.info("Tender checkout activated (F9)");
+            }
+        },
+        onPrintComplete: () => {
+            if (showReceipt && lastTransaction) {
+                printReceipt();
+            } else if (cart.length > 0 && paymentMethod) {
+                processSale();
+            }
+        },
+        onEscape: () => {
+            setShowCustomerModal(false);
+            setShowHeldCartsModal(false);
+            setShowPriceOverrideModal(false);
+            setShowSearch(false);
+        },
+    });
+
     // Process sale
     const processSale = async () => {
+        // Re-entrancy guard: the keyboard shortcut path (F12) and rapid clicks can
+        // fire again during the createPOSSale await — state alone updates too late,
+        // so a duplicate sale/double stock deduction must be rejected synchronously.
+        if (isProcessingRef.current) return;
         if (!paymentMethod || cart.length === 0 || !currentShift || !userId) return;
+
+        // Pre-flight validation: verify no cart items exceed available stock
+        const oversoldItem = cart.find(item => item.stock !== undefined && item.quantity > item.stock);
+        if (oversoldItem) {
+            toast.error(`Cannot complete sale: "${oversoldItem.name}" exceeds available stock (${oversoldItem.quantity} in cart, ${oversoldItem.stock} in stock).`);
+            return;
+        }
 
         // If PhonePe is selected, show the PhonePe modal
         if (paymentMethod === 'phonepe') {
@@ -490,10 +919,31 @@ export default function POSPage() {
         }
 
         setIsProcessing(true);
+        isProcessingRef.current = true;
 
         try {
+            // Pre-commit loyalty validation: reject an invalid redemption BEFORE
+            // the sale is recorded so it can never throw after commit.
+            if (selectedCustomerId && pointsToRedeem > 0) {
+                const account = await getLoyaltyAccount(selectedCustomerId);
+                const settings = await getLoyaltySettings();
+                if (!account || pointsToRedeem > account.current_balance) {
+                    toast.error('Insufficient loyalty points balance for this redemption. Sale cancelled — please adjust and retry.');
+                    setPointsToRedeem(0);
+                    setRedemptionValue(0);
+                    return;
+                }
+                if (pointsToRedeem < settings.min_redemption_points) {
+                    toast.error(`Minimum ${settings.min_redemption_points} points required for redemption. Sale cancelled — please adjust and retry.`);
+                    setPointsToRedeem(0);
+                    setRedemptionValue(0);
+                    return;
+                }
+            }
+
             // Save sale to PocketBase and generate invoice
             const result = await createPOSSale({
+                channel: selectedChannel as import('@/types/database').SalesChannel,
                 items: cart.map(item => ({
                     ...item,
                     productId: item.productId,
@@ -507,7 +957,9 @@ export default function POSPage() {
                 paymentMethod: paymentMethod as 'cash' | 'card' | 'upi' | 'phonepe',
                 cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) || 0 : undefined,
                 changeGiven: paymentMethod === 'cash' ? changeAmount : undefined,
-                customerId: selectedCustomerId || undefined,
+                customerId: selectedCustomer?.id || selectedCustomerId || undefined,
+                customerName: selectedCustomer?.name || undefined,
+                customerPhone: selectedCustomer?.phone || undefined,
                 shiftId: currentShift.id,
                 userId,
                 pointsRedeemed: pointsToRedeem,
@@ -520,11 +972,18 @@ export default function POSPage() {
                 result.warnings.forEach(w => toast.warning(w));
             }
 
-            if (selectedCustomerId && pointsToRedeem > 0) {
-                await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
-            }
-            if (selectedCustomerId && pointsToEarn > 0) {
-                await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+            // Loyalty updates run AFTER the sale is committed — a failure here
+            // must not be reported as a failed sale (retrying would double-sell).
+            try {
+                if (selectedCustomerId && pointsToRedeem > 0) {
+                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
+                }
+                if (selectedCustomerId && pointsToEarn > 0) {
+                    await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+                }
+            } catch (loyaltyError) {
+                console.error('Loyalty update failed after sale was committed:', loyaltyError);
+                toast.warning('Sale completed, but updating loyalty points failed.');
             }
 
             // Save transaction for receipt
@@ -561,6 +1020,7 @@ export default function POSPage() {
             console.error('Error processing sale:', error);
             alert('Failed to process sale. Please try again.');
         } finally {
+            isProcessingRef.current = false;
             setIsProcessing(false);
         }
     };
@@ -574,11 +1034,19 @@ export default function POSPage() {
             return;
         }
 
+        // Pre-flight validation: verify no cart items exceed available stock
+        const oversoldItem = cart.find(item => item.stock !== undefined && item.quantity > item.stock);
+        if (oversoldItem) {
+            toast.error(`Cannot complete sale: "${oversoldItem.name}" exceeds available stock (${oversoldItem.quantity} in cart, ${oversoldItem.stock} in stock).`);
+            return;
+        }
+
         setIsProcessing(true);
 
         try {
             // Save sale to PocketBase and generate invoice
             const result = await createPOSSale({
+                channel: selectedChannel as import('@/types/database').SalesChannel,
                 items: cart.map(item => ({
                     ...item,
                     productId: item.productId,
@@ -590,7 +1058,9 @@ export default function POSPage() {
                 loyaltyDiscount: redemptionValue,
                 total,
                 paymentMethod: 'phonepe',
-                customerId: selectedCustomerId || undefined,
+                customerId: selectedCustomer?.id || selectedCustomerId || undefined,
+                customerName: selectedCustomer?.name || undefined,
+                customerPhone: selectedCustomer?.phone || undefined,
                 shiftId: currentShift.id,
                 userId,
                 notes: phonePeTransactionId ? `PhonePe: ${phonePeTransactionId}` : undefined,
@@ -604,11 +1074,18 @@ export default function POSPage() {
                 result.warnings.forEach(w => toast.warning(w));
             }
 
-            if (selectedCustomerId && pointsToRedeem > 0) {
-                await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
-            }
-            if (selectedCustomerId && pointsToEarn > 0) {
-                await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+            // Loyalty updates run AFTER the sale is committed — a failure here
+            // must not be reported as a failed sale (the payment was received).
+            try {
+                if (selectedCustomerId && pointsToRedeem > 0) {
+                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
+                }
+                if (selectedCustomerId && pointsToEarn > 0) {
+                    await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+                }
+            } catch (loyaltyError) {
+                console.error('Loyalty update failed after sale was committed:', loyaltyError);
+                toast.warning('Sale completed, but updating loyalty points failed.');
             }
 
             setLastTransaction({
@@ -657,24 +1134,55 @@ export default function POSPage() {
             <Header title="Point of Sale" subtitle="Quick checkout for walk-in customers" />
 
             {/* Shift Status Bar - Always visible */}
-            <div className="mx-6 mt-2 mb-0 bg-surface-navy border border-surface-hover rounded-lg px-4 py-2 flex items-center justify-between">
+            <div className="mx-6 mt-2 mb-0 bg-surface-navy border border-surface-hover rounded-lg px-4 py-2 flex flex-wrap items-center justify-between gap-3">
                 {currentShift ? (
-                    <>
-                        <div className="flex items-center gap-4">
-                            <div className="flex items-center gap-2">
-                                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                                <span className="text-sm text-moonstone">Shift Active</span>
-                            </div>
-                            <span className="text-xs text-white font-medium">
-                                {user?.name || user?.email || 'Unknown User'}
-                            </span>
-                            <span className="text-xs text-moonstone">
-                                Started {new Date(currentShift.opened_at).toLocaleTimeString()}
-                            </span>
-                            <span className="text-xs text-primary font-mono">
-                                Cash Sales: {formatPrice(currentShift.total_cash_sales)}
-                            </span>
+                    <div className="flex items-center gap-4 flex-wrap">
+                        <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                            <span className="text-sm text-moonstone">Shift Active</span>
                         </div>
+                        <span className="text-xs text-white font-medium">
+                            {user?.name || user?.email || 'Unknown User'}
+                        </span>
+                        <span className="text-xs text-moonstone">
+                            Started {new Date(currentShift.opened_at).toLocaleTimeString()}
+                        </span>
+                        <span className="text-xs text-primary font-mono">
+                            Cash Sales: {formatPrice(currentShift.total_cash_sales)}
+                        </span>
+                    </div>
+                ) : (
+                    <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-yellow-400 rounded-full" />
+                        <span className="text-sm text-moonstone">No Active Shift</span>
+                        <span className="text-xs text-muted-foreground">Start a shift to begin making sales</span>
+                    </div>
+                )}
+
+                <div className="flex items-center gap-3">
+                    {/* Sales Channel Selector */}
+                    <div className="flex items-center gap-2 bg-bg-navy px-2.5 py-1 rounded-md border border-surface-hover">
+                        <Store className="w-3.5 h-3.5 text-primary shrink-0" />
+                        <span className="text-[11px] text-moonstone font-semibold uppercase tracking-wider hidden sm:inline">Channel:</span>
+                        <select
+                            value={selectedChannel}
+                            onChange={(e) => handleChannelChange(e.target.value)}
+                            className="bg-surface-navy text-xs text-white border border-surface-hover rounded px-2 py-0.5 focus:outline-none focus:border-primary font-medium cursor-pointer"
+                        >
+                            {availableChannels.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                    {c.name} {c.discountPreset ? `(${c.discountPreset > 0 ? '+' : ''}${c.discountPreset}%)` : ''}
+                                </option>
+                            ))}
+                        </select>
+                        {selectedChannel !== 'pos' && (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-medium">
+                                Custom Rates
+                            </span>
+                        )}
+                    </div>
+
+                    {currentShift ? (
                         <Button
                             variant="ghost"
                             size="sm"
@@ -684,14 +1192,7 @@ export default function POSPage() {
                             <LogOut className="w-4 h-4 mr-2" />
                             End Shift
                         </Button>
-                    </>
-                ) : (
-                    <>
-                        <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 bg-yellow-400 rounded-full" />
-                            <span className="text-sm text-moonstone">No Active Shift</span>
-                            <span className="text-xs text-muted-foreground">Start a shift to begin making sales</span>
-                        </div>
+                    ) : (
                         <Button
                             size="sm"
                             onClick={() => setShowOpenShiftDialog(true)}
@@ -699,8 +1200,56 @@ export default function POSPage() {
                             <Clock className="w-4 h-4 mr-2" />
                             Start Shift
                         </Button>
-                    </>
-                )}
+                    )}
+                </div>
+            </div>
+
+            {/* High-Speed POS Hotkey Bar (BillWiz) */}
+            <div className="mx-6 mt-2 mb-1 px-3 py-1.5 bg-bg-navy/90 border border-surface-hover/80 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                    <span className="text-moonstone font-semibold text-[11px] uppercase tracking-wider">Hotkeys:</span>
+                    <button
+                        onClick={() => {
+                            setShowSearch(true);
+                            setTimeout(() => searchInputRef.current?.focus(), 50);
+                        }}
+                        className="inline-flex items-center gap-1 font-mono text-moonstone bg-surface-navy px-1.5 py-0.5 rounded border border-surface-hover hover:border-primary cursor-pointer text-[11px]"
+                    >
+                        <kbd className="text-primary font-bold">F2</kbd> Search
+                    </button>
+                    <button
+                        onClick={() => setShowCustomerModal(true)}
+                        className="inline-flex items-center gap-1 font-mono text-moonstone bg-surface-navy px-1.5 py-0.5 rounded border border-surface-hover hover:border-primary cursor-pointer text-[11px]"
+                    >
+                        <kbd className="text-primary font-bold">F3</kbd> Customer: {selectedCustomer ? selectedCustomer.name.split(' ')[0] : 'Walk-in'}
+                    </button>
+                    <button
+                        onClick={() => handleOpenPriceOverride()}
+                        className="inline-flex items-center gap-1 font-mono text-moonstone bg-surface-navy px-1.5 py-0.5 rounded border border-surface-hover hover:border-primary cursor-pointer text-[11px]"
+                    >
+                        <kbd className="text-primary font-bold">F4</kbd> Rate Override
+                    </button>
+                    <button
+                        onClick={handleParkCart}
+                        className="inline-flex items-center gap-1 font-mono text-moonstone bg-surface-navy px-1.5 py-0.5 rounded border border-surface-hover hover:border-primary cursor-pointer text-[11px]"
+                    >
+                        <kbd className="text-primary font-bold">F8</kbd> Park Cart ({heldCarts.length})
+                    </button>
+                    <button
+                        onClick={() => {
+                            if (cart.length > 0 && !paymentMethod) setPaymentMethod('cash');
+                        }}
+                        className="inline-flex items-center gap-1 font-mono text-moonstone bg-surface-navy px-1.5 py-0.5 rounded border border-surface-hover hover:border-primary cursor-pointer text-[11px]"
+                    >
+                        <kbd className="text-primary font-bold">F9</kbd> Pay
+                    </button>
+                    <span className="inline-flex items-center gap-1 font-mono text-moonstone bg-surface-navy px-1.5 py-0.5 rounded border border-surface-hover text-[11px]">
+                        <kbd className="text-primary font-bold">F12</kbd> Print
+                    </span>
+                </div>
+                <div className="text-[11px] text-moonstone/80 font-mono">
+                    High-Speed POS Mode
+                </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 h-full overflow-hidden">
@@ -739,6 +1288,7 @@ export default function POSPage() {
                                         <Search size={20} />
                                     </div>
                                     <input
+                                        ref={searchInputRef}
                                         type="text"
                                         placeholder="Search by product name or SKU..."
                                         value={searchQuery}
@@ -760,23 +1310,47 @@ export default function POSPage() {
                                 {/* Search Results */}
                                 {searchResults.length > 0 && (
                                     <div className="mt-2 bg-bg-navy rounded-lg border border-surface-hover divide-y divide-surface-hover max-h-48 overflow-y-auto">
-                                        {searchResults.map((product) => (
-                                            <button
-                                                key={product.id}
-                                                onClick={() => addToCart(product)}
-                                                className="w-full p-3 flex items-center justify-between hover:bg-surface-hover transition-colors text-left"
-                                            >
-                                                <div>
-                                                    <p className="font-bold text-white text-sm">{product.name}</p>
-                                                    <p className="text-xs text-moonstone">
-                                                        {product.sku} • {product.variant}
+                                        {searchResults.map((product) => {
+                                            const inCart = cart.find(c => c.sku === product.sku);
+                                            const cartQty = inCart ? inCart.quantity : 0;
+                                            const isOutOfStock = product.stock <= 0;
+                                            const isMaxInCart = product.stock > 0 && cartQty >= product.stock;
+                                            const isDisabled = isOutOfStock || isMaxInCart;
+
+                                            return (
+                                                <button
+                                                    key={product.id}
+                                                    onClick={() => !isDisabled && addToCart(product)}
+                                                    disabled={isDisabled}
+                                                    className={`w-full p-3 flex items-center justify-between transition-colors text-left ${
+                                                        isDisabled
+                                                            ? 'opacity-50 cursor-not-allowed bg-bg-navy/40'
+                                                            : 'hover:bg-surface-hover'
+                                                    }`}
+                                                >
+                                                    <div>
+                                                        <p className="font-bold text-white text-sm">{product.name}</p>
+                                                        <div className="flex items-center gap-2 mt-0.5">
+                                                            <span className="text-xs text-moonstone">
+                                                                {product.sku} • {product.variant}
+                                                            </span>
+                                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                                                isOutOfStock
+                                                                    ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                                                    : isMaxInCart
+                                                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                                                    : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                                            }`}>
+                                                                {isOutOfStock ? '0 in stock' : isMaxInCart ? 'Max in cart' : `Stock: ${product.stock}`}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <p className="font-bold text-primary">
+                                                        {formatPrice(product.price)}
                                                     </p>
-                                                </div>
-                                                <p className="font-bold text-primary">
-                                                    {formatPrice(product.price)}
-                                                </p>
-                                            </button>
-                                        ))}
+                                                </button>
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </div>
@@ -797,7 +1371,7 @@ export default function POSPage() {
                                         Barcode Scanner
                                     </p>
                                     <p className="text-moonstone text-sm mt-1">
-                                        Click "Start Scanner" to enable camera
+                                        Click &quot;Start Scanner&quot; to enable camera
                                     </p>
                                 </div>
                             )}
@@ -810,21 +1384,45 @@ export default function POSPage() {
                                     No products found. Add products in Inventory.
                                 </p>
                             ) : (
-                                quickAddProducts.slice(0, 4).map((product) => (
-                                    <button
-                                        key={product.id}
-                                        onClick={() => addToCart(product)}
-                                        className="p-3 bg-bg-navy border border-surface-hover hover:border-primary/50 hover:bg-bg-navy/80 rounded-lg transition-all text-left group"
-                                    >
-                                        <p className="text-[10px] text-moonstone truncate font-mono">
-                                            {product.sku}
-                                        </p>
-                                        <p className="font-bold text-white text-sm truncate mt-0.5 group-hover:text-primary transition-colors">{product.name}</p>
-                                        <p className="text-xs text-white mt-1">
-                                            {formatPrice(product.price)}
-                                        </p>
-                                    </button>
-                                ))
+                                quickAddProducts.slice(0, 4).map((product) => {
+                                    const inCart = cart.find(c => c.sku === product.sku);
+                                    const cartQty = inCart ? inCart.quantity : 0;
+                                    const isOutOfStock = product.stock <= 0;
+                                    const isMaxInCart = product.stock > 0 && cartQty >= product.stock;
+                                    const isDisabled = isOutOfStock || isMaxInCart;
+
+                                    return (
+                                        <button
+                                            key={product.id}
+                                            onClick={() => !isDisabled && addToCart(product)}
+                                            disabled={isDisabled}
+                                            className={`p-3 bg-bg-navy border rounded-lg transition-all text-left group relative ${
+                                                isDisabled
+                                                    ? 'opacity-50 cursor-not-allowed border-surface-hover bg-bg-navy/40'
+                                                    : 'border-surface-hover hover:border-primary/50 hover:bg-bg-navy/80'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between">
+                                                <p className="text-[10px] text-moonstone truncate font-mono">
+                                                    {product.sku}
+                                                </p>
+                                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
+                                                    isOutOfStock
+                                                        ? 'bg-red-500/20 text-red-400'
+                                                        : isMaxInCart
+                                                        ? 'bg-amber-500/20 text-amber-300'
+                                                        : 'bg-surface-hover text-moonstone'
+                                                }`}>
+                                                    {isOutOfStock ? '0 left' : isMaxInCart ? 'Max' : `${product.stock} left`}
+                                                </span>
+                                            </div>
+                                            <p className="font-bold text-white text-sm truncate mt-0.5 group-hover:text-primary transition-colors">{product.name}</p>
+                                            <p className="text-xs text-white mt-1">
+                                                {formatPrice(product.price)}
+                                            </p>
+                                        </button>
+                                    );
+                                })
                             )}
                         </div>
                     </div>
@@ -832,7 +1430,7 @@ export default function POSPage() {
 
                 {/* Right Panel - Cart */}
                 <div className="bg-surface-navy rounded-xl border border-surface-hover flex flex-col p-6 overflow-hidden col-span-1">
-                    <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center justify-between mb-3">
                         <h2 className="text-lg font-bold text-white">Cart</h2>
                         {cart.length > 0 && (
                             <button
@@ -843,6 +1441,140 @@ export default function POSPage() {
                             </button>
                         )}
                     </div>
+
+                    {/* Customer Selector & Wholesale Tier Indicator (BillWiz & InvenTree) */}
+                    <div className="mb-3 p-2.5 bg-bg-navy rounded-lg border border-surface-hover flex items-center justify-between">
+                        <div className="flex items-center gap-2 min-w-0">
+                            <User className="w-4 h-4 text-primary shrink-0" />
+                            <div className="min-w-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-xs font-bold text-white truncate">
+                                        {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
+                                    </span>
+                                    {selectedCustomer?.tier && (
+                                        <Badge variant="outline" className="text-[10px] text-primary border-primary/40 uppercase">
+                                            {selectedCustomer.tier}
+                                        </Badge>
+                                    )}
+                                </div>
+                                {selectedCustomer?.phone && (
+                                    <span className="text-[11px] text-moonstone font-mono">{selectedCustomer.phone}</span>
+                                )}
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setShowCustomerModal(true)}
+                                className="h-7 text-xs px-2 text-moonstone hover:text-white"
+                                title="Change Customer (F3)"
+                            >
+                                <span className="font-mono text-[10px] text-primary mr-1">[F3]</span>
+                                {selectedCustomer ? "Change" : "Select"}
+                            </Button>
+                            {selectedCustomer && (
+                                <button
+                                    onClick={handleClearCustomer}
+                                    className="text-muted-foreground hover:text-red-400 p-1"
+                                    title="Clear Customer"
+                                >
+                                    <X size={14} />
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Park Cart (F8) and Held Carts Bar */}
+                    <div className="flex items-center justify-between mb-3">
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleParkCart}
+                            disabled={cart.length === 0}
+                            className="h-7 text-xs gap-1 border-surface-hover hover:border-primary text-moonstone hover:text-white"
+                            title="Park Current Cart (F8)"
+                        >
+                            <span className="font-mono text-[10px] text-primary mr-0.5">[F8]</span>
+                            <PauseCircle className="w-3.5 h-3.5 text-amber-400" />
+                            Park Cart
+                        </Button>
+                        {heldCarts.length > 0 && (
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setShowHeldCartsModal(true)}
+                                className="h-7 text-xs gap-1 text-amber-400 hover:text-amber-300 bg-amber-400/10"
+                            >
+                                <History className="w-3.5 h-3.5" />
+                                Held Carts ({heldCarts.length})
+                            </Button>
+                        )}
+                    </div>
+
+                    {/* POS Real-Time Anti-Fraud Visual Match Audit Card (Architecture Spec §4.2) */}
+                    {antiFraudAuditItem && (
+                        <div className="bg-bg-navy/95 border-2 border-emerald-500/50 rounded-xl p-3 shadow-xl mb-3 animate-in slide-in-from-top-2 fade-in relative">
+                            <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-surface-hover/50">
+                                <div className="flex items-center gap-2">
+                                    <span className="size-2 rounded-full bg-emerald-400 animate-ping" />
+                                    <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                                        Anti-Fraud Visual Match Confirmed
+                                    </span>
+                                </div>
+                                <button
+                                    onClick={() => setAntiFraudAuditItem(null)}
+                                    className="text-moonstone hover:text-white p-0.5 rounded transition-colors"
+                                    title="Dismiss"
+                                >
+                                    <X size={13} />
+                                </button>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                                {/* 120x120 Hero Thumbnail */}
+                                <div className="size-20 rounded-lg overflow-hidden border border-emerald-500/40 bg-black/60 shrink-0 relative flex items-center justify-center shadow-md">
+                                    {antiFraudAuditItem.image ? (
+                                        <Image
+                                            src={antiFraudAuditItem.image}
+                                            alt={antiFraudAuditItem.name}
+                                            width={80}
+                                            height={80}
+                                            className="w-full h-full object-cover"
+                                        />
+                                    ) : (
+                                        <div className="flex flex-col items-center justify-center text-moonstone/50 text-center p-1">
+                                            <Tag size={20} />
+                                            <span className="text-[8px] mt-1">No Photo Bound</span>
+                                        </div>
+                                    )}
+                                    <span className="absolute bottom-1 right-1 text-[7px] font-mono bg-black/80 text-emerald-300 px-1 py-0.2 rounded font-bold">
+                                        HERO
+                                    </span>
+                                </div>
+
+                                <div className="flex-1 min-w-0">
+                                    <div className="text-[10px] font-mono text-primary font-bold truncate">
+                                        {antiFraudAuditItem.sku}
+                                    </div>
+                                    <div className="text-xs font-bold text-white truncate mt-0.5">
+                                        {antiFraudAuditItem.name}
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-xs font-mono font-bold text-gold">
+                                            MRP ₹{antiFraudAuditItem.price.toLocaleString("en-IN")}
+                                        </span>
+                                        <span className="text-[9px] text-amber-300 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                                            HSN {antiFraudAuditItem.hsn} (3% GST)
+                                        </span>
+                                    </div>
+                                    <div className="text-[9px] text-emerald-400 flex items-center gap-1 mt-1 font-medium">
+                                        ✓ Tag matches physical item • Ticket-switching protected
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Cart Items */}
                     <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin scrollbar-thumb-surface-hover scrollbar-track-transparent">
@@ -863,11 +1595,40 @@ export default function POSPage() {
                                     className="p-3 bg-bg-navy border border-surface-hover rounded-lg space-y-2"
                                 >
                                     <div className="flex items-center gap-3">
+                                        {item.image && (
+                                            <div className="size-10 rounded-md overflow-hidden border border-surface-hover shrink-0 bg-black/40">
+                                                <Image src={item.image} alt={item.name} width={40} height={40} className="w-full h-full object-cover" />
+                                            </div>
+                                        )}
                                         <div className="flex-1 min-w-0">
                                             <p className="font-bold text-white text-sm truncate">{item.name}</p>
-                                            <p className="text-xs text-moonstone truncate">
-                                                {item.variant} • {formatPrice(item.price)}
-                                            </p>
+                                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                                <span className="text-xs text-moonstone truncate">
+                                                    {item.variant} • {formatPrice(item.price)}
+                                                </span>
+                                                {item.channelPrices && item.channelPrices[selectedChannel] !== undefined && (
+                                                    <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-primary/20 text-primary border border-primary/30" title={`Channel rate: ₹${formatPrice(item.price)}`}>
+                                                        {availableChannels.find(c => c.id === selectedChannel)?.name || selectedChannel}
+                                                    </span>
+                                                )}
+                                                {item.stock !== undefined && (
+                                                    <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                                                        item.quantity >= item.stock
+                                                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                                            : 'bg-surface-navy text-moonstone border border-surface-hover'
+                                                    }`}>
+                                                        Stock: {item.stock}
+                                                    </span>
+                                                )}
+                                                <button
+                                                    onClick={() => handleOpenPriceOverride(item)}
+                                                    className="text-[10px] text-primary hover:underline font-mono bg-primary/10 px-1.5 py-0.5 rounded flex items-center gap-0.5"
+                                                    title="Override Unit Price / Line Discount (F4)"
+                                                >
+                                                    <Tag size={10} />
+                                                    [F4 Rate]
+                                                </button>
+                                            </div>
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <button
@@ -881,7 +1642,13 @@ export default function POSPage() {
                                             </span>
                                             <button
                                                 onClick={() => updateQuantity(item.id, 1)}
-                                                className="w-7 h-7 rounded bg-surface-navy border border-surface-hover flex items-center justify-center text-white hover:text-primary transition-colors"
+                                                disabled={item.stock !== undefined && item.quantity >= item.stock}
+                                                className={`w-7 h-7 rounded bg-surface-navy border border-surface-hover flex items-center justify-center transition-colors ${
+                                                    item.stock !== undefined && item.quantity >= item.stock
+                                                        ? 'opacity-40 cursor-not-allowed text-moonstone'
+                                                        : 'text-white hover:text-primary'
+                                                }`}
+                                                title={item.stock !== undefined && item.quantity >= item.stock ? `Maximum stock reached (${item.stock} available)` : "Increase quantity"}
                                             >
                                                 <Plus size={14} />
                                             </button>
@@ -916,7 +1683,7 @@ export default function POSPage() {
                                     min="0"
                                     max="100"
                                     value={discount}
-                                    onChange={(e) => setDiscount(Number(e.target.value))}
+                                    onChange={(e) => setDiscount(Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
                                     className="bg-bg-navy border border-surface-hover text-white text-sm rounded px-2 py-1 w-16 text-center focus:ring-1 focus:ring-primary focus:border-primary"
                                 />
                             </div>
@@ -953,7 +1720,7 @@ export default function POSPage() {
                             <div className="flex justify-between text-xs text-green-400 bg-green-500/10 rounded px-2 py-1">
                                 <span className="flex items-center gap-1">
                                     <Gift className="w-3 h-3" />
-                                    Points You'll Earn
+                                    Points You&apos;ll Earn
                                 </span>
                                 <span className="font-bold">+{pointsToEarn}</span>
                             </div>
@@ -1028,6 +1795,37 @@ export default function POSPage() {
                                     );
                                 })}
                             </div>
+
+                            {/* UPI < ₹2,000 Zero-MDR Surcharge Discount Option */}
+                            {(paymentMethod === "upi" || paymentMethod === "phonepe") && total > 0 && total < DEFAULT_UPI_DISCOUNT_THRESHOLD && (
+                                <div className="mt-2.5 p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-xs animate-in fade-in">
+                                    <div className="flex items-center justify-between">
+                                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                checked={upiDiscountEnabled}
+                                                onChange={(e) => {
+                                                    const val = e.target.checked;
+                                                    setUpiDiscountState(val);
+                                                    setUpiDiscountEnabled(val);
+                                                }}
+                                                className="accent-emerald-500 rounded"
+                                            />
+                                            <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
+                                                ⚡ UPI &lt; ₹2,000 Zero-MDR Surcharge Discount
+                                            </span>
+                                        </label>
+                                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                                            {upiDiscountEnabled ? "Active (0% Surcharge)" : "Disabled"}
+                                        </span>
+                                    </div>
+                                    <p className="text-[10px] text-emerald-400/80 mt-1 leading-tight">
+                                        {upiDiscountEnabled
+                                            ? "RBI/NPCI zero-MDR rule: Merchant surcharge waived for UPI under ₹2,000. Customer pays ₹0 surcharge."
+                                            : "Feature disabled: Standard merchant surcharge policy applies."}
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -1097,7 +1895,7 @@ export default function POSPage() {
 
             {/* Receipt Modal */}
             {showReceipt && lastTransaction && (
-                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50 p-4">
                     <div className="bg-surface-navy rounded-xl shadow-2xl max-w-md w-full overflow-hidden border border-surface-hover">
                         <div className="bg-bg-navy p-4 flex items-center justify-between border-b border-surface-hover">
                             <h3 className="text-lg font-bold text-white">Sale Completed!</h3>
@@ -1290,6 +2088,207 @@ export default function POSPage() {
                 amount={total}
                 orderId={generateId()}
             />
+
+            {/* Customer Selection Modal (F3 / Wholesale Tiers) */}
+            <Dialog open={showCustomerModal} onOpenChange={setShowCustomerModal}>
+                <DialogContent className="bg-card-bg border-surface-hover text-white max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-white text-lg">
+                            <User className="w-5 h-5 text-gold" />
+                            Select Customer / Wholesale Partner
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-moonstone" />
+                            <Input
+                                placeholder="Search by name, phone or company..."
+                                value={customerSearchQuery}
+                                onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                                className="pl-9 bg-bg-navy border-surface-hover text-white"
+                                autoFocus
+                            />
+                        </div>
+
+                        {selectedCustomer && (
+                            <div className="flex items-center justify-between p-3 rounded-lg bg-gold/10 border border-gold/30">
+                                <div>
+                                    <p className="text-sm font-semibold text-gold">Currently Selected: {selectedCustomer.name}</p>
+                                    <p className="text-xs text-moonstone">{selectedCustomer.phone} • Tier: {selectedCustomer.tier || selectedCustomer.customer_type || 'Retail'}</p>
+                                </div>
+                                <Button size="sm" variant="outline" onClick={handleClearCustomer} className="border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs">
+                                    Switch to Walk-in
+                                </Button>
+                            </div>
+                        )}
+
+                        <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                            {isLoadingCustomers ? (
+                                <p className="text-sm text-moonstone text-center py-4">Searching customers...</p>
+                            ) : customerList.length === 0 ? (
+                                <p className="text-sm text-moonstone text-center py-4">No customers found.</p>
+                            ) : (
+                                customerList.map((cust) => {
+                                    const tierPct = getTierDiscountPercent(cust.tier, cust.customer_type);
+                                    return (
+                                        <div
+                                            key={cust.id}
+                                            onClick={() => handleSelectCustomer(cust)}
+                                            className="flex items-center justify-between p-3 rounded-lg border border-surface-hover hover:border-gold/50 hover:bg-surface-hover/30 cursor-pointer transition-colors"
+                                        >
+                                            <div>
+                                                <p className="text-sm font-medium text-white">{cust.name}</p>
+                                                <p className="text-xs text-moonstone">{cust.phone || "No phone"} {cust.email ? `• ${cust.email}` : ""}</p>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                {tierPct > 0 ? (
+                                                    <Badge className="bg-gold/20 text-gold border-gold/40 text-xs">
+                                                        {cust.tier?.toUpperCase() || cust.customer_type?.toUpperCase()} ({tierPct}% OFF)
+                                                    </Badge>
+                                                ) : (
+                                                    <Badge variant="outline" className="text-moonstone text-xs">
+                                                        Retail
+                                                    </Badge>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowCustomerModal(false)}>
+                            Cancel
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Held / Parked Carts Modal (F8) */}
+            <Dialog open={showHeldCartsModal} onOpenChange={setShowHeldCartsModal}>
+                <DialogContent className="bg-card-bg border-surface-hover text-white max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-white text-lg">
+                            <PauseCircle className="w-5 h-5 text-amber-400" />
+                            Parked Carts Queue (F8)
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3 py-2 max-h-72 overflow-y-auto">
+                        {heldCarts.length === 0 ? (
+                            <div className="text-center py-8 text-moonstone">
+                                <History className="w-10 h-10 mx-auto mb-2 opacity-40" />
+                                <p className="text-sm">No parked carts in memory.</p>
+                                <p className="text-xs text-moonstone/70 mt-1">Press F8 with items in cart to park a sale anytime.</p>
+                            </div>
+                        ) : (
+                            heldCarts.map((h) => {
+                                const cartTotal = h.items.reduce((s, i) => s + i.price * i.quantity, 0);
+                                return (
+                                    <div
+                                        key={h.id}
+                                        className="p-3.5 rounded-lg border border-surface-hover bg-bg-navy/60 flex items-center justify-between"
+                                    >
+                                        <div>
+                                            <p className="text-sm font-semibold text-white">{h.name}</p>
+                                            <p className="text-xs text-moonstone mt-0.5">
+                                                {h.items.length} items • ₹{formatPrice(cartTotal)} • {new Date(h.timestamp).toLocaleTimeString()}
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <Button
+                                                size="sm"
+                                                onClick={() => handleResumeCart(h.id)}
+                                                className="bg-gold hover:bg-gold-light text-navy-dark text-xs font-semibold px-3"
+                                            >
+                                                Resume
+                                            </Button>
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                onClick={() => handleDeleteHeldCart(h.id)}
+                                                className="text-red-400 hover:text-red-300 hover:bg-red-500/10 px-2"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowHeldCartsModal(false)}>
+                            Close
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Line-Item Price & Rate Override Modal (F4) */}
+            <Dialog open={showPriceOverrideModal} onOpenChange={setShowPriceOverrideModal}>
+                <DialogContent className="bg-card-bg border-surface-hover text-white max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-white text-lg">
+                            <Tag className="w-5 h-5 text-gold" />
+                            Negotiated Rate Override (F4)
+                        </DialogTitle>
+                    </DialogHeader>
+                    {overrideItem && (
+                        <div className="space-y-4 py-2">
+                            <div className="p-3 rounded-lg bg-surface-hover/30 border border-surface-hover">
+                                <p className="text-sm font-semibold text-white">{overrideItem.name}</p>
+                                <p className="text-xs text-moonstone">SKU: {overrideItem.sku} • Original: ₹{formatPrice(overrideItem.price)}</p>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className="text-xs text-moonstone uppercase tracking-wider font-semibold">Custom Unit Price (₹)</Label>
+                                <Input
+                                    type="number"
+                                    value={overridePriceInput}
+                                    onChange={(e) => setOverridePriceInput(e.target.value)}
+                                    className="bg-bg-navy border-surface-hover text-white font-mono"
+                                    placeholder="Enter new unit price..."
+                                    autoFocus
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className="text-xs text-moonstone uppercase tracking-wider font-semibold">Special Line Discount (%)</Label>
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    value={overrideDiscountInput}
+                                    onChange={(e) => setOverrideDiscountInput(e.target.value)}
+                                    className="bg-bg-navy border-surface-hover text-white font-mono"
+                                    placeholder="0"
+                                />
+                            </div>
+
+                            <div className="p-3 rounded-lg bg-gold/10 border border-gold/30 flex justify-between items-center text-sm">
+                                <span className="text-moonstone">Calculated Final Rate:</span>
+                                <span className="font-bold text-gold text-base">
+                                    ₹{formatPrice(
+                                        Math.max(0, (parseFloat(overridePriceInput) || 0) * (1 - (parseFloat(overrideDiscountInput) || 0) / 100))
+                                    )}
+                                </span>
+                            </div>
+                        </div>
+                    )}
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowPriceOverrideModal(false)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleApplyPriceOverride}
+                            className="bg-gold hover:bg-gold-light text-navy-dark font-semibold"
+                        >
+                            Apply Override
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

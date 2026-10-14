@@ -5,15 +5,18 @@ import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import {
-    ChevronLeft,
+
     Save,
     Search,
     Plus,
     Trash2,
     Truck,
     User,
-    Package
+    Package,
+    ScanBarcode
 } from "lucide-react";
+import { QuickBarcodeScanModal, type ScannedItemPayload } from "@/components/common/QuickBarcodeScanModal";
+import { MobileScanner } from "@/lib/mobile-scanner";
 import { formatPrice } from "@/lib/utils";
 import {
     createChallan,
@@ -23,8 +26,27 @@ import {
 } from "@/lib/challan";
 import { getStoreSettings, type StoreSettings } from "@/lib/invoice";
 import { searchCustomers, type Customer } from "@/lib/customers";
+import { type Product, type ProductVariant } from "@/lib/products";
 import { pb } from "@/lib/pocketbase";
 import { toast } from "sonner";
+
+// Product search dropdown result: Product/ProductVariant records narrowed
+// to the fields this page reads.
+interface ProductVariantOption {
+    id: string;
+    sku_suffix?: string;
+    size?: string;
+    color?: string;
+    price_adjustment: number;
+}
+
+interface ProductSearchResult {
+    id: string;
+    name: string;
+    base_price: number;
+    hsn_code?: string;
+    variants: ProductVariantOption[];
+}
 
 export default function CreateChallanPage() {
     const router = useRouter();
@@ -58,8 +80,9 @@ export default function CreateChallanPage() {
     // Items State
     const [items, setItems] = useState<Omit<ChallanItem, 'id' | 'challan_id'>[]>([]);
     const [productSearch, setProductSearch] = useState("");
-    const [productResults, setProductResults] = useState<any[]>([]);
+    const [productResults, setProductResults] = useState<ProductSearchResult[]>([]);
     const [showProductResults, setShowProductResults] = useState(false);
+    const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
 
     // Load store settings
     useEffect(() => {
@@ -86,35 +109,41 @@ export default function CreateChallanPage() {
         const timeout = setTimeout(async () => {
             if (productSearch.length > 2) {
                 try {
-                    const products = await pb.collection('products').getFullList({
+                    const products = await pb.collection('products').getFullList<Product & { expand?: { variants?: ProductVariant[] } }>({
                         filter: `name~"${productSearch}"`,
                         expand: 'variants',
                     });
-                    const data = products.map((p: any) => ({
+                    const data = products.map((p) => ({
                         id: p.id,
                         name: p.name,
                         base_price: p.base_price,
                         hsn_code: p.hsn_code,
-                        variants: p.expand?.variants || [],
+                        variants: (p.expand?.variants || []).map((v) => ({
+                            id: v.id,
+                            sku_suffix: v.sku_suffix,
+                            size: v.size,
+                            color: v.color,
+                            price_adjustment: v.price_adjustment || 0,
+                        })),
                     }));
                     setProductResults(data);
-                } catch (e) {
+                } catch {
                     // Fallback: fetch products and variants separately
-                    const products = await pb.collection('products').getFullList({
+                    const products = await pb.collection('products').getFullList<Product>({
                         filter: `name~"${productSearch}"`,
                     });
-                    const productIds = products.map((p: any) => p.id);
-                    let variants: any[] = [];
+                    const productIds = products.map((p) => p.id);
+                    let variants: ProductVariant[] = [];
                     if (productIds.length > 0) {
                         const variantFilter = productIds.map(id => `product="${id}"`).join(' || ');
-                        variants = await pb.collection('product_variants').getFullList({ filter: variantFilter });
+                        variants = await pb.collection('product_variants').getFullList<ProductVariant>({ filter: variantFilter });
                     }
-                    const data = products.map((p: any) => ({
+                    const data = products.map((p) => ({
                         id: p.id,
                         name: p.name,
                         base_price: p.base_price,
                         hsn_code: p.hsn_code,
-                        variants: variants.filter((v: any) => v.product === p.id).map((v: any) => ({
+                        variants: variants.filter((v) => v.product === p.id).map((v) => ({
                             id: v.id,
                             sku_suffix: v.sku_suffix,
                             size: v.size,
@@ -139,7 +168,7 @@ export default function CreateChallanPage() {
         setShowConsigneeResults(false);
     };
 
-    const handleAddItem = (product: any, variant: any) => {
+    const handleAddItem = (product: ProductSearchResult, variant: ProductVariantOption) => {
         const price = product.base_price + (variant.price_adjustment || 0);
         const taxRate = 3; // Default GST for jewelry
         const taxableValue = price;
@@ -171,7 +200,70 @@ export default function CreateChallanPage() {
         setShowProductResults(false);
     };
 
-    const updateItem = (index: number, field: keyof ChallanItem, value: any) => {
+    const handleScannedItem = (payload: ScannedItemPayload) => {
+        if (!payload.product) {
+            toast.error(`Barcode "${payload.barcode}" not found in catalog`);
+            return;
+        }
+
+        const prodResult: ProductSearchResult = {
+            id: payload.product.id,
+            name: payload.product.name,
+            base_price: payload.product.base_price,
+            hsn_code: payload.product.hsn_code,
+            variants: payload.variant ? [{
+                id: payload.variant.id,
+                sku_suffix: '',
+                size: payload.variant.size,
+                color: payload.variant.color,
+                price_adjustment: payload.variant.price_adjustment || 0
+            }] : [{
+                id: 'default',
+                price_adjustment: 0
+            }]
+        };
+
+        handleAddItem(prodResult, prodResult.variants[0]);
+        toast.success(`Scanned & added: ${payload.product.name}`);
+    };
+
+    // Scoped scanner listener: directly adds scanned items to this delivery challan
+    useEffect(() => {
+        const unregister = MobileScanner.registerContext("challan_entry", async (result) => {
+            try {
+                const prod = await pb.collection("products").getFirstListItem(`sku="${result.barcode}" || barcode="${result.barcode}"`);
+                if (prod) {
+                    const variants = await pb.collection("product_variants").getList(1, 1, {
+                        filter: `product="${prod.id}"`,
+                    });
+                    const v = variants.items[0];
+                    handleScannedItem({
+                        barcode: result.barcode,
+                        product: {
+                            id: prod.id,
+                            name: prod.name,
+                            sku: prod.sku,
+                            base_price: prod.base_price,
+                            hsn_code: prod.hsn_code,
+                        },
+                        variant: v ? {
+                            id: v.id,
+                            size: v.size,
+                            color: v.color,
+                        } : undefined
+                    });
+                } else {
+                    toast.error(`Barcode "${result.barcode}" not found in catalog`);
+                }
+            } catch {
+                toast.error(`Barcode "${result.barcode}" not found in catalog`);
+            }
+            return true; // Stop propagation
+        }, 60);
+        return () => unregister();
+    }, [items]);
+
+    const updateItem = (index: number, field: keyof ChallanItem, value: number) => {
         const newItems = [...items];
         const item = { ...newItems[index], [field]: value };
 
@@ -221,7 +313,11 @@ export default function CreateChallanPage() {
             status: 'draft' as const,
             consignor_name: storeSettings?.store_name || 'Store',
             consignor_gstin: storeSettings?.store_gstin,
-            consignor_address: storeSettings ? `${storeSettings.store_address}, ${storeSettings.store_city}, ${storeSettings.store_state} - ${storeSettings.store_pincode}` : '',
+            consignor_address: storeSettings ? [
+                storeSettings.store_address,
+                storeSettings.store_city,
+                [storeSettings.store_state, storeSettings.store_pincode].filter(Boolean).join(" - ")
+            ].filter(Boolean).join(", ") : '',
             consignor_state_code: storeSettings?.store_state_code,
             consignee_id: selectedConsignee?.id,
             consignee_name: consigneeName,
@@ -454,21 +550,32 @@ export default function CreateChallanPage() {
                                     <Package size={20} className="text-primary" />
                                     Items
                                 </h3>
-                                <div className="relative w-64">
-                                    <Plus size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone" />
-                                    <input
-                                        type="text"
-                                        placeholder="Add item..."
-                                        value={productSearch}
-                                        onChange={(e) => setProductSearch(e.target.value)}
-                                        className="w-full h-10 pl-9 pr-4 bg-bg-navy border border-surface-hover rounded-lg text-white text-sm"
-                                    />
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setShowBarcodeScanner(true)}
+                                        className="h-10 px-3 bg-bg-navy border-surface-hover hover:border-primary/50 text-primary flex items-center gap-1.5"
+                                    >
+                                        <ScanBarcode size={16} />
+                                        <span>Scan Barcode</span>
+                                    </Button>
+                                    <div className="relative w-64">
+                                        <Plus size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone" />
+                                        <input
+                                            type="text"
+                                            placeholder="Add item..."
+                                            value={productSearch}
+                                            onChange={(e) => setProductSearch(e.target.value)}
+                                            className="w-full h-10 pl-9 pr-4 bg-bg-navy border border-surface-hover rounded-lg text-white text-sm"
+                                        />
                                     {showProductResults && productResults.length > 0 && (
                                         <div className="absolute top-full right-0 mt-2 w-96 bg-surface-navy border border-surface-hover rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
                                             {productResults.map(product => (
                                                 <div key={product.id}>
                                                     {product.variants.length > 0 ? (
-                                                        product.variants.map((v: any) => (
+                                                        product.variants.map((v) => (
                                                             <div
                                                                 key={v.id}
                                                                 onClick={() => handleAddItem(product, v)}
@@ -494,6 +601,7 @@ export default function CreateChallanPage() {
                                     )}
                                 </div>
                             </div>
+                        </div>
 
                             {items.length === 0 ? (
                                 <div className="border-2 border-dashed border-surface-hover rounded-xl p-12 text-center text-moonstone/50">
@@ -582,6 +690,13 @@ export default function CreateChallanPage() {
                     </div>
                 </div>
             </div>
+
+            <QuickBarcodeScanModal
+                open={showBarcodeScanner}
+                onOpenChange={setShowBarcodeScanner}
+                title="Scan Challan Line Item"
+                onItemScanned={handleScannedItem}
+            />
         </div>
     );
 }

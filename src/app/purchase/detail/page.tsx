@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { format } from "date-fns";
 import {
@@ -11,16 +11,19 @@ import {
     Clock,
     XCircle,
     AlertCircle,
-    Printer,
+
     Send,
     PackageCheck,
+    Printer,
+    Tag,
+    type LucideIcon,
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -59,7 +62,7 @@ import {
 } from "@/lib/purchase";
 import { formatINR } from "@/lib/gst";
 
-const statusConfig: Record<POStatus, { label: string; icon: any; color: string }> = {
+const statusConfig: Record<POStatus, { label: string; icon: LucideIcon; color: string }> = {
     draft: { label: "Draft", icon: Clock, color: "bg-gray-500/20 text-gray-400 border-gray-500/30" },
     sent: { label: "Sent", icon: Truck, color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
     partial: { label: "Partial", icon: AlertCircle, color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
@@ -81,7 +84,7 @@ function PurchaseOrderDetailContent() {
     const [grnNotes, setGrnNotes] = useState("");
     const [processing, setProcessing] = useState(false);
 
-    const fetchPO = async () => {
+    const fetchPO = useCallback(async () => {
         if (!poId) return;
         setLoading(true);
         const data = await getPurchaseOrder(poId);
@@ -97,11 +100,11 @@ function PurchaseOrderDetailContent() {
             });
             setReceivingQuantities(initial);
         }
-    };
+    }, [poId]);
 
     useEffect(() => {
         fetchPO();
-    }, [poId]);
+    }, [fetchPO]);
 
     const handleSendPO = async () => {
         if (!po) return;
@@ -237,6 +240,25 @@ function PurchaseOrderDetailContent() {
                                     Receive Goods
                                 </Button>
                             )}
+
+                            <Button
+                                variant="outline"
+                                onClick={() => {
+                                    const firstItem = po.items?.[0];
+                                    if (firstItem) {
+                                        const sku = firstItem.variant?.product?.sku || 'SKU-INWARD';
+                                        const name = firstItem.variant?.product?.name || firstItem.description || 'Jewelry Item';
+                                        const qty = firstItem.quantity_received || firstItem.quantity_ordered || 1;
+                                        router.push(`/labels?sku=${encodeURIComponent(sku)}&name=${encodeURIComponent(name)}&price=${firstItem.unit_price}&qty=${qty}`);
+                                    } else {
+                                        router.push('/labels');
+                                    }
+                                }}
+                                className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 font-bold"
+                            >
+                                <Tag className="w-4 h-4 mr-2 text-emerald-400" />
+                                Print Inward Barcode Labels
+                            </Button>
 
                             {canCancel && (
                                 <Button

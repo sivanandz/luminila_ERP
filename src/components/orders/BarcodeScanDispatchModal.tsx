@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
 import { dispatchOrderMilestoneWhatsApp } from "@/lib/order-milestones";
 import { CourierCarrier } from "@/lib/logistics-engine";
+import { MobileScanner } from "@/lib/mobile-scanner";
 import {
     ScanBarcode,
     Truck,
@@ -104,6 +105,17 @@ export function BarcodeScanDispatchModal({
             setBarcode("");
             setTrackingPreview(null);
         }
+    }, [open]);
+
+    // High-priority hardware scanner listener: strictly intercepts courier AWBs when dispatch modal is active
+    useEffect(() => {
+        if (!open) return;
+        const unregister = MobileScanner.registerContext("shipping_awb", (result) => {
+            handleBarcodeChange(result.barcode);
+            playSuccessTone();
+            return true; // Stop propagation: prevent billing or catalog interference
+        }, 100);
+        return () => unregister();
     }, [open]);
 
     // Keep preselected order in sync if passed
