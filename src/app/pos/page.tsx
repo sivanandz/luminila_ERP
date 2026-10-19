@@ -401,15 +401,18 @@ export default function POSPage() {
         const loadQuickAddProducts = async () => {
             try {
                 const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 8, {
+                    filter: 'product.is_active = true',
                     expand: 'product',
                     sort: '-created',
                 });
-                const posProducts: POSProduct[] = variants.items.map((v) => {
+                const posProducts: POSProduct[] = [];
+                for (const v of variants.items) {
                     const p = v.expand?.product;
+                    if (!p || p.is_active === false) continue;
                     const basePrice = p?.base_price || 0;
                     const channelPrices = p?.channel_prices;
                     const priceAdjustment = v.price_adjustment || 0;
-                    return {
+                    posProducts.push({
                         id: v.id,
                         productId: v.product,
                         sku: p?.sku ? `${p.sku}${v.sku_suffix ? '-' + v.sku_suffix : ''}` : v.id,
@@ -422,9 +425,9 @@ export default function POSPage() {
                         stock: v.stock_level || 0,
                         image: p?.image_data || p?.image_url || null,
                         hsn_code: p?.hsn_code || "71179010",
-                    };
-                }).filter((p: POSProduct) => p.name !== 'Unknown Product');
-                setQuickAddProducts(posProducts);
+                    });
+                }
+                setQuickAddProducts(posProducts.filter(p => p.name !== 'Unknown Product'));
             } catch (err) {
                 console.error('Error loading quick-add products:', err);
             }
@@ -483,10 +486,10 @@ export default function POSPage() {
             // Exact matches first: bare variant suffix, product barcode, or a full
             // variant SKU ("<parent sku>-<suffix>"). Fuzzy contains-matching here
             // could resolve a scan to an arbitrary variant with the wrong price.
-            let filter = `sku_suffix="${safe}" || product.barcode="${safe}"`;
+            let filter = `(sku_suffix="${safe}" || product.barcode="${safe}") && product.is_active=true`;
             const sep = code.lastIndexOf('-');
             if (sep > 0 && sep < code.length - 1) {
-                filter += ` || (product.sku="${sanitizeFilter(code.slice(0, sep))}" && sku_suffix="${sanitizeFilter(code.slice(sep + 1))}")`;
+                filter = `((sku_suffix="${safe}" || product.barcode="${safe}") || (product.sku="${sanitizeFilter(code.slice(0, sep))}" && sku_suffix="${sanitizeFilter(code.slice(sep + 1))}")) && product.is_active=true`;
             }
             const exact = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
                 filter,
@@ -501,7 +504,7 @@ export default function POSPage() {
                 // Parent-SKU scan (label without a suffix): exact parent match with a
                 // deterministic variant order instead of an arbitrary fuzzy pick.
                 const byParentSku = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
-                    filter: `product.sku="${safe}"`,
+                    filter: `product.sku="${safe}" && product.is_active=true`,
                     expand: 'product',
                     sort: 'sku_suffix',
                 });
@@ -510,6 +513,10 @@ export default function POSPage() {
 
             if (v) {
                 const p = v.expand?.product;
+                if (p?.is_active === false) {
+                    toast.error(`"${p?.name || code}" is marked inactive and cannot be sold.`);
+                    return;
+                }
                 const stock = v.stock_level ?? 0;
                 if (stock <= 0) {
                     toast.error(`"${p?.name || code}" is out of stock (0 available).`);

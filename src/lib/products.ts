@@ -234,10 +234,11 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
             sort: 'product.name'
         });
 
-        return records.items.map(v => {
+        const result: ProductWithVariant[] = [];
+        for (const v of records.items) {
             const p = v.expand?.product;
-            if (!p) return null;
-            return {
+            if (!p || p.is_active === false) continue;
+            result.push({
                 ...p,
                 variant_id: v.id,
                 variant_name: v.variant_name,
@@ -246,8 +247,9 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
                 price_adjustment: v.price_adjustment || 0,
                 channel_prices: p.channel_prices || {},
                 stock: v.stock_level
-            };
-        }).filter(p => p !== null) as ProductWithVariant[];
+            });
+        }
+        return result;
     } catch {
         return [];
     }
