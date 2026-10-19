@@ -400,8 +400,10 @@ export default function POSPage() {
     useEffect(() => {
         const loadQuickAddProducts = async () => {
             try {
+                const tenantEmail = pb.authStore.model?.email?.trim().toLowerCase();
+                const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
                 const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 8, {
-                    filter: 'product.is_active = true',
+                    filter: `product.is_active = true${tenantFilter}`,
                     expand: 'product',
                     sort: '-created',
                 });
@@ -409,6 +411,7 @@ export default function POSPage() {
                 for (const v of variants.items) {
                     const p = v.expand?.product;
                     if (!p || p.is_active === false) continue;
+                    if (tenantEmail && ((v.account_email && v.account_email.toLowerCase() !== tenantEmail) || (p.account_email && p.account_email.toLowerCase() !== tenantEmail))) continue;
                     const basePrice = p?.base_price || 0;
                     const channelPrices = p?.channel_prices;
                     const priceAdjustment = v.price_adjustment || 0;
@@ -482,14 +485,16 @@ export default function POSPage() {
             // Sanitize the raw scanner payload before it is interpolated into the
             // filter — arbitrary QR/DataMatrix content must not break or inject it.
             const safe = sanitizeFilter(code);
+            const tenantEmail = pb.authStore.model?.email?.trim().toLowerCase();
+            const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
 
             // Exact matches first: bare variant suffix, product barcode, or a full
             // variant SKU ("<parent sku>-<suffix>"). Fuzzy contains-matching here
             // could resolve a scan to an arbitrary variant with the wrong price.
-            let filter = `(sku_suffix="${safe}" || product.barcode="${safe}") && product.is_active=true`;
+            let filter = `(sku_suffix="${safe}" || product.barcode="${safe}") && product.is_active=true${tenantFilter}`;
             const sep = code.lastIndexOf('-');
             if (sep > 0 && sep < code.length - 1) {
-                filter = `((sku_suffix="${safe}" || product.barcode="${safe}") || (product.sku="${sanitizeFilter(code.slice(0, sep))}" && sku_suffix="${sanitizeFilter(code.slice(sep + 1))}")) && product.is_active=true`;
+                filter = `((sku_suffix="${safe}" || product.barcode="${safe}") || (product.sku="${sanitizeFilter(code.slice(0, sep))}" && sku_suffix="${sanitizeFilter(code.slice(sep + 1))}")) && product.is_active=true${tenantFilter}`;
             }
             const exact = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
                 filter,
@@ -504,7 +509,7 @@ export default function POSPage() {
                 // Parent-SKU scan (label without a suffix): exact parent match with a
                 // deterministic variant order instead of an arbitrary fuzzy pick.
                 const byParentSku = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
-                    filter: `product.sku="${safe}" && product.is_active=true`,
+                    filter: `product.sku="${safe}" && product.is_active=true${tenantFilter}`,
                     expand: 'product',
                     sort: 'sku_suffix',
                 });
@@ -513,6 +518,10 @@ export default function POSPage() {
 
             if (v) {
                 const p = v.expand?.product;
+                if (tenantEmail && ((v.account_email && v.account_email.toLowerCase() !== tenantEmail) || (p?.account_email && p.account_email.toLowerCase() !== tenantEmail))) {
+                    toast.error("This product belongs to another tenant/account.");
+                    return;
+                }
                 if (p?.is_active === false) {
                     toast.error(`"${p?.name || code}" is marked inactive and cannot be sold.`);
                     return;
@@ -1245,8 +1254,8 @@ export default function POSPage() {
                                 if (val) handleChannelChange(val);
                             }}
                         >
-                            <SelectTrigger className="h-7 bg-surface-navy text-xs text-foreground border border-surface-hover rounded px-2 py-0.5 focus:ring-1 focus:ring-primary font-medium cursor-pointer min-w-[150px] max-w-[240px]">
-                                <SelectValue placeholder="Channel">
+                            <SelectTrigger className="h-7 bg-surface-navy text-xs text-foreground border border-surface-hover rounded px-2 py-0.5 focus:ring-1 focus:ring-primary font-medium cursor-pointer min-w-[150px] max-w-[240px]" suppressHydrationWarning>
+                                <SelectValue placeholder="Channel" suppressHydrationWarning>
                                     {(() => {
                                         const c = availableChannels.find(chan => chan.id === selectedChannel);
                                         return c ? `${c.name}${c.discountPreset ? ` (${c.discountPreset > 0 ? '+' : ''}${c.discountPreset}%)` : ''}` : selectedChannel;

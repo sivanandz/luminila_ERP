@@ -56,6 +56,7 @@ export function getProductDisplayImage(p?: { image_data?: string | null; image_u
 export interface ProductVariant {
     id: string;
     product: string; // Relation
+    account_email?: string;
     variant_name: string;
     sku_suffix?: string;
     price_adjustment?: number;
@@ -228,8 +229,10 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
 
     // Search variants with product expansion
     try {
+        const tenantEmail = typeof window !== "undefined" ? pb.authStore.model?.email?.trim().toLowerCase() : undefined;
+        const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
         const records = await pb.collection('product_variants').getList<ProductVariant>(1, 20, {
-            filter: `(product.name~"${query}" || product.sku~"${query}" || variant_name~"${query}" || sku_suffix~"${query}") && product.is_active=true`,
+            filter: `(product.name~"${query}" || product.sku~"${query}" || variant_name~"${query}" || sku_suffix~"${query}") && product.is_active=true${tenantFilter}`,
             expand: 'product',
             sort: 'product.name'
         });
@@ -238,6 +241,7 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
         for (const v of records.items) {
             const p = v.expand?.product;
             if (!p || p.is_active === false) continue;
+            if (tenantEmail && ((v.account_email && v.account_email.toLowerCase() !== tenantEmail) || (p.account_email && p.account_email.toLowerCase() !== tenantEmail))) continue;
             result.push({
                 ...p,
                 variant_id: v.id,

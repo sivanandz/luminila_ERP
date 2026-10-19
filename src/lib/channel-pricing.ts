@@ -80,20 +80,6 @@ const PB_KEY = "sales_channel_definitions";
 let currentChannels: SalesChannelDefinition[] = [...DEFAULT_SALES_CHANNELS];
 const channelListeners = new Set<(channels: SalesChannelDefinition[]) => void>();
 
-if (typeof window !== "undefined") {
-    try {
-        const cached = localStorage.getItem(getStorageKey());
-        if (cached) {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-                currentChannels = mergeChannels(parsed);
-            }
-        }
-    } catch {
-        // ignore
-    }
-}
-
 function mergeChannels(loaded: SalesChannelDefinition[]): SalesChannelDefinition[] {
     const map = new Map<string, SalesChannelDefinition>();
     DEFAULT_SALES_CHANNELS.forEach((c) => map.set(c.id, c));
@@ -118,6 +104,19 @@ export function subscribeConfiguredChannels(
 export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]> {
     const currentUserEmail = pb.authStore.model?.email;
     if (!currentUserEmail) {
+        if (typeof window !== "undefined") {
+            try {
+                const cached = localStorage.getItem(getStorageKey());
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        currentChannels = mergeChannels(parsed);
+                        channelListeners.forEach((l) => l([...currentChannels]));
+                        return [...currentChannels];
+                    }
+                }
+            } catch { /* ignore */ }
+        }
         currentChannels = [...DEFAULT_SALES_CHANNELS];
         channelListeners.forEach((l) => l([...currentChannels]));
         return [...currentChannels];
@@ -140,6 +139,20 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
                 return [...currentChannels];
             }
         } else {
+            // Check localStorage cache if DB has no record
+            if (typeof window !== "undefined") {
+                const cached = localStorage.getItem(getStorageKey());
+                if (cached) {
+                    try {
+                        const parsed = JSON.parse(cached);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            currentChannels = mergeChannels(parsed);
+                            channelListeners.forEach((l) => l([...currentChannels]));
+                            return [...currentChannels];
+                        }
+                    } catch { /* ignore */ }
+                }
+            }
             // Fresh tenant with no custom channels yet - reset to default channels
             currentChannels = [...DEFAULT_SALES_CHANNELS];
             if (typeof window !== "undefined") {
@@ -150,6 +163,19 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
         }
     } catch (e) {
         console.warn("Failed to load sales channels from PocketBase:", e);
+        if (typeof window !== "undefined") {
+            try {
+                const cached = localStorage.getItem(getStorageKey());
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        currentChannels = mergeChannels(parsed);
+                        channelListeners.forEach((l) => l([...currentChannels]));
+                        return [...currentChannels];
+                    }
+                }
+            } catch { /* ignore */ }
+        }
     }
     return [...currentChannels];
 }
