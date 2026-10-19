@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Printer, Download, Truck, PackageCheck, AlertCircle } from "lucide-react";
 import { CourierCarrier } from "@/lib/logistics-engine";
+import { escapeHtml } from "@/lib/utils";
 
 export interface ShippingLabelData {
     orderNumber: string;
@@ -76,7 +77,7 @@ export function ShippingLabelPrintModal({
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Shipping Label - ${labelData.awbNumber}</title>
+                <title>Shipping Label - ${escapeHtml(labelData.awbNumber || "")}</title>
                 <style>
                     @page {
                         size: 4in 6in;

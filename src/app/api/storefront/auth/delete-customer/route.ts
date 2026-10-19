@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
 import { pb, ensureServerAuth } from "@/lib/pocketbase";
 import { verifyCustomerToken } from "@/lib/customer-token";
+import { getStorefrontBinding } from "@/lib/storefront";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -38,23 +37,8 @@ async function handleDelete(req: Request) {
             );
         }
 
-        const customerId = (body.customerId || "").trim() || customerAuth.id;
-        const rawPhone = (body.phone || "").trim() || customerAuth.phone;
-        const cleanDigits = rawPhone.replace(/\D/g, "");
-
-        // 2. Fetch bound admin email for tenant isolation
-        let boundAdminEmail = "admin@luminila.internal";
-        try {
-            const contentPath = path.join(process.cwd(), "src", "data", "storefront_content.json");
-            if (fs.existsSync(contentPath)) {
-                const cms = JSON.parse(fs.readFileSync(contentPath, "utf-8"));
-                if (cms.adminBinding?.boundAdminEmail) {
-                    boundAdminEmail = cms.adminBinding.boundAdminEmail;
-                }
-            }
-        } catch (e) {
-            console.warn("[Delete Customer] Error reading storefront content:", e);
-        }
+        // 2. Resolve bound admin email for tenant isolation
+        const { boundAdminEmail } = await getStorefrontBinding();
 
         // Verify token tenant matches storefront tenant
         if (customerAuth.tenant !== boundAdminEmail) {
@@ -64,42 +48,34 @@ async function handleDelete(req: Request) {
             );
         }
 
-        await ensureServerAuth();
-
-        let targetId = customerId;
-
-        // If no direct ID was provided, search by phone & tenant
-        if (!targetId && cleanDigits) {
-            const phoneSuffix = cleanDigits.slice(-10);
-            try {
-                const existing = await pb.collection("customers").getFirstListItem(
-                    `phone ~ "${phoneSuffix}" && account_email = "${boundAdminEmail}"`
-                );
-                if (existing) targetId = existing.id;
-            } catch {
-                return NextResponse.json(
-                    { success: false, error: "Customer not found." },
-                    { status: 404, headers: CORS_HEADERS }
-                );
-            }
-        }
-
-        if (!targetId) {
-            return NextResponse.json(
-                { success: false, error: "Could not identify customer record." },
-                { status: 404, headers: CORS_HEADERS }
-            );
-        }
-
-        // Ensure token belongs to the customer being deleted
-        if (customerAuth.id !== targetId && (!cleanDigits || !cleanDigits.endsWith(customerAuth.phone))) {
+        // 3. IDOR Prevention: Target MUST strictly match authenticated customer
+        const targetId = customerAuth.id;
+        if (body.customerId && body.customerId.trim() !== targetId) {
             return NextResponse.json(
                 { success: false, error: "Forbidden: You are not authorized to delete another customer's account." },
                 { status: 403, headers: CORS_HEADERS }
             );
         }
 
-        // Delete customer record from PocketBase
+        await ensureServerAuth();
+
+        // 4. Verify record exists and belongs to this tenant and customer
+        const existing = await pb.collection("customers").getOne(targetId).catch(() => null);
+        if (!existing) {
+            return NextResponse.json(
+                { success: false, error: "Customer not found." },
+                { status: 404, headers: CORS_HEADERS }
+            );
+        }
+
+        if (existing.account_email !== boundAdminEmail) {
+            return NextResponse.json(
+                { success: false, error: "Forbidden: Customer record belongs to a different store tenant." },
+                { status: 403, headers: CORS_HEADERS }
+            );
+        }
+
+        // 5. Delete customer record from PocketBase
         await pb.collection("customers").delete(targetId);
 
         return NextResponse.json(

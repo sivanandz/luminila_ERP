@@ -6,7 +6,7 @@
  */
 
 import crypto from 'crypto';
-import { getTenantStorageKey } from './pocketbase';
+import { getTenantStorageKey, pb } from './pocketbase';
 
 export interface RazorpayConfig {
     keyId: string;
@@ -245,7 +245,10 @@ export async function createPaymentLink(
         try {
             const res = await fetch('/api/pos/payment', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
+                },
                 body: JSON.stringify({ action: 'razorpay_create_link', payload: params }),
             });
             return await res.json();
@@ -366,7 +369,10 @@ export async function fetchPaymentLinkStatus(
         try {
             const res = await fetch('/api/pos/payment', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
+                },
                 body: JSON.stringify({ action: 'razorpay_fetch_status', payload: { paymentLinkId } }),
             });
             return await res.json();

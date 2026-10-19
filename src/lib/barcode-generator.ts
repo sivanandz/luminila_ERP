@@ -3,6 +3,8 @@
  * Generates barcodes for product SKUs for reliable stock updates
  */
 
+import { escapeHtml } from './utils';
+
 export type SymbologyMode = '2D_DATAMATRIX_ECC200' | '2D_QRCODE' | '1D_CODE128_POINTER';
 
 /**
@@ -115,9 +117,9 @@ export function generateDumbbellLabelHTML(product: {
                 line-height: 1.1;
             ">
                 <div style="font-size: 5.5pt; font-weight: 900; letter-spacing: 0.5px;">LUMINILA</div>
-                <div style="font-size: 4.8pt; font-family: monospace; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${product.sku}</div>
+                <div style="font-size: 4.8pt; font-family: monospace; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(product.sku)}</div>
                 <div style="font-size: 5.5pt; font-weight: 900;">₹${formattedPrice}</div>
-                <div style="font-size: 4.2pt; color: #555;">HSN ${hsn}</div>
+                <div style="font-size: 4.2pt; color: #555;">HSN ${escapeHtml(hsn)}</div>
             </div>
         </div>
     `;
@@ -145,11 +147,11 @@ export function generateLabelHTML(product: {
             page-break-inside: avoid;
         ">
             <div style="font-size: 12px; font-weight: bold; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                ${product.name}
+                ${escapeHtml(product.name)}
             </div>
             <img src="${barcodeUrl}" alt="Barcode" style="width: 240px; height: 60px;" />
             <div style="font-size: 14px; font-family: 'Courier New', monospace; color: #333; margin-top: 4px;">
-                ${product.sku}
+                ${escapeHtml(product.sku)}
             </div>
             <div style="font-size: 14px; font-weight: bold; color: #0066cc; margin-top: 4px;">
                 ₹${formattedPrice}

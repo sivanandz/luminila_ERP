@@ -5,7 +5,7 @@
 
 import { pb } from './pocketbase';
 import { format } from 'date-fns';
-import { normalizeDateRange } from './utils';
+import { normalizeDateRange, escapeHtml } from './utils';
 import type { Customer } from './customers';
 import type { Invoice } from './invoice';
 import type { ProductVariant } from '../types/database';
@@ -432,10 +432,14 @@ export function exportToCSV(data: object[], filename: string): void {
         ...data.map((row) =>
             headers.map((h) => {
                 const value = (row as Record<string, unknown>)[h];
-                if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
-                    return `"${value.replace(/"/g, '""')}"`;
+                let strVal = value === null || value === undefined ? '' : String(value);
+                if (/^[=+@-|\t\r]/.test(strVal)) {
+                    strVal = `'${strVal}`;
                 }
-                return value ?? '';
+                if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n') || strVal.includes('\r')) {
+                    return `"${strVal.replace(/"/g, '""')}"`;
+                }
+                return strVal;
             }).join(',')
         ),
     ].join('\n');
@@ -646,7 +650,7 @@ export function printReport(elementId: string, title: string): void {
         <!DOCTYPE html>
         <html>
         <head>
-            <title>${title}</title>
+            <title>${escapeHtml(title)}</title>
             <style>
                 body { font-family: Arial, sans-serif; padding: 20px; }
                 table { width: 100%; border-collapse: collapse; margin-top: 20px; }

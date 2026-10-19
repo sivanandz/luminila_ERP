@@ -5,6 +5,7 @@ import { format } from "date-fns";
 import { formatINR } from "@/lib/gst";
 import { formatJewelrySpecs } from "@/lib/jewelry-engine";
 import type { Invoice } from "@/lib/invoice";
+import { escapeHtml } from "@/lib/utils";
 
 export type PrintMode = "regular" | "thermal58" | "thermal80";
 
@@ -170,7 +171,7 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                     <!DOCTYPE html>
                     <html>
                     <head>
-                        <title>Invoice ${invoice.invoice_number}</title>
+                        <title>Invoice ${escapeHtml(invoice.invoice_number || "")}</title>
                         <style>${styles}</style>
                     </head>
                     <body>

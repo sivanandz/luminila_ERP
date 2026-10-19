@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { ensureServerAuth } from "@/lib/pocketbase";
+import PocketBase from "pocketbase";
+import { ensureServerAuth, getPocketBaseUrl } from "@/lib/pocketbase";
 import {
     createPaymentLink as serverCreateRazorpayLink,
     fetchPaymentLinkStatus as serverFetchRazorpayStatus,
@@ -12,6 +13,40 @@ import {
 
 export async function POST(req: Request) {
     try {
+        // Enforce POS Operator / Superuser Authentication
+        const authHeader = req.headers.get("authorization") || "";
+        const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
+
+        if (!token) {
+            return NextResponse.json(
+                { success: false, error: "Unauthorized: Operator session token is required to process POS payments." },
+                { status: 401 }
+            );
+        }
+
+        const authPb = new PocketBase(getPocketBaseUrl());
+        let isAuthorized = false;
+        try {
+            authPb.authStore.save(token, null);
+            await authPb.collection("users").authRefresh();
+            isAuthorized = authPb.authStore.isValid;
+        } catch {
+            try {
+                authPb.authStore.save(token, null);
+                await authPb.collection("_superusers").authRefresh();
+                isAuthorized = authPb.authStore.isValid;
+            } catch {
+                isAuthorized = false;
+            }
+        }
+
+        if (!isAuthorized) {
+            return NextResponse.json(
+                { success: false, error: "Unauthorized: Invalid or expired operator session." },
+                { status: 401 }
+            );
+        }
+
         const body = await req.json();
         const { action, payload } = body;
 

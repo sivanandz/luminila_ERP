@@ -75,15 +75,37 @@ export async function processRazorpayWebhookEvent(
                     const items = await pb.collection('sales_order_items').getFullList({ filter: `order = "${orderId}"` });
                     for (const item of items) {
                         if (item.product) {
+                            const qty = Number(item.quantity) || 1;
                             await pb.collection('stock_movements').create({
                                 product: item.product,
                                 movement_type: 'sale',
-                                quantity: -(Number(item.quantity) || 1),
+                                quantity: -qty,
                                 reference_id: orderId,
                                 source: 'website',
                                 notes: `Online paid checkout order ${orderId}`,
                                 account_email: (updatedOrder as any).account_email || 'admin@store.local',
                             }).catch(() => {});
+
+                            // Atomically decrement variant stock level
+                            try {
+                                const variants = await pb.collection("product_variants").getFullList({
+                                    filter: `product = "${item.product}"`,
+                                }).catch(() => []);
+                                if (variants.length > 0) {
+                                    await pb.collection("product_variants").update(variants[0].id, {
+                                        "stock_level-": qty,
+                                    }).catch(async () => {
+                                        await pb.collection("product_variants").update(variants[0].id, { stock_level: 0 }).catch(() => {});
+                                    });
+                                }
+                                await pb.collection("products").update(item.product, {
+                                    "stock_level-": qty,
+                                }).catch(async () => {
+                                    await pb.collection("products").update(item.product, { stock_level: 0 }).catch(() => {});
+                                });
+                            } catch (stockDecErr) {
+                                console.warn(`[webhook] Variant stock decrement warning for ${item.product}:`, stockDecErr);
+                            }
                         }
                     }
                 } catch (stockErr) {

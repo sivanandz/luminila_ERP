@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
 import crypto from "crypto";
 import { verifyOtp } from "@/lib/otp-store";
 import { signCustomerToken } from "@/lib/customer-token";
 import { pb, ensureServerAuth } from "@/lib/pocketbase";
+import { getStorefrontBinding } from "@/lib/storefront";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -48,18 +47,7 @@ export async function POST(req: Request) {
         }
 
         // 2. Fetch bound admin email for tenant isolation
-        let boundAdminEmail = "admin@luminila.internal";
-        try {
-            const contentPath = path.join(process.cwd(), "src", "data", "storefront_content.json");
-            if (fs.existsSync(contentPath)) {
-                const cms = JSON.parse(fs.readFileSync(contentPath, "utf-8"));
-                if (cms.adminBinding?.boundAdminEmail) {
-                    boundAdminEmail = cms.adminBinding.boundAdminEmail;
-                }
-            }
-        } catch (e) {
-            console.warn("[Verify OTP] Error reading storefront content:", e);
-        }
+        const { boundAdminEmail } = await getStorefrontBinding();
 
         // 3. Ensure PocketBase server-side authentication
         await ensureServerAuth();

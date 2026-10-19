@@ -160,13 +160,17 @@ export function exportProductsToCSV(products: {
 }
 
 /**
- * Escape field for CSV output
+ * Escape field for CSV output and neutralize spreadsheet formula injection
  */
 function escapeCSVField(field: string): string {
-    if (field.includes(",") || field.includes('"') || field.includes("\n")) {
-        return `"${field.replace(/"/g, '""')}"`;
+    let sanitized = field;
+    if (/^[=+@-|\t\r]/.test(sanitized)) {
+        sanitized = `'${sanitized}`;
     }
-    return field;
+    if (sanitized.includes(",") || sanitized.includes('"') || sanitized.includes("\n") || sanitized.includes("\r")) {
+        return `"${sanitized.replace(/"/g, '""')}"`;
+    }
+    return sanitized;
 }
 
 /**

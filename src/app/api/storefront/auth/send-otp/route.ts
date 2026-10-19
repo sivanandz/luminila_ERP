@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
 import { generateAndSaveOtp } from "@/lib/otp-store";
 import { sendMessage, getTenantWhatsAppSessionId } from "@/lib/whatsapp";
+import { getStorefrontBinding } from "@/lib/storefront";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -32,23 +31,7 @@ export async function POST(req: Request) {
         const waNumber = `91${phone10}`;
 
         // 1. Fetch bound admin and branding from storefront content
-        let boundAdminEmail = "admin@luminila.internal";
-        let brandName = "Luminila Jewels";
-
-        try {
-            const contentPath = path.join(process.cwd(), "src", "data", "storefront_content.json");
-            if (fs.existsSync(contentPath)) {
-                const cms = JSON.parse(fs.readFileSync(contentPath, "utf-8"));
-                if (cms.adminBinding?.boundAdminEmail) {
-                    boundAdminEmail = cms.adminBinding.boundAdminEmail;
-                }
-                if (cms.branding?.wordmark?.text || cms.hero?.brandName) {
-                    brandName = cms.branding?.wordmark?.text || cms.hero?.brandName;
-                }
-            }
-        } catch (e) {
-            console.warn("[Send OTP] Failed to load storefront content config:", e);
-        }
+        const { boundAdminEmail, brandName } = await getStorefrontBinding();
 
         // 2. Generate secure 6-digit OTP
         const otpResult = generateAndSaveOtp(phone10);

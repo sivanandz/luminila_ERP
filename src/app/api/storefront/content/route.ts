@@ -1,5 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
 import PocketBase from "pocketbase";
+import { pb as sharedPb, ensureServerAuth } from "@/lib/pocketbase";
 
 const PB_KEY = "storefront_content";
 const PB_URL = process.env.NEXT_PUBLIC_POCKETBASE_URL || "http://127.0.0.1:8091";
@@ -278,9 +279,14 @@ export async function GET(req: NextRequest) {
         const targetEmail = staffEmail || queryEmail;
 
         let record = null;
+        const readPb = isAuthorized ? pb : sharedPb;
+        if (!isAuthorized) {
+            await ensureServerAuth();
+        }
+
         if (targetEmail) {
             try {
-                record = await pb.collection("store_settings").getFirstListItem(
+                record = await readPb.collection("store_settings").getFirstListItem(
                     `key="${PB_KEY}" && account_email="${targetEmail}"`
                 );
             } catch {}
@@ -288,7 +294,7 @@ export async function GET(req: NextRequest) {
 
         if (!record) {
             try {
-                record = await pb.collection("store_settings").getFirstListItem(`key="${PB_KEY}"`);
+                record = await readPb.collection("store_settings").getFirstListItem(`key="${PB_KEY}"`);
             } catch {}
         }
 

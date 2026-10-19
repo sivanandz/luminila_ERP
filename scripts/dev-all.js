@@ -150,9 +150,12 @@ async function main() {
                     const row = db.prepare('SELECT count(*) as count FROM _superusers').get();
                     db.close();
                     if (row && row.count === 0) {
+                        const crypto = require('crypto');
+                        const adminUser = process.env.POCKETBASE_SUPERUSER_EMAIL || process.env.PB_ADMIN_EMAIL || 'admin@luminila.local';
+                        const adminPass = process.env.POCKETBASE_SUPERUSER_PASSWORD || process.env.PB_ADMIN_PASSWORD || crypto.randomBytes(16).toString('hex');
                         const { execFileSync } = require('child_process');
-                        execFileSync(PB_EXE, ['superuser', 'upsert', 'admin@luminila.local', 'LuminilaInit2026!', `--dir=${PB_DATA}`]);
-                        console.log(`${GREEN}[PB]${RESET} Bootstrap superuser initialized for seamless setup wizard.`);
+                        execFileSync(PB_EXE, ['superuser', 'upsert', adminUser, adminPass, `--dir=${PB_DATA}`]);
+                        console.log(`${GREEN}[PB]${RESET} Bootstrap superuser initialized (${adminUser}).`);
                     }
                 }
             } catch { /* ignore if schema is still migrating */ }
@@ -161,9 +164,20 @@ async function main() {
     process.env.PB_PORT = String(pbPort);
     process.env.NEXT_PUBLIC_POCKETBASE_URL = `http://127.0.0.1:${pbPort}`;
 
-    // Ensure .env.local stays in sync with chosen PocketBase port
+    // Ensure .env.local preserves existing environment keys while updating NEXT_PUBLIC_POCKETBASE_URL
     try {
-        fs.writeFileSync(path.join(ROOT_DIR, '.env.local'), `# PocketBase Configuration\nNEXT_PUBLIC_POCKETBASE_URL=http://127.0.0.1:${pbPort}\n`);
+        const envPath = path.join(ROOT_DIR, '.env.local');
+        let envContent = '';
+        if (fs.existsSync(envPath)) {
+            envContent = fs.readFileSync(envPath, 'utf8');
+        }
+        const pbUrlLine = `NEXT_PUBLIC_POCKETBASE_URL=http://127.0.0.1:${pbPort}`;
+        if (envContent.includes('NEXT_PUBLIC_POCKETBASE_URL=')) {
+            envContent = envContent.replace(/NEXT_PUBLIC_POCKETBASE_URL=.*(\r?\n|$)/g, `${pbUrlLine}$1`);
+        } else {
+            envContent = envContent ? `${envContent.trim()}\n${pbUrlLine}\n` : `# PocketBase Configuration\n${pbUrlLine}\n`;
+        }
+        fs.writeFileSync(envPath, envContent, 'utf8');
     } catch { /* ignore */ }
 
     // 2. WhatsApp Sidecar

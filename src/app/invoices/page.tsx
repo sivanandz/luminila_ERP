@@ -49,9 +49,12 @@ import {
 import { formatINR } from "@/lib/gst";
 
 // Quote a value for CSV output when it contains separators, quotes or newlines,
-// so fields like "Sharma, Ramesh" do not shift the following columns.
+// and neutralize spreadsheet formula characters (=, +, -, @, |, tab, CR)
 const escapeCsvField = (value: unknown): string => {
-    const str = value === null || value === undefined ? "" : String(value);
+    let str = value === null || value === undefined ? "" : String(value);
+    if (/^[=+@-|\t\r]/.test(str)) {
+        str = `'${str}`;
+    }
     if (/[",\n\r]/.test(str)) {
         return `"${str.replace(/"/g, '""')}"`;
     }

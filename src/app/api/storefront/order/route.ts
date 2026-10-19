@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { pb, ensureServerAuth } from "@/lib/pocketbase";
+import { getStorefrontBinding } from "@/lib/storefront";
 
 // Rate limiter: max 5 orders per 10 minutes per clean phone number
 const orderRateLimit = new Map<string, { count: number; firstSeen: number }>();
@@ -82,28 +83,8 @@ export async function POST(req: Request) {
         let pbSyncSuccess = false;
 
         // Resolve bound admin account from PocketBase store_settings for data isolation
-        let boundAdminEmail = (body.accountEmail || "").trim().toLowerCase();
-        let boundDomain = "storefront";
-        try {
-            await ensureServerAuth();
-            const cmsFilter = boundAdminEmail
-                ? `key="storefront_content" && account_email="${boundAdminEmail}"`
-                : `key="storefront_content"`;
-            const cmsRecord = await pb.collection("store_settings").getFirstListItem(cmsFilter).catch(() => null);
-            if (cmsRecord && cmsRecord.value) {
-                const cms = typeof cmsRecord.value === "string" ? JSON.parse(cmsRecord.value) : cmsRecord.value;
-                if (cms.adminBinding?.boundAdminEmail) {
-                    boundAdminEmail = cms.adminBinding.boundAdminEmail;
-                }
-                if (cms.adminBinding?.customDomain) {
-                    boundDomain = cms.adminBinding.customDomain;
-                }
-            }
-        } catch {}
-
-        if (!boundAdminEmail) {
-            boundAdminEmail = "admin@store.local";
-        }
+        const reqEmail = (body.accountEmail || "").trim().toLowerCase();
+        const { boundAdminEmail, customDomain: boundDomain } = await getStorefrontBinding(reqEmail);
 
         // 2. Attempt Database Sync via PocketBase
         try {
@@ -136,7 +117,7 @@ export async function POST(req: Request) {
                 } catch {}
             }
 
-            // Validate items and verify pricing from database
+            // Validate items and verify pricing strictly from database
             let calculatedSubtotal = 0;
             const validatedItems: {
                 productId: string;
@@ -148,29 +129,87 @@ export async function POST(req: Request) {
 
             for (const item of body.items) {
                 const qty = Math.max(1, Math.min(100, Math.floor(Number(item.quantity) || 1)));
-                let verifiedPrice = Number(item.price) || 0;
+                if (!item.productId || typeof item.productId !== "string") {
+                    return NextResponse.json(
+                        { success: false, error: "Invalid item: Missing product ID." },
+                        { status: 400, headers: CORS_HEADERS }
+                    );
+                }
 
+                let dbProd: any = null;
                 try {
-                    const dbProd = await pb.collection("products").getOne(item.productId);
-                    if (dbProd) {
-                        const channelPrices = (dbProd as any).channel_prices || {};
-                        verifiedPrice = Number(channelPrices.website) || Number(dbProd.base_price) || verifiedPrice;
-                    }
+                    dbProd = await pb.collection("products").getOne(item.productId);
                 } catch {
-                    // product lookup fallback
+                    return NextResponse.json(
+                        { success: false, error: `Product not found: ${item.name || item.productId}` },
+                        { status: 400, headers: CORS_HEADERS }
+                    );
+                }
+
+                if (!dbProd || dbProd.is_active === false) {
+                    return NextResponse.json(
+                        { success: false, error: `Product is unavailable: ${item.name || item.productId}` },
+                        { status: 400, headers: CORS_HEADERS }
+                    );
+                }
+
+                if (dbProd.account_email && dbProd.account_email !== boundAdminEmail) {
+                    return NextResponse.json(
+                        { success: false, error: "Product does not belong to this store tenant." },
+                        { status: 400, headers: CORS_HEADERS }
+                    );
+                }
+
+                const channelPrices = (dbProd as any).channel_prices || {};
+                const verifiedPrice = Number(channelPrices.website) || Number(dbProd.base_price) || 0;
+
+                if (verifiedPrice <= 0) {
+                    return NextResponse.json(
+                        { success: false, error: `Product has no valid pricing configured: ${item.name || item.productId}` },
+                        { status: 400, headers: CORS_HEADERS }
+                    );
                 }
 
                 calculatedSubtotal += verifiedPrice * qty;
                 validatedItems.push({
                     productId: item.productId,
-                    sku: item.sku || "",
-                    name: item.name || "Jewelry Item",
+                    sku: dbProd.sku || item.sku || "",
+                    name: dbProd.name || item.name || "Jewelry Item",
                     price: verifiedPrice,
                     quantity: qty,
                 });
             }
 
-            const verifiedDiscount = Math.max(0, Math.min(calculatedSubtotal, Number(body.discountAmount) || 0));
+            // Server-side discount calculation: recompute from verifiedSubtotal and active discounts
+            let verifiedDiscount = 0;
+            if (body.couponCode && typeof body.couponCode === "string" && body.couponCode.trim()) {
+                const code = body.couponCode.trim().toUpperCase();
+                try {
+                    const discountRec = await pb.collection("discounts").getFirstListItem(
+                        `code = "${code}" && is_active = true && account_email = "${boundAdminEmail}"`
+                    ).catch(() => null);
+
+                    if (discountRec) {
+                        const discVal = Number(discountRec.value) || 0;
+                        const discType = discountRec.discount_type || (discountRec as any).type || "percentage";
+                        if (discType === "percentage") {
+                            verifiedDiscount = Math.round((calculatedSubtotal * discVal) / 100);
+                            if (discountRec.max_discount && verifiedDiscount > Number(discountRec.max_discount)) {
+                                verifiedDiscount = Number(discountRec.max_discount);
+                            }
+                        } else {
+                            verifiedDiscount = discVal;
+                        }
+                    } else if (code === "FESTIVE10") {
+                        verifiedDiscount = Math.min(500, Math.round(calculatedSubtotal * 0.10));
+                    }
+                } catch {
+                    if (code === "FESTIVE10") {
+                        verifiedDiscount = Math.min(500, Math.round(calculatedSubtotal * 0.10));
+                    }
+                }
+            }
+            verifiedDiscount = Math.max(0, Math.min(calculatedSubtotal, verifiedDiscount));
             const calculatedTotal = Math.max(0, calculatedSubtotal - verifiedDiscount);
 
             // Online orders remain PENDING until Razorpay webhook confirms payment
@@ -201,7 +240,7 @@ export async function POST(req: Request) {
 
             persistedOrderId = salesOrder.id;
 
-            // Create Sales Order Items
+            // Create Sales Order Items and handle stock decrement
             for (const item of validatedItems) {
                 await pb.collection("sales_order_items").create({
                     order: salesOrder.id,
@@ -213,7 +252,8 @@ export async function POST(req: Request) {
                     account_email: boundAdminEmail,
                 }).catch(() => {});
 
-                // Record Inventory stock movement for COD/offline orders (online orders deduct when confirmed paid via webhook)
+                // Record Inventory stock movement and decrement variant stock for COD/offline orders
+                // (Online orders deduct when confirmed paid via webhook)
                 if (body.paymentMethod !== "razorpay_online") {
                     await pb.collection("stock_movements").create({
                         product: item.productId,
@@ -224,6 +264,26 @@ export async function POST(req: Request) {
                         notes: `Web checkout order ${txnId} [Domain: ${boundDomain}]`,
                         account_email: boundAdminEmail,
                     }).catch(() => {});
+
+                    try {
+                        const variants = await pb.collection("product_variants").getFullList({
+                            filter: `product = "${item.productId}"`,
+                        }).catch(() => []);
+                        if (variants.length > 0) {
+                            await pb.collection("product_variants").update(variants[0].id, {
+                                "stock_level-": item.quantity,
+                            }).catch(async () => {
+                                await pb.collection("product_variants").update(variants[0].id, { stock_level: 0 }).catch(() => {});
+                            });
+                        }
+                        await pb.collection("products").update(item.productId, {
+                            "stock_level-": item.quantity,
+                        }).catch(async () => {
+                            await pb.collection("products").update(item.productId, { stock_level: 0 }).catch(() => {});
+                        });
+                    } catch (stockDecErr) {
+                        console.warn("[order] Stock decrement error:", stockDecErr);
+                    }
                 }
             }
 

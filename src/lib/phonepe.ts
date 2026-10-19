@@ -5,7 +5,7 @@
  * @see https://developer.phonepe.com/payment-gateway
  */
 
-import { getTenantStorageKey } from './pocketbase';
+import { getTenantStorageKey, pb } from './pocketbase';
 
 // ============================================================================
 // CONFIGURATION
@@ -186,7 +186,10 @@ export async function initiatePayment(request: PaymentRequest): Promise<PaymentR
         try {
             const res = await fetch('/api/pos/payment', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
+                },
                 body: JSON.stringify({ action: 'phonepe_initiate', payload: request }),
             });
             return await res.json();
@@ -286,7 +289,10 @@ export async function checkPaymentStatus(
         try {
             const res = await fetch('/api/pos/payment', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
+                },
                 body: JSON.stringify({ action: 'phonepe_status', payload: { transactionId: merchantTransactionId } }),
             });
             return await res.json();

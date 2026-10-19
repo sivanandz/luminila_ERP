@@ -58,6 +58,7 @@ import {
 } from "@/lib/invoice";
 import { exportToJSON } from "@/lib/reports";
 import { formatINR, generateEWayBillJSON, type EWayBillDetails } from "@/lib/gst";
+import { escapeHtml } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import {
     InvoiceTemplateRenderer,
@@ -141,7 +142,7 @@ function InvoiceDetailContent() {
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Invoice #${invoice?.invoice_number}</title>
+                <title>Invoice #${escapeHtml(invoice?.invoice_number || "")}</title>
                 <base href="${window.location.origin}/">
                 ${styles}
             </head>
@@ -259,7 +260,7 @@ function InvoiceDetailContent() {
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Payment Receipt - Voucher #${payment.id}</title>
+                <title>Payment Receipt - Voucher #${escapeHtml(payment.id || "")}</title>
                 <style>
                     body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 30px; color: #1e293b; max-width: 500px; margin: auto; }
                     .header { text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 16px; }
@@ -270,14 +271,14 @@ function InvoiceDetailContent() {
             </head>
             <body>
                 <div class="header">
-                    <h2>${storeSettings?.store_name || "Luminila Jewelry"}</h2>
+                    <h2>${escapeHtml(storeSettings?.store_name || "Luminila Jewelry")}</h2>
                     <p style="font-size:12px;color:#64748b;">OFFICIAL PAYMENT RECEIPT VOUCHER</p>
                 </div>
-                <div class="row"><span>Invoice Ref:</span><strong>#${invoice?.invoice_number}</strong></div>
-                <div class="row"><span>Customer:</span><span>${invoice?.buyer_name || "Walk-in"}</span></div>
+                <div class="row"><span>Invoice Ref:</span><strong>#${escapeHtml(invoice?.invoice_number || "")}</strong></div>
+                <div class="row"><span>Customer:</span><span>${escapeHtml(invoice?.buyer_name || "Walk-in")}</span></div>
                 <div class="row"><span>Date:</span><span>${format(new Date(payment.date), "dd MMMM yyyy HH:mm")}</span></div>
-                <div class="row"><span>Payment Method:</span><strong style="text-transform:uppercase;">${payment.method}</strong></div>
-                ${payment.reference ? `<div class="row"><span>Reference ID:</span><span>${payment.reference}</span></div>` : ""}
+                <div class="row"><span>Payment Method:</span><strong style="text-transform:uppercase;">${escapeHtml(payment.method || "")}</strong></div>
+                ${payment.reference ? `<div class="row"><span>Reference ID:</span><span>${escapeHtml(payment.reference)}</span></div>` : ""}
                 <div class="total">Amount Received: ₹${formatINR(payment.amount)}</div>
                 <div style="text-align:center;"><div class="stamp">PAYMENT CONFIRMED</div></div>
                 <p style="text-align:center;font-size:11px;color:#94a3b8;margin-top:24px;">Thank you for your payment!</p>
