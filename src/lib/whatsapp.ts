@@ -1485,8 +1485,10 @@ export function getTenantWhatsAppSessionId(adminIdentifier?: string): string {
     // Seamless carryover for default primary admin WhatsApp session
     if (
         ident === "wuag7qzp57319f5" ||
+        ident === "4u58n2xva02b64t" ||
         ident === "admin@luminila.com" ||
-        ident === "admin@luminila.local"
+        ident === "admin@luminila.local" ||
+        ident === "ananya@heritagejewels.com"
     ) {
         return "luminila";
     }

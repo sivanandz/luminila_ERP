@@ -35,6 +35,7 @@ import {
 import { getInvoice, type Invoice } from "@/lib/invoice";
 import { createReturnFromInvoice, type ReturnReason } from "@/lib/returns";
 import { formatINR } from "@/lib/gst";
+import { toast } from "sonner";
 
 interface ReturnItem {
     invoice_item_id: string;
@@ -76,7 +77,14 @@ function CreateReturnContent() {
         setLoading(true);
         try {
             const data = await getInvoice(id);
+            if (!data) {
+                toast.error("Invoice not found. Please check invoice number.");
+                setInvoice(null);
+                setReturnItems([]);
+                return;
+            }
             setInvoice(data);
+            toast.success(`Loaded invoice ${data.invoice_number}`);
 
             // Initialize return items from invoice items
             if (data?.items) {
@@ -92,6 +100,7 @@ function CreateReturnContent() {
             }
         } catch (error) {
             console.error("Error loading invoice:", error);
+            toast.error("Failed to load invoice");
         } finally {
             setLoading(false);
         }
@@ -136,10 +145,11 @@ function CreateReturnContent() {
                 reason,
                 notes || undefined
             );
-            router.push(`/returns/${creditNote.id}`);
+            toast.success("Return created successfully");
+            router.push(`/returns/detail?id=${creditNote.id}`);
         } catch (error) {
             console.error("Error creating return:", error);
-            alert("Failed to create return. Please try again.");
+            toast.error("Failed to create return. Please try again.");
         } finally {
             setSubmitting(false);
         }

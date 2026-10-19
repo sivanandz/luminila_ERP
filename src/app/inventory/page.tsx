@@ -509,28 +509,28 @@ function InventoryContent() {
         getCategories().then(setCategories);
         getAttributes().then(setAttributes);
 
-        // Realtime subscription
-        pb.collection('products').subscribe('*', fetchProducts);
-        pb.collection('product_variants').subscribe('*', fetchProducts);
+        // Realtime subscription with graceful error catch (handles transient SSE 404 client id)
+        pb.collection('products').subscribe('*', fetchProducts).catch(() => {});
+        pb.collection('product_variants').subscribe('*', fetchProducts).catch(() => {});
         pb.collection('goods_received_notes').subscribe('*', () => {
             fetchProducts();
             loadOpenPOCount();
-        });
+        }).catch(() => {});
         pb.collection('purchase_orders').subscribe('*', () => {
             fetchProducts();
             loadOpenPOCount();
-        });
+        }).catch(() => {});
         pb.collection('stock_discrepancies').subscribe('*', () => {
             fetchProducts();
             loadDiscrepancyCount();
-        });
+        }).catch(() => {});
 
         return () => {
-            pb.collection('products').unsubscribe('*');
-            pb.collection('product_variants').unsubscribe('*');
-            pb.collection('goods_received_notes').unsubscribe('*');
-            pb.collection('purchase_orders').unsubscribe('*');
-            pb.collection('stock_discrepancies').unsubscribe('*');
+            pb.collection('products').unsubscribe('*').catch(() => {});
+            pb.collection('product_variants').unsubscribe('*').catch(() => {});
+            pb.collection('goods_received_notes').unsubscribe('*').catch(() => {});
+            pb.collection('purchase_orders').unsubscribe('*').catch(() => {});
+            pb.collection('stock_discrepancies').unsubscribe('*').catch(() => {});
         };
     }, []);
 

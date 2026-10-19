@@ -384,12 +384,18 @@ function CustomerDetailContent() {
                                     <div>
                                         <p className="text-xs text-muted-foreground">Total Spent</p>
                                         <p className="text-xl font-bold font-mono text-primary">
-                                            {formatINR(customer.total_spent)}
+                                            {formatINR(
+                                                (customer.total_spent && customer.total_spent > 0)
+                                                    ? customer.total_spent
+                                                    : orders.reduce((sum, o) => sum + (o.total || 0), 0)
+                                            )}
                                         </p>
                                     </div>
                                     <div>
                                         <p className="text-xs text-muted-foreground">Total Orders</p>
-                                        <p className="text-xl font-bold">{customer.total_orders}</p>
+                                        <p className="text-xl font-bold">
+                                            {Math.max(customer.total_orders || 0, orders.length)}
+                                        </p>
                                     </div>
                                     <div>
                                         <p className="text-xs text-muted-foreground">Loyalty Points</p>

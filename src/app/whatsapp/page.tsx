@@ -1231,58 +1231,58 @@ export default function WhatsAppPage() {
             const customerName = chats.find(c => c.id === selectedChat)?.name || "WhatsApp Customer";
             const customerPhone = phoneFromChatId(selectedChat);
 
-            // 1. Create Sale (was orders)
-            // Typed against the Sales collection record so `sale` carries its real shape
+            // 1. Create Sale
             const saleData = await pb.collection('sales').create<Sale>({
                 customer_name: customerName,
                 customer_phone: customerPhone,
+                customer: customer?.id || '',
                 status: 'pending',
                 total: cartTotal,
                 subtotal: cartTotal,
                 discount: 0,
-                channel: 'whatsapp'
+                channel: 'whatsapp',
+                payment_method: 'upi',
             });
 
             const sale = saleData;
 
-            // 2. Create Sale Items (was order_items)
+            // 2. Create Sale Items
             if (sale) {
-                // We need variant_id. For now, assuming we can get it from the product or fetching it.
-                // Since we didn't fetch variants in the search, we might fail here.
-                // IMMEDIATE FIX: Fetch the first variant for each product in the cart before inserting.
-
-                const saleItems = [];
                 for (const item of cart) {
-                    // Fetch variant for this product
                     const variants = await pb.collection('product_variants').getList(1, 1, { filter: `product="${item.id}"` });
-                    const variantId = variants.items[0]?.id;
+                    const variantId = variants.items[0]?.id || '';
 
-                    if (variantId) {
-                        saleItems.push({
-                            sale_id: sale.id,
-                            variant_id: variantId,
-                            quantity: item.quantity,
-                            unit_price: item.base_price
-                        });
-                    }
-                }
-
-                for (const item of saleItems) {
-                    await pb.collection('sale_items').create(item);
+                    await pb.collection('sale_items').create({
+                        sale: sale.id,
+                        product: item.id,
+                        variant: variantId,
+                        quantity: item.quantity || 1,
+                        unit_price: item.base_price,
+                        total: item.base_price * (item.quantity || 1),
+                        total_price: item.base_price * (item.quantity || 1),
+                        discount: 0,
+                    });
                 }
             }
 
-            // 3. Notify
-            const confirmMsg = `✅ *Order #${sale?.id.slice(0, 8)} Created*\nThank you for your order!`;
+            // 3. Notify via WhatsApp
+            const confirmMsg = `✅ *Order #${sale?.id.slice(0, 8).toUpperCase()} Created*\nTotal: ₹${cartTotal.toLocaleString('en-IN')}\n\nThank you for your order! We are generating your payment link now.`;
             await whatsappManager.sendMessage(selectedChat, confirmMsg);
 
-            // 4. Reset
+            // 4. Reset & toast
             setCart([]);
-            alert("Order created successfully!");
+            setAddedToast(`Order #${sale?.id.slice(0, 8).toUpperCase()} created successfully!`);
+            setTimeout(() => setAddedToast(null), 3500);
+
+            // 5. Open payment link modal for immediate completion
+            setRazorpayModalAmount(cartTotal);
+            setRazorpayModalOrderId(sale.id);
+            setShowRazorpayModal(true);
 
         } catch (err) {
             console.error("Order creation failed:", err);
-            alert(`Failed to create order: ${err instanceof Error ? err.message : String(err)}`);
+            setAddedToast(`Order failed: ${err instanceof Error ? err.message : String(err)}`);
+            setTimeout(() => setAddedToast(null), 3500);
         } finally {
             setOrderLoading(false);
         }

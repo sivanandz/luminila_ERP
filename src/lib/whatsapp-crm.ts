@@ -531,7 +531,7 @@ export function parseVendorOffer(body: string): VendorOfferExtraction {
 
     const priceMatch =
         text.match(/(?:₹|rs\.?|inr|price|rate|cost)[:\s]*([\d,]+(?:\.\d{1,2})?)/i) ||
-        text.match(/\b([\d,]{3,7})\s*(?:₹|rs|\/-)/i) ||
+        text.match(/\b([\d,]{2,7})\s*(?:₹|rs|\/-|\+&|\+\s*ship(?:ping)?)/i) ||
         text.match(/@\s*([\d,]+(?:\.\d{1,2})?)/);
     const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : undefined;
 

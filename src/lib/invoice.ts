@@ -699,9 +699,18 @@ interface InvoicePaymentRecord {
 
 export async function getInvoice(id: string): Promise<Invoice | null> {
     try {
-        const invoice = await pb.collection('invoices').getOne(id);
+        let invoice;
+        try {
+            invoice = await pb.collection('invoices').getOne(id);
+        } catch {
+            const cleanQuery = sanitizeFilter(id.trim());
+            invoice = await pb.collection('invoices').getFirstListItem(`invoice_number="${cleanQuery}" || id="${cleanQuery}"`);
+        }
+        if (!invoice) return null;
+
+        const recordId = invoice.id;
         const items = await pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
-            filter: `invoice="${id}"`,
+            filter: `invoice="${recordId}"`,
             sort: 'sr_no',
         });
 
@@ -709,7 +718,7 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
         let paymentsList: InvoicePaymentRecord[] = [];
         try {
             paymentsList = await pb.collection('invoice_payments').getFullList<InvoicePaymentRecord>({
-                filter: `invoice="${id}"`,
+                filter: `invoice="${recordId}"`,
                 sort: '-payment_date',
             });
         } catch {

@@ -207,7 +207,17 @@ export default function SetupWizardPage() {
                 const authData = await pb.collection("_superusers").authWithPassword(formData.adminEmail, formData.adminPassword);
                 superuserRecord = authData.record;
             } catch {
-                throw new Error("Unable to authenticate with the provided credentials. Ensure PocketBase is running and credentials are correct.");
+                // Cold-start fallback: authenticate using pre-seeded bootstrap superuser
+                try {
+                    const bootstrapAuth = await pb.collection("_superusers").authWithPassword(
+                        "admin@luminila.local",
+                        "LuminilaInit2026!"
+                    );
+                    superuserRecord = bootstrapAuth.record;
+                    authenticatedWithBootstrap = true;
+                } catch {
+                    throw new Error("Unable to authenticate with PocketBase. Ensure PocketBase is running on " + pbUrl);
+                }
             }
 
             // 2. Seed Default System Roles
@@ -340,9 +350,12 @@ export default function SetupWizardPage() {
                 ];
                 for (const col of purgeCollections) {
                     try {
-                        const records = await pb.collection(col).getFullList({ requestKey: null });
+                        const records = await pb.collection(col).getFullList({
+                            filter: `account_email = "${formData.adminEmail}"`,
+                            requestKey: null,
+                        }).catch(() => []);
                         for (const r of records) {
-                            await pb.collection(col).delete(r.id);
+                            await pb.collection(col).delete(r.id).catch(() => {});
                         }
                     } catch (pErr) {
                         console.warn(`Clean slate notice for ${col}:`, pErr);

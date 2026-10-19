@@ -20,3 +20,14 @@
 - [tenant-dual-layer] Never rely solely on PocketBase API rules for isolation. Admin/superuser logins bypass DB rules. All queries across POS, Inventory, and APIs must explicitly append `account_email = "${userEmail}"` and perform an in-memory ownership check.
 - [relational-active-guard] `product_variants` queries must always filter `product.is_active = true` and verify parent active state in mapping to prevent ghost/soft-deleted items from surfacing in POS.
 - [audit-integrity] Never state that leakages are plugged without inspecting all call sites of `pb.collection()` across every page in `src/app/`.
+- [setup-isolation] When running setup wizard with "Clean Slate", purge operations must be strictly scoped to `account_email = "${adminEmail}"` to prevent accidental wiping of other merchants' data.
+- [safe-primitives] In UI templates, never call `.trim()` directly on settings fields (pincode, phone, GSTIN) without `String(val ?? "").trim()`, as numeric fields in databases cause fatal TypeErrors.
+- [storefront-binding] In `getStorefrontBinding()`, never fall back to an unscoped `getFirstListItem('key="storefront_content"')` when `preferredEmail` is provided, which leads to tenant account hijacking and order rejections.
+- [browser-csv-parser] In Next.js client-side bundles, never import Node.js 'stream' for CSV parsing; use a lightweight, zero-dependency RFC 4180 parser to prevent runtime module resolution crashes.
+- [pocketbase-expand-safety] Never call expand on non-existent collection relation fields (e.g., products has no variants relation field, product_variants has product); query the child collection with a filter instead.
+- [invoice-lookup-resilience] Invoice retrieval functions must accept both PocketBase record IDs and user-facing invoice numbers (e.g., INV-...) with fallback to getFirstListItem.
+- [customer-360-live-aggregation] In Customer 360 profiles, dynamically aggregate lifetime spend and order counts from the live sales collection rather than relying strictly on un-synchronized static record fields.
+- [whatsapp-session-tenancy] Multi-tenant WhatsApp session mapping in `getTenantWhatsAppSessionId()` must include user record IDs as well as login emails to ensure live sessions (like `luminila`) stay bound when accessed via user ID.
+- [vendor-wholesale-shorthand] In Indian jewelry wholesale messaging, price expressions frequently use shorthand like `500+&` (₹500 + shipping) or `350+ship`. Offer parsing regex must support `\+&` and `\+\s*ship(?:ping)?`.
+- [pocketbase-image-data-limit] When saving base64 image data into PocketBase collections, the `text` field `max` constraint must be explicitly set to 5MB (5242880) in `_collections` to prevent 5000-character constraint validation rejections.
+

@@ -212,9 +212,9 @@ export async function POST(req: Request) {
             verifiedDiscount = Math.max(0, Math.min(calculatedSubtotal, verifiedDiscount));
             const calculatedTotal = Math.max(0, calculatedSubtotal - verifiedDiscount);
 
-            // Online orders remain PENDING until Razorpay webhook confirms payment
-            const orderStatus = "pending";
-            const paymentStatus = "PENDING";
+            // Online orders remain draft until Razorpay webhook confirms payment; COD/concierge orders are confirmed
+            const orderStatus = body.paymentMethod === "razorpay_online" ? "draft" : "confirmed";
+            const paymentStatus = body.paymentMethod === "cod" ? "UNPAID" : "PENDING";
 
             // Create official Sales Order bound to single admin account
             const salesOrder = await pb.collection("sales_orders").create({

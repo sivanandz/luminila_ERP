@@ -412,10 +412,11 @@ function InvoiceDetailContent() {
                             </Button>
 
                             <DropdownMenu>
-                                <DropdownMenuTrigger>
-                                    <Button variant="outline" size="icon">
-                                        <Share2 className="w-4 h-4" />
-                                    </Button>
+                                <DropdownMenuTrigger
+                                    className="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground size-9 text-sm font-medium transition-colors cursor-pointer"
+                                    title="Share Invoice"
+                                >
+                                    <Share2 className="w-4 h-4" />
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
                                     <DropdownMenuItem onClick={() => {

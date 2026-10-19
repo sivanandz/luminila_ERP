@@ -286,10 +286,33 @@ export async function deleteExpense(id: string): Promise<boolean> {
 
 export async function getCategories(): Promise<ExpenseCategory[]> {
     try {
-        const records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
+        let records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
             filter: 'is_active=true',
             sort: 'name',
         });
+
+        if (records.length === 0) {
+            const defaultCategories = [
+                { name: 'Packaging & Boxes', description: 'Jewelry boxes, velvet pouches, carry bags' },
+                { name: 'Courier & Shipping', description: 'Logistics, delivery and freight' },
+                { name: 'Shop Utilities', description: 'Electricity, internet, water, maintenance' },
+                { name: 'Staff Welfare & Tea', description: 'Refreshments and staff amenities' },
+                { name: 'Miscellaneous', description: 'General retail and office overheads' },
+            ];
+            for (const cat of defaultCategories) {
+                try {
+                    await pb.collection('expense_categories').create({
+                        name: cat.name,
+                        description: cat.description,
+                        is_active: true,
+                    });
+                } catch { }
+            }
+            records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
+                filter: 'is_active=true',
+                sort: 'name',
+            });
+        }
 
         return records.map((c) => ({
             id: c.id,

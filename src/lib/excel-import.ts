@@ -387,6 +387,51 @@ function normalizeHeader(header: string): string {
         .trim();
 }
 
+function parseCsvToRows(csvText: string): string[][] {
+    const rows: string[][] = [];
+    let currentRow: string[] = [];
+    let currentField = '';
+    let insideQuotes = false;
+
+    for (let i = 0; i < csvText.length; i++) {
+        const char = csvText[i];
+        const nextChar = csvText[i + 1];
+
+        if (char === '"') {
+            if (insideQuotes && nextChar === '"') {
+                currentField += '"';
+                i++; // Skip escaped quote
+            } else {
+                insideQuotes = !insideQuotes;
+            }
+        } else if (char === ',' && !insideQuotes) {
+            currentRow.push(currentField);
+            currentField = '';
+        } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+            if (char === '\r' && nextChar === '\n') {
+                i++; // Skip LF in CRLF
+            }
+            currentRow.push(currentField);
+            currentField = '';
+            if (currentRow.some(col => col.trim().length > 0)) {
+                rows.push(currentRow);
+            }
+            currentRow = [];
+        } else {
+            currentField += char;
+        }
+    }
+
+    if (currentField.length > 0 || currentRow.length > 0) {
+        currentRow.push(currentField);
+        if (currentRow.some(col => col.trim().length > 0)) {
+            rows.push(currentRow);
+        }
+    }
+
+    return rows;
+}
+
 /**
  * Parses an uploaded Excel (.xlsx, .xls) or CSV file buffer and validates each row.
  */
@@ -398,13 +443,25 @@ export async function parseInventoryImportFile(
     const isCsv = fileName.toLowerCase().endsWith('.csv');
 
     if (isCsv) {
-        const buffer = Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer);
-        const { Readable } = await import('stream');
-        const stream = Readable.from(buffer);
-        await workbook.csv.read(stream);
+        let text: string;
+        if (typeof fileBuffer === 'string') {
+            text = fileBuffer;
+        } else if (fileBuffer instanceof ArrayBuffer) {
+            text = new TextDecoder('utf-8').decode(fileBuffer);
+        } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(fileBuffer)) {
+            text = fileBuffer.toString('utf-8');
+        } else {
+            text = new TextDecoder('utf-8').decode(new Uint8Array(fileBuffer as any));
+        }
+
+        const sheet = workbook.addWorksheet('Products');
+        const parsedRows = parseCsvToRows(text);
+        for (const row of parsedRows) {
+            sheet.addRow(row);
+        }
     } else {
-        const buffer = Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer);
-        await workbook.xlsx.load(buffer as any);
+        const buf = fileBuffer instanceof ArrayBuffer ? fileBuffer : (fileBuffer as any).buffer || fileBuffer;
+        await workbook.xlsx.load(buf as any);
     }
 
     const sheet = workbook.getWorksheet('Products') || workbook.worksheets[0];

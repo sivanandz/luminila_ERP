@@ -60,16 +60,16 @@ export function InvoiceTemplateRenderer({
         ? Boolean(storeSettings.is_gst_registered)
         : legacySettings?.isGstRegistered !== undefined
         ? Boolean(legacySettings?.isGstRegistered)
-        : Boolean((invoice.seller_gstin || storeSettings?.store_gstin) && (invoice.seller_gstin || storeSettings?.store_gstin)?.trim() !== "" && (invoice.seller_gstin || storeSettings?.store_gstin) !== "URP");
+        : Boolean((invoice.seller_gstin || storeSettings?.store_gstin) && String(invoice.seller_gstin || storeSettings?.store_gstin || "").trim() !== "" && (invoice.seller_gstin || storeSettings?.store_gstin) !== "URP");
 
-    const rawInvoiceAddr = !isInvalidOrDummyAddress(invoice.seller_address) ? (invoice.seller_address || "").trim() : "";
-    const rawSettingsAddr = (storeSettings?.store_address || legacySettings?.address || "").trim();
+    const rawInvoiceAddr = !isInvalidOrDummyAddress(invoice.seller_address) ? String(invoice.seller_address || "").trim() : "";
+    const rawSettingsAddr = String(storeSettings?.store_address || legacySettings?.address || "").trim();
     const cleanSettingsAddr = !isInvalidOrDummyAddress(rawSettingsAddr) ? rawSettingsAddr : "";
 
     const activeBaseAddress = rawInvoiceAddr || cleanSettingsAddr;
-    const storeCity = (storeSettings?.store_city || legacySettings?.city || "").trim();
-    const storeState = (storeSettings?.store_state || legacySettings?.state || "").trim();
-    const storePincode = (storeSettings?.store_pincode || legacySettings?.pincode || "").trim();
+    const storeCity = String(storeSettings?.store_city || legacySettings?.city || "").trim();
+    const storeState = String(storeSettings?.store_state || legacySettings?.state || "").trim();
+    const storePincode = String(storeSettings?.store_pincode || legacySettings?.pincode || "").trim();
 
     let formattedStoreAddress = activeBaseAddress;
     if (activeBaseAddress) {

@@ -107,58 +107,54 @@ export default function CreateChallanPage() {
     // Search products
     useEffect(() => {
         const timeout = setTimeout(async () => {
-            if (productSearch.length > 2) {
+            if (productSearch.length > 1) {
                 try {
-                    const products = await pb.collection('products').getFullList<Product & { expand?: { variants?: ProductVariant[] } }>({
-                        filter: `name~"${productSearch}"`,
-                        expand: 'variants',
-                    });
-                    const data = products.map((p) => ({
-                        id: p.id,
-                        name: p.name,
-                        base_price: p.base_price,
-                        hsn_code: p.hsn_code,
-                        variants: (p.expand?.variants || []).map((v) => ({
-                            id: v.id,
-                            sku_suffix: v.sku_suffix,
-                            size: v.size,
-                            color: v.color,
-                            price_adjustment: v.price_adjustment || 0,
-                        })),
-                    }));
-                    setProductResults(data);
-                } catch {
-                    // Fallback: fetch products and variants separately
                     const products = await pb.collection('products').getFullList<Product>({
-                        filter: `name~"${productSearch}"`,
+                        filter: `name~"${productSearch}" || sku~"${productSearch}"`,
                     });
                     const productIds = products.map((p) => p.id);
                     let variants: ProductVariant[] = [];
                     if (productIds.length > 0) {
-                        const variantFilter = productIds.map(id => `product="${id}"`).join(' || ');
-                        variants = await pb.collection('product_variants').getFullList<ProductVariant>({ filter: variantFilter });
+                        try {
+                            const variantFilter = productIds.map(id => `product="${id}"`).join(' || ');
+                            variants = await pb.collection('product_variants').getFullList<ProductVariant>({ filter: variantFilter });
+                        } catch {
+                            variants = [];
+                        }
                     }
-                    const data = products.map((p) => ({
-                        id: p.id,
-                        name: p.name,
-                        base_price: p.base_price,
-                        hsn_code: p.hsn_code,
-                        variants: variants.filter((v) => v.product === p.id).map((v) => ({
-                            id: v.id,
-                            sku_suffix: v.sku_suffix,
-                            size: v.size,
-                            color: v.color,
-                            price_adjustment: v.price_adjustment || 0,
-                        })),
-                    }));
+                    const data = products.map((p) => {
+                        const prodVariants = variants.filter((v) => v.product === p.id);
+                        return {
+                            id: p.id,
+                            name: p.name,
+                            base_price: p.base_price,
+                            hsn_code: p.hsn_code,
+                            variants: prodVariants.length > 0 ? prodVariants.map((v) => ({
+                                id: v.id,
+                                sku_suffix: v.sku_suffix,
+                                size: v.size,
+                                color: v.color,
+                                price_adjustment: v.price_adjustment || 0,
+                            })) : [{
+                                id: '',
+                                sku_suffix: '',
+                                size: '',
+                                color: '',
+                                price_adjustment: 0,
+                            }],
+                        };
+                    });
                     setProductResults(data);
+                } catch (err) {
+                    console.error('Error fetching products for challan:', err);
+                    setProductResults([]);
                 }
                 setShowProductResults(true);
             } else {
                 setProductResults([]);
                 setShowProductResults(false);
             }
-        }, 500);
+        }, 300);
         return () => clearTimeout(timeout);
     }, [productSearch]);
 
@@ -574,27 +570,23 @@ export default function CreateChallanPage() {
                                         <div className="absolute top-full right-0 mt-2 w-96 bg-surface-navy border border-surface-hover rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
                                             {productResults.map(product => (
                                                 <div key={product.id}>
-                                                    {product.variants.length > 0 ? (
-                                                        product.variants.map((v) => (
-                                                            <div
-                                                                key={v.id}
-                                                                onClick={() => handleAddItem(product, v)}
-                                                                className="p-3 hover:bg-bg-navy cursor-pointer border-b border-surface-hover flex justify-between items-center"
-                                                            >
-                                                                <div>
-                                                                    <p className="text-white font-bold text-sm">{product.name}</p>
-                                                                    <p className="text-xs text-moonstone">{v.size} {v.color}</p>
-                                                                </div>
-                                                                <p className="font-mono text-primary text-sm">
-                                                                    {formatPrice(product.base_price + v.price_adjustment)}
+                                                    {product.variants.map((v, vIdx) => (
+                                                        <div
+                                                            key={v.id || `${product.id}-${vIdx}`}
+                                                            onClick={() => handleAddItem(product, v)}
+                                                            className="p-3 hover:bg-bg-navy cursor-pointer border-b border-surface-hover flex justify-between items-center"
+                                                        >
+                                                            <div>
+                                                                <p className="text-white font-bold text-sm">{product.name}</p>
+                                                                <p className="text-xs text-moonstone">
+                                                                    {v.size || v.color ? `${v.size || ''} ${v.color || ''}`.trim() : (product.hsn_code ? `HSN: ${product.hsn_code}` : 'Standard Piece')}
                                                                 </p>
                                                             </div>
-                                                        ))
-                                                    ) : (
-                                                        <div className="p-3 text-moonstone text-xs text-center">
-                                                            No variants found
+                                                            <p className="font-mono text-primary text-sm">
+                                                                {formatPrice(product.base_price + (v.price_adjustment || 0))}
+                                                            </p>
                                                         </div>
-                                                    )}
+                                                    ))}
                                                 </div>
                                             ))}
                                         </div>

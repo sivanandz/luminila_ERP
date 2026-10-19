@@ -2459,16 +2459,16 @@ app.post('/api/:session/catalog/products', async (req, res) => {
     }
 
     try {
-        // image should be base64
+        // CatalogLayer signature: createProduct(name, image, description, price, isHidden, url, retailerId, currency)
         const result = await sessionData.client.createProduct(
             name,
             image, // base64
+            description || '',
             price,
-            currency || 'INR',
             isHidden || false,
             url || '',
             retailerId || '',
-            description || ''
+            currency || 'INR'
         );
         res.json({ success: true, result });
     } catch (error) {

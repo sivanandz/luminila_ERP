@@ -50,11 +50,16 @@ function subscribeToCollection<T>(
     collectionName: string,
     callback: (data: { action: string; record: T }) => void
 ): () => void {
+    let active = true;
     pb.collection(collectionName).subscribe('*', (e) => {
+        if (!active) return;
         callback({ action: e.action, record: e.record as T });
+    }).catch(() => {
+        // Handle transient PocketBase SSE disconnect/reconnect gracefully
     });
     return () => {
-        pb.collection(collectionName).unsubscribe('*');
+        active = false;
+        pb.collection(collectionName).unsubscribe('*').catch(() => {});
     };
 }
 
