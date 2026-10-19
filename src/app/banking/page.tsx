@@ -12,9 +12,9 @@ import { formatPrice } from "@/lib/utils";
 import {
     Plus,
     Landmark,
-    CreditCard,
+
     ArrowUpRight,
-    ArrowDownLeft,
+
     History as HistoryIcon,
     Wallet
 } from "lucide-react";
@@ -129,11 +129,11 @@ export default function BankingPage() {
                 </div>
             </Header>
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
-                <div className="max-w-7xl mx-auto flex flex-col gap-8">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
+                <div className="max-w-7xl mx-auto flex flex-col gap-4 md:gap-8">
 
                     {/* Stats */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-6">
                         <div className="bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 rounded-xl p-6">
                             <div className="flex items-center gap-4 mb-4">
                                 <div className="p-3 bg-primary/20 rounded-lg text-primary">

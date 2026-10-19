@@ -27,11 +27,19 @@ import { Badge } from "@/components/ui/badge";
 import { getStockReport, exportToCSV, printReport, type StockReportRow } from "@/lib/reports";
 import { formatINR } from "@/lib/gst";
 
+// Summary shape returned by getStockReport(); fields are optional because the
+// state starts empty before the report loads.
+interface StockReportSummary {
+    totalProducts?: number;
+    lowStock?: number;
+    totalValue?: number;
+}
+
 export default function StockReportPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
     const [rows, setRows] = useState<StockReportRow[]>([]);
-    const [summary, setSummary] = useState<any>({});
+    const [summary, setSummary] = useState<StockReportSummary>({});
     const [search, setSearch] = useState("");
     const [showLowStock, setShowLowStock] = useState(false);
 
@@ -44,6 +52,7 @@ export default function StockReportPage() {
     };
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- loadReport deliberately flips `loading` synchronously to start the loading lifecycle before the fetch resolves; the report fetch is a side effect on an external system, not derivable state.
         loadReport();
     }, []);
 

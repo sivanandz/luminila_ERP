@@ -66,7 +66,7 @@ export function MessageActionMenu({
     isGroupOrChannel,
     isChannel,
     senderName,
-    chatName,
+
     position,
     detectedAmount,
     detectedSku,

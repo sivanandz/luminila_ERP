@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 
 // Dynamic import for camera scanner
@@ -36,11 +37,17 @@ import {
 
     ChevronDown,
     ChevronUp,
+    Truck,
+    FileSpreadsheet,
 } from "lucide-react";
 import { ProductBroadcastModal } from "@/components/whatsapp/ProductBroadcastModal";
 import { ProductPhotoTaggingModal, type ShotType } from "@/components/inventory/ProductPhotoTaggingModal";
 import { DiscrepancyModal } from "@/components/inventory/DiscrepancyModal";
+import { ProductPurchaseHistoryModal } from "@/components/inventory/ProductPurchaseHistoryModal";
+import { QuickReceivePOModal } from "@/components/inventory/QuickReceivePOModal";
+import { BulkInventoryImportModal } from "@/components/inventory/BulkInventoryImportModal";
 import { getDiscrepancyStats } from "@/lib/discrepancies";
+import { getOpenPurchaseOrders, reconcilePOWithInwardBatch } from "@/lib/purchase";
 import { ChannelPricingInput } from "@/components/pricing/ChannelPricingInput";
 import { getChannelPrice } from "@/lib/channel-pricing";
 import { MobileScanner } from "@/lib/mobile-scanner";
@@ -53,6 +60,8 @@ import {
     generateChildSKU,
     generateWholesaleSKU,
     deriveHSNCode,
+    getSubcategoriesForCategory,
+    computeNextSkuSequence,
 } from "@/lib/sku-generator";
 import {
 
@@ -81,6 +90,9 @@ import {
 import { getCategories, createCategory, type Category } from "@/lib/categories";
 import { getAttributes, type ProductAttribute } from "@/lib/attributes";
 import { parseSKUFromBarcode } from "@/lib/barcode-generator";
+import { StockTransferModal } from "@/components/inventory/StockTransferModal";
+import { getInventoryLocations, type InventoryLocation } from "@/lib/multi-location";
+import { ArrowRightLeft } from "lucide-react";
 import {
     getProducts,
     createProduct,
@@ -91,6 +103,7 @@ import {
     getProductVariants,
     updateVariant,
     STORAGE_LOCATIONS,
+    getProductDisplayImage,
     type Product as PbProduct,
     type ProductVariant,
 } from "@/lib/products";
@@ -106,8 +119,10 @@ interface Product {
     categoryId?: string; // ID
     material?: string;
     price: number;
+    cost_price?: number;
     channel_prices?: Record<string, number>;
     stock: number;
+    pending_po_quantity?: number;
     image: string | null;
     hsn_code?: string;
     location?: string;
@@ -123,7 +138,22 @@ interface ProductRecordWithCategory extends PbProduct {
     };
 }
 
-export default function InventoryPage() {
+function InventoryContent() {
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    const [activeInwardPo, setActiveInwardPo] = useState<string>("");
+
+    useEffect(() => {
+        const inwardPo = searchParams.get("inwardPo");
+        const search = searchParams.get("search");
+        if (inwardPo) {
+            setActiveInwardPo(inwardPo);
+        }
+        if (search) {
+            setScanQuery(search);
+        }
+    }, [searchParams]);
+
     const [selectedCategory, setSelectedCategory] = useState("All");
     const [selectedLocation, setSelectedLocation] = useState("All");
     const [products, setProducts] = useState<Product[]>([]);
@@ -135,6 +165,7 @@ export default function InventoryPage() {
     const [, setAttributes] = useState<ProductAttribute[]>([]);
 
     const [showImportDialog, setShowImportDialog] = useState(false);
+    const [showBulkImportModal, setShowBulkImportModal] = useState(false);
     const [importData, setImportData] = useState<Record<string, string>[]>([]);
     const [importLoading, setImportLoading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -163,20 +194,27 @@ export default function InventoryPage() {
         );
     };
 
-
-
     // Form state
     const [newProduct, setNewProduct] = useState({
         name: "",
         sku: "",
-        category: "",
+        category: "Uncategorized",
         base_price: "",
+        cost_price: "",
+        po_reference: "",
         channel_prices: {} as Record<string, number>,
         stock: "",
         hsn_code: "71179010",
         image_url: "",
         location: "Showcase Tray A",
     });
+
+    // Auto-populate po_reference when opening add dialog during active inward mode
+    useEffect(() => {
+        if (showAddDialog && activeInwardPo && !isEditMode) {
+            setNewProduct(prev => ({ ...prev, po_reference: prev.po_reference || activeInwardPo }));
+        }
+    }, [showAddDialog, activeInwardPo, isEditMode]);
 
     // Product Photo Tagging Modal State
     const [showPhotoModal, setShowPhotoModal] = useState(false);
@@ -201,6 +239,29 @@ export default function InventoryPage() {
             // ignore
         }
     };
+
+    // Purchase Order & Delivery History Modal State
+    const [selectedPOProduct, setSelectedPOProduct] = useState<Product | null>(null);
+    const [showPOHistoryModal, setShowPOHistoryModal] = useState(false);
+    const [showQuickReceiveModal, setShowQuickReceiveModal] = useState(false);
+    const [openPOCount, setOpenPOCount] = useState<number>(0);
+
+    const loadOpenPOCount = async () => {
+        try {
+            const list = await getOpenPurchaseOrders();
+            setOpenPOCount(list.length);
+        } catch {
+            // ignore
+        }
+    };
+
+    // Multi-Location & Stock Transfer Modal State
+    const [showTransferModal, setShowTransferModal] = useState(false);
+    const [locationsList, setLocationsList] = useState<InventoryLocation[]>([]);
+
+    useEffect(() => {
+        getInventoryLocations().then(setLocationsList).catch(() => {});
+    }, []);
 
     // Master Jewelry SKU Generator State
     const [showSkuArchitect, setShowSkuArchitect] = useState(false);
@@ -309,28 +370,7 @@ export default function InventoryPage() {
         }
     };
 
-    // Derive the next SKU sequence for a genre+category+subcategory prefix from the
-    // highest already-issued sequence across ALL product rows (soft-deleted rows keep
-    // their SKU), so a regenerated SKU never collides with an existing one.
-    // `fallbackSeq` is used only when the lookup itself fails.
-    const computeNextSkuSequence = async (prefix: string, fallbackSeq: number): Promise<number> => {
-        let nextSeq = 1;
-        try {
-            const rows = await pb.collection('products').getFullList({
-                filter: pb.filter("sku ~ {:prefix}", { prefix }),
-                fields: 'sku',
-            });
-            const seqRegex = new RegExp(`^${prefix}(\\d{5})`);
-            rows.forEach(row => {
-                const match = String(row.sku || '').toUpperCase().match(seqRegex);
-                if (match) nextSeq = Math.max(nextSeq, parseInt(match[1], 10) + 1);
-            });
-            return nextSeq;
-        } catch (err) {
-            console.error("SKU sequence lookup failed, using fallback sequence", err);
-            return Math.max(1, fallbackSeq);
-        }
-    };
+
 
     // Auto-generate Architectural SKU according to Spec
     const handleApplyGeneratedSKU = async () => {
@@ -343,17 +383,18 @@ export default function InventoryPage() {
         const finalSKU = generateWholesaleSKU(child, skuPackagingTier);
         const derivedHsn = deriveHSNCode(skuCategory, skuBaseMetal, skuStone);
 
-        const genreLabel = skuTaxonomies.genres.find(g => g.code === skuGenre)?.label.split(" ")[0] || "";
-        const catLabel = skuTaxonomies.categories.find(c => c.code === skuCategory)?.label || "";
-        const subLabel = skuTaxonomies.subcategories.find(s => s.code === skuSubcat)?.label || "";
-        const autoName = `${genreLabel} ${catLabel} ${subLabel}`.trim();
+        const isGen = skuCategory === "GEN";
+        const genreLabel = isGen ? "" : (skuTaxonomies.genres.find(g => g.code === skuGenre)?.label.split(" ")[0] || "");
+        const catLabel = isGen ? "" : (skuTaxonomies.categories.find(c => c.code === skuCategory)?.label || "");
+        const subLabel = (isGen || skuSubcat === "GEN") ? "" : (skuTaxonomies.subcategories.find(s => s.code === skuSubcat)?.label || "");
+        const autoName = [genreLabel, catLabel, subLabel].filter(Boolean).join(" ").trim();
 
         setNewProduct(prev => ({
             ...prev,
             sku: finalSKU,
             hsn_code: derivedHsn,
             name: prev.name ? prev.name : autoName,
-            category: catLabel || prev.category,
+            category: isGen ? "Uncategorized" : (catLabel || prev.category),
         }));
         toast.success(`Generated Architectural SKU: ${finalSKU} (HSN: ${derivedHsn})`);
     };
@@ -408,6 +449,30 @@ export default function InventoryPage() {
                 }
             });
 
+            // Calculate pending stock from active Purchase Orders
+            const productPendingMap = new Map<string, number>();
+            try {
+                const openPoItems = await pb.collection('purchase_order_items').getFullList({
+                    filter: 'quantity_ordered > quantity_received',
+                    expand: 'variant',
+                });
+                const variantToProduct = new Map<string, string>();
+                allVariants.forEach(v => variantToProduct.set(v.id, v.product));
+
+                openPoItems.forEach((poi: any) => {
+                    const variantId = poi.variant;
+                    const prodId = variantToProduct.get(variantId);
+                    if (prodId) {
+                        const ordered = poi.quantity_ordered ?? poi.quantity ?? 0;
+                        const rec = poi.quantity_received || 0;
+                        const pending = Math.max(0, ordered - rec);
+                        productPendingMap.set(prodId, (productPendingMap.get(prodId) || 0) + pending);
+                    }
+                });
+            } catch (poErr) {
+                console.warn('Could not load pending PO quantities:', poErr);
+            }
+
             const mappedProducts: Product[] = fetchedProducts.map((p) => {
                 const catName = p.expand?.category?.name || "Uncategorized";
                 return {
@@ -417,10 +482,12 @@ export default function InventoryPage() {
                     category: p.category ? catName : "Uncategorized",
                     categoryId: p.category,
                     price: p.base_price,
+                    cost_price: p.cost_price || 0,
                     channel_prices: p.channel_prices || {},
                     stock: variantMap.get(p.id) || 0,
+                    pending_po_quantity: productPendingMap.get(p.id) || 0,
                     material: variantMaterialMap.get(p.id),
-                    image: p.image_data || p.image_url || null,
+                    image: getProductDisplayImage(p),
                     hsn_code: p.hsn_code,
                     location: p.location || "Showcase Tray A",
                 };
@@ -438,12 +505,21 @@ export default function InventoryPage() {
     useEffect(() => {
         fetchProducts();
         loadDiscrepancyCount();
+        loadOpenPOCount();
         getCategories().then(setCategories);
         getAttributes().then(setAttributes);
 
         // Realtime subscription
         pb.collection('products').subscribe('*', fetchProducts);
         pb.collection('product_variants').subscribe('*', fetchProducts);
+        pb.collection('goods_received_notes').subscribe('*', () => {
+            fetchProducts();
+            loadOpenPOCount();
+        });
+        pb.collection('purchase_orders').subscribe('*', () => {
+            fetchProducts();
+            loadOpenPOCount();
+        });
         pb.collection('stock_discrepancies').subscribe('*', () => {
             fetchProducts();
             loadDiscrepancyCount();
@@ -452,6 +528,8 @@ export default function InventoryPage() {
         return () => {
             pb.collection('products').unsubscribe('*');
             pb.collection('product_variants').unsubscribe('*');
+            pb.collection('goods_received_notes').unsubscribe('*');
+            pb.collection('purchase_orders').unsubscribe('*');
             pb.collection('stock_discrepancies').unsubscribe('*');
         };
     }, []);
@@ -461,23 +539,29 @@ export default function InventoryPage() {
         setFormLoading(true);
         try {
             // Find category ID from name if needed
-            let categoryId = newProduct.category;
-            const catObj = categories.find(c => c.name === newProduct.category || c.id === newProduct.category);
-            if (catObj) categoryId = catObj.id;
-            // If new category (simple string), create it?
-            if (!catObj && newProduct.category && newProduct.category !== "Uncategorized") {
-                try {
-                    const newCat = await createCategory({ name: newProduct.category, is_active: true });
-                    categoryId = newCat.id;
-                    setCategories(prev => [...prev, newCat]);
-                } catch (e) { console.error("Cat create failed", e) }
+            let categoryId = "";
+            if (newProduct.category && newProduct.category !== "Uncategorized") {
+                const catObj = categories.find(c => c.name === newProduct.category || c.id === newProduct.category);
+                if (catObj) {
+                    categoryId = catObj.id;
+                } else {
+                    try {
+                        const newCat = await createCategory({ name: newProduct.category, is_active: true });
+                        categoryId = newCat.id;
+                        setCategories(prev => [...prev, newCat]);
+                    } catch (e) { console.error("Cat create failed", e); }
+                }
             }
+
+            const costPrice = parseFloat(newProduct.cost_price) || 0;
+            const poRef = newProduct.po_reference.trim();
 
             const productPayload: Omit<PbProduct, "id" | "created" | "updated"> = {
                 name: newProduct.name,
                 sku: newProduct.sku,
                 category: categoryId,
                 base_price: parseFloat(newProduct.base_price) || 0,
+                cost_price: costPrice,
                 channel_prices: newProduct.channel_prices || {},
                 hsn_code: newProduct.hsn_code,
                 image_url: newProduct.image_url && newProduct.image_url.startsWith('http') ? newProduct.image_url : '',
@@ -485,6 +569,8 @@ export default function InventoryPage() {
                 location: newProduct.location || "Showcase Tray A",
                 is_active: true
             };
+
+            let targetVariantId = "";
 
             if (isEditMode && editingProductId) {
                 // Update
@@ -499,17 +585,19 @@ export default function InventoryPage() {
                 const currentTotal = products.find(p => p.id === editingProductId)?.stock ?? desiredTotal;
                 const stockDelta = desiredTotal - currentTotal;
                 if (variants.length > 0) {
+                    targetVariantId = variants[0].id;
                     await updateVariant(variants[0].id, {
                         stock_level: Math.max(0, (variants[0].stock_level || 0) + stockDelta),
                         variant_name: newProduct.sku
                     });
                 } else {
                     // Create if missing
-                    await createVariant({
+                    const v = await createVariant({
                         product: editingProductId,
                         variant_name: newProduct.sku,
                         stock_level: parseInt(newProduct.stock) || 0
                     });
+                    targetVariantId = v.id;
                 }
                 toast.success("Product updated");
             } else {
@@ -517,16 +605,52 @@ export default function InventoryPage() {
                 const product = await createProduct(productPayload);
 
                 // Create default variant
-                await createVariant({
+                const v = await createVariant({
                     product: product.id,
                     variant_name: newProduct.sku,
                     stock_level: parseInt(newProduct.stock) || 0
                 });
+                targetVariantId = v.id;
                 toast.success("Product created");
             }
 
+            // If tagged to a Purchase Order, log stock movement and reconcile
+            if (poRef && targetVariantId) {
+                const addedStock = parseInt(newProduct.stock) || 0;
+                const userEmail = (pb.authStore.model as any)?.email || '';
+                await pb.collection('stock_movements').create({
+                    account_email: userEmail,
+                    variant: targetVariantId,
+                    movement_type: 'restock',
+                    quantity: addedStock,
+                    reference_id: poRef,
+                    source: 'manual_intake',
+                    notes: `Inward intake tagged to PO: ${poRef}. Unit cost: ₹${costPrice}`,
+                }).catch(err => console.warn('Could not log stock movement:', err));
+
+                try {
+                    const batchCost = costPrice * addedStock;
+                    const rec = await reconcilePOWithInwardBatch(poRef, batchCost);
+                    if (rec.discrepancyStatus === 'over_budget') {
+                        toast.error(
+                            `PO ${poRef} Over Budget! Inward: ₹${rec.po.inward_goods_cost?.toLocaleString('en-IN')} vs Budget: ₹${rec.po.budget_amount?.toLocaleString('en-IN')} (Variance: ₹${rec.discrepancyAmount.toLocaleString('en-IN')}). Discrepancy flagged for manager approval.`,
+                            { duration: 8000 }
+                        );
+                    } else if (rec.discrepancyStatus === 'under_budget') {
+                        toast.warning(
+                            `PO ${poRef} Under Budget: Inward ₹${rec.po.inward_goods_cost?.toLocaleString('en-IN')} of ₹${rec.po.budget_amount?.toLocaleString('en-IN')}. Remaining: ₹${rec.discrepancyAmount.toLocaleString('en-IN')}.`,
+                            { duration: 6000 }
+                        );
+                    } else {
+                        toast.success(`PO ${poRef} reconciled successfully with inward intake!`);
+                    }
+                } catch (recErr: any) {
+                    console.warn('PO reconciliation notice:', recErr.message);
+                }
+            }
+
             setShowAddDialog(false);
-            setNewProduct({ name: '', sku: '', category: 'Earrings', base_price: '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A' });
+            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A' });
             fetchProducts();
         } catch (err) {
             console.error('Error saving product:', err);
@@ -544,8 +668,10 @@ export default function InventoryPage() {
             await deleteProduct(id);
             toast.success("Product deleted");
             fetchProducts();
-        } catch {
-            toast.error("Failed to delete product");
+        } catch (err: unknown) {
+            console.error("Failed to delete product:", err);
+            const msg = (err as { data?: { message?: string }; message?: string })?.data?.message || (err as Error)?.message || "Failed to delete product";
+            toast.error("Failed to delete product: " + msg);
         }
     };
 
@@ -622,7 +748,9 @@ export default function InventoryPage() {
     const filteredProducts = products.filter(product => {
         const matchesCategory = selectedCategory === "All" || product.category === selectedCategory || product.categoryId === selectedCategory;
         const matchesLocation = selectedLocation === "All" || (product.location || "Showcase Tray A") === selectedLocation;
-        return matchesCategory && matchesLocation;
+        const q = scanQuery.trim().toLowerCase();
+        const matchesSearch = !q || product.name.toLowerCase().includes(q) || product.sku.toLowerCase().includes(q);
+        return matchesCategory && matchesLocation && matchesSearch;
     });
 
     return (
@@ -638,8 +766,62 @@ export default function InventoryPage() {
                 }
             />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
-                <div className="max-w-7xl mx-auto flex flex-col gap-8">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
+                <div className="max-w-7xl mx-auto flex flex-col gap-4 md:gap-8">
+                    {/* Active Inward PO Intake Banner */}
+                    {activeInwardPo && (
+                        <div className="bg-gradient-to-r from-teal-950/90 via-surface-navy to-teal-950/90 border border-teal-500/40 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-xl animate-in fade-in">
+                            <div className="flex items-center gap-3">
+                                <div className="size-10 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center shrink-0 border border-teal-500/30">
+                                    <Truck size={20} />
+                                </div>
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-white uppercase tracking-wider">Active Inward Intake Mode</span>
+                                        <span className="text-xs font-mono px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/40 font-bold">
+                                            {activeInwardPo}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-moonstone mt-0.5">
+                                        Inward products will be linked to this Purchase Order with automatic landed cost absorption and discrepancy reconciliation.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2 self-end md:self-auto">
+                                <Button
+                                    size="sm"
+                                    onClick={() => setShowBulkImportModal(true)}
+                                    className="bg-teal-600 hover:bg-teal-500 text-white font-semibold text-xs h-8 px-3 flex items-center gap-1.5 shadow-md"
+                                >
+                                    <Upload size={14} /> Bulk Upload Sheet
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={() => {
+                                        setNewProduct(prev => ({ ...prev, po_reference: activeInwardPo }));
+                                        setIsEditMode(false);
+                                        setEditingProductId(null);
+                                        setShowAddDialog(true);
+                                    }}
+                                    className="bg-primary text-primary-foreground font-semibold text-xs h-8 px-3 flex items-center gap-1.5"
+                                >
+                                    <Plus size={14} /> Add Product for PO
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => {
+                                        setActiveInwardPo("");
+                                        router.replace("/inventory");
+                                    }}
+                                    className="text-xs text-slate-400 hover:text-white h-8 px-2"
+                                >
+                                    Exit Inward Mode
+                                </Button>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Filters */}
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                         <div className="flex items-center gap-3 flex-1 flex-wrap">
@@ -671,14 +853,42 @@ export default function InventoryPage() {
                                     onChange={(e) => setSelectedLocation(e.target.value)}
                                     className="bg-transparent text-xs font-semibold text-white border-none focus:outline-none cursor-pointer"
                                 >
-                                    <option value="All" className="bg-surface-navy text-white">All Locations</option>
-                                    {STORAGE_LOCATIONS.map(loc => (
-                                        <option key={loc} value={loc} className="bg-surface-navy text-white">{loc}</option>
-                                    ))}
+                                    <option value="All" className="bg-surface-navy text-white">All Facilities</option>
+                                    {locationsList.length > 0 ? (
+                                        locationsList.map(loc => (
+                                            <option key={loc.id} value={loc.name} className="bg-surface-navy text-white">
+                                                [{loc.code}] {loc.name}
+                                            </option>
+                                        ))
+                                    ) : (
+                                        STORAGE_LOCATIONS.map(loc => (
+                                            <option key={loc} value={loc} className="bg-surface-navy text-white">{loc}</option>
+                                        ))
+                                    )}
                                 </select>
                             </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <button
+                                onClick={() => setShowQuickReceiveModal(true)}
+                                className="bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-indigo-500/30 transition-colors font-semibold text-xs relative"
+                                title="Take delivery and match incoming stock from active Purchase Orders"
+                            >
+                                <Truck size={16} />
+                                <span>Receive from PO</span>
+                                {openPOCount > 0 && (
+                                    <span className="bg-emerald-400 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full ml-1">
+                                        {openPOCount}
+                                    </span>
+                                )}
+                            </button>
+                            <button
+                                onClick={() => setShowTransferModal(true)}
+                                className="bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-blue-500/30 transition-colors font-semibold text-xs"
+                                title="Inter-Location Stock Transfer across PoS Counters & Warehouses"
+                            >
+                                <ArrowRightLeft size={16} /> Inter-Store / Warehouse Transfer
+                            </button>
                             <button
                                 onClick={() => {
                                     const list = selectedProductIds.length > 0
@@ -710,8 +920,23 @@ export default function InventoryPage() {
                             </button>
                             <button onClick={fetchProducts} className="bg-surface-navy text-moonstone hover:text-white h-10 px-4 rounded-lg flex items-center gap-2 border border-surface-hover"><RefreshCw size={16} /> Sync</button>
                             <button onClick={() => setShowScanDialog(true)} className="bg-primary/20 text-primary h-10 px-4 rounded-lg flex items-center gap-2 border border-primary/30"><ScanBarcode size={16} /> Scan</button>
-                            <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept=".csv" className="hidden" />
-                            <button onClick={() => fileInputRef.current?.click()} className="bg-surface-navy text-moonstone hover:text-white h-10 px-4 rounded-lg flex items-center gap-2 border border-surface-hover"><Upload size={16} /> Import</button>
+                            <a
+                                href="/api/inventory/template"
+                                download="luminila_inventory_import_template.xlsx"
+                                className="bg-surface-navy text-moonstone hover:text-white h-10 px-3.5 rounded-lg flex items-center gap-2 border border-surface-hover text-xs font-semibold transition-colors"
+                                title="Download official Excel template pre-formatted for bulk inventory upload"
+                            >
+                                <FileSpreadsheet size={16} className="text-teal-400" />
+                                <span>Excel Template</span>
+                            </a>
+                            <button
+                                onClick={() => setShowBulkImportModal(true)}
+                                className="bg-teal-600/20 text-teal-300 hover:bg-teal-600/30 hover:text-white h-10 px-4 rounded-lg flex items-center gap-2 border border-teal-500/40 text-xs font-semibold transition-colors"
+                                title="Upload inventory in bulk from Excel (.xlsx) or CSV"
+                            >
+                                <Upload size={16} className="text-teal-400" />
+                                <span>Bulk Import</span>
+                            </button>
                         </div>
                     </div>
 
@@ -719,13 +944,13 @@ export default function InventoryPage() {
                     {loading ? (
                         <div className="flex justify-center p-12"><Loader2 className="animate-spin text-primary" size={40} /></div>
                     ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
                             {filteredProducts.map((product) => {
                                 const isSelected = selectedProductIds.includes(product.id);
                                 return (
                                     <div
                                         key={product.id}
-                                        className={`bg-surface-navy rounded-xl border p-4 group transition-all shadow-sm relative ${
+                                        className={`bg-surface-navy rounded-xl border p-3 md:p-4 group transition-all shadow-sm relative ${
                                             isSelected ? 'border-emerald-500 ring-1 ring-emerald-500/40' : 'border-surface-hover hover:border-primary/50'
                                         }`}
                                     >
@@ -772,12 +997,24 @@ export default function InventoryPage() {
                                                 >
                                                     <AlertTriangle size={18} />
                                                 </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedPOProduct(product);
+                                                        setShowPOHistoryModal(true);
+                                                    }}
+                                                    title="View Purchase Orders, Deliveries & GRN Stock Intake History"
+                                                    className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-lg hover:scale-110 transition-transform font-bold"
+                                                >
+                                                    <Truck size={18} />
+                                                </button>
                                                 <button onClick={() => {
                                                     setNewProduct({
                                                         name: product.name,
                                                         sku: product.sku,
-                                                        category: product.categoryId || "",
+                                                        category: product.categoryId ? (categories.find(c => c.id === product.categoryId)?.name || product.category || "Uncategorized") : (product.category || "Uncategorized"),
                                                         base_price: String(product.price),
+                                                        cost_price: String(product.cost_price || ""),
+                                                        po_reference: "",
                                                         channel_prices: product.channel_prices || {},
                                                         stock: String(product.stock),
                                                         hsn_code: product.hsn_code || "7117",
@@ -819,7 +1056,22 @@ export default function InventoryPage() {
                                                         </span>
                                                     )}
                                                 </div>
-                                                <span className={`text-xs px-2 py-1 rounded ${product.stock > 5 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>Stock: {product.stock}</span>
+                                                <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                                    <span className={`text-xs px-2 py-1 rounded ${product.stock > 5 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>Stock: {product.stock}</span>
+                                                    {product.pending_po_quantity && product.pending_po_quantity > 0 ? (
+                                                        <span
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedPOProduct(product);
+                                                                setShowPOHistoryModal(true);
+                                                            }}
+                                                            className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 cursor-pointer hover:bg-amber-500/25 transition-colors"
+                                                            title={`${product.pending_po_quantity} units pending on Purchase Orders. Click to view.`}
+                                                        >
+                                                            <Truck size={10} /> +{product.pending_po_quantity} arriving
+                                                        </span>
+                                                    ) : null}
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -954,10 +1206,28 @@ export default function InventoryPage() {
 
                                 {showSkuArchitect && (
                                     <div className="p-3 space-y-2.5 border-t border-surface-hover/40 bg-bg-navy/90 text-xs">
+                                        <div className="flex items-center justify-between pb-1 border-b border-surface-hover/30">
+                                            <span className="text-[10px] text-moonstone font-medium">Configure jewelry taxonomy or skip for generic stock:</span>
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() => {
+                                                    setSkuGenre("GEN");
+                                                    setSkuCategory("GEN");
+                                                    setSkuSubcat("GEN");
+                                                    setNewProduct(prev => ({ ...prev, category: "Uncategorized" }));
+                                                    toast.info("Taxonomy set to General / Uncategorized");
+                                                }}
+                                                className="h-6 text-[10px] px-2 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 font-semibold"
+                                            >
+                                                ⚡ Skip Taxonomy (General SKU)
+                                            </Button>
+                                        </div>
                                         <div className="grid grid-cols-3 gap-2">
                                             <div>
                                                 <Label className="text-[10px] text-moonstone">Style Genre</Label>
-                                                <Select value={skuGenre} onValueChange={val => setSkuGenre(val || "TMP")}>
+                                                <Select value={skuGenre} onValueChange={val => setSkuGenre(val || "GEN")}>
                                                     <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
                                                     <SelectContent>
                                                         {skuTaxonomies.genres.map((g, idx) => (
@@ -971,10 +1241,14 @@ export default function InventoryPage() {
                                             <div>
                                                 <Label className="text-[10px] text-moonstone">Category</Label>
                                                 <Select value={skuCategory} onValueChange={(val) => {
-                                                    const v = val || "NEC";
+                                                    const v = val || "GEN";
                                                     setSkuCategory(v);
                                                     const matchedCat = skuTaxonomies.categories.find(c => c.code === v);
-                                                    if (matchedCat) setNewProduct(prev => ({ ...prev, category: matchedCat.label }));
+                                                    if (matchedCat) setNewProduct(prev => ({ ...prev, category: v === "GEN" ? "Uncategorized" : matchedCat.label }));
+                                                    const validSubcats = getSubcategoriesForCategory(v, skuTaxonomies.subcategories);
+                                                    if (validSubcats.length > 0 && !validSubcats.some(s => s.code === skuSubcat)) {
+                                                        setSkuSubcat(validSubcats[0].code);
+                                                    }
                                                 }}>
                                                     <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
                                                     <SelectContent>
@@ -988,10 +1262,10 @@ export default function InventoryPage() {
                                             </div>
                                             <div>
                                                 <Label className="text-[10px] text-moonstone">Subcategory</Label>
-                                                <Select value={skuSubcat} onValueChange={val => setSkuSubcat(val || "CHK")}>
+                                                <Select value={skuSubcat} onValueChange={val => setSkuSubcat(val || "GEN")}>
                                                     <SelectTrigger className="bg-surface-navy border-surface-hover text-xs h-7.5"><SelectValue /></SelectTrigger>
                                                     <SelectContent>
-                                                        {skuTaxonomies.subcategories.map((s, idx) => (
+                                                        {getSubcategoriesForCategory(skuCategory, skuTaxonomies.subcategories).map((s, idx) => (
                                                             <SelectItem key={`${s.code}-${idx}`} value={s.code} className="text-xs">
                                                                 {s.code} - {s.label}
                                                             </SelectItem>
@@ -1162,10 +1436,11 @@ export default function InventoryPage() {
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
                                     <Label className="text-xs">Category</Label>
-                                    <Select value={newProduct.category || ""} onValueChange={v => setNewProduct({ ...newProduct, category: v || "" })}>
+                                    <Select value={newProduct.category || "Uncategorized"} onValueChange={v => setNewProduct({ ...newProduct, category: v || "Uncategorized" })}>
                                         <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue placeholder="Select Category" /></SelectTrigger>
                                         <SelectContent>
-                                            {categories.map(c => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}
+                                            <SelectItem value="Uncategorized">-- Skip / Uncategorized --</SelectItem>
+                                            {categories.filter(c => c.name !== "Uncategorized").map(c => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -1188,6 +1463,38 @@ export default function InventoryPage() {
                                 onChange={(cp) => setNewProduct(prev => ({ ...prev, channel_prices: cp }))}
                                 onBasePriceChange={(bp) => setNewProduct(prev => ({ ...prev, base_price: String(bp) }))}
                             />
+
+                            {/* Cost Price & Purchase Order Reference */}
+                            <div className="grid grid-cols-2 gap-3 bg-bg-navy/60 p-2.5 rounded-lg border border-surface-hover/70">
+                                <div>
+                                    <Label className="text-xs flex items-center justify-between text-moonstone">
+                                        <span>Unit Cost Price (₹)</span>
+                                        <span className="text-[10px] text-teal-400 font-semibold">Inward Cost</span>
+                                    </Label>
+                                    <Input
+                                        type="number"
+                                        value={newProduct.cost_price}
+                                        onChange={e => setNewProduct({ ...newProduct, cost_price: e.target.value })}
+                                        placeholder="e.g. 850"
+                                        className="bg-bg-navy border-surface-hover text-sm h-9 font-mono mt-1 text-teal-300 font-semibold"
+                                    />
+                                </div>
+                                <div>
+                                    <Label className="text-xs flex items-center justify-between text-moonstone">
+                                        <span>Purchase Order Ref</span>
+                                        {activeInwardPo && (
+                                            <span className="text-[9px] text-teal-400 font-bold bg-teal-500/10 px-1 rounded">Active</span>
+                                        )}
+                                    </Label>
+                                    <Input
+                                        type="text"
+                                        value={newProduct.po_reference}
+                                        onChange={e => setNewProduct({ ...newProduct, po_reference: e.target.value.toUpperCase() })}
+                                        placeholder="e.g. PO-SRIM-20261019-180532"
+                                        className="bg-bg-navy border-surface-hover text-xs h-9 font-mono mt-1 text-teal-300 uppercase"
+                                    />
+                                </div>
+                            </div>
 
                             {/* Stock & Storage Location */}
                             <div className="grid grid-cols-2 gap-3">
@@ -1349,6 +1656,49 @@ export default function InventoryPage() {
                     loadDiscrepancyCount();
                 }}
             />
+
+            {/* Multi-Location & Stock Transfer Modal */}
+            <StockTransferModal
+                open={showTransferModal}
+                onOpenChange={setShowTransferModal}
+                onTransferred={fetchProducts}
+            />
+
+            {/* Product Purchase Order & Delivery Intake History Modal */}
+            <ProductPurchaseHistoryModal
+                isOpen={showPOHistoryModal}
+                onClose={() => {
+                    setShowPOHistoryModal(false);
+                    setSelectedPOProduct(null);
+                }}
+                product={selectedPOProduct}
+            />
+
+            {/* Quick Receive from Purchase Orders Modal */}
+            <QuickReceivePOModal
+                isOpen={showQuickReceiveModal}
+                onClose={() => {
+                    setShowQuickReceiveModal(false);
+                    fetchProducts();
+                    loadOpenPOCount();
+                }}
+            />
+
+            {/* Bulk Inventory Excel / CSV Import Modal */}
+            <BulkInventoryImportModal
+                isOpen={showBulkImportModal}
+                onClose={() => setShowBulkImportModal(false)}
+                onImportSuccess={fetchProducts}
+                defaultPoReference={activeInwardPo || undefined}
+            />
         </div>
+    );
+}
+
+export default function InventoryPage() {
+    return (
+        <Suspense fallback={<div className="flex justify-center p-12"><Loader2 className="animate-spin text-primary" size={40} /></div>}>
+            <InventoryContent />
+        </Suspense>
     );
 }

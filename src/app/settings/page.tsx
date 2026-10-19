@@ -9,7 +9,7 @@ import {
     MessageCircle,
     Shield,
     Bell,
-    Palette,
+
     Save,
     ExternalLink,
     CheckCircle,
@@ -21,15 +21,20 @@ import {
     Tags,
     Plus,
     Trash2,
-    Edit,
+
     Loader2,
     Truck,
+    Download,
+    Barcode,
 } from "lucide-react";
+import { SKUTaxonomySettings } from "@/components/settings/SKUTaxonomySettings";
+import { SalesChannelsSettings } from "@/components/settings/SalesChannelsSettings";
 import { LogoUpload } from "@/components/settings/LogoUpload";
+import { isUpiDiscountEnabled, setUpiDiscountEnabled } from "@/lib/channel-pricing";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
     Select,
     SelectContent,
@@ -51,6 +56,8 @@ import { EwayBillSettings } from "@/components/settings/EwayBillSettings";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { getStoreSettings, saveStoreSettings, getDefaultStoreSettings, type StoreSettings } from "@/lib/settings";
+import { pb } from "@/lib/pocketbase";
+import { getDetailedSessionStatus, getBusinessProfile, type DetailedSessionStatus, type BusinessProfile } from "@/lib/whatsapp";
 
 interface SettingSection {
     id: string;
@@ -60,6 +67,8 @@ interface SettingSection {
 
 const sections: SettingSection[] = [
     { id: "store", title: "Store Settings", icon: <Store size={20} /> },
+    { id: "channels", title: "Sales Channels & Pricing", icon: <Globe size={20} /> },
+    { id: "sku_taxonomies", title: "SKU Architecture", icon: <Barcode size={20} /> },
     { id: "invoice", title: "Invoice & GST", icon: <FileText size={20} /> },
     { id: "ewaybill", title: "E-way Bill", icon: <Truck size={20} /> },
     { id: "categories", title: "Categories", icon: <FolderTree size={20} /> },
@@ -75,6 +84,75 @@ export default function SettingsPage() {
     const { user } = useAuth();
     const [activeSection, setActiveSection] = useState("store");
     const [isSaving, setIsSaving] = useState(false);
+    const [isExportingSnapshot, setIsExportingSnapshot] = useState(false);
+
+    useEffect(() => {
+        if (typeof window !== "undefined") {
+            const params = new URLSearchParams(window.location.search);
+            const tab = params.get("tab");
+            if (tab && (tab === "sku_taxonomies" || tab === "sku_architecture")) {
+                setActiveSection("sku_taxonomies");
+            } else if (tab && (tab === "channels" || tab === "sales_channels")) {
+                setActiveSection("channels");
+            } else if (tab && sections.some(s => s.id === tab)) {
+                setActiveSection(tab);
+            }
+        }
+    }, []);
+
+    // Export complete DB snapshot (InvenTree feature)
+    const handleExportDatabaseSnapshot = async () => {
+        setIsExportingSnapshot(true);
+        try {
+            toast.info("Compiling full database snapshot from PocketBase...");
+            const [products, variants, customers, invoices, invoiceItems, settingsList] = await Promise.all([
+                pb.collection('products').getFullList({ sort: '-created' }).catch(() => []),
+                pb.collection('product_variants').getFullList().catch(() => []),
+                pb.collection('customers').getFullList().catch(() => []),
+                pb.collection('invoices').getFullList().catch(() => []),
+                pb.collection('invoice_items').getFullList().catch(() => []),
+                pb.collection('store_settings').getFullList().catch(() => []),
+            ]);
+
+            const snapshot = {
+                app: "Luminila Jewelry ERP",
+                version: "2.1.0",
+                exported_at: new Date().toISOString(),
+                exported_by: user?.email || "admin",
+                summary: {
+                    products_count: products.length,
+                    variants_count: variants.length,
+                    customers_count: customers.length,
+                    invoices_count: invoices.length,
+                    invoice_items_count: invoiceItems.length,
+                },
+                data: {
+                    products,
+                    product_variants: variants,
+                    customers,
+                    invoices,
+                    invoice_items: invoiceItems,
+                    store_settings: settingsList,
+                }
+            };
+
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(snapshot, null, 2));
+            const downloadAnchor = document.createElement("a");
+            const filename = `luminila_database_backup_${new Date().toISOString().split("T")[0]}.json`;
+            downloadAnchor.setAttribute("href", dataStr);
+            downloadAnchor.setAttribute("download", filename);
+            document.body.appendChild(downloadAnchor);
+            downloadAnchor.click();
+            downloadAnchor.remove();
+
+            toast.success(`Exported complete snapshot with ${products.length} products & ${invoices.length} invoices!`);
+        } catch (err) {
+            console.error("Snapshot export failed:", err);
+            toast.error("Failed to generate database snapshot: " + ((err instanceof Error ? err.message : String(err)) || "Unknown error"));
+        } finally {
+            setIsExportingSnapshot(false);
+        }
+    };
 
     // Unified Settings State - initialized with clean scoped defaults
     const [settings, setSettings] = useState<StoreSettings>(() =>
@@ -96,18 +174,102 @@ export default function SettingsPage() {
         is_required: false,
     });
 
-    // Load data scoped to current user/store
-    useEffect(() => {
-        getStoreSettings(user?.id, user?.name, user?.email).then(loaded => {
-            setSettings(loaded);
-        });
+    const [waStatus, setWaStatus] = useState<DetailedSessionStatus | null>(null);
+    const [waBusinessProfile, setWaBusinessProfile] = useState<BusinessProfile | null>(null);
+    const [checkingWa, setCheckingWa] = useState(false);
+    const [isSyncingWaProfile, setIsSyncingWaProfile] = useState(false);
+    const [upiDiscountPolicyEnabled, setUpiDiscountPolicyEnabled] = useState<boolean>(() => isUpiDiscountEnabled());
 
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const custom = e as CustomEvent<{ enabled: boolean }>;
+            if (custom.detail) setUpiDiscountPolicyEnabled(custom.detail.enabled);
+        };
+        window.addEventListener("luminila:upi-discount-toggled", handler);
+        return () => window.removeEventListener("luminila:upi-discount-toggled", handler);
+    }, []);
+
+    // Proactively poll WhatsApp status and profile on mount
+    useEffect(() => {
+        let cancelled = false;
+        getDetailedSessionStatus().then(status => {
+            if (cancelled) return;
+            setWaStatus(status);
+            if (status.connected) {
+                getBusinessProfile().then(profile => {
+                    if (!cancelled && profile) setWaBusinessProfile(profile);
+                }).catch(() => {});
+            }
+        }).catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    // Load settings scoped to current user/store (independent of section switching
+    // so unsaved edits are not overwritten, and guarded against out-of-order loads)
+    useEffect(() => {
+        let cancelled = false;
+        getStoreSettings(user?.id, user?.name, user?.email).then(loaded => {
+            if (!cancelled) setSettings(loaded);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [user?.id, user?.name, user?.email]);
+
+    // Load per-section data when the active section changes
+    useEffect(() => {
         if (activeSection === "categories") {
             getCategories().then(setCategories);
         } else if (activeSection === "attributes") {
             getAttributes().then(setAttributes);
+        } else if (activeSection === "whatsapp") {
+            setCheckingWa(true);
+            getDetailedSessionStatus()
+                .then(st => {
+                    setWaStatus(st);
+                    if (st.connected) return getBusinessProfile().then(p => p && setWaBusinessProfile(p));
+                })
+                .finally(() => setCheckingWa(false));
         }
-    }, [activeSection, user?.id, user?.name, user?.email]);
+    }, [activeSection]);
+
+    const handleSyncFromWhatsApp = async () => {
+        setIsSyncingWaProfile(true);
+        try {
+            const status = await getDetailedSessionStatus();
+            setWaStatus(status);
+            if (!status.connected) {
+                toast.error("WhatsApp session is not connected.");
+                return;
+            }
+            const profile = await getBusinessProfile();
+            if (profile) setWaBusinessProfile(profile);
+
+            const updates: Partial<StoreSettings> = {};
+            if (status.connectedNumber) {
+                const formatted = status.connectedNumber.startsWith("+")
+                    ? status.connectedNumber
+                    : `+${status.connectedNumber}`;
+                updates.whatsappPhone = formatted;
+            }
+            if (profile?.address && profile.address.trim()) {
+                updates.address = profile.address.trim();
+            }
+            if (Object.keys(updates).length > 0) {
+                setSettings(prev => ({ ...prev, ...updates }));
+                toast.success("Synced address and contact details from connected WhatsApp Business profile!");
+            } else {
+                toast.info("WhatsApp connected, but no business profile address was found.");
+            }
+        } catch (err) {
+            console.error("Failed to sync from WhatsApp profile:", err);
+            toast.error("Failed to sync from WhatsApp profile: " + ((err instanceof Error ? err.message : String(err)) || "Unknown error"));
+        } finally {
+            setIsSyncingWaProfile(false);
+        }
+    };
 
     // Connection statuses
     const connections = {
@@ -210,18 +372,46 @@ export default function SettingsPage() {
                 }
             />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-                    {/* Sidebar */}
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-8">
+                    {/* Settings Navigation: Themed Dropdown on Mobile/Narrow, Sidebar on Desktop */}
                     <div className="lg:col-span-1">
-                        <div className="card sticky top-0 p-4 bg-card border border-border rounded-xl">
-                            <nav className="space-y-1">
+                        {/* Mobile Dropdown */}
+                        <div className="block lg:hidden w-full">
+                            {(() => {
+                                const curSection = sections.find((s) => s.id === activeSection) || sections[0];
+                                return (
+                                    <Select value={activeSection} onValueChange={(v) => v && setActiveSection(v)}>
+                                        <SelectTrigger className="w-full h-11 bg-card border-border text-xs font-semibold px-3 rounded-xl flex items-center justify-between shadow-xs">
+                                            <div className="flex items-center gap-2.5">
+                                                <span className="text-primary">{curSection.icon}</span>
+                                                <span className="font-semibold text-xs text-foreground">{curSection.title}</span>
+                                            </div>
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-popover border-border">
+                                            {sections.map((section) => (
+                                                <SelectItem key={section.id} value={section.id} className="text-xs font-medium py-2.5">
+                                                    <div className="flex items-center gap-2.5">
+                                                        <span className="text-primary">{section.icon}</span>
+                                                        <span>{section.title}</span>
+                                                    </div>
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                );
+                            })()}
+                        </div>
+
+                        {/* Desktop Sidebar */}
+                        <div className="hidden lg:block card sticky top-0 p-3 lg:p-4 bg-card border border-border rounded-xl">
+                            <nav className="flex flex-col space-y-1">
                                 {sections.map((section) => (
                                     <button
                                         key={section.id}
                                         onClick={() => setActiveSection(section.id)}
-                                        className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-left transition-all ${activeSection === section.id
-                                            ? "bg-primary text-primary-foreground font-bold shadow-[0_0_10px_rgba(238,189,43,0.2)]"
+                                        className={`w-full whitespace-nowrap flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all ${activeSection === section.id
+                                            ? "bg-primary text-primary-foreground font-bold shadow-xs"
                                             : "text-muted-foreground hover:bg-background hover:text-foreground"
                                             }`}
                                     >
@@ -292,21 +482,119 @@ export default function SettingsPage() {
                                             </Label>
                                             <Input
                                                 type="tel"
+                                                placeholder="+91 98765 43210"
                                                 value={settings.phone}
                                                 onChange={(e) => setSettings({ ...settings, phone: e.target.value })}
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    WhatsApp Business Phone
+                                                </Label>
+                                                {waStatus?.connected && waStatus.connectedNumber && (
+                                                    <button
+                                                        type="button"
+                                                        className="text-xs text-primary hover:underline font-semibold flex items-center gap-1"
+                                                        onClick={() => {
+                                                            const formatted = waStatus.connectedNumber!.startsWith("+")
+                                                                ? waStatus.connectedNumber!
+                                                                : `+${waStatus.connectedNumber}`;
+                                                            setSettings({ ...settings, whatsappPhone: formatted });
+                                                            toast.success(`Used connected WhatsApp: ${formatted}`);
+                                                        }}
+                                                    >
+                                                        Use Connected (+{waStatus.connectedNumber})
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <Input
+                                                type="tel"
+                                                placeholder="+91 98765 43210 (Used for invoices & messaging)"
+                                                value={settings.whatsappPhone || ""}
+                                                onChange={(e) => setSettings({ ...settings, whatsappPhone: e.target.value })}
                                             />
                                         </div>
                                     </div>
 
                                     <div className="space-y-2">
-                                        <Label className="text-xs font-bold text-muted-foreground uppercase">
-                                            Store Address
-                                        </Label>
+                                        <div className="flex items-center justify-between">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                Street Address / Shop No / Building
+                                            </Label>
+                                            {waStatus?.connected && (
+                                                <button
+                                                    type="button"
+                                                    disabled={isSyncingWaProfile}
+                                                    className="text-xs text-primary hover:underline font-semibold flex items-center gap-1 disabled:opacity-50"
+                                                    onClick={handleSyncFromWhatsApp}
+                                                >
+                                                    {isSyncingWaProfile ? <Loader2 size={12} className="animate-spin" /> : <MessageCircle size={12} />}
+                                                    Auto-fill from Connected WhatsApp
+                                                </button>
+                                            )}
+                                        </div>
                                         <Textarea
-                                            rows={3}
+                                            rows={2}
+                                            placeholder="Shop No. 12, Main Bazaar Road"
                                             value={settings.address}
                                             onChange={(e) => setSettings({ ...settings, address: e.target.value })}
                                         />
+                                        {waBusinessProfile?.address && settings.address !== waBusinessProfile.address.trim() && (
+                                            <div className="flex items-center justify-between text-xs bg-muted/60 p-2 rounded-md border border-border">
+                                                <span className="text-muted-foreground truncate">
+                                                    WhatsApp Business Profile Address: <strong className="text-foreground">{waBusinessProfile.address.trim()}</strong>
+                                                </span>
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="h-6 text-xs px-2 shrink-0 ml-2"
+                                                    onClick={() => {
+                                                        setSettings(prev => ({ ...prev, address: waBusinessProfile.address!.trim() }));
+                                                        toast.success("Applied address from WhatsApp profile");
+                                                    }}
+                                                >
+                                                    Apply
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                City
+                                            </Label>
+                                            <Input
+                                                type="text"
+                                                placeholder="e.g. Bengaluru, Mumbai"
+                                                value={settings.city || ""}
+                                                onChange={(e) => setSettings({ ...settings, city: e.target.value })}
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                State
+                                            </Label>
+                                            <Input
+                                                type="text"
+                                                placeholder="e.g. Karnataka, Maharashtra"
+                                                value={settings.state || ""}
+                                                onChange={(e) => setSettings({ ...settings, state: e.target.value })}
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                PIN Code
+                                            </Label>
+                                            <Input
+                                                type="text"
+                                                placeholder="e.g. 560001"
+                                                value={settings.pincode || ""}
+                                                onChange={(e) => setSettings({ ...settings, pincode: e.target.value })}
+                                            />
+                                        </div>
                                     </div>
 
                                     <div className="space-y-2">
@@ -373,20 +661,51 @@ export default function SettingsPage() {
                                             Select your preferred invoice print format
                                         </p>
                                     </div>
+                                     {/* GST Registration Status */}
+                                    <div className="p-4 rounded-xl border border-border bg-muted/40 space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <div className="space-y-1">
+                                                <div className="flex items-center gap-2">
+                                                    <Label htmlFor="gst-registered-toggle" className="text-sm font-bold text-foreground cursor-pointer">
+                                                        GST Registered Business
+                                                    </Label>
+                                                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${settings.isGstRegistered !== false ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-600 border border-amber-500/20'}`}>
+                                                        {settings.isGstRegistered !== false ? "Active • Standard GST Invoices" : "Turned Off • Bill of Supply (0% GST)"}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {settings.isGstRegistered !== false
+                                                        ? "Your store collects GST and generates standard Tax Invoices with GSTIN."
+                                                        : "Unregistered or Composition Dealer: No GSTIN required. Invoices will automatically be issued as 'Bill of Supply' with 0% tax."}
+                                                </p>
+                                            </div>
+                                            <Switch
+                                                id="gst-registered-toggle"
+                                                checked={settings.isGstRegistered !== false}
+                                                onCheckedChange={(checked) => setSettings({ ...settings, isGstRegistered: checked })}
+                                            />
+                                        </div>
+                                    </div>
 
                                     {/* GST Details */}
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                         <div className="space-y-2">
-                                            <Label className="text-xs font-bold text-muted-foreground uppercase">
-                                                GSTIN
-                                            </Label>
+                                            <div className="flex items-center justify-between">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    GSTIN
+                                                </Label>
+                                                {settings.isGstRegistered === false && (
+                                                    <span className="text-[10px] text-amber-500 font-medium">Not Applicable (Unregistered)</span>
+                                                )}
+                                            </div>
                                             <Input
                                                 type="text"
-                                                placeholder="22AAAAA0000A1Z5"
+                                                placeholder={settings.isGstRegistered === false ? "Not Applicable (Unregistered Business)" : "22AAAAA0000A1Z5"}
                                                 maxLength={15}
-                                                value={settings.gstin}
+                                                disabled={settings.isGstRegistered === false}
+                                                value={settings.gstin || ""}
                                                 onChange={(e) => setSettings({ ...settings, gstin: e.target.value })}
-                                                className="uppercase"
+                                                className={`uppercase ${settings.isGstRegistered === false ? "opacity-60 bg-muted cursor-not-allowed" : ""}`}
                                             />
                                         </div>
                                         <div className="space-y-2">
@@ -733,7 +1052,7 @@ export default function SettingsPage() {
                                                 </Label>
                                                 <Input
                                                     type="text"
-                                                    placeholder="zennila.myshopify.com"
+                                                    placeholder="your-store.myshopify.com"
                                                 />
                                             </div>
                                             <div className="space-y-2">
@@ -910,6 +1229,64 @@ export default function SettingsPage() {
                                                     </SelectContent>
                                                 </Select>
                                             </div>
+
+                                            {/* UPI < ₹2,000 Surcharge Discount Policy Setting */}
+                                            <div className="col-span-2 pt-3 border-t border-border/60">
+                                                <div className="flex items-center justify-between p-3.5 rounded-xl bg-muted/40 border border-border">
+                                                    <div className="space-y-0.5">
+                                                        <Label className="text-sm font-semibold flex items-center gap-1.5 text-foreground cursor-pointer">
+                                                            <span>⚡ UPI &lt; ₹2,000 Zero-MDR Surcharge Discount</span>
+                                                        </Label>
+                                                        <p className="text-xs text-muted-foreground">
+                                                            Automatically waive/discount 2.2% merchant surcharge for UPI transactions under ₹2,000 during checkout (RBI/NPCI zero-MDR rule).
+                                                        </p>
+                                                    </div>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={upiDiscountPolicyEnabled}
+                                                        onChange={(e) => {
+                                                            const val = e.target.checked;
+                                                            setUpiDiscountPolicyEnabled(val);
+                                                            setUpiDiscountEnabled(val);
+                                                            toast.success(val ? "UPI < ₹2,000 surcharge discount enabled" : "UPI < ₹2,000 surcharge discount disabled");
+                                                        }}
+                                                        className="w-5 h-5 rounded text-primary focus:ring-primary accent-primary cursor-pointer"
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Database Snapshot & Backup (InvenTree feature) */}
+                                    <div className="p-6 bg-background border border-border rounded-xl hover:border-primary/30 transition-colors">
+                                        <div className="flex items-center justify-between mb-4">
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-12 h-12 bg-amber-500/10 rounded-xl flex items-center justify-center text-amber-400 font-bold border border-amber-500/20">
+                                                    <Database size={24} />
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold text-foreground text-lg">Database Backup & Snapshot</h3>
+                                                    <p className="text-sm text-muted-foreground">
+                                                        One-click JSON snapshot of inventory, customers, invoices, and settings
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <Button
+                                                onClick={handleExportDatabaseSnapshot}
+                                                disabled={isExportingSnapshot}
+                                                className="bg-gold hover:bg-gold-light text-navy-dark font-semibold text-xs flex items-center gap-2"
+                                            >
+                                                {isExportingSnapshot ? (
+                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                ) : (
+                                                    <Download className="w-4 h-4" />
+                                                )}
+                                                Download Snapshot
+                                            </Button>
+                                        </div>
+                                        <div className="p-3 bg-surface-navy/60 rounded-lg text-xs text-moonstone border border-surface-hover flex items-center justify-between">
+                                            <span>Format: JSON Full Dump (PocketBase compatible)</span>
+                                            <span className="text-emerald-400 font-semibold">● PocketBase Live on Port 8091</span>
                                         </div>
                                     </div>
                                 </div>
@@ -920,26 +1297,111 @@ export default function SettingsPage() {
                                     <div className="border-b border-border pb-4">
                                         <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
                                             <MessageCircle className="text-primary" size={24} />
-                                            WhatsApp Automation
+                                            WhatsApp Automation & Store Binding
                                         </h2>
-                                        <p className="text-muted-foreground text-sm mt-1">Configure automated messaging and sidecar connection</p>
+                                        <p className="text-muted-foreground text-sm mt-1">Configure your official store WhatsApp number and sidecar connectivity</p>
                                     </div>
 
-                                    <div className="p-8 border border-dashed border-border bg-background/50 rounded-xl text-center">
-                                        <div className="w-16 h-16 bg-[#25D366]/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-[#25D366]/20">
-                                            <MessageCircle size={32} className="text-[#25D366]" />
+                                    {/* Live Status Card */}
+                                    <div className="p-6 bg-background border border-border rounded-xl">
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border">
+                                            <div className="flex items-center gap-3">
+                                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${waStatus?.connected ? 'bg-[#25D366]/10 text-[#25D366] border-[#25D366]/30' : 'bg-amber-500/10 text-amber-500 border-amber-500/30'}`}>
+                                                    <MessageCircle size={24} />
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold text-foreground text-base">WhatsApp Web Sidecar</h3>
+                                                    <p className="text-xs text-muted-foreground">Session: luminila (port 21465)</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                {checkingWa ? (
+                                                    <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                                        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking...
+                                                    </span>
+                                                ) : waStatus?.connected ? (
+                                                    <span className="badge badge-success flex items-center gap-1.5 py-1 px-3 text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 rounded-md">
+                                                        <CheckCircle size={14} />
+                                                        Connected & Ready
+                                                    </span>
+                                                ) : (
+                                                    <span className="badge badge-warning flex items-center gap-1.5 py-1 px-3 text-xs font-semibold bg-amber-500/10 text-amber-600 border border-amber-500/20 rounded-md">
+                                                        <XCircle size={14} />
+                                                        Disconnected
+                                                    </span>
+                                                )}
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => router.push('/whatsapp')}
+                                                >
+                                                    <ExternalLink size={14} className="mr-1" />
+                                                    WhatsApp Dashboard
+                                                </Button>
+                                            </div>
                                         </div>
-                                        <h3 className="font-bold text-lg text-foreground">
-                                            Connect WhatsApp Web
-                                        </h3>
-                                        <p className="text-muted-foreground mt-2 mb-6 max-w-sm mx-auto">
-                                            Scan QR code with your mobile to enable order notifications and customer support integration.
+
+                                        {waStatus?.connected && (
+                                            <div className="mt-4 p-3 bg-muted/40 rounded-lg border border-border/60 text-xs space-y-1">
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-muted-foreground">Bound Account Profile:</span>
+                                                    <span className="font-semibold text-foreground">{waStatus.pushname || "WhatsApp Business"}</span>
+                                                </div>
+                                                {waStatus.connectedNumber && (
+                                                    <div className="flex justify-between items-center">
+                                                        <span className="text-muted-foreground">Active Phone Number:</span>
+                                                        <span className="font-mono font-bold text-foreground">+{waStatus.connectedNumber}</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Store WhatsApp Business Number Field */}
+                                    <div className="p-6 bg-background border border-border rounded-xl space-y-4">
+                                        <div>
+                                            <h3 className="font-bold text-foreground text-base">Store WhatsApp Business Number</h3>
+                                            <p className="text-xs text-muted-foreground mt-0.5">
+                                                This number is printed on customer receipts/invoices and used to contact your store.
+                                            </p>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    WhatsApp Phone (with Country Code)
+                                                </Label>
+                                                <Input
+                                                    type="tel"
+                                                    placeholder="e.g. +91 98765 43210"
+                                                    value={settings.whatsappPhone || ""}
+                                                    onChange={(e) => setSettings({ ...settings, whatsappPhone: e.target.value })}
+                                                />
+                                            </div>
+
+                                            {waStatus?.connected && waStatus.connectedNumber && (
+                                                <div>
+                                                    <Button
+                                                        type="button"
+                                                        variant="secondary"
+                                                        className="w-full text-xs font-semibold"
+                                                        onClick={() => {
+                                                            const formatted = waStatus.connectedNumber!.startsWith('+') 
+                                                                ? waStatus.connectedNumber! 
+                                                                : `+${waStatus.connectedNumber}`;
+                                                            setSettings({ ...settings, whatsappPhone: formatted });
+                                                            toast.success(`Populated store WhatsApp number: ${formatted}`);
+                                                        }}
+                                                    >
+                                                        Use Connected Account (+{waStatus.connectedNumber})
+                                                    </Button>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <p className="text-xs text-muted-foreground italic">
+                                            Tip: Save changes at the top right to persist this to your store profile and all invoices.
                                         </p>
-                                        <Button
-                                            onClick={() => router.push('/whatsapp')}
-                                        >
-                                            Open WhatsApp Dashboard
-                                        </Button>
                                     </div>
                                 </div>
                             )}
@@ -972,16 +1434,30 @@ export default function SettingsPage() {
                                 </div>
                             )}
 
+                            {activeSection === "channels" && (
+                                <div className="animate-fade-in">
+                                    <SalesChannelsSettings />
+                                </div>
+                            )}
+
+                            {activeSection === "sku_taxonomies" && (
+                                <div className="animate-fade-in">
+                                    <SKUTaxonomySettings />
+                                </div>
+                            )}
+
                             {/* Save Button */}
-                            <div className="mt-8 pt-6 border-t border-border flex justify-end">
-                                <Button
-                                    onClick={handleSave}
-                                    disabled={isSaving}
-                                >
-                                    <Save className="mr-2 h-4 w-4" />
-                                    {isSaving ? "Saving..." : "Save Changes"}
-                                </Button>
-                            </div>
+                            {activeSection !== "sku_taxonomies" && activeSection !== "channels" && (
+                                <div className="mt-8 pt-6 border-t border-border flex justify-end">
+                                    <Button
+                                        onClick={handleSave}
+                                        disabled={isSaving}
+                                    >
+                                        <Save className="mr-2 h-4 w-4" />
+                                        {isSaving ? "Saving..." : "Save Changes"}
+                                    </Button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>

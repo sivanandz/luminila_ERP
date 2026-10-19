@@ -53,7 +53,7 @@ export async function getAttribute(id: string): Promise<ProductAttribute | null>
     try {
         const record = await pb.collection('product_attributes').getOne<ProductAttribute>(id);
         return record;
-    } catch (error) {
+    } catch {
         return null;
     }
 }

@@ -34,6 +34,22 @@ export const pb = new PocketBase(getPocketBaseUrl());
 // Disable auto-cancellation for duplicate requests
 pb.autoCancellation(false);
 
+// Multi-Account Data Isolation: Auto-inject account_email on record creation
+pb.beforeSend = function (url, options) {
+    if (options.method === 'POST' && pb.authStore.model?.email) {
+        if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+            if (!(options.body as Record<string, unknown>).account_email) {
+                (options.body as Record<string, unknown>).account_email = pb.authStore.model.email;
+            }
+        } else if (options.body instanceof FormData) {
+            if (!options.body.has('account_email')) {
+                options.body.append('account_email', pb.authStore.model.email);
+            }
+        }
+    }
+    return { url, options };
+};
+
 /**
  * Ensure PocketBase client authStore is hydrated from browser localStorage
  */
@@ -55,6 +71,29 @@ export function ensureAuth(): boolean {
 
 if (typeof window !== "undefined") {
     ensureAuth();
+}
+
+/**
+ * Ensure PocketBase client is authenticated in server-side API routes (Node.js)
+ */
+export async function ensureServerAuth(): Promise<boolean> {
+    if (pb.authStore.isValid && (pb.authStore as any).isSuperuser) return true;
+    const adminEmail = process.env.POCKETBASE_SUPERUSER_EMAIL || process.env.PB_ADMIN_EMAIL;
+    const adminPassword = process.env.POCKETBASE_SUPERUSER_PASSWORD || process.env.PB_ADMIN_PASSWORD;
+    if (!adminEmail || !adminPassword) {
+        return pb.authStore.isValid;
+    }
+    try {
+        await pb.collection('_superusers').authWithPassword(adminEmail, adminPassword);
+        return true;
+    } catch {
+        try {
+            await pb.collection('users').authWithPassword(adminEmail, adminPassword);
+            return true;
+        } catch {
+            return false;
+        }
+    }
 }
 
 /**
@@ -153,12 +192,28 @@ export async function checkServerStatus(targetUrl?: string): Promise<ServerHealt
             isTunnel,
             latencyMs,
         };
-    } catch (err: any) {
+    } catch (err) {
         return {
             ok: false,
             url: urlToCheck,
             isTunnel,
-            error: err?.message || "Connection refused",
+            error: (err instanceof Error ? err.message : String(err)) || "Connection refused",
         };
     }
+}
+
+/**
+ * Resolves current authenticated tenant email for data isolation
+ */
+export function getCurrentTenantEmail(): string {
+    ensureAuth();
+    return pb.authStore.model?.email?.trim().toLowerCase() || "default";
+}
+
+/**
+ * Returns a tenant-scoped browser storage key preventing cross-account contamination
+ */
+export function getTenantStorageKey(baseKey: string): string {
+    const email = getCurrentTenantEmail();
+    return `${baseKey}_${email}`;
 }

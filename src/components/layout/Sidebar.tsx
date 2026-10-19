@@ -19,7 +19,7 @@ import {
     BarChart3,
     Printer,
     Tags,
-    HelpCircle,
+
     Diamond,
     Users,
     Undo2,
@@ -40,6 +40,7 @@ import {
     LogIn,
     ChevronsDown,
     ChevronsUp,
+    Globe,
 } from "lucide-react";
 
 interface NavItem {
@@ -61,6 +62,16 @@ const navGroups: NavItem[] = [
             { href: "/challan", icon: <Truck size={18} />, label: "Delivery Challan" },
             { href: "/returns", icon: <Undo2 size={18} />, label: "Returns" },
         ],
+    },
+    {
+        href: "/whatsapp",
+        icon: <MessageCircle size={20} />,
+        label: "WhatsApp",
+    },
+    {
+        href: "/storefront-control",
+        icon: <Globe size={20} />,
+        label: "Storefront CMS",
     },
     {
         icon: <Package size={20} />,
@@ -92,7 +103,6 @@ const navGroups: NavItem[] = [
         label: "CRM",
         children: [
             { href: "/customers", icon: <Users size={18} />, label: "Customers" },
-            { href: "/whatsapp", icon: <MessageCircle size={18} />, label: "WhatsApp" },
         ],
     },
     {

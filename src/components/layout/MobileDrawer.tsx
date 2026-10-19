@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-    LayoutDashboard,
+
     ShoppingCart,
     Package,
     FileText,
@@ -26,7 +26,8 @@ import {
     ChevronRight,
     Wifi,
     Cloud,
-    Smartphone
+    Smartphone,
+    Globe,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,8 @@ const navSections = [
             { href: "/invoices", label: "GST Invoices", icon: FileText },
             { href: "/challan", label: "Delivery Challan", icon: Truck },
             { href: "/returns", label: "Returns & Credit", icon: Undo2 },
+            { href: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
+            { href: "/storefront-control", label: "Storefront CMS", icon: Globe },
         ],
     },
     {
@@ -72,7 +75,6 @@ const navSections = [
         title: "Showroom & System",
         items: [
             { href: "/customers", label: "Customer CRM", icon: Users },
-            { href: "/whatsapp", label: "WhatsApp Status", icon: MessageCircle },
             { href: "/activity", label: "Audit Timeline", icon: Activity },
             { href: "/users", label: "Staff & Roles", icon: UserCog },
             { href: "/settings", label: "Store Settings", icon: Settings },

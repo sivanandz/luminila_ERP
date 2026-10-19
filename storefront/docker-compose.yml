@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  luminila-storefront:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: luminila_storefront
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_POCKETBASE_URL=https://api.yourdomain.com
+      - NEXT_PUBLIC_WHATSAPP_PHONE=919876543210
+    ports:
+      - "3001:3000"
+    networks:
+      - luminila-net
+
+networks:
+  luminila-net:
+    driver: bridge

@@ -12,7 +12,7 @@
 1. **Idempotency everywhere.** Every provisioning step must be safe to re-run after an interruption. This is a cold-start wizard, so interruption is the norm, not the exception.
 2. **Never report success for work that did not happen.** A `toast.success` must imply an observable state change.
 3. **One source of truth** for the PocketBase URL and the superuser credential — derived, never duplicated.
-4. **Fail loudly with a repair instruction.** Silent empty results (`WIZ-02`) are the worst failure class because they look like authorization design rather than a bug.
+4. **Fail loudly with a repair instruction.** Silent empty results (`WIZ-02`) are the worst failure class because they look like authorization de sign rather than a bug.
 5. **Never validate against the real `pb_data`.** All runtime checks run against a throwaway `--dir`.
 
 ---

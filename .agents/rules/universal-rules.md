@@ -31,3 +31,7 @@ When user's prompt is NOT in English:
 - **Infra/Safety**: 5-Phase Deployment. Verify secrets security.
 
 ---
+
+## ☁️ Cloudflare Interaction Rule
+
+When interacting with Cloudflare, use the cf CLI unless the project has a Wrangler configuration file.

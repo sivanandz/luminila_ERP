@@ -18,9 +18,21 @@ const eslintConfig = defineConfig([
     "pocketbase/**",
     "src-tauri/**",
     "scratch/**",
+    // Machine-owned agent artifacts:
+    ".zcode/**",
   ]),
   {
     rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          // `_`-prefixed bindings are the convention for intentionally-unused values
+          "varsIgnorePattern": "^_",
+          "argsIgnorePattern": "^_",
+          "caughtErrors": "all",
+          "caughtErrorsIgnorePattern": "^_",
+        },
+      ],
       "@typescript-eslint/no-explicit-any": "warn",
       "react/no-unescaped-entities": "warn",
       "react-hooks/set-state-in-effect": "warn",

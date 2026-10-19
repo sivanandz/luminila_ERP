@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import {
-    FileText,
+
     TrendingUp,
     Package,
     Receipt,
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 
 const reports = [
     {
@@ -53,9 +53,9 @@ export default function ReportsPage() {
                 subtitle="Generate and export business reports"
             />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 <div className="max-w-4xl mx-auto">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-6">
                         {reports.map((report) => {
                             const Icon = report.icon;
                             return (

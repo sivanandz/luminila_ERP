@@ -128,7 +128,7 @@ export async function getTierByPoints(points: number): Promise<LoyaltyTier | nul
             { sort: '-min_points' }
         );
         return record;
-    } catch (error) {
+    } catch {
         // Fallback? or return null
         return null;
     }
@@ -147,7 +147,7 @@ export async function getLoyaltyAccount(customerId: string): Promise<LoyaltyAcco
             }
         );
         return record;
-    } catch (error) {
+    } catch {
         return null;
     }
 }
@@ -282,14 +282,14 @@ export async function earnPoints(
 
         try {
             // Update account atomically
-            const updated = await pb.collection('loyalty_accounts').update(account.id, {
+            const updated = await pb.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
                 'current_balance+': pointsToEarn,
                 'total_points_earned+': pointsToEarn,
                 'lifetime_value+': purchaseAmount,
                 last_activity: new Date().toISOString(),
             });
 
-            const newBalance = (updated as any).current_balance;
+            const newBalance = updated.current_balance;
 
             // Record transaction
             await recordTransaction(
@@ -335,13 +335,13 @@ export async function redeemPoints(
 
         try {
             // Update account atomically (guarded by min: 0 constraint against negative balance)
-            const updated = await pb.collection('loyalty_accounts').update(account.id, {
+            const updated = await pb.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
                 'current_balance-': pointsToRedeem,
                 'total_points_redeemed+': pointsToRedeem,
                 last_activity: new Date().toISOString(),
             });
 
-            const newBalance = (updated as any).current_balance;
+            const newBalance = updated.current_balance;
 
             // Record transaction (negative points for redemption)
             await recordTransaction(
@@ -366,7 +366,7 @@ export async function adjustPoints(
     customerId: string,
     pointsAdjustment: number,
     reason: string,
-    performedBy?: string
+    _performedBy?: string
 ): Promise<{ newBalance: number } | null> {
     const account = await getLoyaltyAccount(customerId);
     if (!account) return null;
@@ -461,7 +461,7 @@ export async function getLoyaltyStats(): Promise<{
             totalPointsIssued: 0, // Pending aggregation solution
             totalPointsRedeemed: 0,
         };
-    } catch (err) {
+    } catch {
         return {
             totalMembers: 0,
             activeMembers: 0,

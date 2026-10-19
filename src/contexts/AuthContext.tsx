@@ -2,7 +2,8 @@
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { pb, autoDiscoverPocketBase } from "@/lib/pocketbase";
-import type { AuthModel } from "pocketbase";
+import type { AuthModel, RecordAuthResponse } from "pocketbase";
+import { ClientResponseError } from "pocketbase";
 
 interface AuthContextType {
     user: AuthModel | null;
@@ -71,7 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const login = async (email: string, password: string) => {
-        let authData: any = null;
+        let authData: RecordAuthResponse | null = null;
         let isSuperuser = false;
 
         // Ensure active PocketBase server is reachable
@@ -79,9 +80,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         try {
             authData = await pb.collection("users").authWithPassword(email, password);
-        } catch (userErr: any) {
+        } catch (userErr) {
             // If connection failed without status code, try discovering port again
-            if (!userErr.status) {
+            if (!(userErr instanceof ClientResponseError) || !userErr.status) {
                 await autoDiscoverPocketBase();
             }
             // Fallback: check if it's a superuser account

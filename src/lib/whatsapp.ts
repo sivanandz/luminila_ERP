@@ -7,6 +7,24 @@
  */
 
 const DEFAULT_WPPCONNECT_URL = process.env.NEXT_PUBLIC_WPPCONNECT_URL || "http://127.0.0.1:21465";
+const WPPCONNECT_SECRET = process.env.NEXT_PUBLIC_WPPCONNECT_SECRET || process.env.WPPCONNECT_SECRET || "luminila-secret-key";
+
+// Wrap global fetch for WhatsApp sidecar requests to automatically attach Bearer authentication
+const _nativeFetch = typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch;
+const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    const isWppReq = urlStr.includes("21465") || urlStr.includes("/api/");
+    
+    if (isWppReq) {
+        init = init || {};
+        const headers = new Headers(init.headers || {});
+        if (!headers.has("Authorization")) {
+            headers.set("Authorization", `Bearer ${WPPCONNECT_SECRET}`);
+        }
+        init.headers = headers;
+    }
+    return _nativeFetch(input, init);
+};
 
 /**
  * Get active WhatsApp Sidecar URL
@@ -32,12 +50,13 @@ export function getWhatsAppUrl(): string {
 }
 
 /**
- * Update the WhatsApp Sidecar URL at runtime
+ * Update the WhatsApp Sidecar URL at runtime (safeguarded to trusted hosts)
  */
 export function setWhatsAppUrl(url: string): string {
     const sanitized = url.trim().replace(/\/+$/, "");
     if (typeof window !== "undefined") {
-        if (sanitized && sanitized !== DEFAULT_WPPCONNECT_URL) {
+        const isSafe = /^https?:\/\/(localhost|127\.0\.0\.1|tauri\.localhost|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$/i.test(sanitized);
+        if (sanitized && isSafe && sanitized !== DEFAULT_WPPCONNECT_URL) {
             localStorage.setItem("WA_CUSTOM_URL", sanitized);
         } else {
             localStorage.removeItem("WA_CUSTOM_URL");
@@ -62,12 +81,12 @@ export async function checkWhatsAppStatus(targetUrl?: string): Promise<{ ok: boo
             isTunnel,
             latencyMs: Date.now() - startTime
         };
-    } catch (err: any) {
+    } catch (err) {
         return {
             ok: false,
             url: urlToCheck,
             isTunnel,
-            error: err?.message || "Connection refused"
+            error: (err instanceof Error ? err.message : String(err)) || "Connection refused"
         };
     }
 }
@@ -111,8 +130,36 @@ export interface WPPMessage {
         caption?: string;
         sender?: string;
         mediaUrl?: string;
+        thumbnail?: string;
         mimetype?: string;
     };
+}
+
+/**
+ * Normalize a WhatsApp message ID from various representation forms (string or object)
+ */
+export function normalizeMessageId(id: unknown): string {
+    if (!id) return '';
+    if (typeof id === 'string') return id;
+    if (typeof id === 'object' && id !== null) {
+        const obj = id as Record<string, unknown>;
+        if (typeof obj._serialized === 'string') return obj._serialized;
+        if (typeof obj.id === 'string') return String(obj.id);
+    }
+    return String(id);
+}
+
+/**
+ * Extract the stanza ID (the unique hash/ID component) from a WhatsApp message ID
+ */
+export function getMessageStanzaId(id: unknown): string {
+    const raw = normalizeMessageId(id);
+    if (!raw) return '';
+    if (raw.includes('_')) {
+        const parts = raw.split('_');
+        return parts[parts.length - 1];
+    }
+    return raw;
 }
 
 interface WPPContact {
@@ -189,6 +236,69 @@ export async function getSessionQR(sessionId: string): Promise<string | null> {
         return data.qrCode || null;
     } catch {
         return null;
+    }
+}
+
+/** WhatsApp id object as serialized by WPPConnect (WhatsApp Web "Wid" shape) */
+interface WPPApiId {
+    _serialized?: string;
+    user?: string;
+    fromMe?: boolean;
+}
+
+/** Host device info returned by the WPPConnect /status endpoint */
+interface WPPHostDevice {
+    wid?: WPPApiId;
+    phone?: string;
+    device_manufacture?: string;
+    device_model?: string;
+    os_version?: string;
+    wa_version?: string;
+    battery?: number;
+    plugged?: boolean;
+    pushname?: string;
+    locales?: string[];
+}
+
+export interface DetailedSessionStatus {
+    status: WPPSession["status"];
+    connected: boolean;
+    connectedNumber: string | null;
+    pushname: string | null;
+    hostDevice?: WPPHostDevice | null;
+    pairingCode?: string | null;
+    qrReady?: boolean;
+}
+
+/**
+ * Check detailed session status including connected phone and pushname
+ */
+export async function getDetailedSessionStatus(sessionId = "luminila"): Promise<DetailedSessionStatus> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/status`);
+        if (!response.ok) {
+            return { status: "DISCONNECTED", connected: false, connectedNumber: null, pushname: null };
+        }
+        const data = await response.json();
+        const status: WPPSession["status"] = data.connected
+            ? "CONNECTED"
+            : (data.linkingPhone || data.pairingCode || data.qrReady)
+            ? "QR_CODE"
+            : data.exists
+            ? "INITIALIZING"
+            : "DISCONNECTED";
+
+        return {
+            status,
+            connected: Boolean(data.connected),
+            connectedNumber: data.connectedNumber || null,
+            pushname: data.pushname || null,
+            hostDevice: data.hostDevice || null,
+            pairingCode: data.pairingCode || null,
+            qrReady: Boolean(data.qrReady),
+        };
+    } catch {
+        return { status: "DISCONNECTED", connected: false, connectedNumber: null, pushname: null };
     }
 }
 
@@ -345,10 +455,13 @@ export async function sendFile(
 export async function markAsRead(sessionId: string, chatId: string): Promise<boolean> {
     try {
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/mark-as-read/${encodeURIComponent(chatId)}`, {
-            method: "POST"
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chatId })
         });
+        if (!response.ok) return false;
         const data = await response.json();
-        return data.success;
+        return !!data.success;
     } catch {
         return false;
     }
@@ -496,6 +609,15 @@ export async function archiveChat(
     }
 }
 
+/** Raw contact record as returned by the WPPConnect /contacts endpoint */
+interface WPPApiContact {
+    id?: WPPApiId;
+    name?: string;
+    pushname?: string;
+    isMyContact?: boolean;
+    isGroup?: boolean;
+}
+
 /**
  * Get all contacts
  */
@@ -505,7 +627,7 @@ export async function getAllContacts(sessionId: string): Promise<WPPContact[]> {
         if (!response.ok) return [];
 
         const data = await response.json();
-        return (data.contacts || []).map((contact: any) => ({
+        return (data.contacts || []).map((contact: WPPApiContact) => ({
             id: contact.id?._serialized || contact.id || '',
             name: contact.name || contact.pushname || '',
             pushname: contact.pushname || '',
@@ -640,7 +762,7 @@ export interface BusinessProfile {
  * Get business profile (own or another contact's)
  */
 export async function getBusinessProfile(
-    sessionId: string,
+    sessionId: string = "luminila",
     chatId?: string
 ): Promise<BusinessProfile | null> {
     try {
@@ -723,20 +845,55 @@ export async function createCatalogProduct(
         description?: string;
         price?: number;
         currency?: string;
+        image?: string;
         imageBase64?: string;
         url?: string;
+        retailerId?: string;
+        isHidden?: boolean;
     }
 ): Promise<{ success: boolean; productId?: string }> {
     try {
+        const payload = {
+            ...product,
+            image: product.image || product.imageBase64 || "",
+        };
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(product)
+            body: JSON.stringify(payload)
         });
         const data = await response.json();
-        return { success: data.success, productId: data.result?.id };
+        return { success: data.success, productId: data.result?.id || data.productId };
     } catch {
         return { success: false };
+    }
+}
+
+/**
+ * Edit an existing product in WhatsApp Catalog
+ */
+export async function editCatalogProduct(
+    sessionId: string,
+    productId: string,
+    options: {
+        name?: string;
+        description?: string;
+        price?: number;
+        currency?: string;
+        isHidden?: boolean;
+        url?: string;
+    }
+): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${productId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ options })
+        });
+        const data = await response.json();
+        return { success: !!data.success, result: data.result, error: data.error };
+    } catch (err) {
+        return { success: false, error: (err as Error)?.message || "Failed to update catalog product" };
     }
 }
 
@@ -788,6 +945,10 @@ export interface WPPChat {
     id: string;
     name: string;
     isGroup: boolean;
+    isCommunity?: boolean;
+    isCommunityAnnounce?: boolean;
+    isNewsletter?: boolean;
+    parentGroup?: string | null;
     timestamp: number;
     unreadCount: number;
     profilePic?: string | null;
@@ -797,13 +958,40 @@ export interface WPPChat {
     };
 }
 
+/** Raw chat record as returned by the WPPConnect /chats endpoint */
+interface WPPApiChat {
+    id?: WPPApiId;
+    name?: string;
+    isGroup?: boolean;
+    isParentGroup?: boolean;
+    isCommunity?: boolean;
+    isCommunityAnnounce?: boolean;
+    isNewsletter?: boolean;
+    parentGroup?: string | null;
+    t?: number;
+    timestamp?: number;
+    unreadCount?: number;
+    lastMessage?: {
+        type?: string;
+        body?: string;
+        t?: number;
+        timestamp?: number;
+    };
+    contact?: {
+        name?: string;
+        pushname?: string;
+        profilePicThumbObj?: { eurl?: string; img?: string; imgFull?: string };
+    };
+    profilePicThumbObj?: { eurl?: string; img?: string; imgFull?: string };
+}
+
 export async function getAllChats(sessionId: string): Promise<WPPChat[]> {
     try {
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/chats`);
         if (!response.ok) return [];
 
         const data = await response.json();
-        return (data.chats || []).map((chat: any) => {
+        return (data.chats || []).map((chat: WPPApiChat) => {
             let lastMsgBody = "";
             if (chat.lastMessage) {
                 if (chat.lastMessage.type === 'image') lastMsgBody = "📷 Photo";
@@ -814,13 +1002,35 @@ export async function getAllChats(sessionId: string): Promise<WPPChat[]> {
                 else lastMsgBody = chat.lastMessage.body || "";
             }
 
+            const idStr = chat.id?._serialized || (typeof chat.id === 'string' ? chat.id : '');
+            const isGrp = Boolean(chat.isGroup || idStr.includes('@g.us'));
+            const isNewsletter = Boolean(chat.isNewsletter || idStr.includes('@newsletter'));
+            const nameLower = (chat.name || '').toLowerCase();
+            const isComm = Boolean(chat.isCommunity || chat.isParentGroup || nameLower.includes('community'));
+            const isCommAnnounce = Boolean(
+                chat.isCommunityAnnounce ||
+                (isGrp && (nameLower.includes('announcement') || nameLower.includes('announcements')))
+            );
+            const rawPic = chat.profilePicThumbObj?.eurl ||
+                chat.profilePicThumbObj?.img ||
+                chat.contact?.profilePicThumbObj?.eurl ||
+                chat.contact?.profilePicThumbObj?.img ||
+                (chat as Record<string, unknown>).icon ||
+                (chat as { groupMetadata?: { icon?: string } }).groupMetadata?.icon ||
+                (chat as { newsletterMetadata?: { icon?: string } }).newsletterMetadata?.icon ||
+                null;
+
             return {
-                id: chat.id?._serialized || chat.id,
+                id: idStr,
                 name: chat.name || chat.contact?.pushname || chat.contact?.name || "Unknown",
-                isGroup: chat.isGroup || false,
+                isGroup: isGrp,
+                isCommunity: isComm,
+                isCommunityAnnounce: isCommAnnounce,
+                isNewsletter,
+                parentGroup: chat.parentGroup || null,
                 timestamp: chat.t || chat.timestamp || 0,
                 unreadCount: chat.unreadCount || 0,
-                profilePic: chat.profilePicThumbObj?.eurl || chat.contact?.profilePicThumbObj?.eurl || null,
+                profilePic: typeof rawPic === 'string' ? rawPic : null,
                 lastMessage: chat.lastMessage ? {
                     body: lastMsgBody,
                     timestamp: chat.lastMessage.t || chat.lastMessage.timestamp || 0
@@ -833,8 +1043,8 @@ export async function getAllChats(sessionId: string): Promise<WPPChat[]> {
 }
 
 /**
- * Get profile picture for a contact
- * Returns the direct URL (eurl) or base64 data from ProfilePicThumbObj
+ * Get profile picture for a contact, group, community, or newsletter
+ * Returns the direct URL (eurl) or data URI
  */
 export async function getProfilePicture(sessionId: string, contactId: string): Promise<string | null> {
     try {
@@ -846,8 +1056,24 @@ export async function getProfilePicture(sessionId: string, contactId: string): P
 
         // ProfilePicThumbObj has eurl (external URL) or img (base64)
         const pic = data.profilePic;
-        if (typeof pic === 'string') return pic;
-        return pic.eurl || pic.img || pic.imgFull || null;
+        let url: string | null = null;
+        if (typeof pic === 'string') {
+            url = pic;
+        } else if (typeof pic === 'object' && pic !== null) {
+            url = pic.eurl || pic.img || pic.imgFull || null;
+        }
+
+        if (url && typeof url === 'string') {
+            const trimmed = url.trim();
+            if (trimmed.startsWith('data:') || trimmed.startsWith('http')) {
+                return trimmed;
+            }
+            if (/^[A-Za-z0-9+/=]{50,}$/.test(trimmed)) {
+                return `data:image/jpeg;base64,${trimmed}`;
+            }
+            return trimmed;
+        }
+        return null;
     } catch (e) {
         console.error('Error fetching profile pic:', e);
         return null;
@@ -882,6 +1108,41 @@ export async function downloadMedia(sessionId: string, messageId: string): Promi
     }
 }
 
+/** Raw message record as returned by the WPPConnect /messages endpoint */
+interface WPPApiMessage {
+    id?: WPPApiId;
+    from?: string;
+    to?: string;
+    body?: string;
+    caption?: string;
+    type: string; // always present on WPPConnect message payloads
+    t?: number;
+    timestamp?: number;
+    isGroupMsg?: boolean;
+    fromMe?: boolean;
+    notifyName?: string;
+    stanzaId?: string;
+    text?: string;
+    participant?: string;
+    deprecatedMms3Url?: string;
+    mediaUrl?: string;
+    mimetype?: string;
+    filename?: string;
+    thumbnail?: string;
+    preview?: string;
+    mediaData?: {
+        preview?: string;
+        thumbnail?: string;
+    };
+    sender?: {
+        name?: string;
+        pushname?: string;
+        id?: WPPApiId;
+    };
+    quotedMsg?: WPPApiMessage;
+    quotedMsgObj?: WPPApiMessage;
+}
+
 /**
  * Get messages from a specific chat
  */
@@ -893,7 +1154,7 @@ export async function getChatMessages(sessionId: string, chatId: string, count =
         const data = await response.json();
         return (data.messages || [])
             // Filter out system/notification messages that don't have readable content
-            .filter((msg: any) => {
+            .filter((msg: WPPApiMessage) => {
                 const systemTypes = ['e2e_notification', 'notification_template', 'gp2', 'protocol', 'ciphertext', 'revoked'];
                 // Keep message if it's not a system type, or if it has actual body content
                 if (systemTypes.includes(msg.type)) {
@@ -903,20 +1164,15 @@ export async function getChatMessages(sessionId: string, chatId: string, count =
                 }
                 return true;
             })
-            .map((msg: any) => {
+            .map((msg: WPPApiMessage) => {
                 const isMediaType = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.type);
 
                 // Helper to detect if content is base64 data (should not be displayed as text)
                 const isBase64Content = (str: string) => {
                     if (!str || typeof str !== 'string') return false;
-                    // Base64 image/media content is usually very long or starts with data URI
-                    return str.length > 500 || str.startsWith('data:') || /^[A-Za-z0-9+/=]{100,}$/.test(str);
-                };
-
-                // Helper to detect internal WhatsApp IDs
-                const isInternalId = (str: string) => {
-                    if (!str || typeof str !== 'string') return false;
-                    return /^\d+@(lid|c\.us|g\.us|broadcast)$/.test(str) || str.includes('@lid');
+                    const clean = str.trim();
+                    // Base64 image/media content is usually long or has common base64 prefixes/character sets
+                    return clean.length > 500 || clean.startsWith('data:') || clean.startsWith('/9j/') || clean.startsWith('UklGR') || clean.startsWith('iVBOR') || /^[A-Za-z0-9+/=]{100,}$/.test(clean);
                 };
 
                 // Get body - filter out base64 content and internal IDs
@@ -930,9 +1186,35 @@ export async function getChatMessages(sessionId: string, chatId: string, count =
 
                 // Parse quoted message if present
                 let quotedMsg = undefined;
-                if (msg.quotedMsg || msg.quotedMsgObj) {
-                    const quoted = msg.quotedMsg || msg.quotedMsgObj;
+                const quoted = msg.quotedMsg || msg.quotedMsgObj;
+                if (quoted) {
                     const quotedIsMedia = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(quoted.type);
+
+                    // Extract inline thumbnail for media quotes (WhatsApp Web includes base64 preview in body/preview/thumbnail)
+                    let thumbnail = '';
+                    if (quotedIsMedia) {
+                        const rawThumb = quoted.thumbnail ||
+                            quoted.preview ||
+                            quoted.mediaData?.preview ||
+                            quoted.mediaData?.thumbnail ||
+                            (quoted.type === 'image' || quoted.type === 'sticker' || quoted.type === 'video' ? quoted.body : '');
+
+                        if (typeof rawThumb === 'string' && rawThumb.length > 20) {
+                            const trimmed = rawThumb.trim();
+                            if (trimmed.startsWith('data:')) {
+                                thumbnail = trimmed;
+                            } else if (trimmed.startsWith('/9j/')) {
+                                thumbnail = `data:image/jpeg;base64,${trimmed}`;
+                            } else if (trimmed.startsWith('UklGR')) {
+                                thumbnail = `data:image/webp;base64,${trimmed}`;
+                            } else if (trimmed.startsWith('iVBOR')) {
+                                thumbnail = `data:image/png;base64,${trimmed}`;
+                            } else if (/^[A-Za-z0-9+/=]{20,}$/.test(trimmed)) {
+                                const mime = quoted.mimetype || (quoted.type === 'sticker' ? 'image/webp' : 'image/jpeg');
+                                thumbnail = `data:${mime};base64,${trimmed}`;
+                            }
+                        }
+                    }
 
                     // Get the quoted body, filtering out internal IDs and base64
                     let quotedBody = '';
@@ -947,15 +1229,30 @@ export async function getChatMessages(sessionId: string, chatId: string, count =
                         quotedBody = (isQuotedInternalId || isBase64Content(candidateBody)) ? '' : candidateBody;
                     }
 
+                    // Resolve quoted message ID safely as a clean string (prevent [object Object])
+                    let resolvedQuotedId = '';
+                    if (typeof quoted.id === 'string') {
+                        resolvedQuotedId = quoted.id;
+                    } else if (quoted.id && typeof quoted.id === 'object') {
+                        const qIdObj = quoted.id as Record<string, unknown>;
+                        resolvedQuotedId = (typeof qIdObj._serialized === 'string' ? qIdObj._serialized : (typeof qIdObj.id === 'string' ? qIdObj.id : ''));
+                    }
+                    if (!resolvedQuotedId && quoted.stanzaId) {
+                        resolvedQuotedId = String(quoted.stanzaId);
+                    }
+
+                    // Avoid encrypted whatsapp.net CDN URLs that reject browser GET requests with 403
+                    const validMediaUrl = thumbnail || (typeof quoted.mediaUrl === 'string' && quoted.mediaUrl.startsWith('http') && !quoted.mediaUrl.includes('whatsapp.net') ? quoted.mediaUrl : '');
+
                     quotedMsg = {
-                        id: quoted.id?._serialized || quoted.id || quoted.stanzaId || '',
+                        id: resolvedQuotedId,
                         body: quotedBody || (quotedIsMedia ? `[${quoted.type}]` : '[Message]'),
                         type: quoted.type || 'chat',
                         caption: quoted.caption || '',
                         sender: quoted.sender?.pushname || quoted.sender?.name || quoted.notifyName ||
                             quoted.participant?.split('@')[0] || '',
-                        // For image thumbnails - use deprecatedMms3Url or thumbnail if available
-                        mediaUrl: quotedIsMedia ? (quoted.deprecatedMms3Url || quoted.mediaUrl || '') : '',
+                        mediaUrl: validMediaUrl,
+                        thumbnail: thumbnail || '',
                         mimetype: quoted.mimetype || ''
                     };
                 }
@@ -1045,9 +1342,7 @@ ${itemsList}
 
 *Total: ₹${orderDetails.total.toLocaleString("en-IN")}*
 
-Thank you for your order! We'll update you when it ships.
-
-_Zennila - Fashion Jewelry_`;
+Thank you for your order! We'll update you when it ships.`;
 
     return sendMessage(sessionId, phone, message);
 }
@@ -1069,9 +1364,7 @@ export async function sendShippingUpdate(
 Your order *${orderDetails.orderId}* has been shipped!
 
 ${orderDetails.trackingId ? `Tracking ID: ${orderDetails.trackingId}` : ""}
-${orderDetails.estimatedDelivery ? `Expected Delivery: ${orderDetails.estimatedDelivery}` : ""}
-
-_Zennila - Fashion Jewelry_`;
+${orderDetails.estimatedDelivery ? `Expected Delivery: ${orderDetails.estimatedDelivery}` : ""}`;
 
     return sendMessage(sessionId, phone, message);
 }
@@ -1106,8 +1399,8 @@ export function parseOrderFromMessage(message: string): {
     const orderKeywords = ["order", "buy", "purchase", "want", "need", "book", "interested"];
     const hasOrderIntent = orderKeywords.some((kw) => lowerMessage.includes(kw));
 
-    // Extract potential SKUs (LUM-XXX-XXX pattern)
-    const skuPattern = /LUM-[A-Z]{3}-\d{3}(-[A-Z0-9]+)?/gi;
+    // Extract potential SKUs
+    const skuPattern = /[A-Z0-9]{2,4}-[A-Z0-9]{2,4}-\d{2,4}(-[A-Z0-9]+)?/gi;
     const skus = message.match(skuPattern) || [];
 
     // Extract product mentions
@@ -1149,12 +1442,12 @@ export function generateAutoReply(
 
     // Greeting
     if (lowerMessage.match(/^(hi|hello|hey|good morning|good evening)/)) {
-        return "Hello! 👋 Welcome to Zennila. How can I help you today?\n\nReply with 'catalog' to see our collection.";
+        return "Hello! 👋 Welcome! How can I help you today?\n\nReply with 'catalog' to see our collection.";
     }
 
     // Catalog request
     if (lowerMessage.includes("catalog") || lowerMessage.includes("collection") || lowerMessage.includes("products")) {
-        return "Check out our collection at zennila.com 🛍️\n\nOr reply with what you're looking for!";
+        return "Reply with what you are looking for, or ask for our latest collection! 🛍️";
     }
 
     return null;
@@ -1180,8 +1473,29 @@ export async function requestPairingCode(sessionId: string, phone: string): Prom
     }
 }
 
+/**
+ * Generate a tenant-scoped WPPConnect session identifier based on admin ID or email.
+ * Guarantees zero cross-admin session collisions and prevents session hijacking.
+ */
+export function getTenantWhatsAppSessionId(adminIdentifier?: string): string {
+    if (!adminIdentifier || !adminIdentifier.trim()) {
+        return "luminila";
+    }
+    const ident = adminIdentifier.trim().toLowerCase();
+    // Seamless carryover for default primary admin WhatsApp session
+    if (
+        ident === "wuag7qzp57319f5" ||
+        ident === "admin@luminila.com" ||
+        ident === "admin@luminila.local"
+    ) {
+        return "luminila";
+    }
+    const clean = ident.replace(/[^a-z0-9]/g, "_");
+    return `wpp_${clean.slice(0, 32)}`;
+}
+
 export class WhatsAppManager {
-    private sessionId: string = "luminila";
+    private sessionId: string = "wpp_default";
     private pollInterval: NodeJS.Timeout | null = null;
     private messageCallback: ((messages: WPPMessage[]) => void) | null = null;
 
@@ -1216,6 +1530,10 @@ export class WhatsAppManager {
 
     async getStatus(): Promise<WPPSession["status"]> {
         return getSessionStatus(this.sessionId);
+    }
+
+    async getDetailedStatus(): Promise<DetailedSessionStatus> {
+        return getDetailedSessionStatus(this.sessionId);
     }
 
     async getQR(): Promise<string | null> {

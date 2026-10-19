@@ -6,7 +6,7 @@ import { format, startOfMonth, endOfMonth } from "date-fns";
 import {
     ArrowLeft,
     Download,
-    Printer,
+
     FileText,
 } from "lucide-react";
 
@@ -16,6 +16,13 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import {
     Table,
     TableBody,
     TableCell,
@@ -24,16 +31,27 @@ import {
     TableRow,
 } from "@/components/ui/table";
 
-import { getGSTR1Report, generateGSTR1JSON, exportToJSON, exportToCSV, printReport, type GSTR1Row } from "@/lib/reports";
+import { getGSTR1Report, generateGSTR1JSON, exportToJSON, exportToCSV, type GSTR1Row } from "@/lib/reports";
 import { formatINR } from "@/lib/gst";
+
+// GSTR-1 period totals as returned by getGSTR1Report; fields absent until the report loads
+interface GSTR1Summary {
+    totalB2B?: number;
+    totalB2C?: number;
+    totalCGST?: number;
+    totalSGST?: number;
+    totalIGST?: number;
+    invoiceCount?: number;
+}
 
 export default function GSTReportPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
     const [b2b, setB2B] = useState<GSTR1Row[]>([]);
     const [b2c, setB2C] = useState<GSTR1Row[]>([]);
-    const [summary, setSummary] = useState<any>({});
+    const [summary, setSummary] = useState<GSTR1Summary>({});
     const [gstin, setGstin] = useState("");
+    const [activeGstTab, setActiveGstTab] = useState<"b2b" | "b2c">("b2b");
 
     // Default to current month
     const [startDate, setStartDate] = useState(
@@ -54,6 +72,7 @@ export default function GSTReportPage() {
 
     useEffect(() => {
         loadReport();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- loadReport is recreated every render and closes over startDate/endDate; adding it would refetch on every render, the date deps already reload exactly when the range changes
     }, [startDate, endDate]);
 
     const handleExportB2B = () => {
@@ -168,8 +187,27 @@ export default function GSTReportPage() {
                 </div>
 
                 {/* Tabs */}
-                <Tabs defaultValue="b2b" className="w-full">
-                    <div className="flex items-center justify-between mb-4">
+                <Tabs value={activeGstTab} onValueChange={(v) => setActiveGstTab(v as any)} className="w-full">
+                    {/* Mobile / Narrow Viewport: Dropdown */}
+                    <div className="block sm:hidden w-full mb-3">
+                        <Select value={activeGstTab} onValueChange={(v) => v && setActiveGstTab(v as any)}>
+                            <SelectTrigger className="w-full h-10 bg-card border-border text-xs font-semibold px-3 rounded-xl flex items-center justify-between shadow-xs">
+                                <span className="text-xs font-semibold text-foreground">
+                                    {activeGstTab === "b2b" ? `B2B Invoices (${b2b.length})` : `B2C Invoices (${b2c.length})`}
+                                </span>
+                            </SelectTrigger>
+                            <SelectContent className="bg-popover border-border">
+                                <SelectItem value="b2b" className="text-xs font-medium py-2">
+                                    B2B Invoices ({b2b.length})
+                                </SelectItem>
+                                <SelectItem value="b2c" className="text-xs font-medium py-2">
+                                    B2C Invoices ({b2c.length})
+                                </SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+
+                    <div className="hidden sm:flex items-center justify-between mb-4">
                         <TabsList>
                             <TabsTrigger value="b2b">B2B Invoices ({b2b.length})</TabsTrigger>
                             <TabsTrigger value="b2c">B2C Invoices ({b2c.length})</TabsTrigger>

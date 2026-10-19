@@ -5,8 +5,8 @@ import {
     Users,
     Shield,
     Plus,
-    Edit,
-    Trash2,
+
+
     UserCheck,
     UserX,
     Crown,
@@ -64,7 +64,7 @@ function UsersContent() {
     const [users, setUsers] = useState<UserProfile[]>([]);
     const [roles, setRoles] = useState<Role[]>([]);
     const [loading, setLoading] = useState(true);
-    const [stats, setStats] = useState<any>(null);
+    const [stats, setStats] = useState<Awaited<ReturnType<typeof getRBACStats>> | null>(null);
     const [search, setSearch] = useState("");
 
     const [showRoleDialog, setShowRoleDialog] = useState(false);
@@ -172,9 +172,9 @@ function UsersContent() {
             setShowAddUser(false);
             setNewUser({ name: "", email: "", password: "", role: "Viewer" });
             loadData();
-        } catch (error: any) {
+        } catch (error) {
             console.error("Error creating user:", error);
-            alert("Failed to create user: " + error.message);
+            alert("Failed to create user: " + (error instanceof Error ? error.message : String(error)));
         } finally {
             setCreating(false);
         }
@@ -193,9 +193,9 @@ function UsersContent() {
                 }
             />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 {/* Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 md:gap-4 mb-6">
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6 flex items-center gap-4">
                             <div className="p-3 rounded-lg bg-primary/10">

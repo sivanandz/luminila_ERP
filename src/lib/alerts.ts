@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { pb } from "./pocketbase";
+import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey } from "./pocketbase";
+import type { ProductVariant } from "@/types/database";
 
 interface LowStockItem {
     variantId: string;
@@ -33,6 +34,8 @@ const DEFAULT_CONFIG: AlertConfig = {
     notifyWhatsApp: false,
 };
 
+const getAlertStorageKey = () => getTenantStorageKey("luminila_alert_config_v1");
+
 /**
  * Load alert configuration from localStorage
  */
@@ -40,7 +43,7 @@ export function loadAlertConfig(): AlertConfig {
     if (typeof window === "undefined") return DEFAULT_CONFIG;
 
     try {
-        const stored = localStorage.getItem("luminila_alert_config");
+        const stored = localStorage.getItem(getAlertStorageKey());
         if (stored) {
             return { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
         }
@@ -55,24 +58,36 @@ export function loadAlertConfig(): AlertConfig {
  */
 export function saveAlertConfig(config: AlertConfig): void {
     if (typeof window === "undefined") return;
-    localStorage.setItem("luminila_alert_config", JSON.stringify(config));
+    localStorage.setItem(getAlertStorageKey(), JSON.stringify(config));
 }
 
 /**
  * Fetch low stock items from database
  */
 export async function fetchLowStockItems(threshold?: number): Promise<LowStockItem[]> {
+    ensureAuth();
     const config = loadAlertConfig();
     const effectiveThreshold = threshold ?? config.defaultThreshold;
+    const userEmail = getCurrentTenantEmail();
 
     try {
-        const data = await pb.collection('product_variants').getFullList({
-            filter: `stock_level<=${effectiveThreshold}`,
+        const filter = userEmail 
+            ? `account_email="${userEmail}" && stock_level<=${effectiveThreshold}`
+            : `stock_level<=${effectiveThreshold}`;
+
+        const data = await pb.collection('product_variants').getFullList<ProductVariant>({
+            filter,
             sort: 'stock_level',
             expand: 'product',
         });
 
-        return (data || []).map((item: any) => ({
+        // Filter out inactive products
+        const activeItems = (data || []).filter(item => {
+            const prod = item.expand?.product as any;
+            return !prod || prod.is_active !== false;
+        });
+
+        return activeItems.map((item) => ({
             variantId: item.id,
             productId: item.expand?.product?.id || "",
             productName: item.expand?.product?.name || "Unknown",
@@ -154,6 +169,7 @@ export function useLowStockAlerts() {
     const [config, setConfig] = useState<AlertConfig>(DEFAULT_CONFIG);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- alert config lives in localStorage, an external store that is unavailable during SSR render, so it can only be read and set after mount
         setConfig(loadAlertConfig());
     }, []);
 
@@ -166,6 +182,7 @@ export function useLowStockAlerts() {
     }, [config.defaultThreshold]);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- checkAlerts intentionally flips isLoading true before its first await so the loading state shows for the initial and interval-driven stock checks; deferring it would change loading behavior
         checkAlerts();
 
         if (config.enabled && config.checkIntervalMs > 0) {

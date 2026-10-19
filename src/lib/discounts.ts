@@ -40,11 +40,71 @@ export interface DiscountValidation {
     discountAmount: number;
 }
 
+/**
+ * Raw discounts record as stored in PocketBase, including the legacy column
+ * names (type, min_order_value, max_uses, valid_from, valid_until) that the
+ * service layer keeps in sync with the canonical Discount fields.
+ */
+interface DiscountRecord {
+    id: string;
+    code: string;
+    name?: string;
+    description?: string;
+    discount_type?: DiscountType;
+    type?: DiscountType;
+    value?: number;
+    max_discount?: number;
+    min_purchase?: number;
+    min_order_value?: number;
+    min_items?: number;
+    applies_to?: AppliesTo;
+    applies_to_ids?: string[];
+    usage_limit?: number;
+    max_uses?: number;
+    per_customer_limit?: number;
+    used_count?: number;
+    start_date?: string;
+    valid_from?: string;
+    end_date?: string;
+    valid_until?: string;
+    is_active?: boolean;
+    created?: string;
+}
+
+/**
+ * Update payload accepted by the discounts collection: canonical Discount
+ * fields plus the legacy aliases written alongside them.
+ */
+type DiscountUpdatePayload = {
+    [key: string]: string | number | boolean | string[] | undefined;
+    code?: string;
+    name?: string;
+    description?: string;
+    discount_type?: DiscountType;
+    type?: DiscountType;
+    value?: number;
+    max_discount?: number;
+    min_purchase?: number;
+    min_order_value?: number;
+    min_items?: number;
+    applies_to?: AppliesTo;
+    applies_to_ids?: string[];
+    usage_limit?: number;
+    max_uses?: number;
+    per_customer_limit?: number;
+    used_count?: number;
+    start_date?: string;
+    valid_from?: string;
+    end_date?: string;
+    valid_until?: string;
+    is_active?: boolean;
+};
+
 // ===========================================
 // DISCOUNT CRUD
 // ===========================================
 
-function mapDiscountRecord(d: any): Discount {
+function mapDiscountRecord(d: DiscountRecord): Discount {
     return {
         id: d.id,
         code: d.code,
@@ -70,7 +130,7 @@ function mapDiscountRecord(d: any): Discount {
 export async function getDiscounts(activeOnly: boolean = false): Promise<Discount[]> {
     try {
         const filter = activeOnly ? 'is_active=true' : '';
-        const records = await pb.collection('discounts').getFullList({
+        const records = await pb.collection('discounts').getFullList<DiscountRecord>({
             filter,
             sort: '-created',
         });
@@ -84,24 +144,24 @@ export async function getDiscounts(activeOnly: boolean = false): Promise<Discoun
 
 export async function getDiscount(id: string): Promise<Discount | null> {
     try {
-        const d = await pb.collection('discounts').getOne(id);
+        const d = await pb.collection('discounts').getOne<DiscountRecord>(id);
         return mapDiscountRecord(d);
-    } catch (error) {
+    } catch {
         return null;
     }
 }
 
 export async function getDiscountByCode(code: string): Promise<Discount | null> {
     try {
-        const d = await pb.collection('discounts').getFirstListItem(`code="${code.toUpperCase()}"`);
+        const d = await pb.collection('discounts').getFirstListItem<DiscountRecord>(`code="${code.toUpperCase()}"`);
         return mapDiscountRecord(d);
-    } catch (error) {
+    } catch {
         return null;
     }
 }
 
 export async function createDiscount(discount: Omit<Discount, 'id' | 'used_count' | 'created_at'>): Promise<Discount> {
-    const d = await pb.collection('discounts').create({
+    const d = await pb.collection('discounts').create<DiscountRecord>({
         code: discount.code.toUpperCase(),
         name: discount.name,
         description: discount.description || '',
@@ -129,7 +189,7 @@ export async function createDiscount(discount: Omit<Discount, 'id' | 'used_count
 }
 
 export async function updateDiscount(id: string, updates: Partial<Discount>): Promise<Discount> {
-    const { id: _, created_at, ...cleanUpdates } = updates as any;
+    const cleanUpdates: DiscountUpdatePayload = { ...updates };
     if (cleanUpdates.code) {
         cleanUpdates.code = cleanUpdates.code.toUpperCase();
     }
@@ -159,7 +219,7 @@ export async function updateDiscount(id: string, updates: Partial<Discount>): Pr
         cleanUpdates.end_date = cleanUpdates.valid_until;
     }
 
-    const d = await pb.collection('discounts').update(id, cleanUpdates);
+    const d = await pb.collection('discounts').update<DiscountRecord>(id, cleanUpdates);
     return mapDiscountRecord(d);
 }
 
@@ -217,7 +277,7 @@ export async function validateDiscount(
             if (usages.length >= discount.per_customer_limit) {
                 return { valid: false, error: 'You have already used this discount', discountAmount: 0 };
             }
-        } catch (error) {
+        } catch {
             // Ignore error, continue validation
         }
     }
@@ -285,7 +345,7 @@ export async function recordDiscountUsage(
     }
 ): Promise<void> {
     try {
-        const payload: Record<string, any> = {
+        const payload: Record<string, unknown> = {
             discount: discountId,
             discount_amount: discountAmount,
             amount_saved: discountAmount,
@@ -318,12 +378,12 @@ export async function getDiscountStats(): Promise<{
     usageCount: number;
 }> {
     try {
-        const allDiscounts = await pb.collection('discounts').getFullList();
+        const allDiscounts = await pb.collection('discounts').getFullList<DiscountRecord>();
         const totalDiscounts = allDiscounts.length;
-        const activeCount = allDiscounts.filter((d: any) => d.is_active).length;
+        const activeCount = allDiscounts.filter((d) => d.is_active).length;
 
         const usageRecords = await pb.collection('discount_usage').getFullList();
-        const totalSavings = usageRecords.reduce((sum: number, u: any) => sum + (u.discount_amount || u.amount_saved || 0), 0);
+        const totalSavings = usageRecords.reduce((sum: number, u) => sum + (u.discount_amount || u.amount_saved || 0), 0);
         const usageCount = usageRecords.length;
 
         return {

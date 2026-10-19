@@ -9,7 +9,7 @@ import {
     Phone,
     Mail,
     MapPin,
-    Package,
+
     MoreVertical,
     Edit,
     Trash2,
@@ -108,7 +108,7 @@ export default function VendorsPage() {
                 }
             />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 {/* Actions Bar */}
                 <div className="flex items-center justify-between gap-4 mb-6">
                     <div className="relative w-80">
@@ -253,7 +253,7 @@ export default function VendorsPage() {
                     <AlertDialogHeader>
                         <AlertDialogTitle>Delete Vendor?</AlertDialogTitle>
                         <AlertDialogDescription>
-                            Are you sure you want to delete "{deletingVendor?.name}"? This action cannot be undone.
+                            Are you sure you want to delete &quot;{deletingVendor?.name}&quot;? This action cannot be undone.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>

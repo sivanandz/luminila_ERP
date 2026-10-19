@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
 import { dispatchOrderMilestoneWhatsApp } from "@/lib/order-milestones";
-import { CourierCarrier } from "@/lib/logistics-engine";
+import { CourierCarrier, fetchStCourierLiveTracking } from "@/lib/logistics-engine";
 import { MobileScanner } from "@/lib/mobile-scanner";
 import {
     ScanBarcode,
@@ -179,14 +179,13 @@ export function BarcodeScanDispatchModal({
     const fetchStCourierPreview = async (awb: string) => {
         setCheckingTracking(true);
         try {
-            const res = await fetch(`/api/tracking/st-courier?awb=${encodeURIComponent(awb)}&format=json`);
-            const data = await res.json();
-            if (data.success && data.tracking) {
+            const data = await fetchStCourierLiveTracking(awb);
+            if (data.isValid) {
                 playSuccessTone();
                 setTrackingPreview({
-                    statusText: data.tracking.statusText || data.tracking.summary?.currentStatus || "Registered",
-                    origin: data.tracking.summary?.origin,
-                    destination: data.tracking.summary?.destination,
+                    statusText: data.statusText || data.summary?.currentStatus || "Registered",
+                    origin: data.summary?.origin,
+                    destination: data.summary?.destination,
                     isValid: true,
                 });
             } else {
@@ -243,7 +242,7 @@ export function BarcodeScanDispatchModal({
         try {
             // Generate live tracking link
             const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
-            let trackingUrl = `${baseUrl}/api/tracking/st-courier?awb=${cleanAwb}`;
+            let trackingUrl = `${baseUrl}/tracking/st-courier?awb=${cleanAwb}`;
             let carrierTitle = "ST Courier";
 
             if (carrier === "delhivery") {
@@ -412,7 +411,7 @@ export function BarcodeScanDispatchModal({
                                         ST Courier Live Status: {trackingPreview.statusText}
                                     </span>
                                     <a
-                                        href={`/api/tracking/st-courier?awb=${barcode}`}
+                                        href={`/tracking/st-courier?awb=${barcode}`}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="text-[10px] text-primary hover:underline flex items-center gap-0.5"

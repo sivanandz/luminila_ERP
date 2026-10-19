@@ -4,8 +4,6 @@
  * Making Charges: 5% GST (if billed separately)
  */
 
-import { type DeliveryChallan } from './challan';
-
 // ===========================================
 // GST RATES
 // ===========================================
@@ -301,13 +299,113 @@ export interface EWayBillDetails {
     distance: number;
 }
 
-export type EWayBillDocument = any | DeliveryChallan;
+/**
+ * Item fields of an invoice/challan line that feed the E-Way Bill payload.
+ */
+interface EWayBillSourceItem {
+    description?: string;
+    hsn_code?: string;
+    quantity?: number;
+    unit?: string;
+    taxable_value?: number;
+    taxable_amount?: number;
+    cgst_amount?: number;
+    sgst_amount?: number;
+    igst_amount?: number;
+}
+
+/**
+ * Structural superset of Invoice and DeliveryChallan covering every field
+ * generateEWayBillJSON reads, so either document type can be passed.
+ */
+export interface EWayBillDocument {
+    challan_number?: string;
+    challan_date?: string;
+    challan_type?: string;
+    invoice_number?: string;
+    invoice_date?: string;
+    consignor_name?: string;
+    consignor_address?: string;
+    consignor_city?: string;
+    consignor_pincode?: string | number;
+    consignee_name?: string;
+    consignee_gstin?: string;
+    consignee_address?: string;
+    consignee_city?: string;
+    consignee_pincode?: string | number;
+    consignee_state_code?: string;
+    seller_name?: string;
+    seller_address?: string;
+    seller_city?: string;
+    seller_pincode?: string | number;
+    buyer_name?: string;
+    buyer_gstin?: string;
+    buyer_address?: string;
+    buyer_city?: string;
+    buyer_pincode?: string | number;
+    buyer_state_code?: string;
+    place_of_supply?: string;
+    pincode?: string | number;
+    cgst_amount?: number;
+    sgst_amount?: number;
+    igst_amount?: number;
+    items?: EWayBillSourceItem[];
+}
+
+/**
+ * NIC GST portal e-way bill JSON payload produced by generateEWayBillJSON.
+ */
+export interface EWayBillJSON {
+    supplyType: string;
+    subSupplyType: string;
+    docType: string;
+    docNo: string | undefined;
+    docDate: string;
+    fromGstin: string;
+    fromTrdName: string;
+    fromAddr1: string;
+    fromAddr2: string;
+    fromPlace: string;
+    fromPincode: number;
+    fromStateCode: number;
+    toGstin: string;
+    toTrdName: string | undefined;
+    toAddr1: string;
+    toAddr2: string;
+    toPlace: string;
+    toPincode: number;
+    toStateCode: number;
+    totalValue: number;
+    cgstValue: number;
+    sgstValue: number;
+    igstValue: number;
+    cessValue: number;
+    transDistance: number;
+    transporterId: string;
+    transporterName: string;
+    transDocNo: string;
+    transDocDate: string;
+    vehicleNo: string;
+    vehicleType: string;
+    itemList: {
+        productName: string;
+        productDesc: string;
+        hsnCode: number;
+        quantity: number | undefined;
+        qtyUnit: string;
+        taxableAmount: number;
+        sgstRate: number;
+        cgstRate: number;
+        igstRate: number;
+        cessRate: number;
+    }[];
+}
 
 export function generateEWayBillJSON(
     document: EWayBillDocument,
     supplierGstin: string,
     ewbDetails: EWayBillDetails
-): any {
+): EWayBillJSON {
     // Determine if it's an invoice or challan
     const isChallan = 'challan_number' in document;
 
@@ -358,18 +456,18 @@ export function generateEWayBillJSON(
     const toPincode = Number((isChallan ? (document.consignee_pincode || document.pincode) : (document.buyer_pincode || document.pincode)) || 0) || 560001;
     const toStateCode = Number((isChallan ? document.consignee_state_code : document.buyer_state_code) || 0);
 
-    const fromAddr1 = (isChallan ? document.consignor_address : document.seller_address) || 'Main Street';
-    const fromPlace = (isChallan ? document.consignor_city : document.seller_city) || 'City';
-    const fromPincode = Number((isChallan ? document.consignor_pincode : document.seller_pincode) || 560001) || 560001;
+    const fromAddr1 = (isChallan ? document.consignor_address : document.seller_address) || '';
+    const fromPlace = (isChallan ? document.consignor_city : document.seller_city) || '';
+    const fromPincode = Number((isChallan ? document.consignor_pincode : document.seller_pincode) || 0) || 0;
 
-    const docDate = new Date(docDateRaw).toLocaleDateString('en-IN', {
+    const docDate = new Date(docDateRaw as string).toLocaleDateString('en-IN', {
         day: '2-digit',
         month: '2-digit',
         year: 'numeric',
     }); // dd/mm/yyyy
 
     // Items
-    const itemList = (document.items || []).map((item: any) => {
+    const itemList = (document.items || []).map((item) => {
         const taxable = item.taxable_value || item.taxable_amount || 0;
         const totalTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0);
 
@@ -390,7 +488,7 @@ export function generateEWayBillJSON(
         };
     });
 
-    const totalTaxable = itemList.reduce((sum: number, item: any) => sum + item.taxableAmount, 0);
+    const totalTaxable = itemList.reduce((sum, item) => sum + item.taxableAmount, 0);
     const totalCGST = document.cgst_amount || 0;
     const totalSGST = document.sgst_amount || 0;
     const totalIGST = document.igst_amount || 0;

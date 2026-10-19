@@ -3,11 +3,24 @@
  * CRUD operations for products and variants using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 
 // ===========================================
 // TYPES
 // ===========================================
+
+export const STORAGE_LOCATIONS = [
+    'Showcase Tray A',
+    'Showcase Tray B',
+    'Counter 1',
+    'Counter 2',
+    'Safe Vault 1',
+    'Safe Vault 2',
+    'Wholesale Warehouse',
+    'Backroom Locker',
+] as const;
+
+export type StorageLocation = typeof STORAGE_LOCATIONS[number];
 
 export interface Product {
     id: string;
@@ -16,13 +29,28 @@ export interface Product {
     description?: string;
     base_price: number;
     cost_price?: number;
+    channel_prices?: Record<string, number>;
     category?: string;
     image_url?: string;
+    image_data?: string;
     barcode?: string;
     hsn_code?: string;
+    location?: string;
+    account_email?: string;
     is_active: boolean;
     created: string;
     updated: string;
+}
+
+/**
+ * Resilient image resolver: prioritizes base64 image_data or clean web URLs,
+ * gracefully filtering out broken WhatsApp encrypted MMS3 CDN tokens.
+ */
+export function getProductDisplayImage(p?: { image_data?: string | null; image_url?: string | null } | null): string | null {
+    if (!p) return null;
+    if (p.image_data && p.image_data.length > 20) return p.image_data;
+    if (p.image_url && !p.image_url.includes('whatsapp.net')) return p.image_url;
+    return null;
 }
 
 export interface ProductVariant {
@@ -31,6 +59,7 @@ export interface ProductVariant {
     variant_name: string;
     sku_suffix?: string;
     price_adjustment?: number;
+    channel_prices?: Record<string, number>;
     stock_level: number;
     low_stock_threshold?: number;
     size?: string;
@@ -50,7 +79,9 @@ export interface ProductWithVariant extends Product {
     variant_name: string;
     full_sku: string;
     price: number;
+    price_adjustment?: number;
     stock: number;
+    channel_prices?: Record<string, number>;
 }
 
 // ===========================================
@@ -61,17 +92,24 @@ export async function getProducts(filters?: {
     category?: string;
     search?: string;
     activeOnly?: boolean;
+    location?: string;
 }): Promise<Product[]> {
     try {
         const filterParts: string[] = [];
         if (filters?.activeOnly !== false) { // Default to true
             filterParts.push('is_active=true');
         }
+        if (typeof window !== "undefined" && pb.authStore.model?.email) {
+            filterParts.push(`account_email="${sanitizeFilter(pb.authStore.model.email)}"`);
+        }
         if (filters?.category && filters.category !== 'All') {
-            filterParts.push(`category="${filters.category}"`);
+            filterParts.push(`category="${sanitizeFilter(filters.category)}"`);
+        }
+        if (filters?.location && filters.location !== 'All') {
+            filterParts.push(`location="${sanitizeFilter(filters.location)}"`);
         }
         if (filters?.search) {
-            const s = filters.search;
+            const s = sanitizeFilter(filters.search);
             filterParts.push(`(name~"${s}" || sku~"${s}" || barcode~"${s}")`);
         }
 
@@ -91,7 +129,7 @@ export async function getProduct(id: string): Promise<Product | null> {
     try {
         const record = await pb.collection('products').getOne<Product>(id);
         return record;
-    } catch (error) {
+    } catch {
         return null;
     }
 }
@@ -133,7 +171,7 @@ export async function getProductVariants(productId: string): Promise<ProductVari
             sort: 'variant_name'
         });
         return records;
-    } catch (error) {
+    } catch {
         return [];
     }
 }
@@ -191,13 +229,13 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
     // Search variants with product expansion
     try {
         const records = await pb.collection('product_variants').getList<ProductVariant>(1, 20, {
-            filter: `product.name~"${query}" || product.sku~"${query}" || variant_name~"${query}" || sku_suffix~"${query}"`,
+            filter: `(product.name~"${query}" || product.sku~"${query}" || variant_name~"${query}" || sku_suffix~"${query}") && product.is_active=true`,
             expand: 'product',
             sort: 'product.name'
         });
 
         return records.items.map(v => {
-            const p = v.expand?.product!;
+            const p = v.expand?.product;
             if (!p) return null;
             return {
                 ...p,
@@ -205,10 +243,12 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
                 variant_name: v.variant_name,
                 full_sku: p.sku + (v.sku_suffix ? `-${v.sku_suffix}` : ''),
                 price: (p.base_price || 0) + (v.price_adjustment || 0),
+                price_adjustment: v.price_adjustment || 0,
+                channel_prices: p.channel_prices || {},
                 stock: v.stock_level
             };
         }).filter(p => p !== null) as ProductWithVariant[];
-    } catch (error) {
+    } catch {
         return [];
     }
 }

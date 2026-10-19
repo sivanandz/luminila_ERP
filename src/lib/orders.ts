@@ -5,8 +5,16 @@
 
 import { pb } from '@/lib/pocketbase';
 import { toast } from 'sonner';
+import type { Customer } from '@/lib/customers';
+// Aliased: this file's local SalesOrder/SalesOrderItem are narrower order-creation
+// payloads, while the database types describe the persisted sales_orders records.
+import type {
+    ProductVariant,
+    SalesOrder as SalesOrderRecord,
+    SalesOrderItem as SalesOrderItemRow,
+} from '@/types/database';
 import { createInvoice, getStoreSettings } from '@/lib/invoice';
-import { calculateGST } from '@/lib/gst';
+import { calculateGST, getStateCode } from '@/lib/gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from '@/lib/sequence-generator';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
@@ -68,6 +76,19 @@ export interface SalesOrderItem {
     total: number;
 }
 
+/** sales_order_items record as written/created and read back for invoicing */
+interface SalesOrderItemRecord {
+    order: string;
+    description: string;
+    quantity: number;
+    unit_price: number;
+    tax_rate?: number;
+    discount_amount?: number;
+    total: number;
+    product?: string;
+    variant?: string;
+}
+
 /**
  * Generate sequential order number (SO/YYMM/00001 or EST/YYMM/00001)
  * Resolves WPA-12
@@ -127,7 +148,7 @@ export async function createOrder(data: OrderInput) {
 
         // 2. Create Order Items
         const promises = data.items.map(item => {
-            const itemData: any = {
+            const itemData: SalesOrderItemRecord = {
                 order: order.id,
                 description: item.description,
                 quantity: item.quantity,
@@ -142,6 +163,20 @@ export async function createOrder(data: OrderInput) {
         });
 
         await Promise.all(promises);
+
+        // Hybrid WhatsApp Campaign Attribution (7-day window / promo code)
+        try {
+            const { attributeOrderToCampaign } = await import('@/lib/campaign-attribution');
+            await attributeOrderToCampaign({
+                id: order.id,
+                customerPhone: data.customer_phone,
+                total: data.total,
+                promoCode: (data.notes || '').match(/([A-Z0-9]{4,15})/)?.[1],
+                created: (order as any).created || new Date().toISOString(),
+            });
+        } catch {
+            // Non-blocking attribution check
+        }
 
         return { success: true, orderId: order.id, orderNumber: allocatedOrderNumber };
     } catch (error) {
@@ -177,20 +212,42 @@ export async function convertEstimateToOrder(estimateId: string) {
 export async function generateInvoiceFromOrder(orderId: string) {
     try {
         const order = await pb.collection('sales_orders').getOne(orderId);
-        const orderItems = await pb.collection('sales_order_items').getFullList({
+        const orderItems = await pb.collection('sales_order_items').getFullList<SalesOrderItemRecord>({
             filter: `order="${orderId}"`
         });
 
         const store = await getStoreSettings();
+        const isGstRegistered = store.is_gst_registered !== false && Boolean(store.store_gstin);
 
-        // WPA-13 fix: derive the CGST/SGST vs IGST split from place of supply
-        // instead of hardcoding intra-state CGST+SGST regardless of buyer state.
+        // WPA-13 fix: sales_orders has no buyer_state_code/place_of_supply field
+        // (and createOrder never writes one), so derive the CGST/SGST vs IGST
+        // split from the order's customer record instead of silently falling
+        // back to the seller state, which forced every invoice intra-state.
         const sellerStateCode = store.store_state_code || '27';
-        const buyerStateCode = (order as any).buyer_state_code || (order as any).place_of_supply || sellerStateCode;
+        let buyerStateCode = sellerStateCode;
+        if (order.customer) {
+            try {
+                const customer = await pb.collection('customers').getOne<Customer>(order.customer);
+                const gstinStateCode = String(customer.gstin || '').trim().substring(0, 2);
+                buyerStateCode =
+                    customer.state_code ||
+                    getStateCode(customer.state || '') ||
+                    (/^\d{2}$/.test(gstinStateCode) ? gstinStateCode : '') ||
+                    sellerStateCode;
+            } catch {
+                // Customer lookup failed — fall back to the seller state (intra-state).
+            }
+        }
 
-        const invoiceItems = orderItems.map((item: any, idx: number) => {
-            const taxable = (item.unit_price || 0) * (item.quantity || 1);
-            const gstRate = 3; // Standard jewelry GST rate
+        const invoiceItems = orderItems.map((item, idx: number) => {
+            // Taxable value is net of the line discount (sales_order_items stores
+            // discount_amount alongside a post-discount total); GST applies to
+            // the post-discount base so taxable + tax == line total.
+            const gross = (item.unit_price || 0) * (item.quantity || 1);
+            const taxable = Math.max(0, gross - (item.discount_amount || 0));
+            // Use each item's own tax rate instead of a hardcoded 3% so the
+            // header tax (sum of items) matches the item-level GST amounts.
+            const gstRate = isGstRegistered ? (item.tax_rate || 0) : 0;
             const gst = calculateGST(taxable, sellerStateCode, buyerStateCode, gstRate);
             return {
                 sr_no: idx + 1,
@@ -201,8 +258,8 @@ export async function generateInvoiceFromOrder(orderId: string) {
                 unit: 'PCS',
                 unit_price: item.unit_price || 0,
                 discount_percent: 0,
-                discount_amount: 0,
-                taxable_amount: taxable,
+                discount_amount: item.discount_amount || 0,
+                taxable_amount: gst.taxableAmount,
                 gst_rate: gstRate,
                 cgst_rate: gst.cgstRate,
                 cgst_amount: gst.cgstAmount,
@@ -212,13 +269,20 @@ export async function generateInvoiceFromOrder(orderId: string) {
                 igst_amount: gst.igstAmount,
                 cess_rate: 0,
                 cess_amount: 0,
-                total_amount: item.total || (taxable + gst.totalTax)
+                total_amount: gst.grandTotal
             };
         });
 
-        const subtotal = order.subtotal || invoiceItems.reduce((acc, it) => acc + it.taxable_amount, 0);
-        const totalTax = order.tax_total || invoiceItems.reduce((acc, it) => acc + it.cgst_amount + it.sgst_amount + it.igst_amount, 0);
-        const grandTotal = order.total || (subtotal + totalTax);
+        // Header totals are summed from the (post-discount, per-item-rate) lines
+        // so the invoice is arithmetically self-consistent; the order header's
+        // subtotal/tax_total were computed on the pre-discount base and can
+        // disagree with the lines (invoice.ts does the same for POS sales).
+        const subtotal = invoiceItems.reduce((acc, it) => acc + it.taxable_amount, 0);
+        const totalTax = isGstRegistered
+            ? invoiceItems.reduce((acc, it) => acc + it.cgst_amount + it.sgst_amount + it.igst_amount, 0)
+            : 0;
+        const shippingCharges = order.shipping_charges || 0;
+        const grandTotal = subtotal + totalTax + shippingCharges;
 
         const invoice = await createInvoice({
             invoice_date: new Date().toISOString().split('T')[0],
@@ -226,7 +290,7 @@ export async function generateInvoiceFromOrder(orderId: string) {
             order_id: orderId,
             customer_id: order.customer || '',
             status: 'pending',
-            seller_gstin: store.store_gstin || '',
+            seller_gstin: isGstRegistered ? (store.store_gstin || '') : '',
             seller_name: store.store_name || 'Luminila Jewelry',
             seller_address: `${store.store_address || ''} ${store.store_city || ''}`.trim(),
             seller_state_code: store.store_state_code || '27',
@@ -283,7 +347,7 @@ export async function getOrders(type?: OrderType, status?: OrderStatus) {
             sort: '-order_date'
         });
         return records;
-    } catch (error: any) {
+    } catch (error) {
         console.error('Error fetching orders:', error);
         return [];
     }
@@ -292,12 +356,25 @@ export async function getOrders(type?: OrderType, status?: OrderStatus) {
 /**
  * Get single order details
  */
-export async function getOrderDetails(id: string) {
+/**
+ * sales_order_items row as consumed by the order detail page: the variant
+ * relation id is resolved to the expanded ProductVariant record.
+ */
+export interface OrderDetailItem extends Omit<SalesOrderItemRow, 'variant'> {
+    variant?: ProductVariant;
+}
+
+export type OrderDetail = SalesOrderRecord & {
+    created_at?: string; // legacy timestamp fallback for order.created
+    items?: OrderDetailItem[];
+};
+
+export async function getOrderDetails(id: string): Promise<OrderDetail | null> {
     try {
-        const order = await pb.collection('sales_orders').getOne(id);
+        const order = await pb.collection('sales_orders').getOne<SalesOrderRecord>(id);
 
         // Fetch items separately as reverse expand is tricky in getOne sometimes if not configured
-        const items = await pb.collection('sales_order_items').getFullList({
+        const items = await pb.collection('sales_order_items').getFullList<OrderDetailItem>({
             filter: `order="${id}"`,
             expand: 'product,variant'
         });

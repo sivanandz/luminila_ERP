@@ -1,6 +1,5 @@
-import crypto from 'crypto';
 import { pb } from '@/lib/pocketbase';
-import { getRazorpayConfig } from '@/lib/razorpay';
+import { getRazorpayConfig, verifyWebhookSignature } from '@/lib/razorpay';
 import { sendPaidOrderInvoice, sendLoyaltyMilestoneAlert } from '@/lib/whatsapp-notifications';
 import { earnPoints, calculatePointsToEarn } from '@/lib/loyalty';
 
@@ -20,20 +19,19 @@ export async function processRazorpayWebhookEvent(
 ): Promise<WebhookProcessResult> {
     const config = getRazorpayConfig();
 
-    // If webhook secret is configured, enforce HMAC SHA256 signature verification
-    if (config.webhookSecret) {
-        if (!signature) {
-            return { success: false, error: 'Missing x-razorpay-signature header' };
-        }
-        const expectedSignature = crypto
-            .createHmac('sha256', config.webhookSecret)
-            .update(rawBody)
-            .digest('hex');
+    // Enforce HMAC SHA256 signature verification (fail closed)
+    if (!config.webhookSecret) {
+        console.error('Razorpay Webhook rejected: RAZORPAY_WEBHOOK_SECRET is not configured');
+        return { success: false, error: 'Webhook secret is not configured' };
+    }
 
-        if (expectedSignature !== signature) {
-            console.error('Razorpay Webhook signature verification failed');
-            return { success: false, error: 'Invalid signature' };
-        }
+    if (!signature) {
+        return { success: false, error: 'Missing x-razorpay-signature header' };
+    }
+    const isValid = verifyWebhookSignature(rawBody, signature, config.webhookSecret);
+    if (!isValid) {
+        console.error('Razorpay Webhook signature verification failed');
+        return { success: false, error: 'Invalid signature' };
     }
 
     const eventData = JSON.parse(rawBody);
@@ -71,6 +69,26 @@ export async function processRazorpayWebhookEvent(
                     payment_status: 'PAID',
                     status: 'confirmed',
                 });
+
+                // Deduct inventory for confirmed paid order
+                try {
+                    const items = await pb.collection('sales_order_items').getFullList({ filter: `order = "${orderId}"` });
+                    for (const item of items) {
+                        if (item.product) {
+                            await pb.collection('stock_movements').create({
+                                product: item.product,
+                                movement_type: 'sale',
+                                quantity: -(Number(item.quantity) || 1),
+                                reference_id: orderId,
+                                source: 'website',
+                                notes: `Online paid checkout order ${orderId}`,
+                                account_email: (updatedOrder as any).account_email || 'admin@store.local',
+                            }).catch(() => {});
+                        }
+                    }
+                } catch (stockErr) {
+                    console.warn(`[webhook] Stock movement recording failed for ${orderId}:`, stockErr);
+                }
 
                 // Trigger WhatsApp confirmation & invoice
                 await sendPaidOrderInvoice(orderId);

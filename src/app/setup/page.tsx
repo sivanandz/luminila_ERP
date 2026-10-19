@@ -118,6 +118,7 @@ export default function SetupWizardPage() {
         adminEmail: "admin@luminila.local",
         adminPassword: "",
         adminPasswordConfirm: "",
+        cleanSlate: true,
     });
 
     const checkStatus = useCallback(async () => {
@@ -173,8 +174,15 @@ export default function SetupWizardPage() {
             return;
         }
 
-        if (!formData.adminEmail.trim()) {
+        const emailTrimmed = formData.adminEmail.trim();
+        if (!emailTrimmed) {
             toast.error("Please enter a valid administrator email");
+            return;
+        }
+
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+        if (!emailRegex.test(emailTrimmed)) {
+            toast.error("Invalid email address. Please include a domain extension (e.g. name@gmail.com)");
             return;
         }
 
@@ -191,27 +199,15 @@ export default function SetupWizardPage() {
         setLoading(true);
 
         try {
-            // 1. Authenticate as Superuser (first try bootstrap credentials, then form credentials)
+            // 1. Authenticate as Superuser using form credentials
             let superuserRecord: { id: string; email?: string } | null = null;
             let authenticatedWithBootstrap = false;
 
             try {
-                const authData = await pb.collection("_superusers").authWithPassword("admin@luminila.local", "Luminila2026!");
+                const authData = await pb.collection("_superusers").authWithPassword(formData.adminEmail, formData.adminPassword);
                 superuserRecord = authData.record;
-                authenticatedWithBootstrap = true;
             } catch {
-                try {
-                    const authData = await pb.collection("_superusers").authWithPassword("admin@luminila.local", "LuminilaInit2026!");
-                    superuserRecord = authData.record;
-                    authenticatedWithBootstrap = true;
-                } catch {
-                    try {
-                        const authData = await pb.collection("_superusers").authWithPassword(formData.adminEmail, formData.adminPassword);
-                        superuserRecord = authData.record;
-                    } catch {
-                        throw new Error("Unable to authenticate superuser. Ensure PocketBase is running via npm run dev.");
-                    }
-                }
+                throw new Error("Unable to authenticate with the provided credentials. Ensure PocketBase is running and credentials are correct.");
             }
 
             // 2. Seed Default System Roles
@@ -286,15 +282,20 @@ export default function SetupWizardPage() {
             // 5. Seed Initial Store Settings
             if (formData.storeName) {
                 const initialSettings = [
-                    { key: "store_name", value: formData.storeName, category: "general" },
-                    { key: "currency", value: "INR", category: "general" },
-                    { key: "currency_symbol", value: "₹", category: "general" },
+                    { key: "store_name", value: formData.storeName, category: "general", account_email: formData.adminEmail },
+                    { key: "currency", value: "INR", category: "general", account_email: formData.adminEmail },
+                    { key: "currency_symbol", value: "₹", category: "general", account_email: formData.adminEmail },
                 ];
 
                 for (const setting of initialSettings) {
                     try {
-                        const existingSetting = await pb.collection("store_settings").getFirstListItem(`key="${setting.key}"`);
-                        await pb.collection("store_settings").update(existingSetting.id, { value: setting.value });
+                        const existingSetting = await pb.collection("store_settings").getFirstListItem(
+                            `key="${setting.key}" && account_email="${formData.adminEmail}"`
+                        );
+                        await pb.collection("store_settings").update(existingSetting.id, { 
+                            value: setting.value,
+                            account_email: formData.adminEmail,
+                        });
                     } catch (sErr: unknown) {
                         const sErrStatus = (sErr as { status?: number })?.status;
                         if (sErrStatus === 404) {
@@ -306,7 +307,50 @@ export default function SetupWizardPage() {
                 }
             }
 
-            // 6. Update superuser credentials to match chosen admin (done last so token remains valid)
+            // 6. Clean Slate: Purge prior demo inventory, vendors, discrepancies, and transactions if requested
+            if (formData.cleanSlate) {
+                const purgeCollections = [
+                    "invoice_payments",
+                    "invoice_items",
+                    "invoices",
+                    "credit_note_items",
+                    "credit_notes",
+                    "delivery_challan_items",
+                    "delivery_challans",
+                    "stock_movements",
+                    "stock_discrepancies",
+                    "sale_items",
+                    "sales",
+                    "sales_order_items",
+                    "sales_orders",
+                    "grn_items",
+                    "goods_received_notes",
+                    "purchase_order_items",
+                    "purchase_orders",
+                    "vendor_products",
+                    "vendors",
+                    "expenses",
+                    "bank_transactions",
+                    "payment_links",
+                    "whatsapp_messages",
+                    "whatsapp_chats",
+                    "product_variants",
+                    "products",
+                    "customers",
+                ];
+                for (const col of purgeCollections) {
+                    try {
+                        const records = await pb.collection(col).getFullList({ requestKey: null });
+                        for (const r of records) {
+                            await pb.collection(col).delete(r.id);
+                        }
+                    } catch (pErr) {
+                        console.warn(`Clean slate notice for ${col}:`, pErr);
+                    }
+                }
+            }
+
+            // 7. Update superuser credentials to match chosen admin (done last so token remains valid)
             if (authenticatedWithBootstrap && superuserRecord) {
                 try {
                     await pb.collection("_superusers").update(superuserRecord.id, {
@@ -330,7 +374,20 @@ export default function SetupWizardPage() {
 
             setCurrentStep("complete");
         } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : "Setup execution failed";
+            let message = "Setup execution failed";
+            if (err && typeof err === "object") {
+                const pbErr = err as { message?: string; data?: { data?: Record<string, { message?: string }> } };
+                if (pbErr.data?.data && Object.keys(pbErr.data.data).length > 0) {
+                    const fieldErrors = Object.entries(pbErr.data.data)
+                        .map(([field, val]) => `${field.charAt(0).toUpperCase() + field.slice(1)}: ${val?.message || "Invalid value"}`)
+                        .join(" • ");
+                    message = fieldErrors;
+                } else if (pbErr.message) {
+                    message = pbErr.message;
+                }
+            } else if (err instanceof Error) {
+                message = err.message;
+            }
             toast.error(message);
         } finally {
             setLoading(false);
@@ -583,6 +640,24 @@ export default function SetupWizardPage() {
                                     Unified Admin: This account will have full administrative privileges for both the Luminila ERP application and PocketBase engine.
                                 </span>
                             </div>
+
+                            {/* Clean Slate Option */}
+                            <label className="flex items-start gap-3 p-3 rounded-xl bg-card border border-border cursor-pointer hover:bg-muted/30 transition-colors">
+                                <input
+                                    type="checkbox"
+                                    checked={formData.cleanSlate}
+                                    onChange={(e) => setFormData({ ...formData, cleanSlate: e.target.checked })}
+                                    className="mt-0.5 rounded border-border text-primary focus:ring-primary h-4 w-4"
+                                />
+                                <div className="space-y-0.5 text-xs">
+                                    <span className="font-semibold text-foreground block">
+                                        Clean Slate: Start with empty store
+                                    </span>
+                                    <span className="text-muted-foreground block text-[11px] leading-relaxed">
+                                        Purges existing local demo inventory, test POS sales, and transactions so this store starts at ₹0 with a fresh catalog.
+                                    </span>
+                                </div>
+                            </label>
 
                             {/* Buttons */}
                             <div className="flex gap-3 pt-2">

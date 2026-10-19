@@ -137,8 +137,9 @@ export class MobileScanner {
     static async startCameraScan(): Promise<string | null> {
         if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
             try {
-                // @ts-expect-error - optional native plugin; not installed for web builds
-                const tauriScanner = await import('@tauri-apps/plugin-barcode-scanner');
+                // Dynamically access optional plugin if running in Tauri environment
+                const pluginModule = '@tauri-apps/plugin-barcode-scanner';
+                const tauriScanner: any = await (Function('m', 'return import(m)')(pluginModule)).catch(() => null);
                 if (tauriScanner && typeof tauriScanner.scan === 'function') {
                     const res = await tauriScanner.scan({
                         windowed: false,

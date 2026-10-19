@@ -4,8 +4,8 @@
  * explicit Admin approval for unbinding, session resets, or disconnection.
  */
 
-import PocketBase from 'pocketbase';
-import { pb, getPocketBaseUrl } from './pocketbase';
+import PocketBase, { type RecordModel } from 'pocketbase';
+import { pb, getPocketBaseUrl, ensureAuth, getCurrentTenantEmail, getTenantStorageKey } from './pocketbase';
 
 export interface WhatsAppBinding {
     isBound: boolean;
@@ -39,15 +39,19 @@ export const DEFAULT_UNBOUND_BINDING: WhatsAppBinding = {
 };
 
 const BINDING_SETTING_KEY = 'whatsapp_binding';
-const LOCAL_STORAGE_KEY = 'luminila_whatsapp_binding';
+const getBindingStorageKey = () => getTenantStorageKey('luminila_whatsapp_binding_v1');
 
 /**
  * Retrieve the current WhatsApp account binding status.
  * Reads from PocketBase `store_settings`, falling back to localStorage cache.
  */
 export async function getWhatsAppBinding(): Promise<WhatsAppBinding> {
+    ensureAuth();
+    const userEmail = getCurrentTenantEmail();
+    const filter = userEmail ? `key="${BINDING_SETTING_KEY}" && account_email="${userEmail}"` : `key="${BINDING_SETTING_KEY}"`;
+
     try {
-        const record = await pb.collection('store_settings').getFirstListItem(`key="${BINDING_SETTING_KEY}"`);
+        const record = await pb.collection('store_settings').getFirstListItem(filter);
         if (record && record.value) {
             const parsed = typeof record.value === 'string' ? JSON.parse(record.value) : record.value;
             const binding: WhatsAppBinding = {
@@ -56,7 +60,7 @@ export async function getWhatsAppBinding(): Promise<WhatsAppBinding> {
             };
 
             if (typeof window !== 'undefined') {
-                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(binding));
+                localStorage.setItem(getBindingStorageKey(), JSON.stringify(binding));
             }
             return binding;
         }
@@ -65,7 +69,7 @@ export async function getWhatsAppBinding(): Promise<WhatsAppBinding> {
     }
 
     if (typeof window !== 'undefined') {
-        const cached = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const cached = localStorage.getItem(getBindingStorageKey());
         if (cached) {
             try {
                 return { ...DEFAULT_UNBOUND_BINDING, ...JSON.parse(cached) };
@@ -99,13 +103,17 @@ export async function bindWhatsAppAccount(
     };
 
     if (typeof window !== 'undefined') {
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(bindingData));
+        localStorage.setItem(getBindingStorageKey(), JSON.stringify(bindingData));
     }
 
     try {
+        ensureAuth();
+        const userEmail = getCurrentTenantEmail();
+        const filter = userEmail ? `key="${BINDING_SETTING_KEY}" && account_email="${userEmail}"` : `key="${BINDING_SETTING_KEY}"`;
+
         let existingId: string | null = null;
         try {
-            const existing = await pb.collection('store_settings').getFirstListItem(`key="${BINDING_SETTING_KEY}"`);
+            const existing = await pb.collection('store_settings').getFirstListItem(filter);
             existingId = existing.id;
         } catch {
             existingId = null;
@@ -115,12 +123,14 @@ export async function bindWhatsAppAccount(
             await pb.collection('store_settings').update(existingId, {
                 value: bindingData,
                 category: 'whatsapp',
+                account_email: userEmail,
             });
         } else {
             await pb.collection('store_settings').create({
                 key: BINDING_SETTING_KEY,
                 value: bindingData,
                 category: 'whatsapp',
+                account_email: userEmail,
             });
         }
     } catch (err) {
@@ -147,15 +157,20 @@ export async function unbindWhatsAppAccount(approverEmail: string): Promise<What
     };
 
     if (typeof window !== 'undefined') {
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(unboundData));
+        localStorage.setItem(getBindingStorageKey(), JSON.stringify(unboundData));
     }
 
     try {
-        const existing = await pb.collection('store_settings').getFirstListItem(`key="${BINDING_SETTING_KEY}"`);
+        ensureAuth();
+        const userEmail = getCurrentTenantEmail();
+        const filter = userEmail ? `key="${BINDING_SETTING_KEY}" && account_email="${userEmail}"` : `key="${BINDING_SETTING_KEY}"`;
+
+        const existing = await pb.collection('store_settings').getFirstListItem(filter);
         if (existing) {
             await pb.collection('store_settings').update(existing.id, {
                 value: unboundData,
                 category: 'whatsapp',
+                account_email: userEmail,
             });
         }
     } catch (err) {
@@ -185,14 +200,14 @@ export async function verifyAdminApproval(
     const tempPb = new PocketBase(getPocketBaseUrl());
     tempPb.autoCancellation(false);
 
-    let authRecord: any = null;
+    let authRecord: RecordModel | null = null;
     let isSuperuser = false;
 
     // 1. Try standard users collection
     try {
         const res = await tempPb.collection('users').authWithPassword(email.trim(), password);
         authRecord = res.record;
-    } catch (userErr: any) {
+    } catch (userErr) {
         // 2. Try _superusers collection fallback
         try {
             const superRes = await tempPb.collection('_superusers').authWithPassword(email.trim(), password);
@@ -201,7 +216,7 @@ export async function verifyAdminApproval(
         } catch {
             return {
                 success: false,
-                error: userErr?.message || 'Invalid credentials or user not found.',
+                error: (userErr instanceof Error ? userErr.message : String(userErr)) || 'Invalid credentials or user not found.',
             };
         }
     }
@@ -265,7 +280,7 @@ export async function verifyAdminApproval(
                 isSuperuser: false,
             },
         };
-    } catch (roleErr: any) {
+    } catch (roleErr) {
         console.error('[WhatsApp Binding] Role verification failed:', roleErr);
         return { success: false, error: 'Could not verify admin role permissions.' };
     }

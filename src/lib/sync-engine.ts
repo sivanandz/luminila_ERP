@@ -4,6 +4,7 @@
  */
 
 import { pb } from "./pocketbase";
+import type { ProductVariant } from "@/types/database";
 import {
     isShopifyConfigured,
     fetchAllShopifyProducts,
@@ -221,10 +222,10 @@ export async function pushInventoryToAll(
     const results: SyncResult[] = [];
 
     // Get variant info for channel mappings
-    let variant: any = null;
+    let variant: ProductVariant | null = null;
     try {
-        variant = await pb.collection('product_variants').getOne(variantId);
-    } catch (e) { }
+        variant = await pb.collection('product_variants').getOne<ProductVariant>(variantId);
+    } catch { }
 
     // Push to Shopify
     if (isShopifyConfigured()) {

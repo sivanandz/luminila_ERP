@@ -1,10 +1,11 @@
 import { pb } from '@/lib/pocketbase';
 import { Product } from '@/types/database';
-import { getWhatsAppUrl } from '@/lib/whatsapp';
+import { getWhatsAppUrl, whatsappManager } from '@/lib/whatsapp';
+import { getChannelPrice } from '@/lib/channel-pricing';
 
 const SIDECAR_URL = {
-    toString() { return `${getWhatsAppUrl()}/api/default`; },
-    valueOf() { return `${getWhatsAppUrl()}/api/default`; }
+    toString() { return `${getWhatsAppUrl()}/api/${whatsappManager.getSessionIdSafe() || 'luminila'}`; },
+    valueOf() { return `${getWhatsAppUrl()}/api/${whatsappManager.getSessionIdSafe() || 'luminila'}`; }
 } as unknown as string;
 
 interface WhatsAppProduct {
@@ -19,14 +20,22 @@ interface WhatsAppProduct {
     url?: string;
 }
 
-interface SyncLog {
+interface SidecarCatalogProduct {
     id: string;
-    started_at: string;
-    status: 'running' | 'success' | 'failed';
-    products_added: number;
-    products_updated: number;
-    products_deleted: number;
-    errors: any[];
+    name: string;
+    description?: string;
+    price: number;
+    currency: string;
+    isHidden: boolean;
+    image?: string;
+    retailerId?: string;
+    sku?: string;
+}
+
+interface CatalogSyncError {
+    type: 'fetch_wa_catalog' | 'process_product' | 'fatal';
+    error: string;
+    sku?: string;
 }
 
 export async function syncCatalog() {
@@ -51,7 +60,7 @@ export async function syncCatalog() {
     let added = 0;
     let updated = 0;
     let deleted = 0;
-    const errors: any[] = [];
+    const errors: CatalogSyncError[] = [];
 
     try {
         // 2. Fetch PocketBase Products
@@ -65,7 +74,7 @@ export async function syncCatalog() {
             const json = await res.json();
             if (json.success) {
                 const rawProducts = json.products || [];
-                waProducts = rawProducts.map((p: any) => ({
+                waProducts = rawProducts.map((p: SidecarCatalogProduct) => ({
                     id: p.id,
                     name: p.name,
                     description: p.description,
@@ -76,9 +85,10 @@ export async function syncCatalog() {
                     retailerId: p.retailerId || p.sku
                 }));
             }
-        } catch (e: any) {
-            console.warn('Could not fetch WA catalog:', e.message);
-            errors.push({ type: 'fetch_wa_catalog', error: e.message });
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            console.warn('Could not fetch WA catalog:', message);
+            errors.push({ type: 'fetch_wa_catalog', error: message });
         }
 
         // 4. Index WA Products by retailerId (SKU)
@@ -93,13 +103,14 @@ export async function syncCatalog() {
                 if (!p.sku) continue;
 
                 const waP = waMap.get(p.sku);
+                const targetPrice = getChannelPrice(p as unknown as Product, 'whatsapp');
 
                 if (p.is_active) {
                     if (!waP) {
                         await createProductInWhatsApp(p as unknown as Product);
                         added++;
                     } else {
-                        if (waP.price !== p.base_price || waP.name !== p.name) {
+                        if (waP.price !== targetPrice || waP.name !== p.name) {
                             await updateProductInWhatsApp(waP.id, p as unknown as Product);
                             updated++;
                         }
@@ -110,9 +121,9 @@ export async function syncCatalog() {
                         deleted++;
                     }
                 }
-            } catch (err: any) {
+            } catch (err) {
                 console.error(`Error processing product ${p.sku}:`, err);
-                errors.push({ type: 'process_product', sku: p.sku, error: err.message });
+                errors.push({ type: 'process_product', sku: p.sku, error: err instanceof Error ? err.message : String(err) });
             }
         }
 
@@ -128,15 +139,16 @@ export async function syncCatalog() {
 
         return { success: true, added, updated, deleted, errors };
 
-    } catch (error: any) {
+    } catch (error) {
         console.error('Sync failed:', error);
+        const message = error instanceof Error ? error.message : String(error);
         await pb.collection('catalog_sync_logs').update(logId, {
             status: 'failed',
             completed_at: new Date().toISOString(),
-            errors: [...errors, { type: 'fatal', error: error.message }]
+            errors: [...errors, { type: 'fatal', error: message }]
         });
 
-        return { success: false, error: error.message };
+        return { success: false, error: message };
     }
 }
 
@@ -154,7 +166,7 @@ async function createProductInWhatsApp(p: Product) {
     const payload = {
         name: p.name,
         description: p.description || '',
-        price: p.base_price,
+        price: getChannelPrice(p, 'whatsapp'),
         currency: 'INR',
         isHidden: false,
         url: p.image_url || '',
@@ -175,7 +187,7 @@ async function updateProductInWhatsApp(waId: string, p: Product) {
     const payload = {
         options: {
             name: p.name,
-            price: p.base_price,
+            price: getChannelPrice(p, 'whatsapp'),
             description: p.description || '',
             isHidden: false
         }

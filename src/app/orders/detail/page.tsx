@@ -12,21 +12,30 @@ import {
     User,
     Calendar,
     MapPin,
-    CreditCard
+    Truck,
 } from "lucide-react";
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getOrderDetails, convertEstimateToOrder, generateInvoiceFromOrder } from "@/lib/orders";
+import { getOrderDetails, convertEstimateToOrder, generateInvoiceFromOrder, type OrderDetail } from "@/lib/orders";
+import { getStoreSettings, type StoreSettings } from "@/lib/settings";
 import { toast } from "sonner";
+import { OrderMilestoneBar } from "@/components/orders/OrderMilestoneBar";
+import { ShippingLabelPrintModal, type ShippingLabelData } from "@/components/shipping/ShippingLabelPrintModal";
 
 function OrderDetailContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const id = searchParams.get("id");
 
-    const [order, setOrder] = useState<any>(null);
+    const [order, setOrder] = useState<OrderDetail | null>(null);
+    const [settings, setSettings] = useState<StoreSettings | null>(null);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
+    const [showShippingLabel, setShowShippingLabel] = useState(false);
+
+    useEffect(() => {
+        getStoreSettings().then(setSettings).catch(() => {});
+    }, []);
 
     const fetchOrder = useCallback(async () => {
         if (!id) return;
@@ -43,6 +52,7 @@ function OrderDetailContent() {
 
     useEffect(() => {
         if (id) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchOrder flips `loading` synchronously before its first await so the spinner shows on every refetch, including those triggered by the Convert/Invoice handlers; deferring it past the await would change which screen renders
             fetchOrder();
         }
     }, [id, fetchOrder]);
@@ -82,7 +92,7 @@ function OrderDetailContent() {
         <div className="flex flex-col h-full overflow-hidden bg-bg-navy">
             <Header
                 title={`${isEstimate ? 'Estimate' : 'Order'} #${order.order_number}`}
-                subtitle={`Created on ${formatDate(order.created || (order as any).created_at)}`}
+                subtitle={`Created on ${formatDate(order.created || order.created_at)}`}
                 action={
                     <div className="flex items-center gap-3">
                         <Button
@@ -91,6 +101,14 @@ function OrderDetailContent() {
                         >
                             <ArrowLeft size={18} className="mr-2" />
                             Back
+                        </Button>
+                        <Button
+                            variant="outline"
+                            onClick={() => setShowShippingLabel(true)}
+                            className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 font-bold"
+                        >
+                            <Truck size={18} className="mr-2 text-emerald-400" />
+                            4×6″ Shipping Label
                         </Button>
                         <Button variant="outline" onClick={() => window.print()}>
                             <Printer size={18} className="mr-2" />
@@ -149,7 +167,7 @@ function OrderDetailContent() {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-surface-hover">
-                                        {order.items?.map((item: any) => (
+                                        {order.items?.map((item) => (
                                             <tr key={item.id} className="hover:bg-bg-navy/30">
                                                 <td className="py-4 px-6">
                                                     <p className="font-bold text-white text-sm">{item.description}</p>
@@ -260,9 +278,51 @@ function OrderDetailContent() {
                             </div>
                         </div>
 
+                        {/* VIP WhatsApp Order Milestones (Option B) */}
+                        <OrderMilestoneBar
+                            orderId={order.id}
+                            orderNumber={order.order_number || order.id}
+                            customerName={order.customer_name || 'Valued Customer'}
+                            customerPhone={order.customer_phone}
+                            initialStatus={order.status}
+                            onMilestoneDispatched={fetchOrder}
+                        />
+
                     </div>
                 </div>
             </div>
+
+            {/* 4x6 Thermal Shipping Parcel Label Modal */}
+            <ShippingLabelPrintModal
+                open={showShippingLabel}
+                onOpenChange={setShowShippingLabel}
+                labelData={{
+                    orderNumber: order.order_number || order.id,
+                    carrier: 'st_courier',
+                    awbNumber: (order as any).tracking_id || (order as any).awb_number || '',
+                    isCod: order.payment_method === 'cod',
+                    codAmount: order.payment_method === 'cod' ? order.total : 0,
+                    weightGrams: 250,
+                    orderDate: order.order_date,
+                    sender: {
+                        companyName: settings?.storeName || (settings as any)?.store_name || "Store",
+                        address: settings?.address || (settings as any)?.store_address || "",
+                        city: settings?.city || (settings as any)?.store_city || "",
+                        state: settings?.state || (settings as any)?.store_state || "",
+                        pincode: settings?.pincode || (settings as any)?.store_pincode || "",
+                        phone: settings?.whatsappPhone || settings?.phone || (settings as any)?.store_phone || "",
+                    },
+                    consignee: {
+                        name: order.customer_name || "Valued Customer",
+                        address: order.shipping_address || order.billing_address || "Delivery Address On Record",
+                        city: (order as any).shipping_city || (order as any).city || "",
+                        state: (order as any).shipping_state || (order as any).state || "",
+                        pincode: (order as any).shipping_pincode || (order as any).pincode || "",
+                        phone: order.customer_phone || "",
+                    },
+                    routingCode: "",
+                }}
+            />
         </div>
     );
 }

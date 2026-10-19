@@ -5,6 +5,15 @@
 
 import { pb } from "./pocketbase";
 import { downloadAsFile, readFileAsText } from "./csv";
+import type {
+    Product,
+    ProductVariant,
+    Sale,
+    SaleItem,
+    StockMovement,
+    Vendor,
+} from "../types/database";
+import type { Customer } from "./customers";
 
 interface BackupData {
     version: string;
@@ -204,7 +213,7 @@ export async function restoreFromBackup(file: File): Promise<{
 
         // Restore in order (respecting foreign keys)
         // 1. Vendors first
-        for (const vendor of data.tables.vendors as any[]) {
+        for (const vendor of data.tables.vendors as Vendor[]) {
             try {
                 const existing = await pb.collection("vendors").getOne(vendor.id).catch(() => null);
                 if (existing) {
@@ -219,7 +228,7 @@ export async function restoreFromBackup(file: File): Promise<{
 
         // 1b. Customers (before sales)
         if (Array.isArray(data.tables.customers)) {
-            for (const customer of data.tables.customers as any[]) {
+            for (const customer of data.tables.customers as Customer[]) {
                 try {
                     const existing = await pb.collection("customers").getOne(customer.id).catch(() => null);
                     if (existing) {
@@ -234,7 +243,7 @@ export async function restoreFromBackup(file: File): Promise<{
         }
 
         // 2. Products
-        for (const product of data.tables.products as any[]) {
+        for (const product of data.tables.products as Product[]) {
             try {
                 const existing = await pb.collection("products").getOne(product.id).catch(() => null);
                 if (existing) {
@@ -248,7 +257,7 @@ export async function restoreFromBackup(file: File): Promise<{
         }
 
         // 3. Product variants
-        for (const variant of data.tables.product_variants as any[]) {
+        for (const variant of data.tables.product_variants as ProductVariant[]) {
             try {
                 const existing = await pb.collection("product_variants").getOne(variant.id).catch(() => null);
                 if (existing) {
@@ -262,7 +271,7 @@ export async function restoreFromBackup(file: File): Promise<{
         }
 
         // 4. Sales
-        for (const sale of data.tables.sales as any[]) {
+        for (const sale of data.tables.sales as Sale[]) {
             try {
                 const existing = await pb.collection("sales").getOne(sale.id).catch(() => null);
                 if (existing) {
@@ -276,7 +285,7 @@ export async function restoreFromBackup(file: File): Promise<{
         }
 
         // 5. Sale items
-        for (const item of data.tables.sale_items as any[]) {
+        for (const item of data.tables.sale_items as SaleItem[]) {
             try {
                 const existing = await pb.collection("sale_items").getOne(item.id).catch(() => null);
                 if (existing) {
@@ -290,7 +299,7 @@ export async function restoreFromBackup(file: File): Promise<{
         }
 
         // 6. Stock movements
-        for (const movement of data.tables.stock_movements as any[]) {
+        for (const movement of data.tables.stock_movements as StockMovement[]) {
             try {
                 const existing = await pb.collection("stock_movements").getOne(movement.id).catch(() => null);
                 if (existing) {
@@ -307,7 +316,7 @@ export async function restoreFromBackup(file: File): Promise<{
             success: true,
             message: `Backup from ${new Date(data.createdAt).toLocaleDateString()} restored successfully`,
             restored: {
-                customers: (data.tables.customers as any[])?.length || 0,
+                customers: data.tables.customers?.length || 0,
                 products: data.tables.products.length,
                 variants: data.tables.product_variants.length,
                 vendors: data.tables.vendors.length,

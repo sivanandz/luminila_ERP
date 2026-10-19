@@ -11,8 +11,11 @@
  */
 
 import { pb } from './pocketbase';
-import { createInvoiceFromSale, type Invoice } from './invoice';
+import { createInvoiceFromSale } from './invoice';
 import { enqueueTask } from './concurrency';
+import { ClientResponseError } from 'pocketbase';
+import { adjustLocationStock } from './multi-location';
+import type { Sale } from '../types/database';
 
 // ============================================
 // TYPES
@@ -28,9 +31,20 @@ export interface POSCartItem {
     remarks?: string;
     productId?: string;   // PocketBase product ID
     variantId?: string;   // PocketBase variant ID
+    // Jewelry Specifications (Vyapar / BIS Aligned)
+    gross_weight?: number;
+    net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    wastage_percent?: number;
+    huid_code?: string;
 }
 
 export interface POSSaleData {
+    channel?: import('../types/database').SalesChannel;
     items: POSCartItem[];
     subtotal: number;
     discountPercent: number;
@@ -45,6 +59,7 @@ export interface POSSaleData {
     customerPhone?: string;
     shiftId: string;
     userId: string;
+    locationId?: string;
     notes?: string;
     pointsRedeemed?: number;
     pointsEarned?: number;
@@ -74,7 +89,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     try {
         // 1. Create sale record
         const sale = await pb.collection('sales').create({
-            channel: 'pos',
+            channel: data.channel || 'pos',
             channel_order_id: transactionId,
             customer: data.customerId || null,
             customer_name: data.customerName || 'Walk-in Customer',
@@ -106,6 +121,15 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                 remarks: item.remarks || '',
                 discount: 0,
                 total: item.price * item.quantity,
+                gross_weight: item.gross_weight ?? null,
+                net_weight: item.net_weight ?? null,
+                stone_weight: item.stone_weight ?? null,
+                stone_amount: item.stone_amount ?? null,
+                purity_karat: item.purity_karat || '',
+                making_charges: item.making_charges ?? 0,
+                making_charges_type: item.making_charges_type || 'per_gram',
+                wastage_percent: item.wastage_percent ?? 0,
+                huid_code: item.huid_code || '',
             });
             createdSaleItemIds.push(saleItem.id);
 
@@ -127,10 +151,21 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                         'stock_level-': item.quantity,
                     });
                     stockDeductions.push({ variantId: item.variantId, quantity: item.quantity });
-                } catch (stockErr: any) {
-                    const isMinConstraint = stockErr?.data?.data?.stock_level?.code === 'validation_min_number_constraint' ||
-                        String(stockErr?.message).includes('validation_min_number_constraint') ||
-                        stockErr?.status === 400;
+
+                    // Deduct from specific physical POS facility/store
+                    if (data.locationId) {
+                        await adjustLocationStock(
+                            item.variantId || item.productId || item.id,
+                            data.locationId,
+                            -item.quantity,
+                            `POS Sale [${transactionId}]`
+                        ).catch(() => {});
+                    }
+                } catch (stockErr) {
+                    const pbErr = stockErr instanceof ClientResponseError ? stockErr : null;
+                    const isMinConstraint = pbErr?.data?.data?.stock_level?.code === 'validation_min_number_constraint' ||
+                        String(stockErr instanceof Error ? stockErr.message : stockErr).includes('validation_min_number_constraint') ||
+                        pbErr?.status === 400;
 
                     if (isMinConstraint) {
                         console.warn(`[pos-sales] Variant ${item.variantId} insufficient stock for quantity ${item.quantity}. Clamping to 0.`);
@@ -266,9 +301,9 @@ async function updateShiftTotals(
 // HELPER: Get Sales by Shift
 // ============================================
 
-export async function getSalesByShift(shiftId: string): Promise<any[]> {
+export async function getSalesByShift(shiftId: string): Promise<Sale[]> {
     try {
-        const sales = await pb.collection('sales').getFullList({
+        const sales = await pb.collection('sales').getFullList<Sale>({
             filter: `register_shift_id="${shiftId}"`,
             sort: '-created',
             expand: 'customer',
@@ -295,19 +330,19 @@ export async function getTodaysSalesSummary(): Promise<{
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const sales = await pb.collection('sales').getFullList({
+        const sales = await pb.collection('sales').getFullList<Sale>({
             filter: `channel="pos" && created>="${today.toISOString()}"`,
         });
 
         return {
             totalSales: sales.length,
-            totalAmount: sales.reduce((sum, s) => sum + ((s as any).total || 0), 0),
-            cashAmount: sales.filter(s => (s as any).payment_method === 'cash')
-                .reduce((sum, s) => sum + ((s as any).total || 0), 0),
-            cardAmount: sales.filter(s => (s as any).payment_method === 'card')
-                .reduce((sum, s) => sum + ((s as any).total || 0), 0),
-            upiAmount: sales.filter(s => ['upi', 'phonepe'].includes((s as any).payment_method))
-                .reduce((sum, s) => sum + ((s as any).total || 0), 0),
+            totalAmount: sales.reduce((sum, s) => sum + (s.total || 0), 0),
+            cashAmount: sales.filter(s => s.payment_method === 'cash')
+                .reduce((sum, s) => sum + (s.total || 0), 0),
+            cardAmount: sales.filter(s => s.payment_method === 'card')
+                .reduce((sum, s) => sum + (s.total || 0), 0),
+            upiAmount: sales.filter(s => ['upi', 'phonepe'].includes(s.payment_method ?? ''))
+                .reduce((sum, s) => sum + (s.total || 0), 0),
         };
     } catch (error) {
         console.error('Error fetching today\'s sales summary:', error);

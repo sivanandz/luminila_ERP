@@ -6,6 +6,9 @@
 import { pb } from './pocketbase';
 import { format } from 'date-fns';
 import { normalizeDateRange } from './utils';
+import type { Customer } from './customers';
+import type { Invoice } from './invoice';
+import type { ProductVariant } from '../types/database';
 
 // ===========================================
 // TYPES
@@ -62,6 +65,120 @@ export interface ReportSummary {
     totalItems: number;
 }
 
+/**
+ * Invoice fields as returned by raw PocketBase `invoices` records in report
+ * queries: the app-level Invoice plus the relation id, the required
+ * invoice_number column, the legacy `customer_name` fallback and the
+ * `expand.customer` payload that only exist on the wire response.
+ */
+export type InvoiceReportRecord = Invoice & {
+    id: string;
+    invoice_number: string;
+    customer_name?: string;
+    expand?: {
+        customer?: Customer;
+    };
+};
+
+/**
+ * Invoice item fields as stored in PocketBase `invoice_items`, including the
+ * `invoice` relation id used by the chunked report item queries.
+ */
+interface InvoiceItemRecord {
+    id: string;
+    invoice: string;
+    hsn_code: string;
+    description: string;
+    quantity: number;
+    taxable_amount: number;
+    cgst_amount: number;
+    sgst_amount: number;
+    igst_amount: number;
+}
+
+/** GSTR-1 period totals; fields are absent until the report loads or on error */
+export interface GSTR1Summary {
+    totalB2B?: number;
+    totalB2C?: number;
+    totalCGST?: number;
+    totalSGST?: number;
+    totalIGST?: number;
+    invoiceCount?: number;
+}
+
+// GSTR-1 JSON export structures (GSTN offline tool schema)
+export interface GSTR1JSONInvoiceItem {
+    num: number;
+    itm_det: {
+        rt: number;
+        txval: number;
+        iamt: number;
+        camt?: number;
+        samt?: number;
+        csamt?: number;
+    };
+}
+
+export interface GSTR1JSONInvoice {
+    inum: string;
+    idt: string;
+    val: number;
+    pos?: string;
+    rchrg?: string;
+    etin: string;
+    inv_typ?: string;
+    itms: GSTR1JSONInvoiceItem[];
+}
+
+export interface GSTR1JSONB2BEntry {
+    ctin: string;
+    inv: GSTR1JSONInvoice[];
+}
+
+export interface GSTR1JSONB2CLEntry {
+    pos: string;
+    inv: GSTR1JSONInvoice[];
+}
+
+export interface GSTR1JSONB2CSEntry {
+    sply_ty: string;
+    rt: number;
+    typ: string;
+    pos: string;
+    txval: number;
+    iamt: number;
+    camt: number;
+    samt: number;
+    csamt: number;
+}
+
+export interface GSTR1JSON {
+    gstin: string;
+    fp: string;
+    gt: number;
+    cur_gt: number;
+    version: string;
+    hash: string;
+    b2b: GSTR1JSONB2BEntry[];
+    b2cl: GSTR1JSONB2CLEntry[];
+    b2cs: GSTR1JSONB2CSEntry[];
+    hsn: {
+        data: {
+            num: number;
+            hsn_sc: string;
+            desc: string;
+            uqc: string;
+            qty: number;
+            val: number;
+            txval: number;
+            iamt: number;
+            camt: number;
+            samt: number;
+            csamt: number;
+        }[];
+    };
+}
+
 function formatDateSafe(dateStr?: string, fmt = 'dd/MM/yyyy'): string {
     if (!dateStr) return '-';
     const d = new Date(dateStr);
@@ -80,13 +197,13 @@ export async function getSalesReport(
 ): Promise<{ rows: SalesReportRow[]; summary: ReportSummary }> {
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
-        const invoices = await pb.collection('invoices').getFullList({
+        const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
             filter: `invoice_date>="${start}" && invoice_date<="${end}"`,
             sort: '-invoice_date',
             expand: 'customer',
         });
 
-        const rows: SalesReportRow[] = invoices.map((inv: any) => ({
+        const rows: SalesReportRow[] = invoices.map((inv) => ({
             date: formatDateSafe(inv.invoice_date, 'dd/MM/yyyy'),
             invoiceNumber: inv.invoice_number,
             customerName: inv.buyer_name || inv.customer_name || inv.expand?.customer?.name || 'Walk-in Customer',
@@ -120,10 +237,10 @@ export async function getSalesReport(
 export async function getGSTR1Report(
     startDate: string,
     endDate: string
-): Promise<{ b2b: GSTR1Row[]; b2c: GSTR1Row[]; summary: any }> {
+): Promise<{ b2b: GSTR1Row[]; b2c: GSTR1Row[]; summary: GSTR1Summary }> {
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
-        const invoices = await pb.collection('invoices').getFullList({
+        const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
             filter: `invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
             sort: 'invoice_date',
         });
@@ -131,7 +248,7 @@ export async function getGSTR1Report(
         const b2b: GSTR1Row[] = [];
         const b2c: GSTR1Row[] = [];
 
-        invoices.forEach((inv: any) => {
+        invoices.forEach((inv) => {
             const invTaxable = inv.taxable_value || inv.subtotal || 0;
             const invCgst = inv.cgst_amount || 0;
             const invSgst = inv.sgst_amount || 0;
@@ -188,12 +305,12 @@ export async function getStockReport(): Promise<{
     summary: { totalProducts: number; lowStock: number; totalValue: number };
 }> {
     try {
-        const data = await pb.collection('product_variants').getFullList({
+        const data = await pb.collection('product_variants').getFullList<ProductVariant>({
             sort: 'stock_level',
             expand: 'product',
         });
 
-        const rows: StockReportRow[] = data.map((v: any) => {
+        const rows: StockReportRow[] = data.map((v) => {
             const product = v.expand?.product;
             const costPrice = (product?.cost_price && product.cost_price > 0)
                 ? product.cost_price
@@ -226,7 +343,7 @@ export async function getStockReport(): Promise<{
 }
 
 // Helper to fetch invoice items in chunks to avoid URL length limit overflow (HTTP 414 / 400)
-export async function fetchInvoiceItemsForInvoices(invoiceIds: string[]): Promise<any[]> {
+export async function fetchInvoiceItemsForInvoices(invoiceIds: string[]): Promise<InvoiceItemRecord[]> {
     if (!invoiceIds || invoiceIds.length === 0) return [];
     const CHUNK_SIZE = 25; // max 25 IDs per query keeps URL length ~700 chars, well below 2KB/4KB proxy limits
     const chunks: string[][] = [];
@@ -236,7 +353,7 @@ export async function fetchInvoiceItemsForInvoices(invoiceIds: string[]): Promis
     const results = await Promise.all(
         chunks.map(chunk => {
             const filter = chunk.map(id => `invoice="${id}"`).join(' || ');
-            return pb.collection('invoice_items').getFullList({ filter });
+            return pb.collection('invoice_items').getFullList<InvoiceItemRecord>({ filter });
         })
     );
     return results.flat();
@@ -265,7 +382,7 @@ export async function getHSNSummary(
         // Group by HSN
         const byHSN = new Map<string, { description: string; quantity: number; taxableValue: number; tax: number; igst: number; cgst: number; sgst: number }>();
 
-        items.forEach((item: any) => {
+        items.forEach((item) => {
             const hsn = item.hsn_code || '7113';
             const existing = byHSN.get(hsn) || {
                 description: item.description?.split(' - ')[0] || 'Jewelry',
@@ -306,7 +423,7 @@ export async function getHSNSummary(
 // EXPORT UTILITIES
 // ===========================================
 
-export function exportToCSV(data: any[], filename: string): void {
+export function exportToCSV(data: object[], filename: string): void {
     if (data.length === 0) return;
 
     const headers = Object.keys(data[0]);
@@ -314,7 +431,7 @@ export function exportToCSV(data: any[], filename: string): void {
         headers.join(','),
         ...data.map((row) =>
             headers.map((h) => {
-                const value = row[h];
+                const value = (row as Record<string, unknown>)[h];
                 if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
                     return `"${value.replace(/"/g, '""')}"`;
                 }
@@ -338,23 +455,23 @@ export async function generateGSTR1JSON(
     startDate: string,
     endDate: string,
     gstin: string
-): Promise<any> {
+): Promise<GSTR1JSON> {
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
-        const invoices = await pb.collection('invoices').getFullList({
+        const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
             filter: `invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
             sort: 'invoice_number',
         });
 
         // Fetch items for all invoices in safe URL-length chunks
         const invoiceIds = invoices.map(inv => inv.id);
-        let allItems: any[] = [];
+        let allItems: InvoiceItemRecord[] = [];
         if (invoiceIds.length > 0) {
             allItems = await fetchInvoiceItemsForInvoices(invoiceIds);
         }
 
         // Group items by invoice
-        const itemsByInvoice = new Map<string, any[]>();
+        const itemsByInvoice = new Map<string, InvoiceItemRecord[]>();
         allItems.forEach(item => {
             if (!itemsByInvoice.has(item.invoice)) {
                 itemsByInvoice.set(item.invoice, []);
@@ -364,15 +481,15 @@ export async function generateGSTR1JSON(
 
         const hsnData = await getHSNSummary(startDate, endDate);
 
-        const b2b: any[] = [];
-        const b2cl: any[] = [];
-        const b2cs: any[] = [];
+        const b2b: GSTR1JSONB2BEntry[] = [];
+        const b2cl: GSTR1JSONB2CLEntry[] = [];
+        const b2cs: GSTR1JSONB2CSEntry[] = [];
 
-        const getInvoiceItemsByRate = (inv: any) => {
+        const getInvoiceItemsByRate = (inv: InvoiceReportRecord) => {
             const items = itemsByInvoice.get(inv.id) || [];
             const rates = new Map<number, { txval: number; iamt: number; camt: number; samt: number; csamt: number }>();
 
-            items.forEach((item: any) => {
+            items.forEach((item) => {
                 let rate = 0;
                 if (item.taxable_amount > 0) {
                     const tax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0);
@@ -390,7 +507,7 @@ export async function generateGSTR1JSON(
             return Array.from(rates.entries()).map(([rt, val]) => ({ rt, ...val }));
         };
 
-        invoices.forEach((inv: any) => {
+        invoices.forEach((inv) => {
             const invDate = format(new Date(inv.invoice_date), 'dd-MM-yyyy');
             const pos = inv.place_of_supply?.substring(0, 2) || inv.buyer_state_code || '';
             const isInterState = pos !== gstin.substring(0, 2);
@@ -509,7 +626,7 @@ export async function generateGSTR1JSON(
     }
 }
 
-export function exportToJSON(data: any, filename: string): void {
+export function exportToJSON(data: unknown, filename: string): void {
     const jsonString = JSON.stringify(data, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const link = document.createElement('a');
@@ -559,6 +676,6 @@ export function printInvoice(invoiceId: string): void {
     printReport('invoice-preview', `Invoice #${invoiceId}`);
 }
 
-export function downloadInvoicePDF(invoiceId: string): void {
+export function downloadInvoicePDF(_invoiceId: string): void {
     window.print();
 }

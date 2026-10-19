@@ -10,7 +10,7 @@ import {
     Quote,
     Copy,
     Check,
-    Sparkles,
+
     ChevronRight,
     Package,
     PackagePlus,

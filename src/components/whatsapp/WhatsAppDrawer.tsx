@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { MessageCircle, X, Send, Search, Loader2, RefreshCw, Users, Radio } from "lucide-react";
+import { MessageCircle, X, Send, Search, Loader2, RefreshCw, Users, Radio, Building2, Megaphone } from "lucide-react";
 import { toast } from "sonner";
 import { whatsappManager, getAllChats, getChatMessages, markAsRead, type WPPChat, type WPPMessage } from "@/lib/whatsapp";
 import {
@@ -15,6 +15,7 @@ import {
     type ContactType,
 } from "@/lib/whatsapp-crm";
 import { pb } from "@/lib/pocketbase";
+import type { Vendor } from "@/types/database";
 import { MessageActionMenu } from "@/components/whatsapp/MessageActionMenu";
 import { VendorIngestionModal, AddExistingInventoryModal } from "@/components/whatsapp/VendorIngestionModal";
 import { useLongPress } from "@/hooks/use-long-press";
@@ -27,6 +28,11 @@ import { cn } from "@/lib/utils";
  * inspecting stock on /inventory or verifying a PO in /purchase.
  * Includes full right-click / long-press Context Action Engine (spec §8 / §8.4).
  */
+
+// WPPMessage records hydrated from stored transcripts may also carry a resolved sender display name.
+interface WPPMessageWithFromName extends WPPMessage {
+    fromName?: string;
+}
 export function WhatsAppDrawer() {
     const pathname = usePathname();
     const { user } = useAuth();
@@ -102,7 +108,7 @@ export function WhatsAppDrawer() {
         // Resolve vendor link if phone matches a registered vendor
         const digits = (chat.id || '').replace(/\D/g, '').slice(-10);
         if (digits) {
-            pb.collection('vendors').getFirstListItem(`phone~"${digits}"`).then((v: any) => {
+            pb.collection('vendors').getFirstListItem<Vendor>(`phone~"${digits}"`).then((v) => {
                 setActiveVendor({ id: v.id, name: v.name });
             }).catch(() => setActiveVendor(null));
         } else {
@@ -150,6 +156,7 @@ export function WhatsAppDrawer() {
         }
         try {
             const { getTypeAheadProducts } = await import('@/lib/products');
+            const { getChannelPrice } = await import('@/lib/channel-pricing');
             const matches = await getTypeAheadProducts(query);
             let best = matches[0];
             if (hints.size) {
@@ -163,7 +170,7 @@ export function WhatsAppDrawer() {
                 sku: best.full_sku,
                 name: best.name,
                 variant: best.variant_name,
-                price: best.price,
+                price: getChannelPrice({ base_price: best.base_price, channel_prices: best.channel_prices }, 'whatsapp', best.price_adjustment),
                 quantity: 1,
                 productId: best.id,
                 variantId: best.variant_id,
@@ -281,7 +288,7 @@ export function WhatsAppDrawer() {
                                             className="w-full h-8 pl-8 pr-2 text-xs rounded-lg bg-muted/50 border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                                         />
                                     </div>
-                                    <div className="flex items-center gap-1 text-[11px]">
+                                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                                         <button
                                             onClick={() => setFilterMode('all')}
                                             className={cn(
@@ -346,6 +353,14 @@ export function WhatsAppDrawer() {
                                                         {isChannelChat ? (
                                                             <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-amber-500/15 text-amber-500 shrink-0">
                                                                 Channel
+                                                            </span>
+                                                        ) : isGroupChat && contactTypes[chat.id] === 'vendor' ? (
+                                                            <span className="text-[9px] font-bold uppercase px-1.5 py-px rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center gap-0.5 shrink-0">
+                                                                <Building2 size={9} /> Vendor Group
+                                                            </span>
+                                                        ) : (chat.isCommunityAnnounce || (chat.name || '').toLowerCase().includes('announcement')) ? (
+                                                            <span className="text-[9px] font-bold uppercase px-1.5 py-px rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-0.5 shrink-0">
+                                                                <Megaphone size={9} /> Announcement
                                                             </span>
                                                         ) : isGroupChat ? (
                                                             <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-blue-500/15 text-blue-500 shrink-0">
@@ -423,7 +438,7 @@ export function WhatsAppDrawer() {
                                     )}
                                     {messages.map((m) => {
                                         const isGrpOrChnl = activeChat?.isGroup || activeChat?.id.includes('@g.us') || activeChat?.id.includes('@newsletter');
-                                        const senderLabel = (m as any)?.fromName || (m.sender as any)?.pushname || (m.sender as any)?.name;
+                                        const senderLabel = (m as WPPMessageWithFromName)?.fromName || m.sender?.pushname || m.sender?.name;
 
                                         return (
                                             <div
@@ -451,6 +466,7 @@ export function WhatsAppDrawer() {
                                                         : 'bg-card border border-border text-foreground rounded-bl-sm',
                                                 )}>
                                                     {m.mediaUrl && (
+                                                        // eslint-disable-next-line @next/next/no-img-element -- Chat attachment media has inherently dynamic dimensions and mediaUrl can be a remote URL or base64 data URI, so next/image props do not map cleanly.
                                                         <img
                                                             src={m.mediaUrl}
                                                             alt="Attachment"
@@ -498,7 +514,7 @@ export function WhatsAppDrawer() {
                 contactType={currentContactType}
                 isGroupOrChannel={activeChat?.isGroup || activeChat?.id.includes('@g.us') || activeChat?.id.includes('@newsletter')}
                 isChannel={activeChat?.id.includes('@newsletter')}
-                senderName={(actionMenu.message as any)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name}
+                senderName={(actionMenu.message as WPPMessageWithFromName)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name}
                 chatName={activeChat?.name}
                 position={actionMenu.position}
                 detectedAmount={(() => {
@@ -512,21 +528,32 @@ export function WhatsAppDrawer() {
                     const text = actionMenu.message?.caption || actionMenu.message?.body || '';
                     setIngestSourceContext({
                         chatName: activeChat?.name,
-                        senderName: (actionMenu.message as any)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name,
+                        senderName: (actionMenu.message as WPPMessageWithFromName)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name,
                         isGroup: activeChat?.isGroup || activeChat?.id.includes('@g.us'),
                         isChannel: activeChat?.id.includes('@newsletter'),
                     });
                     setAddInventoryMsg(text);
                 }}
-                onCreateProduct={() => {
+                onCreateProduct={async () => {
                     const text = actionMenu.message?.caption || actionMenu.message?.body || '';
                     setIngestSourceContext({
                         chatName: activeChat?.name,
-                        senderName: (actionMenu.message as any)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name,
+                        senderName: (actionMenu.message as WPPMessageWithFromName)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name,
                         isGroup: activeChat?.isGroup || activeChat?.id.includes('@g.us'),
                         isChannel: activeChat?.id.includes('@newsletter'),
                     });
-                    setVendorIngestImage(actionMenu.message?.mediaUrl || null);
+
+                    let imageToUse: string | null = actionMenu.message?.mediaUrl || null;
+                    if (actionMenu.message?.id && (!imageToUse || imageToUse.includes('whatsapp.net') || imageToUse.startsWith('http'))) {
+                        try {
+                            const decrypted = await whatsappManager.downloadMedia(actionMenu.message.id);
+                            if (decrypted) imageToUse = decrypted;
+                        } catch (e) {
+                            console.warn('[WhatsAppDrawer onCreateProduct] downloadMedia error:', e);
+                        }
+                    }
+
+                    setVendorIngestImage(imageToUse);
                     setVendorIngestMsg(text);
                 }}
                 onAutoBarcodeTag={() => actionMenu.message && handleAutoBarcodeTag(actionMenu.message)}

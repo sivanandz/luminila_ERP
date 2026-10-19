@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
     CreditCard,
     Building2,
@@ -163,18 +163,22 @@ _Not sure? You can measure inner diameter with a ruler or request an adjustable 
 
     // Keep selected index valid
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- intentionally resets the highlight to the first matching command after each query change; a render-phase reset would trade this for extra tracking state with no behavioral gain
         setSelectedIndex(0);
     }, [cleanQuery]);
 
     // Keyboard navigation
-    const executeCommand = (cmd: SlashCommand) => {
-        if (cmd.snippet) {
-            onSelectSnippet(cmd.snippet);
-        } else if (onTriggerAction) {
-            onTriggerAction(cmd.id);
-        }
-        onClose();
-    };
+    const executeCommand = useCallback(
+        (cmd: SlashCommand) => {
+            if (cmd.snippet) {
+                onSelectSnippet(cmd.snippet);
+            } else if (onTriggerAction) {
+                onTriggerAction(cmd.id);
+            }
+            onClose();
+        },
+        [onSelectSnippet, onTriggerAction, onClose]
+    );
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -200,7 +204,7 @@ _Not sure? You can measure inner diameter with a ruler or request an adjustable 
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [isOpen, filtered, selectedIndex, executeCommand, onClose]);
+    }, [isOpen, filtered, selectedIndex, executeCommand, onClose, onSelectSnippet, onTriggerAction]);
 
     if (!isOpen || filtered.length === 0) return null;
 

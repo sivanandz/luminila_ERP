@@ -90,3 +90,25 @@ description: Apply when writing, building, refactoring, or fixing code — proje
 > 🔴 **Agents & Skills can invoke ANY script** via `python .agents/skills/<skill>/scripts/<script>.py`
 
 ---
+
+## 🛡️ Multi-Tenant Isolation & Zero-Mock Guardrails
+
+**MANDATORY FOR ALL CODE AND ARCHITECTURE WORK:**
+
+1. **Zero Mock Fallbacks in Production Code**:
+   - NEVER embed hardcoded business entities (mock locations, sample campaigns, fake revenue figures, dummy counters, or placeholder brand names like "Zennila" or "Phoenix Mall") in production client libraries or components.
+   - If a database query returns empty or fails, return empty collections (`[]`), zero counts (`0`), or render a clean empty state. Never silently substitute fake demonstration data.
+
+2. **Mandatory Tenant-Scoped Browser Storage**:
+   - ALL `localStorage` and `sessionStorage` keys holding tenant-specific preferences, caches, or state MUST be dynamically namespaced with `_${accountEmail}` or `_${accountId}`.
+   - Global un-namespaced keys (e.g. `luminila_active_pos_loc`, `luminila_alert_config`) are strictly prohibited for tenant-owned state.
+
+3. **Database-First State (No Shared Flat Files)**:
+   - Transactional, CMS, and operational data MUST reside in PocketBase collections with strict tenant rules (`account_email = @request.auth.email`).
+   - NEVER write or read tenant data to/from shared flat files on the server disk (e.g. `src/data/*.json`).
+
+4. **Full-Stack Isolation Verification**:
+   - Isolation audits and tests MUST NOT rely solely on Node.js PocketBase SDK queries. They must explicitly verify client-side storage keys and fallback code paths that execute in browser environments (`window.localStorage`).
+
+5. **No Silent Catch Degradation**:
+   - Do NOT use catch-blocks (`catch { return DEFAULT_DATA }`) that mask missing database tables or failed API queries with pre-fabricated seed data. Fail explicitly or return an empty dataset.

@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { getPocketBaseUrl, setPocketBaseUrl, checkServerStatus, ServerHealthResult } from "@/lib/pocketbase";
 import { getWhatsAppUrl, setWhatsAppUrl, checkWhatsAppStatus } from "@/lib/whatsapp";
-import { Wifi, CheckCircle2, XCircle, Loader2, Globe, Laptop, HelpCircle, ShieldCheck, MessageSquare } from "lucide-react";
+import { Wifi, CheckCircle2, XCircle, Loader2, Globe, Laptop, ShieldCheck, MessageSquare } from "lucide-react";
 
 interface ServerConfigModalProps {
     isOpen: boolean;

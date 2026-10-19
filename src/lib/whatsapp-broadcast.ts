@@ -69,11 +69,11 @@ let cachedLoyaltyTiers: CachedTier[] | null = null;
 export async function loadLoyaltyTiers(): Promise<CachedTier[]> {
     if (cachedLoyaltyTiers) return cachedLoyaltyTiers;
     try {
-        const records = await pb.collection('loyalty_tiers').getFullList({
+        const records = await pb.collection('loyalty_tiers').getFullList<CachedTier>({
             sort: '-min_points',
         });
         if (records.length > 0) {
-            cachedLoyaltyTiers = records.map((r: any) => ({
+            cachedLoyaltyTiers = records.map((r) => ({
                 name: r.name,
                 min_points: r.min_points || 0,
             }));
@@ -116,7 +116,7 @@ export async function resolveAudienceDetailed(segment: AudienceSegment): Promise
             filter: filters[segment],
             sort: '-total_spent',
         }) as unknown as CustomerRow[];
-    } catch (queryErr) {
+    } catch {
         // Fallback: fetch without filter and filter in memory if PB syntax differs
         try {
             const allRows = await pb.collection('customers').getFullList({
@@ -389,6 +389,7 @@ export interface BroadcastProductOptions {
     campaignTitle?: string;
     announcementNote?: string;
     callToAction?: string;
+    customMessage?: string;
     includeImages?: boolean;
     createdBy?: string;
 }
@@ -461,7 +462,7 @@ export async function broadcastProductsToDestinations(
         return result;
     }
 
-    const messageText = formatProductCatalogBroadcastMessage(products, {
+    const messageText = options.customMessage?.trim() || formatProductCatalogBroadcastMessage(products, {
         title: options.campaignTitle,
         note: options.announcementNote,
         callToAction: options.callToAction,

@@ -92,7 +92,7 @@ export async function getRole(id: string): Promise<Role | null> {
             created: record.created,
             updated: record.updated
         };
-    } catch (err) {
+    } catch {
         return null;
     }
 }
@@ -267,7 +267,7 @@ export async function getCurrentUserPermissions(): Promise<Record<Resource, Perm
     if (userRoles.length === 0) return {} as Record<Resource, Permission[]>;
 
     // 2. Merge Permissions
-    const merged: Record<Resource, Set<Permission>> = {} as any;
+    const merged: Record<Resource, Set<Permission>> = {} as Record<Resource, Set<Permission>>;
 
     userRoles.forEach(ur => {
         const role = ur.expand?.role as Role;
@@ -282,7 +282,7 @@ export async function getCurrentUserPermissions(): Promise<Record<Resource, Perm
     });
 
     // 3. Convert to Array
-    const result: Record<Resource, Permission[]> = {} as any;
+    const result: Record<Resource, Permission[]> = {} as Record<Resource, Permission[]>;
     Object.entries(merged).forEach(([resource, set]) => {
         result[resource as Resource] = Array.from(set);
     });

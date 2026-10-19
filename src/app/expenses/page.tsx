@@ -10,18 +10,20 @@ import {
     getCategories,
     getExpenseStats,
     type Expense,
-    type ExpenseCategory
+    type ExpenseCategory,
+    type ExpensePaymentMode,
+    type ExpenseStats
 } from "@/lib/expenses";
 import {
     Plus,
     Search,
-    Filter,
-    Calendar,
+
+
     Wallet,
     CreditCard,
     Landmark,
     Banknote,
-    MoreHorizontal,
+
     Trash2,
     PieChart,
     ArrowUpRight
@@ -44,7 +46,7 @@ import { Textarea } from "@/components/ui/textarea";
 export default function ExpensesPage() {
     const [expenses, setExpenses] = useState<Expense[]>([]);
     const [categories, setCategories] = useState<ExpenseCategory[]>([]);
-    const [stats, setStats] = useState<any>(null);
+    const [stats, setStats] = useState<ExpenseStats | null>(null);
     const [loading, setLoading] = useState(true);
 
     // Filters
@@ -85,6 +87,7 @@ export default function ExpensesPage() {
 
     useEffect(() => {
         loadData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- loadData is recreated every render (adding it would refetch on every render) and search must only refetch on explicit submit
     }, [selectedCategory, dateRange]);
 
     // Initial load for categories
@@ -106,7 +109,7 @@ export default function ExpensesPage() {
         const result = await createExpense({
             ...newExpense,
             amount: parseFloat(newExpense.amount),
-            payment_mode: newExpense.payment_mode as any
+            payment_mode: newExpense.payment_mode as ExpensePaymentMode
         });
 
         if (result) {
@@ -136,10 +139,10 @@ export default function ExpensesPage() {
         <div className="flex flex-col h-full bg-bg-navy">
             <Header title="Expense Management" subtitle="Track business spending and costs" />
 
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
 
                 {/* Stats Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8 max-w-7xl mx-auto">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-6 mb-6 max-w-7xl mx-auto">
                     <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover">
                         <div className="flex justify-between items-start">
                             <div>

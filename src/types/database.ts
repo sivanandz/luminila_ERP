@@ -405,3 +405,42 @@ export interface CrossBorderExportInvoice extends PBRecord {
     shipping_bill_date?: string;
 }
 
+// ===========================================
+// MULTI-LOCATION & MULTI-WAREHOUSE TYPES
+// ===========================================
+
+export type LocationType = 'warehouse' | 'pos_store' | 'vault' | 'transit';
+
+export interface LocationRecord extends PBRecord {
+    code: string;
+    name: string;
+    type: LocationType;
+    address?: string;
+    city?: string;
+    state?: string;
+    pincode?: string;
+    contact_phone?: string;
+    gstin?: string;
+    is_active: boolean;
+    is_default: boolean;
+    allow_pos_sales: boolean;
+    color?: string;
+}
+
+export interface StockTransferRecord extends PBRecord {
+    transfer_number: string;
+    source_location: string; // Relation -> locations
+    destination_location: string; // Relation -> locations
+    status: 'draft' | 'dispatched' | 'in_transit' | 'received' | 'cancelled';
+    items: string; // JSON Array of items
+    challan_id?: string;
+    carrier?: string;
+    tracking_awb?: string;
+    notes?: string;
+    dispatched_by?: string;
+    dispatched_at?: string;
+    received_by?: string;
+    received_at?: string;
+}
+
+

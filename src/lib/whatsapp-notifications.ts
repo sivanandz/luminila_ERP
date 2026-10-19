@@ -4,10 +4,8 @@
  */
 
 import { pb } from './pocketbase';
-import { sendMessage, sendFile } from './whatsapp';
+import { sendMessage, getTenantWhatsAppSessionId } from './whatsapp';
 import { isWhatsAppOptedOut } from './whatsapp-crm';
-
-const DEFAULT_SESSION_ID = 'luminila';
 
 /**
  * Format currency in Indian numbering system
@@ -71,12 +69,13 @@ We will notify you with the live courier tracking number as soon as your parcel 
 _For any queries or sizing assistance, simply reply directly to this chat._`;
 
         const waNumber = toWhatsAppNumber(phone);
-        const sent = await sendMessage(DEFAULT_SESSION_ID, waNumber, messageText);
+        const tenantSession = getTenantWhatsAppSessionId(order.account_email);
+        const sent = await sendMessage(tenantSession, waNumber, messageText);
 
         return { success: sent };
-    } catch (err: any) {
+    } catch (err) {
         console.error('Error sending WhatsApp invoice notification:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 }
 
@@ -122,12 +121,13 @@ Please inspect the tamper-evident security seal upon delivery.
 _Thank you for trusting Luminila Jewels!_ ✨`;
 
         const waNumber = toWhatsAppNumber(phone);
-        const sent = await sendMessage(DEFAULT_SESSION_ID, waNumber, messageText);
+        const tenantSession = getTenantWhatsAppSessionId(order.account_email);
+        const sent = await sendMessage(tenantSession, waNumber, messageText);
 
         return { success: sent };
-    } catch (err: any) {
+    } catch (err) {
         console.error('Error sending shipping tracking WhatsApp notification:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 }
 
@@ -167,12 +167,13 @@ You can redeem these points on your next purchase at our showroom or right here 
 _Thank you for being a loyal Luminila Jewels customer!_`;
 
         const waNumber = toWhatsAppNumber(customer.phone);
-        const sent = await sendMessage(DEFAULT_SESSION_ID, waNumber, messageText);
+        const tenantSession = getTenantWhatsAppSessionId(customer.account_email);
+        const sent = await sendMessage(tenantSession, waNumber, messageText);
 
         return { success: sent };
-    } catch (err: any) {
+    } catch (err) {
         console.error('Error sending loyalty milestone alert:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 }
 
@@ -210,11 +211,12 @@ Your feedback means everything to our artisans. Could you take 30 seconds to sha
 Need an exchange, adjustment, or styling advice? Simply reply to this message and our jewelry stylists will be glad to assist you.`;
 
         const waNumber = toWhatsAppNumber(phone);
-        const sent = await sendMessage(DEFAULT_SESSION_ID, waNumber, messageText);
+        const tenantSession = getTenantWhatsAppSessionId(order.account_email);
+        const sent = await sendMessage(tenantSession, waNumber, messageText);
 
         return { success: sent };
-    } catch (err: any) {
+    } catch (err) {
         console.error('Error sending review request:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 }

@@ -101,7 +101,7 @@ export async function ingestWhatsAppCatalogOrder(
                     created_at: createdCustomer.created,
                     updated_at: createdCustomer.updated,
                 };
-            } catch (custErr: any) {
+            } catch (custErr) {
                 console.warn('Customer auto-creation warning:', custErr);
             }
         } else {
@@ -173,8 +173,8 @@ export async function ingestWhatsAppCatalogOrder(
             totalAmount: total,
             itemCount: items.length,
         };
-    } catch (err: any) {
+    } catch (err) {
         console.error('Failed to ingest WhatsApp catalog order:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 }

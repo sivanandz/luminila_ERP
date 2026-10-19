@@ -46,7 +46,7 @@ export function OrderMilestoneBar({
     const [huid, setHuid] = useState("LUM-QC994");
     const [courierName, setCourierName] = useState("ST Courier");
     const [trackingNumber, setTrackingNumber] = useState("64437374632");
-    const [trackingUrl, setTrackingUrl] = useState("/api/tracking/st-courier?awb=");
+    const [trackingUrl, setTrackingUrl] = useState("/tracking/st-courier?awb=");
     const [photoUrl, setPhotoUrl] = useState<string>("");
     const [photoPreview, setPhotoPreview] = useState<string | null>(null);
     const [dispatching, setDispatching] = useState(false);
@@ -58,7 +58,7 @@ export function OrderMilestoneBar({
         // Auto-detect ST Courier 11-digit format
         if (/^\d{11}$/.test(clean)) {
             setCourierName("ST Courier");
-            setTrackingUrl("/api/tracking/st-courier?awb=");
+            setTrackingUrl("/tracking/st-courier?awb=");
         } else if (/^DLV/i.test(clean) || (clean.length === 12 && /^\d+$/.test(clean))) {
             setCourierName("Delhivery Express");
             setTrackingUrl("https://www.delhivery.com/track/package/");
@@ -234,7 +234,7 @@ export function OrderMilestoneBar({
                                         const c = e.target.value;
                                         setCourierName(c);
                                         if (c === "ST Courier") {
-                                            setTrackingUrl("/api/tracking/st-courier?awb=");
+                                            setTrackingUrl("/tracking/st-courier?awb=");
                                         } else if (c === "Delhivery Express") {
                                             setTrackingUrl("https://www.delhivery.com/track/package/");
                                         } else if (c === "Shiprocket") {

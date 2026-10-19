@@ -1,8 +1,17 @@
 "use client";
 
-import { CartItem } from "@/types/database";
+import { CartItem, type Product, type ProductVariant } from "@/types/database";
 import { formatPrice } from "@/lib/utils";
 import { Plus, Minus, Trash2, Receipt } from "lucide-react";
+
+/**
+ * Product name from a variant whose `product` relation may arrive either as the
+ * raw PocketBase relation id (string) or already expanded inline (object).
+ */
+function inlineProductName(variant: ProductVariant): string | undefined {
+    const product: unknown = variant.product;
+    return product && typeof product === "object" ? (product as Product).name : undefined;
+}
 
 interface CartProps {
     items: CartItem[];
@@ -53,11 +62,20 @@ export function Cart({ items, onUpdateQuantity, onRemoveItem, onClear }: CartPro
                     >
                         <div className="flex-1 min-w-0">
                             <p className="font-medium text-sm truncate">
-                                {item.variant.expand?.product?.name || (item.variant as any).product?.name || item.variant.variant_name}
+                                {item.variant.expand?.product?.name || inlineProductName(item.variant) || item.variant.variant_name}
                             </p>
                             <p className="text-xs text-foreground-muted truncate">
                                 {item.variant.variant_name} • {formatPrice(item.unit_price)}
                             </p>
+                            {(item.variant.gross_weight || item.variant.purity_karat || item.variant.huid_code) && (
+                                <p className="text-[10px] text-amber-700 font-mono truncate">
+                                    {[
+                                        item.variant.purity_karat,
+                                        item.variant.gross_weight ? `${item.variant.gross_weight}g` : null,
+                                        item.variant.huid_code ? `HUID: ${item.variant.huid_code}` : null
+                                    ].filter(Boolean).join(' • ')}
+                                </p>
+                            )}
                         </div>
 
                         {/* Quantity Controls */}

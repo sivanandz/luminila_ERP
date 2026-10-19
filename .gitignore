@@ -62,6 +62,10 @@ next-env.d.ts
 pocketbase/pb_data/*
 !pocketbase/pb_data/.gitkeep
 
+# Runtime JSON data
+src/data/*.json
+!src/data/.gitkeep
+
 # Backup directories
 backup_*/
 
@@ -80,4 +84,7 @@ src-tauri/gen/android/local.properties
 .v2c/
 .video_agent/
 .zcodeignore
+.zcode/
+.cursor/
 scratch/
+**/.kotlin/

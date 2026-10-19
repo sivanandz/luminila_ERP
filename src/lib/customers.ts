@@ -26,6 +26,7 @@ export interface Customer {
     gstin?: string;
     pan?: string;
     customer_type: CustomerType;
+    tier?: string;
     date_of_birth?: string;
     anniversary?: string;
     notes?: string;
@@ -40,6 +41,14 @@ export interface Customer {
     created: string;
     updated: string;
     last_purchase_date?: string;
+}
+
+export function getTierDiscountPercent(tier?: string, customerType?: string): number {
+    const t = (tier || customerType || '').toLowerCase();
+    if (t.includes('distributor')) return 15;
+    if (t.includes('wholesal')) return 8;
+    if (t.includes('vip')) return 5;
+    return 0;
 }
 
 export interface CustomerInteraction {
@@ -121,8 +130,18 @@ export async function createCustomer(customer: Omit<Customer, 'id' | 'loyalty_po
 }
 
 export async function updateCustomer(id: string, updates: Partial<Customer>): Promise<Customer> {
-    // Remove computed fields if any passed accidentally
-    const { id: _, loyalty_points, total_spent, total_orders, created, updated, last_purchase_date, ...updateData } = updates as any;
+    // Remove computed fields if any passed accidentally (the named bindings are
+    // intentionally unused — their omission keeps them out of the update payload)
+    const {
+        id: _omittedId,
+        loyalty_points: _omittedLoyaltyPoints,
+        total_spent: _omittedTotalSpent,
+        total_orders: _omittedTotalOrders,
+        created: _omittedCreated,
+        updated: _omittedUpdated,
+        last_purchase_date: _omittedLastPurchase,
+        ...updateData
+    } = updates;
 
     try {
         const record = await pb.collection('customers').update(id, updateData);
@@ -151,8 +170,7 @@ export async function searchCustomers(query: string, limit: number = 10): Promis
     try {
         const records = await pb.collection('customers').getList<Customer>(1, limit, {
             filter: `name~"${sanitizeFilter(query)}" || phone~"${sanitizeFilter(query)}" || email~"${sanitizeFilter(query)}"`,
-            sort: 'name',
-            fields: 'id,name,phone,email,customer_type,total_spent'
+            sort: 'name'
         });
         return records.items;
     } catch (error) {
@@ -166,8 +184,16 @@ export async function searchCustomers(query: string, limit: number = 10): Promis
 // ===========================================
 
 export async function getCustomerPurchases(customerId: string): Promise<CustomerPurchase[]> {
+    // Fields of a sales record consumed for purchase history display
+    interface SaleSummary {
+        id: string;
+        total: number;
+        payment_method?: string;
+        created: string;
+    }
+
     try {
-        const records = await pb.collection('sales').getList(1, 50, {
+        const records = await pb.collection('sales').getList<SaleSummary>(1, 50, {
             filter: `customer="${customerId}"`,
             sort: '-created',
             expand: 'sale_items(sale)' // Logic for count might be complex if items are separate collection
@@ -180,7 +206,7 @@ export async function getCustomerPurchases(customerId: string): Promise<Customer
         // The previous code used a join. 
         // Let's assume for now we just show what's available. 
 
-        return records.items.map((sale: any) => ({
+        return records.items.map((sale) => ({
             id: sale.id,
             total: sale.total,
             items_count: 0, // Pending efficient count solution
@@ -241,6 +267,21 @@ export async function addLoyaltyPoints(customerId: string, points: number): Prom
 // REMINDERS (Birthdays/Anniversaries)
 // ===========================================
 
+/**
+ * Parse a date-only value (YYYY-MM-DD) as a local-timezone date.
+ * `new Date('YYYY-MM-DD')` parses as UTC midnight, which shifts the
+ * calendar day in timezones behind UTC. Falls back to `new Date(value)`
+ * for other formats; returns null for missing/invalid values.
+ */
+function parseDateOnly(value?: string): Date | null {
+    if (!value) return null;
+    const match = value.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    const date = match
+        ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+        : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export async function getUpcomingBirthdays(days: number = 7): Promise<Customer[]> {
     // PB filtering for dates excluding year is hard. fetch all with DOB and filter in JS.
     try {
@@ -250,12 +291,13 @@ export async function getUpcomingBirthdays(days: number = 7): Promise<Customer[]
         });
 
         const today = new Date();
+        today.setHours(0, 0, 0, 0); // local midnight so events happening today are included
         const endDate = new Date();
         endDate.setDate(endDate.getDate() + days);
 
         return records.filter(customer => {
-            if (!customer.date_of_birth) return false;
-            const dob = new Date(customer.date_of_birth);
+            const dob = parseDateOnly(customer.date_of_birth);
+            if (!dob) return false;
             const thisYearBday = new Date(today.getFullYear(), dob.getMonth(), dob.getDate());
             if (thisYearBday < today) {
                 thisYearBday.setFullYear(thisYearBday.getFullYear() + 1);
@@ -277,12 +319,13 @@ export async function getUpcomingAnniversaries(days: number = 7): Promise<Custom
         });
 
         const today = new Date();
+        today.setHours(0, 0, 0, 0); // local midnight so events happening today are included
         const endDate = new Date();
         endDate.setDate(endDate.getDate() + days);
 
         return records.filter(customer => {
-            if (!customer.anniversary) return false;
-            const ann = new Date(customer.anniversary);
+            const ann = parseDateOnly(customer.anniversary);
+            if (!ann) return false;
             const thisYearAnn = new Date(today.getFullYear(), ann.getMonth(), ann.getDate());
             if (thisYearAnn < today) {
                 thisYearAnn.setFullYear(thisYearAnn.getFullYear() + 1);
@@ -339,7 +382,7 @@ export async function getCustomerStats(): Promise<{
             topSpenders: topSpenders.items,
             byType,
         };
-    } catch (error) {
+    } catch {
         return {
             totalCustomers: 0,
             newThisMonth: 0,

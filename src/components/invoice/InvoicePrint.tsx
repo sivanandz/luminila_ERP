@@ -2,7 +2,8 @@
 
 import { useRef, forwardRef, useImperativeHandle } from "react";
 import { format } from "date-fns";
-import { formatINR, amountToWords } from "@/lib/gst";
+import { formatINR } from "@/lib/gst";
+import { formatJewelrySpecs } from "@/lib/jewelry-engine";
 import type { Invoice } from "@/lib/invoice";
 
 export type PrintMode = "regular" | "thermal58" | "thermal80";
@@ -15,6 +16,10 @@ interface InvoicePrintProps {
         store_phone?: string;
         store_email?: string;
         store_logo?: string; // Base64 encoded logo
+        store_address?: string;
+        store_city?: string;
+        store_state?: string;
+        store_pincode?: string;
         bank_name?: string;
         bank_account_no?: string;
         bank_ifsc?: string;
@@ -193,6 +198,7 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                         {/* Header */}
                         <div className="center">
                             {storeSettings?.store_logo && (
+                                // eslint-disable-next-line @next/next/no-img-element -- store logo is a dynamic base64 upload with unknown aspect ratio rendered into a raw print window via innerHTML
                                 <img src={storeSettings.store_logo} alt="Logo" className="logo" />
                             )}
                             <div className="store-name">{invoice.seller_name}</div>
@@ -234,6 +240,11 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                         {invoice.items?.map((item, index) => (
                             <div key={item.id || index} className="item">
                                 <div className="item-name">{item.description}</div>
+                                {formatJewelrySpecs(item) && (
+                                    <div style={{ fontSize: "8px", color: "#333", margin: "1px 0" }}>
+                                        {formatJewelrySpecs(item)}
+                                    </div>
+                                )}
                                 <div className="item-details">
                                     <span>{item.quantity} x {formatINR(item.unit_price)}</span>
                                     <span>{formatINR(item.total_amount)}</span>
@@ -304,25 +315,41 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
             );
         }
 
-        // Regular A4 Format
-        return (
-            <div ref={printRef} className="bg-white text-black p-6 rounded-lg">
-                <div className="invoice-container">
-                    {/* Header */}
-                    <div className="header">
-                        <div>
-                            {storeSettings?.store_logo && (
-                                <img src={storeSettings.store_logo} alt="Logo" className="logo" />
-                            )}
-                            <div className="company-name">{invoice.seller_name}</div>
+    const isInvalidAddr = (addr?: string | null) => {
+        if (!addr) return true;
+        const l = addr.toLowerCase().trim();
+        return l === "" || l.includes("14, car street") || l.includes("undefined") || l.includes("commercial complex") || l.includes("main street");
+    };
+    const cleanSellerAddress = !isInvalidAddr(invoice.seller_address)
+        ? invoice.seller_address
+        : [
+            storeSettings?.store_address,
+            storeSettings?.store_city,
+            [storeSettings?.store_state, storeSettings?.store_pincode].filter(Boolean).join(" - ")
+          ].filter(Boolean).join(", ");
+
+    // Regular A4 Format
+    return (
+        <div ref={printRef} className="bg-white text-black p-6 rounded-lg">
+            <div className="invoice-container">
+                {/* Header */}
+                <div className="header">
+                    <div>
+                        {storeSettings?.store_logo && (
+                            // eslint-disable-next-line @next/next/no-img-element -- store logo is a dynamic base64 upload with unknown aspect ratio rendered into a raw print window via innerHTML
+                            <img src={storeSettings.store_logo} alt="Logo" className="logo" />
+                        )}
+                        <div className="company-name">{invoice.seller_name}</div>
+                        {cleanSellerAddress && (
                             <div style={{ fontSize: "11px", maxWidth: "300px" }}>
-                                {invoice.seller_address}
+                                {cleanSellerAddress}
                             </div>
-                            {invoice.seller_gstin && (
-                                <div style={{ marginTop: "5px" }}>
-                                    <strong>GSTIN:</strong> {invoice.seller_gstin}
-                                </div>
-                            )}
+                        )}
+                        {invoice.seller_gstin && (
+                            <div style={{ marginTop: "5px" }}>
+                                <strong>GSTIN:</strong> {invoice.seller_gstin}
+                            </div>
+                        )}
                             {storeSettings?.store_phone && (
                                 <div>Phone: {storeSettings.store_phone}</div>
                             )}
@@ -431,7 +458,14 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                             {invoice.items?.map((item, index) => (
                                 <tr key={item.id || index}>
                                     <td className="text-center">{index + 1}</td>
-                                    <td>{item.description}</td>
+                                    <td>
+                                        <div style={{ fontWeight: 500 }}>{item.description}</div>
+                                        {formatJewelrySpecs(item) && (
+                                            <div style={{ fontSize: "11px", color: "#555", marginTop: "2px" }}>
+                                                {formatJewelrySpecs(item)}
+                                            </div>
+                                        )}
+                                    </td>
                                     <td>{item.hsn_code}</td>
                                     <td className="text-center">
                                         {item.quantity} {item.unit}

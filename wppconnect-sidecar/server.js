@@ -12,6 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { execSync } = require('child_process');
 
 // Configuration
 const PORT = process.env.WPPCONNECT_PORT || 21465;
@@ -31,7 +32,24 @@ function getSessionTokenPath(sessionName) {
     return path.join(TOKENS_BASE_DIR, sessionName);
 }
 
+function killOrphanedSessionBrowsers(sessionName) {
+    if (process.platform !== 'win32') return;
+    try {
+        const out = execSync('powershell "Get-WmiObject Win32_Process -Filter \\"Name=\'chrome.exe\'\\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"', { encoding: 'utf-8', timeout: 5000 });
+        const list = JSON.parse(out || '[]');
+        const items = Array.isArray(list) ? list : [list];
+        const sessionPath = getSessionTokenPath(sessionName);
+        const orphaned = items.filter(i => i.CommandLine && (i.CommandLine.includes(sessionName) || i.CommandLine.includes(sessionPath)));
+        for (const item of orphaned) {
+            try {
+                process.kill(item.ProcessId, 'SIGKILL');
+            } catch {}
+        }
+    } catch { /* ignore */ }
+}
+
 async function cleanSessionTokens(sessionName) {
+    killOrphanedSessionBrowsers(sessionName);
     const sessionPath = getSessionTokenPath(sessionName);
     const dataJson = path.join(TOKENS_BASE_DIR, `${sessionName}.data.json`);
     const qrPng = path.join(TOKENS_BASE_DIR, `${sessionName}_qr.png`);
@@ -54,8 +72,15 @@ async function cleanSessionTokens(sessionName) {
 }
 
 function removeStaleProfileLocks(sessionName) {
+    killOrphanedSessionBrowsers(sessionName);
     const sessionPath = getSessionTokenPath(sessionName);
-    const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+    const lockFiles = [
+        'SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile',
+        path.join('Default', 'lockfile'),
+        path.join('Default', 'SingletonLock'),
+        path.join('Default', 'SingletonCookie'),
+        path.join('Default', 'SingletonSocket')
+    ];
     for (const lock of lockFiles) {
         const lockPath = path.join(sessionPath, lock);
         try {
@@ -73,7 +98,7 @@ const server = http.createServer(app);
 // websites open in the user's browser must not be able to drive it.
 const EXTRA_ORIGINS = (process.env.WPP_ALLOWED_ORIGINS || '')
     .split(',').map(o => o.trim()).filter(Boolean);
-const TRUSTED_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|tauri\.localhost|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|[a-z0-9-]+\.trycloudflare\.com)(:\d+)?$/i;
+const TRUSTED_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?$/i;
 function isAllowedOrigin(origin) {
     // Same-machine server-to-server calls (Next.js API routes, scripts) send no Origin
     if (!origin) return true;
@@ -85,20 +110,48 @@ const io = new Server(server, {
     cors: { origin: corsOrigin, methods: ['GET', 'POST'] }
 });
 
+io.use((socket, next) => {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    if (!token || token !== SECRET_KEY) {
+        return next(new Error('Unauthorized: Invalid sidecar socket token'));
+    }
+    next();
+});
+
 app.use((req, res, next) => {
-    if (!isAllowedOrigin(req.headers.origin)) {
+    const origin = req.headers.origin;
+    if (origin && !isAllowedOrigin(origin)) {
         return res.status(403).json({ success: false, error: 'Origin not allowed' });
     }
-    res.header('Access-Control-Allow-Private-Network', 'true');
+    if (origin && (origin.includes('localhost') || origin.includes('tauri'))) {
+        res.header('Access-Control-Allow-Private-Network', 'true');
+    }
     next();
 });
 
 app.use(cors({
     origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Api-Key'],
     credentials: true
 }));
+
+// Require Bearer token authentication for all /api endpoints
+function requireSidecarAuth(req, res, next) {
+    if (req.method === 'OPTIONS') return next();
+    
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') 
+        ? authHeader.slice(7).trim() 
+        : (req.query.token || req.headers['x-api-key']);
+        
+    if (!token || token !== SECRET_KEY) {
+        return res.status(401).json({ success: false, error: 'Unauthorized: Invalid or missing sidecar API token' });
+    }
+    next();
+}
+
+app.use('/api', requireSidecarAuth);
 
 // Session names become filesystem paths (token dirs are rm -rf'd on reset) - restrict strictly
 const SESSION_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -209,7 +262,9 @@ async function closeSessionData(data) {
 }
 
 function attachClientListeners(names, client) {
-    client.onMessage((message) => {
+    const emit = (event, data) => names.forEach(session => io.emit(event, { session, ...data }));
+
+    const handleMsg = (message) => {
         const payload = {
             id: message.id,
             from: message.from,
@@ -218,11 +273,33 @@ function attachClientListeners(names, client) {
             type: message.type,
             timestamp: message.timestamp,
             isGroupMsg: message.isGroupMsg,
+            fromMe: message.fromMe,
             sender: message.sender
         };
-        names.forEach(session => io.emit('message', { session, message: payload }));
-    });
-    client.onAck((ack) => names.forEach(session => io.emit('ack', { session, ack })));
+        emit('message', { message: payload });
+    };
+
+    if (typeof client.onAnyMessage === 'function') {
+        client.onAnyMessage(handleMsg);
+    } else if (typeof client.onMessage === 'function') {
+        client.onMessage(handleMsg);
+    }
+
+    if (typeof client.onAck === 'function') {
+        client.onAck((ack) => emit('ack', { ack }));
+    }
+    if (typeof client.onRevokedMessage === 'function') {
+        client.onRevokedMessage((revoked) => emit('message_revoked', { revoked }));
+    }
+    if (typeof client.onReactionMessage === 'function') {
+        client.onReactionMessage((reaction) => emit('message_reaction', { reaction }));
+    }
+    if (typeof client.onMessageEdit === 'function') {
+        client.onMessageEdit((edited) => emit('message_edit', { edited }));
+    }
+    if (typeof client.onPollResponse === 'function') {
+        client.onPollResponse((poll) => emit('poll_response', { poll }));
+    }
 }
 
 /**
@@ -422,7 +499,7 @@ app.get('/api/:session/qrcode/image', async (req, res) => {
 // Check session status (auto-boots from disk if profile exists)
 const bootingSessions = new Set();
 
-app.get('/api/:session/status', (req, res) => {
+app.get('/api/:session/status', async (req, res) => {
     const { session } = req.params;
     let sessionData = sessions.get(session);
 
@@ -461,6 +538,54 @@ app.get('/api/:session/status', (req, res) => {
         });
     }
 
+    let connectedNumber = null;
+    let pushname = null;
+    let hostDevice = null;
+    if (sessionData.client && sessionData.connected) {
+        try {
+            hostDevice = await sessionData.client.getHostDevice().catch(() => null);
+            pushname = hostDevice?.pushname || null;
+
+            if (sessionData.client.getWid) {
+                const wid = await sessionData.client.getWid().catch(() => null);
+                if (wid?.user) connectedNumber = wid.user;
+                else if (typeof wid === 'string') connectedNumber = wid.split('@')[0].split(':')[0];
+            }
+            if (!connectedNumber && sessionData.client.getMe) {
+                const me = await sessionData.client.getMe().catch(() => null);
+                if (me?.user) connectedNumber = me.user;
+                else if (me?.id?.user) connectedNumber = me.id.user;
+                else if (typeof me === 'string') connectedNumber = me.split('@')[0].split(':')[0];
+            }
+            if (!connectedNumber && sessionData.client.page) {
+                const extracted = await sessionData.client.page.evaluate(() => {
+                    const lsLastWid = window.localStorage ? (window.localStorage.getItem('last-wid-md') || window.localStorage.getItem('last-wid') || window.localStorage.getItem('WABrowserId')) : null;
+                    const wppMe = window.WPP?.conn?.getMyUserId?.();
+                    const connMe = window.WPP?.whatsapp?.Conn?.me?._serialized || window.WPP?.whatsapp?.Conn?.wid?._serialized;
+                    const userMe = window.WPP?.whatsapp?.User?.getMaybeMeUser?.()?._serialized;
+                    const myUserId = (typeof wppMe === 'string') ? wppMe : (wppMe?._serialized || wppMe?.user);
+                    return { lsLastWid, myUserId, connMe, userMe };
+                }).catch(() => null);
+                if (extracted) {
+                    const raw = extracted.myUserId || extracted.connMe || extracted.userMe || extracted.lsLastWid;
+                    if (typeof raw === 'string') {
+                        const matched = raw.match(/\d{8,15}/);
+                        if (matched) connectedNumber = matched[0];
+                    }
+                }
+            }
+            if (!connectedNumber && hostDevice) {
+                connectedNumber = hostDevice.wid?.user || hostDevice.id?.user || hostDevice.phone || null;
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    if (connectedNumber) {
+        sessionData.connectedNumber = connectedNumber;
+    }
+
     res.json({
         exists: true,
         connected: (sessionData.connected && !!sessionData.client) || false,
@@ -468,8 +593,26 @@ app.get('/api/:session/status', (req, res) => {
         qrReady: sessionData.qrReady || false,
         linkingPhone: sessionData.linkingPhone || false,
         pairingCode: sessionData.pairingCode || null,
-        qrcode: sessionData.qrCode || null
+        qrcode: sessionData.qrCode || null,
+        connectedNumber,
+        pushname,
+        hostDevice
     });
+});
+
+app.get('/api/:session/host-device', async (req, res) => {
+    const { session } = req.params;
+    const sessionData = sessions.get(session);
+    if (!sessionData?.client || !sessionData?.connected) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+    try {
+        const hostDevice = await sessionData.client.getHostDevice();
+        const connectedNumber = hostDevice?.wid?.user || hostDevice?.id?.user || hostDevice?.phone || null;
+        res.json({ success: true, hostDevice, connectedNumber });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err?.message || 'Failed to get host device' });
+    }
 });
 
 // Logout session
@@ -639,7 +782,7 @@ app.get('/api/:session/chats', async (req, res) => {
         try {
             if (typeof sessionData.client.listChats === 'function') {
                 console.log(`[${session}] Calling client.listChats()...`);
-                const result = await sessionData.client.listChats({ count: 50 });
+                const result = await sessionData.client.listChats({ count: 100 });
                 if (Array.isArray(result)) {
                     chats = result;
                 }
@@ -655,13 +798,21 @@ app.get('/api/:session/chats', async (req, res) => {
                     console.log(`[${session}] Trying WPP.chat.list() in browser context...`);
                     const evaluated = await sessionData.client.page.evaluate(async () => {
                         if (window.WPP && window.WPP.chat && typeof window.WPP.chat.list === 'function') {
-                            const raw = await window.WPP.chat.list({ count: 50 });
+                            const raw = await window.WPP.chat.list({ count: 100 });
                             return (raw || []).map(c => {
                                 const idStr = c.id?._serialized || (typeof c.id === 'string' ? c.id : '');
+                                const nameStr = c.name || c.formattedTitle || c.contact?.pushname || c.contact?.name || (idStr ? idStr.split('@')[0] : 'Unknown');
+                                const isComm = !!(c.isParentGroup || c.isCommunity || (c.groupMetadata && c.groupMetadata.isParentGroup));
+                                const isCommAnnounce = !!(c.isCommunityAnnounce || c.isDefaultSubgroup || (c.groupMetadata && c.groupMetadata.isCommunityAnnounce) || (c.isGroup && nameStr.toLowerCase().includes('announcement')));
                                 return {
                                     id: { _serialized: idStr },
-                                    name: c.name || c.formattedTitle || c.contact?.pushname || c.contact?.name || (idStr ? idStr.split('@')[0] : 'Unknown'),
+                                    name: nameStr,
                                     isGroup: !!c.isGroup,
+                                    isParentGroup: isComm,
+                                    isCommunity: isComm,
+                                    isCommunityAnnounce: isCommAnnounce,
+                                    isNewsletter: idStr.includes('@newsletter'),
+                                    parentGroup: c.parentGroup?._serialized || c.parentGroup || null,
                                     timestamp: c.t || c.timestamp || Math.floor(Date.now() / 1000),
                                     unreadCount: c.unreadCount || 0,
                                     lastMessage: c.lastMessage ? {
@@ -685,8 +836,8 @@ app.get('/api/:session/chats', async (req, res) => {
 
         console.log(`[${session}] Retrieved ${chats.length} chats`);
 
-        // Enrich the top 20 chats with lastMessage if missing
-        const slicedChats = (chats || []).slice(0, 30);
+        // Enrich the top 50 chats with lastMessage if missing
+        const slicedChats = (chats || []).slice(0, 100);
 
         const enrichedChats = await Promise.all(slicedChats.map(async (chat) => {
             try {
@@ -702,6 +853,28 @@ app.get('/api/:session/chats', async (req, res) => {
             } catch (err) {
                 console.warn(`[${session}] Failed to enrich chat ${chat.id?._serialized || chat.id}: ${err.message}`);
             }
+
+            const idStr = chat.id?._serialized || (typeof chat.id === 'string' ? chat.id : '');
+            const nameStr = (chat.name || chat.formattedTitle || chat.contact?.pushname || chat.contact?.name || '').toLowerCase();
+            const isComm = Boolean(chat.isParentGroup || chat.isCommunity || (chat.groupMetadata && chat.groupMetadata.isParentGroup) || nameStr.includes('community'));
+            const isCommAnnounce = Boolean(
+                chat.isCommunityAnnounce ||
+                chat.isDefaultSubgroup ||
+                (chat.groupMetadata && chat.groupMetadata.isCommunityAnnounce) ||
+                ((chat.isGroup || idStr.includes('@g.us')) && (nameStr.includes('announcement') || nameStr.includes('announcements')))
+            );
+
+            chat.isParentGroup = isComm;
+            chat.isCommunity = isComm;
+            chat.isCommunityAnnounce = isCommAnnounce;
+            chat.isNewsletter = idStr.includes('@newsletter');
+
+            const readTime = sessionData.readChats?.get(idStr);
+            const msgTime = chat.lastMessage?.timestamp || chat.lastMessage?.t || chat.t || chat.timestamp || 0;
+            if (readTime && msgTime <= readTime) {
+                chat.unreadCount = 0;
+            }
+
             return chat;
         }));
 
@@ -730,7 +903,7 @@ app.get('/api/:session/messages/:chatId', async (req, res) => {
     }
 });
 
-// Get profile picture
+// Get profile picture (supports individual contacts, groups, communities, and newsletters)
 app.get('/api/:session/profile-pic/:contactId', async (req, res) => {
     const { session, contactId } = req.params;
     const sessionData = sessions.get(session);
@@ -740,10 +913,56 @@ app.get('/api/:session/profile-pic/:contactId', async (req, res) => {
     }
 
     try {
-        const profilePic = await sessionData.client.getProfilePicFromServer(contactId);
+        let profilePic = null;
+
+        // 1. In-browser evaluate via WPP functions (safely handles @c.us, @g.us, @newsletter)
+        if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+            try {
+                profilePic = await sessionData.client.page.evaluate(async (id) => {
+                    try {
+                        // A. Try WPP.contact.getProfilePictureUrl (supports contact, group, newsletter)
+                        if (window.WPP?.contact?.getProfilePictureUrl) {
+                            const url = await window.WPP.contact.getProfilePictureUrl(id);
+                            if (url) return url;
+                        }
+                        // B. Check WPP.chat or Store.Chat models
+                        const chat = window.WPP?.chat?.get ? window.WPP.chat.get(id) : window.Store?.Chat?.get(id);
+                        if (chat) {
+                            if (chat.profilePicThumbObj?.eurl) return chat.profilePicThumbObj.eurl;
+                            if (chat.profilePicThumbObj?.img) return chat.profilePicThumbObj.img;
+                            if (chat.contact?.profilePicThumbObj?.eurl) return chat.contact.profilePicThumbObj.eurl;
+                            if (chat.contact?.profilePicThumbObj?.img) return chat.contact.profilePicThumbObj.img;
+                            if (chat.groupMetadata?.icon) return chat.groupMetadata.icon;
+                            if (chat.newsletterMetadata?.icon) return chat.newsletterMetadata.icon;
+                        }
+                        // C. Check Contact store
+                        const contact = window.WPP?.contact?.get ? window.WPP.contact.get(id) : window.Store?.Contact?.get(id);
+                        if (contact) {
+                            if (contact.profilePicThumbObj?.eurl) return contact.profilePicThumbObj.eurl;
+                            if (contact.profilePicThumbObj?.img) return contact.profilePicThumbObj.img;
+                        }
+                    } catch {
+                        // ignore inside evaluate
+                    }
+                    return null;
+                }, contactId);
+            } catch {
+                // ignore evaluate errors
+            }
+        }
+
+        // 2. Fallback to client.getProfilePicFromServer if evaluate did not return
+        if (!profilePic && typeof sessionData.client.getProfilePicFromServer === 'function') {
+            try {
+                profilePic = await sessionData.client.getProfilePicFromServer(contactId);
+            } catch {
+                // ignore
+            }
+        }
+
         res.json({ success: true, profilePic });
     } catch (error) {
-        res.json({ success: true, profilePic: null }); // Return null if no profile pic
+        res.json({ success: true, profilePic: null });
     }
 });
 
@@ -899,9 +1118,18 @@ app.post('/api/:session/send-audio', async (req, res) => {
     }
 
     try {
-        const result = ptt
-            ? await sessionData.client.sendPtt(phone, base64)
-            : await sessionData.client.sendFile(phone, base64, 'audio.mp3', '');
+        let result;
+        if (ptt) {
+            if (typeof base64 === 'string' && (base64.startsWith('data:') || /^[A-Za-z0-9+/=]{50,}$/.test(base64.trim()))) {
+                result = await sessionData.client.sendPttFromBase64(phone, base64, 'voice.oga');
+            } else if (typeof sessionData.client.sendPtt === 'function') {
+                result = await sessionData.client.sendPtt(phone, base64);
+            } else {
+                result = await sessionData.client.sendPttFromBase64(phone, base64, 'voice.oga');
+            }
+        } else {
+            result = await sessionData.client.sendFile(phone, base64, 'audio.mp3', '');
+        }
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -995,18 +1223,45 @@ app.get('/api/:session/check-number/:phone', async (req, res) => {
     }
 });
 
-// Mark chat as read
-app.post('/api/:session/mark-as-read', async (req, res) => {
+// Mark chat as read (supports both POST body and URL param)
+app.post(['/api/:session/mark-as-read', '/api/:session/mark-as-read/:chatId'], async (req, res) => {
     const { session } = req.params;
-    const { chatId } = req.body;
+    const chatId = req.params.chatId || req.body?.chatId;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
 
+    if (!chatId) {
+        return res.status(400).json({ success: false, error: 'chatId is required' });
+    }
+
     try {
-        await sessionData.client.markUnseenMessage(chatId);
+        if (!sessionData.readChats) sessionData.readChats = new Map();
+        sessionData.readChats.set(chatId, Date.now() / 1000);
+
+        if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+            await sessionData.client.page.evaluate(async (id) => {
+                try {
+                    if (window.WPP?.chat?.sendSeen) {
+                        await window.WPP.chat.sendSeen(id);
+                    }
+                    if (window.WPP?.chat?.markIsRead) {
+                        await window.WPP.chat.markIsRead(id);
+                    }
+                    if (window.WPP?.chat?.openChatBottom) {
+                        await window.WPP.chat.openChatBottom(id);
+                    }
+                    const chat = window.WPP?.chat?.get ? window.WPP.chat.get(id) : window.Store?.Chat?.get(id);
+                    if (chat) {
+                        chat.unreadCount = 0;
+                        chat.markedUnread = false;
+                        if (chat.msgUnreadCnt !== undefined) chat.msgUnreadCnt = 0;
+                    }
+                } catch { /* ignore in-browser error */ }
+            }, chatId);
+        }
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1024,11 +1279,7 @@ app.post('/api/:session/archive-chat', async (req, res) => {
     }
 
     try {
-        if (archive) {
-            await sessionData.client.archiveChat(chatId);
-        } else {
-            await sessionData.client.unarchiveChat(chatId);
-        }
+        await sessionData.client.archiveChat(chatId, !!archive);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1159,10 +1410,29 @@ app.get('/api/:session/starred-messages', async (req, res) => {
     }
 
     try {
-        const starred = await sessionData.client.getStarredMessages();
-        res.json({ success: true, messages: starred });
+        let starred = [];
+        if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+            starred = await sessionData.client.page.evaluate(async () => {
+                try {
+                    if (window.WPP?.chat?.getStarredMessages) {
+                        return await window.WPP.chat.getStarredMessages();
+                    }
+                    if (window.Store?.Msg?.models) {
+                        return window.Store.Msg.models.filter(m => m.star).map(m => ({
+                            id: m.id?._serialized || m.id,
+                            from: m.from?._serialized || m.from,
+                            to: m.to?._serialized || m.to,
+                            body: m.body || '',
+                            timestamp: m.t || m.timestamp || 0
+                        }));
+                    }
+                } catch { /* ignore */ }
+                return [];
+            }).catch(() => []);
+        }
+        res.json({ success: true, messages: starred || [] });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        res.json({ success: true, messages: [] });
     }
 });
 
@@ -1265,7 +1535,39 @@ app.get('/api/:session/group/:groupId', async (req, res) => {
     }
 
     try {
-        const groupInfo = await sessionData.client.getGroupInfo(groupId);
+        let groupInfo = null;
+        if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+            groupInfo = await sessionData.client.page.evaluate(async (id) => {
+                try {
+                    if (window.WPP?.group?.getGroupMetadata) {
+                        return await window.WPP.group.getGroupMetadata(id);
+                    }
+                    const chat = window.Store?.Chat?.get(id);
+                    if (chat) {
+                        return {
+                            id: chat.id?._serialized || chat.id,
+                            name: chat.name,
+                            description: chat.groupMetadata?.desc,
+                            participants: chat.groupMetadata?.participants?.map(p => ({
+                                id: p.id?._serialized || p.id,
+                                isAdmin: p.isAdmin,
+                                isSuperAdmin: p.isSuperAdmin
+                            }))
+                        };
+                    }
+                } catch { /* ignore */ }
+                return null;
+            }, groupId).catch(() => null);
+        }
+        if (!groupInfo) {
+            const members = await sessionData.client.getGroupMembers(groupId).catch(() => []);
+            const admins = await sessionData.client.getGroupAdmins(groupId).catch(() => []);
+            groupInfo = {
+                id: groupId,
+                participants: members,
+                admins: admins
+            };
+        }
         res.json({ success: true, group: groupInfo });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1428,7 +1730,8 @@ app.post('/api/:session/del-products', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.deleteProduct(productIds);
+        const ids = Array.isArray(productIds) ? productIds : [productIds].filter(Boolean);
+        const result = await sessionData.client.delProducts(ids);
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1643,7 +1946,16 @@ app.post('/api/:session/react-message', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.sendReaction(messageId, reaction);
+        let result;
+        if (typeof sessionData.client.sendReactionToMessage === 'function') {
+            result = await sessionData.client.sendReactionToMessage(messageId, reaction || '');
+        } else if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+            result = await sessionData.client.page.evaluate(async ({ id, emoji }) => {
+                if (window.WPP?.chat?.sendReactionToMessage) {
+                    return await window.WPP.chat.sendReactionToMessage(id, emoji || '');
+                }
+            }, { id: messageId, emoji: reaction });
+        }
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1760,8 +2072,8 @@ app.post('/api/:session/send-link-preview', async (req, res) => {
 // CHAT MANAGEMENT APIs
 // ============================================
 
-// Get unread messages
-app.get('/api/:session/all-unread-messages', async (req, res) => {
+// Get unread messages (supports both /unread-messages and /all-unread-messages)
+app.get(['/api/:session/unread-messages', '/api/:session/all-unread-messages'], async (req, res) => {
     const { session } = req.params;
     const sessionData = sessions.get(session);
 
@@ -1771,7 +2083,7 @@ app.get('/api/:session/all-unread-messages', async (req, res) => {
 
     try {
         const messages = await sessionData.client.getUnreadMessages();
-        res.json({ success: true, messages });
+        res.json({ success: true, messages: messages || [] });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -1787,8 +2099,21 @@ app.get('/api/:session/all-chats-archived', async (req, res) => {
     }
 
     try {
-        const chats = await sessionData.client.getArchivedChats();
-        res.json({ success: true, chats });
+        let chats = [];
+        if (typeof sessionData.client.listChats === 'function') {
+            chats = await sessionData.client.listChats({ only: 'archived' }).catch(() => []);
+        }
+        if (!Array.isArray(chats) || chats.length === 0) {
+            if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+                chats = await sessionData.client.page.evaluate(async () => {
+                    if (window.WPP?.chat?.list) {
+                        return await window.WPP.chat.list({ only: 'archived' });
+                    }
+                    return [];
+                }).catch(() => []);
+            }
+        }
+        res.json({ success: true, chats: chats || [] });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -1845,8 +2170,17 @@ app.post('/api/:session/send-mute', async (req, res) => {
     }
 
     try {
-        await sessionData.client.muteChat(chatId, duration);
-        res.json({ success: true });
+        let result;
+        if (typeof sessionData.client.sendMute === 'function') {
+            result = await sessionData.client.sendMute(chatId, duration || 8, 'hours');
+        } else if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+            result = await sessionData.client.page.evaluate(async ({ id, time }) => {
+                if (window.WPP?.chat?.mute) {
+                    return await window.WPP.chat.mute(id, { expiration: time });
+                }
+            }, { id: chatId, time: duration });
+        }
+        res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2051,43 +2385,6 @@ app.get('/api/:session/all-broadcast-list', async (req, res) => {
     }
 });
 
-// Close session
-app.post('/api/:session/close', async (req, res) => {
-    const { session } = req.params;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData) {
-        return res.json({ success: true, message: 'Session not found' });
-    }
-
-    try {
-        if (sessionData.client) {
-            await sessionData.client.close();
-        }
-        sessions.delete(session);
-        res.json({ success: true, message: 'Session closed' });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Logout (clear session data)
-app.post('/api/:session/logout', async (req, res) => {
-    const { session } = req.params;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.json({ success: true, message: 'Session not found' });
-    }
-
-    try {
-        await sessionData.client.logout();
-        sessions.delete(session);
-        res.json({ success: true, message: 'Logged out' });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
 
 // Socket.IO connection
 io.on('connection', (socket) => {
@@ -2144,7 +2441,7 @@ app.get('/api/:session/catalog/products/:productId', async (req, res) => {
     }
 
     try {
-        const product = await sessionData.client.getProduct(productId);
+        const product = await sessionData.client.getProductById(productId);
         res.json({ success: true, product });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -2301,8 +2598,20 @@ app.get('/api/:session/labels/:labelId/chats', async (req, res) => {
     }
 
     try {
-        const chats = await sessionData.client.getChatsByLabelId(labelId);
-        res.json({ success: true, chats });
+        let chats = [];
+        if (sessionData.client.page && !sessionData.client.page.isClosed()) {
+            chats = await sessionData.client.page.evaluate(async (id) => {
+                if (window.WPP?.labels?.getChatsByLabel) {
+                    return await window.WPP.labels.getChatsByLabel(id);
+                }
+                const label = window.Store?.Label?.get(id);
+                if (label?.chatIds) {
+                    return label.chatIds;
+                }
+                return [];
+            }, labelId).catch(() => []);
+        }
+        res.json({ success: true, chats: chats || [] });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2312,7 +2621,6 @@ app.get('/api/:session/labels/:labelId/chats', async (req, res) => {
 // BUSINESS PROFILE ENDPOINTS
 // ==============================
 
-// Get business profile
 app.get('/api/:session/business-profile', async (req, res) => {
     const { session } = req.params;
     const { chatId } = req.query;
@@ -2323,8 +2631,21 @@ app.get('/api/:session/business-profile', async (req, res) => {
     }
 
     try {
-        const profile = chatId
-            ? await sessionData.client.getBusinessProfile(chatId)
+        let targetChatId = chatId;
+        if (!targetChatId) {
+            if (sessionData.connectedNumber) {
+                targetChatId = `${sessionData.connectedNumber.replace(/\D/g, '')}@c.us`;
+            } else if (sessionData.client.getWid) {
+                const wid = await sessionData.client.getWid().catch(() => null);
+                const u = wid?.user || (typeof wid === 'string' ? wid.split('@')[0].split(':')[0] : null);
+                if (u) {
+                    sessionData.connectedNumber = u;
+                    targetChatId = `${u.replace(/\D/g, '')}@c.us`;
+                }
+            }
+        }
+        const profile = targetChatId
+            ? await sessionData.client.getBusinessProfile(targetChatId)
             : await sessionData.client.getBusinessProfile();
         res.json({ success: true, profile });
     } catch (error) {

@@ -5,8 +5,16 @@ import { useSearchParams } from "next/navigation";
 import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Printer, Download, RefreshCw, Plus, Trash2, Tag, CheckCircle } from "lucide-react";
+import { Printer, Plus, Trash2, Tag, CheckCircle, Sparkles } from "lucide-react";
 import JsBarcode from "jsbarcode";
+import {
+    type SymbologyMode,
+    generateDataMatrixURL,
+    generateQRCodeURL,
+    generateBarcodeURL,
+} from "@/lib/barcode-generator";
+import { getProducts } from "@/lib/products";
+import { getChannelPrice, getConfiguredChannels, loadConfiguredChannels, type SalesChannelDef } from "@/lib/channel-pricing";
 
 interface LabelData {
     sku: string;
@@ -14,6 +22,7 @@ interface LabelData {
     price: number;
     variant?: string;
     quantity: number;
+    hsn_code?: string;
 }
 
 // Product type from DB
@@ -22,7 +31,10 @@ interface DBProduct {
     name: string;
     sku: string;
     price: number;
+    base_price: number;
+    channel_prices?: Record<string, number>;
     category: string;
+    hsn_code?: string;
 }
 
 // Standard label size presets
@@ -35,6 +47,7 @@ interface LabelSize {
 }
 
 const LABEL_SIZES: LabelSize[] = [
+    { id: "dumbbell", name: "Dumbbell Tag (54×11mm)", width: 54, height: 11, description: "Jewelry Barbell Tag (Wing A Symbology + Bridge + Wing B Text)" },
     { id: "small", name: "Small (25×15mm)", width: 25, height: 15, description: "Jewelry tags, small items" },
     { id: "medium", name: "Medium (50×25mm)", width: 50, height: 25, description: "Standard product labels" },
     { id: "large", name: "Large (75×50mm)", width: 75, height: 50, description: "Retail price tags" },
@@ -43,6 +56,44 @@ const LABEL_SIZES: LabelSize[] = [
     { id: "dymo-large", name: "DYMO Large (89×28mm)", width: 89, height: 28, description: "DYMO shipping labels" },
     { id: "custom", name: "Custom Size", width: 50, height: 25, description: "Set your own dimensions" },
 ];
+
+function DumbbellTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: LabelData; symbology?: SymbologyMode }) {
+    let codeUrl = '';
+    if (symbology === '2D_DATAMATRIX_ECC200') {
+        codeUrl = generateDataMatrixURL(data.sku);
+    } else if (symbology === '2D_QRCODE') {
+        codeUrl = generateQRCodeURL(data.sku);
+    } else {
+        codeUrl = generateBarcodeURL(data.sku);
+    }
+
+    return (
+        <div className="dumbbell-tag bg-white text-black border border-gray-300 rounded p-1 w-[260px] h-[58px] flex items-center justify-between shadow-sm">
+            {/* Wing A: Symbology Zone (19 x 10mm) */}
+            <div className="w-[85px] h-[48px] flex items-center justify-center overflow-hidden border-r border-dashed border-gray-200 pr-1">
+                {/* eslint-disable-next-line @next/next/no-img-element -- barcode image from external generator APIs with dynamic response format (PNG/SVG), rendered in a fixed-size print label */}
+                <img
+                    src={codeUrl}
+                    alt={data.sku}
+                    className={`object-contain ${symbology === '1D_CODE128_POINTER' ? 'w-full h-7' : 'w-9 h-9'}`}
+                />
+            </div>
+
+            {/* Central Bridge (16 x 2mm): Adhesive-Free Zone */}
+            <div className="w-10 h-1.5 border-y border-dotted border-gray-400 mx-1 flex items-center justify-center">
+                <span className="text-[6px] text-gray-400 select-none font-mono">BRIDGE</span>
+            </div>
+
+            {/* Wing B: Text Area (19 x 10mm) */}
+            <div className="w-[100px] h-[48px] flex flex-col justify-center text-right pl-1 border-l border-dashed border-gray-200">
+                <p className="text-[9px] font-black tracking-wider text-black">LUMINILA</p>
+                <p className="text-[8px] font-mono font-bold text-gray-800 truncate" title={data.sku}>{data.sku}</p>
+                <p className="text-[10px] font-black text-black">₹{data.price.toLocaleString("en-IN")}</p>
+                <p className="text-[7px] text-gray-500 font-mono">HSN {data.hsn_code || '71179010'}</p>
+            </div>
+        </div>
+    );
+}
 
 function BarcodeLabel({ data }: { data: LabelData }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -91,19 +142,56 @@ function LabelsContent() {
     const [addedNotice, setAddedNotice] = useState<string | null>(null);
     const [availableProducts, setAvailableProducts] = useState<DBProduct[]>([]);
     const [loading, setLoading] = useState(true);
-    const [selectedLabelSize, setSelectedLabelSize] = useState<LabelSize>(LABEL_SIZES[1]); // Default to Medium
+    const [selectedLabelSize, setSelectedLabelSize] = useState<LabelSize>(LABEL_SIZES[0]); // Default to Dumbbell
+    const [symbologyMode, setSymbologyMode] = useState<SymbologyMode>("2D_DATAMATRIX_ECC200");
+    const [selectedChannel, setSelectedChannel] = useState<string>("pos");
+    const [availableChannels, setAvailableChannels] = useState<SalesChannelDef[]>(getConfiguredChannels());
 
-    // Load products from localStorage
     useEffect(() => {
-        const loadProducts = () => {
+        loadConfiguredChannels().then(setAvailableChannels).catch(console.error);
+    }, []);
+
+    const handleLabelChannelChange = (channelId: string) => {
+        setSelectedChannel(channelId);
+        setAvailableProducts(prev => prev.map(p => ({
+            ...p,
+            price: getChannelPrice({ base_price: p.base_price, channel_prices: p.channel_prices }, channelId),
+        })));
+    };
+
+    // Load products from PocketBase or localStorage
+    useEffect(() => {
+        const loadProducts = async () => {
             try {
+                const dbProducts = await getProducts();
+                if (dbProducts && dbProducts.length > 0) {
+                    setAvailableProducts(dbProducts.map(p => ({
+                        id: p.id,
+                        name: p.name,
+                        sku: p.sku,
+                        base_price: p.base_price,
+                        channel_prices: p.channel_prices,
+                        price: getChannelPrice(p, selectedChannel),
+                        category: p.category || '',
+                        hsn_code: p.hsn_code || '71179010',
+                    })));
+                    return;
+                }
                 const stored = localStorage.getItem('luminila_products');
                 if (stored) {
                     const products = JSON.parse(stored);
-                    setAvailableProducts(products);
+                    setAvailableProducts(products.map((p: any) => ({
+                        ...p,
+                        base_price: p.base_price ?? p.price,
+                        price: getChannelPrice({ base_price: p.base_price ?? p.price, channel_prices: p.channel_prices }, selectedChannel),
+                    })));
                 }
             } catch (e) {
-                console.error('Failed to load products:', e);
+                console.error('Failed to load products from PB:', e);
+                const stored = localStorage.getItem('luminila_products');
+                if (stored) {
+                    try { setAvailableProducts(JSON.parse(stored)); } catch { }
+                }
             } finally {
                 setLoading(false);
             }
@@ -200,8 +288,8 @@ function LabelsContent() {
                 </div>
             )}
 
-            <div className="flex-1 overflow-y-auto p-6 scroll-smooth no-print">
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 scroll-smooth no-print">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
                     {/* Product Selection */}
                     <div className="lg:col-span-2 flex flex-col gap-6">
                         <div className="card bg-surface-navy border-surface-hover">
@@ -269,6 +357,33 @@ function LabelsContent() {
                                         <p className="text-xs text-moonstone/60 mt-1">{selectedLabelSize.description}</p>
                                     </div>
 
+                                    {/* Price Tier / Channel for Printed Tags */}
+                                    <div className="flex-1">
+                                        <label className="text-sm font-bold text-moonstone uppercase mb-2 block">Price Tier / Channel:</label>
+                                        <Select
+                                            value={selectedChannel}
+                                            onValueChange={(val) => { if (val) handleLabelChannelChange(val); }}
+                                        >
+                                            <SelectTrigger className="w-full h-10 bg-bg-navy border-surface-hover text-white">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className="!bg-[#1a2332] border border-surface-hover shadow-xl">
+                                                {availableChannels.map(channel => (
+                                                    <SelectItem
+                                                        key={channel.id}
+                                                        value={channel.id}
+                                                        className="text-white hover:!bg-primary/20 hover:!text-white focus:!bg-primary/20 focus:!text-white data-[highlighted]:!bg-primary/20 data-[highlighted]:!text-white cursor-pointer"
+                                                    >
+                                                        {channel.name} {channel.discountPreset ? `(${channel.discountPreset > 0 ? '+' : ''}${channel.discountPreset}%)` : ''}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-xs text-moonstone/60 mt-1">
+                                            {selectedChannel === 'pos' ? 'Standard retail tag rate' : `Custom rate: ${availableChannels.find(c => c.id === selectedChannel)?.name || selectedChannel}`}
+                                        </p>
+                                    </div>
+
                                     {/* Quantity Preference (Default for new adds) */}
                                     <div>
                                         <label className="text-sm font-bold text-moonstone uppercase mb-2 block">Default Qty:</label>
@@ -297,6 +412,40 @@ function LabelsContent() {
                                     </div>
                                 </div>
 
+                                {/* Symbology Selector for Dumbbell / Jewelry Tags */}
+                                {selectedLabelSize.id === 'dumbbell' && (
+                                    <div className="p-3 bg-bg-navy/80 rounded-lg border border-primary/20 space-y-2">
+                                        <label className="text-xs font-bold text-moonstone uppercase flex items-center gap-1.5">
+                                            <Sparkles size={13} className="text-gold" />
+                                            Administrative Symbology Engine (Spec):
+                                        </label>
+                                        <Select
+                                            value={symbologyMode}
+                                            onValueChange={(value) => {
+                                                if (value) setSymbologyMode(value as SymbologyMode);
+                                            }}
+                                        >
+                                            <SelectTrigger className="w-full h-9 bg-surface-navy border-surface-hover text-white text-xs">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className="!bg-[#1a2332] border border-surface-hover text-white text-xs">
+                                                <SelectItem value="2D_DATAMATRIX_ECC200" className="text-xs">
+                                                    2D Data Matrix ECC 200 (Wing A 6.5mm • 30% Reed-Solomon Recovery)
+                                                </SelectItem>
+                                                <SelectItem value="2D_QRCODE" className="text-xs">
+                                                    2D QR Code (ISO/IEC 18004 • Native Smartphone Camera)
+                                                </SelectItem>
+                                                <SelectItem value="1D_CODE128_POINTER" className="text-xs">
+                                                    1D Code 128 (Legacy Laser Barcode Wand)
+                                                </SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-[10px] text-moonstone">
+                                            Dumbbell format (54×11mm) with adhesive-free central bridge protecting fine necklaces & earring posts.
+                                        </p>
+                                    </div>
+                                )}
+
                                 {/* Size Preview */}
                                 <div className="flex items-center gap-3 text-xs text-moonstone">
                                     <span className="font-bold uppercase">Preview:</span>
@@ -319,7 +468,11 @@ function LabelsContent() {
                                 <h2 className="text-lg font-bold text-white mb-4">Preview</h2>
                                 <div className="flex flex-wrap gap-4 p-4 bg-bg-navy/50 rounded-lg border border-surface-hover justify-center sm:justify-start">
                                     {selectedProducts.slice(0, 6).map((product, index) => (
-                                        <BarcodeLabel key={`${product.sku}-${index}`} data={product} />
+                                        selectedLabelSize.id === 'dumbbell' ? (
+                                            <DumbbellTag key={`${product.sku}-${index}`} data={product} symbology={symbologyMode} />
+                                        ) : (
+                                            <BarcodeLabel key={`${product.sku}-${index}`} data={product} />
+                                        )
                                     ))}
                                     {selectedProducts.length > 6 && (
                                         <div className="w-[200px] h-[100px] border-2 border-dashed border-surface-hover rounded-lg flex items-center justify-center bg-bg-navy/30">
@@ -440,13 +593,13 @@ function LabelsContent() {
                             width: 100%;
                             background: white;
                         }
-                        .barcode-label {
+                        .barcode-label, .dumbbell-tag {
                             break-inside: avoid;
                             page-break-inside: avoid;
                             color: black !important;
                             border: 1px solid #ddd;
                         }
-                        .barcode-label * {
+                        .barcode-label *, .dumbbell-tag * {
                             color: black !important;
                             border-color: black !important;
                         }
@@ -455,7 +608,11 @@ function LabelsContent() {
                 <div className="flex flex-wrap gap-2 p-4 bg-white">
                     {selectedProducts.flatMap((product, pIndex) =>
                         Array.from({ length: product.quantity }).map((_, qIndex) => (
-                            <BarcodeLabel key={`print-${pIndex}-${qIndex}`} data={product} />
+                            selectedLabelSize.id === 'dumbbell' ? (
+                                <DumbbellTag key={`print-${pIndex}-${qIndex}`} data={product} symbology={symbologyMode} />
+                            ) : (
+                                <BarcodeLabel key={`print-${pIndex}-${qIndex}`} data={product} />
+                            )
                         ))
                     )}
                 </div>

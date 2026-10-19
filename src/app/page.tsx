@@ -92,8 +92,8 @@ export default function DashboardPage() {
                     subtitle="Real-time business overview"
                 />
 
-                <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
-                    <div className="max-w-7xl mx-auto space-y-6">
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
+                    <div className="max-w-7xl mx-auto space-y-4 md:space-y-6">
                         {/* Actions Bar */}
                         <div className="flex items-center justify-between">
                             <div>

@@ -63,6 +63,7 @@ function TransactionsContent() {
 
     useEffect(() => {
         fetchData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchData is recreated every render, so listing it would refetch on every render; the fetch is intentionally keyed on selectedAccount alone
     }, [selectedAccount]);
 
     // Update selected account if param changes
@@ -107,7 +108,7 @@ function TransactionsContent() {
             await createBankTransaction({
                 account: newTx.account_id,
                 transaction_date: newTx.transaction_date,
-                type: newTx.type as any,
+                type: newTx.type as BankTransaction['type'],
                 amount: parseFloat(newTx.amount),
                 description: newTx.description,
                 reference_number: newTx.reference_number
@@ -176,7 +177,7 @@ function TransactionsContent() {
                     <div className="flex items-center gap-2 bg-surface-navy p-1 rounded-lg border border-surface-hover">
                         <Select value={selectedAccount} onValueChange={(val) => val && setSelectedAccount(val)}>
                             <SelectTrigger className="w-[200px] border-none bg-transparent">
-                                <SelectValue placeholder="Select Account" {...({} as any)} />
+                                <SelectValue placeholder="Select Account" />
                             </SelectTrigger>
                             <SelectContent className="bg-surface-navy border-surface-hover text-white">
                                 <SelectItem value="all">All Accounts</SelectItem>
@@ -271,10 +272,10 @@ function TransactionsContent() {
                                 <Label>Type</Label>
                                 <Select
                                     value={newTx.type}
-                                    onValueChange={(val) => setNewTx({ ...newTx, type: val as any })}
+                                    onValueChange={(val) => setNewTx({ ...newTx, type: val as BankTransaction['type'] })}
                                 >
                                     <SelectTrigger className="bg-bg-navy border-surface-hover">
-                                        <SelectValue {...({} as any)} />
+                                        <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent className="bg-surface-navy border-surface-hover text-white">
                                         <SelectItem value="deposit">Deposit (In)</SelectItem>
@@ -301,7 +302,7 @@ function TransactionsContent() {
                                 onValueChange={(val) => val && setNewTx({ ...newTx, account_id: val })}
                             >
                                 <SelectTrigger className="bg-bg-navy border-surface-hover">
-                                    <SelectValue placeholder="Select Account" {...({} as any)} />
+                                    <SelectValue placeholder="Select Account" />
                                 </SelectTrigger>
                                 <SelectContent className="bg-surface-navy border-surface-hover text-white">
                                     {accounts.map(acc => (

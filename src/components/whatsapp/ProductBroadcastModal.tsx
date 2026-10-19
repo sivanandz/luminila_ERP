@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import {
     Dialog,
     DialogContent,
@@ -12,9 +13,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import {
     RadioTower,
     Radio,
@@ -31,6 +33,9 @@ import {
     CheckCircle2,
     Layers,
     Share2,
+    Megaphone,
+    Pencil,
+    RotateCcw,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -41,8 +46,10 @@ import {
 } from "@/lib/whatsapp-broadcast";
 import { getAllChats, whatsappManager, type WPPChat } from "@/lib/whatsapp";
 import { pb } from "@/lib/pocketbase";
+import type { Product } from "@/types/database";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
+import { getChannelPrice } from "@/lib/channel-pricing";
 
 export interface ProductBroadcastModalProps {
     isOpen: boolean;
@@ -75,17 +82,21 @@ export function ProductBroadcastModal({
     // Target Destinations
     const [sendToStatus, setSendToStatus] = useState(true);
     const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+    const [selectedCommunities, setSelectedCommunities] = useState<string[]>([]);
     const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
     const [selectedSegments, setSelectedSegments] = useState<AudienceSegment[]>([]);
 
-    // Discovered Chats (Channels & Groups)
+    // Discovered Chats (Channels, Communities & Groups)
     const [loadingChats, setLoadingChats] = useState(false);
     const [availableChannels, setAvailableChannels] = useState<WPPChat[]>([]);
+    const [availableCommunities, setAvailableCommunities] = useState<WPPChat[]>([]);
     const [availableGroups, setAvailableGroups] = useState<WPPChat[]>([]);
 
     // Dispatch state
     const [broadcasting, setBroadcasting] = useState(false);
     const [previewTab, setPreviewTab] = useState<'config' | 'preview'>('config');
+    const [customMessage, setCustomMessage] = useState<string>("");
+    const [isEditingCustomMessage, setIsEditingCustomMessage] = useState<boolean>(false);
 
     // Reset or populate on open
     useEffect(() => {
@@ -94,9 +105,10 @@ export function ProductBroadcastModal({
             setSelectedProducts(initialSelectedProducts);
         }
         setShowSearchPicker(false);
+        setIsEditingCustomMessage(false);
     }, [isOpen, initialSelectedProducts]);
 
-    // Discover WhatsApp Channels and Groups for the connected session
+    // Discover WhatsApp Channels, Communities and Groups for the connected session
     useEffect(() => {
         if (!isOpen) return;
         let cancelled = false;
@@ -106,13 +118,25 @@ export function ProductBroadcastModal({
             .then((chats) => {
                 if (cancelled) return;
                 const channels = chats.filter((c) => c.id.includes('@newsletter'));
-                const groups = chats.filter((c) => c.isGroup || c.id.includes('@g.us'));
+                const communities = chats.filter((c) =>
+                    Boolean(c.isCommunityAnnounce || c.isCommunity || (c.name || '').toLowerCase().includes('announcement') || (c.name || '').toLowerCase().includes('community'))
+                );
+                const groups = chats.filter((c) =>
+                    (c.isGroup || c.id.includes('@g.us')) &&
+                    !c.isCommunityAnnounce &&
+                    !(c.name || '').toLowerCase().includes('announcement')
+                );
+
                 setAvailableChannels(channels);
+                setAvailableCommunities(communities);
                 setAvailableGroups(groups);
 
-                // Auto-select all channels by default if any exist
+                // Auto-select all channels & communities by default if any exist
                 if (channels.length > 0) {
                     setSelectedChannels(channels.map((c) => c.id));
+                }
+                if (communities.length > 0) {
+                    setSelectedCommunities(communities.map((c) => c.id));
                 }
             })
             .catch((err) => {
@@ -137,14 +161,14 @@ export function ProductBroadcastModal({
         const timer = setTimeout(async () => {
             setSearchingProducts(true);
             try {
-                const res = await pb.collection('products').getList(1, 10, {
+                const res = await pb.collection('products').getList<Product>(1, 10, {
                     filter: `name~"${searchQuery.trim()}" || sku~"${searchQuery.trim()}"`,
                 });
-                const mapped: BroadcastProductItem[] = res.items.map((p: any) => ({
+                const mapped: BroadcastProductItem[] = res.items.map((p) => ({
                     id: p.id,
                     name: p.name,
                     sku: p.sku,
-                    price: p.base_price || 0,
+                    price: getChannelPrice(p, 'whatsapp'),
                     stock: 1,
                     category: p.category,
                     image: p.image_url || null,
@@ -180,6 +204,12 @@ export function ProductBroadcastModal({
         );
     };
 
+    const toggleCommunity = (id: string) => {
+        setSelectedCommunities((prev) =>
+            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+        );
+    };
+
     const toggleGroup = (id: string) => {
         setSelectedGroups((prev) =>
             prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -200,6 +230,12 @@ export function ProductBroadcastModal({
         });
     }, [selectedProducts, campaignTitle, announcementNote, callToAction]);
 
+    useEffect(() => {
+        if (!isEditingCustomMessage) {
+            setCustomMessage(formattedPreview);
+        }
+    }, [formattedPreview, isEditingCustomMessage]);
+
     const handleBroadcast = async () => {
         if (selectedProducts.length === 0) {
             toast.error("Please select at least 1 product to broadcast");
@@ -209,27 +245,30 @@ export function ProductBroadcastModal({
         const hasAnyDestination =
             sendToStatus ||
             selectedChannels.length > 0 ||
+            selectedCommunities.length > 0 ||
             selectedGroups.length > 0 ||
             selectedSegments.length > 0;
 
         if (!hasAnyDestination) {
-            toast.error("Please select at least one broadcast destination (Status, Channels, Groups, or Cohorts)");
+            toast.error("Please select at least one broadcast destination (Status, Channels, Communities, Groups, or Cohorts)");
             return;
         }
 
         setBroadcasting(true);
         try {
+            const allGroupIds = Array.from(new Set([...selectedCommunities, ...selectedGroups]));
             const res = await broadcastProductsToDestinations({
                 products: selectedProducts,
                 destinations: {
                     status: sendToStatus,
                     channelIds: selectedChannels,
-                    groupIds: selectedGroups,
+                    groupIds: allGroupIds,
                     customerSegments: selectedSegments,
                 },
                 campaignTitle,
                 announcementNote,
                 callToAction,
+                customMessage: isEditingCustomMessage ? customMessage : undefined,
                 includeImages,
                 createdBy: user?.id,
             });
@@ -237,7 +276,8 @@ export function ProductBroadcastModal({
             const summaryParts: string[] = [];
             if (res.statusPosted) summaryParts.push("WhatsApp Status");
             if (res.channelsSent > 0) summaryParts.push(`${res.channelsSent} Channel(s)`);
-            if (res.groupsSent > 0) summaryParts.push(`${res.groupsSent} Group(s)`);
+            if (selectedCommunities.length > 0) summaryParts.push(`${selectedCommunities.length} Community Announcement(s)`);
+            if (selectedGroups.length > 0) summaryParts.push(`${selectedGroups.length} Group(s)`);
             if (res.customersQueued > 0) summaryParts.push(`${res.customersQueued} Customer(s) queued`);
 
             if (summaryParts.length > 0) {
@@ -340,7 +380,7 @@ export function ProductBroadcastModal({
                                                 >
                                                     <div className="flex items-center gap-2 min-w-0">
                                                         {p.image ? (
-                                                            <img src={p.image} alt={p.name} className="size-7 rounded object-cover border border-border" />
+                                                            <Image src={p.image} alt={p.name} width={28} height={28} className="size-7 rounded object-cover border border-border" />
                                                         ) : (
                                                             <div className="size-7 rounded bg-muted flex items-center justify-center text-muted-foreground">
                                                                 <Package size={12} />
@@ -380,7 +420,7 @@ export function ProductBroadcastModal({
                                             className="flex items-center gap-2 p-2 rounded-md bg-card border border-border/80 relative group"
                                         >
                                             {p.image ? (
-                                                <img src={p.image} alt={p.name} className="size-11 rounded object-cover border border-border shrink-0" />
+                                                <Image src={p.image} alt={p.name} width={44} height={44} className="size-11 rounded object-cover border border-border shrink-0" />
                                             ) : (
                                                 <div className="size-11 rounded bg-muted flex items-center justify-center text-muted-foreground shrink-0">
                                                     <Package size={16} />
@@ -491,20 +531,83 @@ export function ProductBroadcastModal({
                                 )}
                             </div>
 
-                            {/* WhatsApp Groups & Community Announcements */}
+                            {/* 2. WhatsApp Community Announcements */}
+                            <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <div className="space-y-0.5">
+                                        <div className="flex items-center gap-1.5 font-bold text-amber-500">
+                                            <Megaphone size={14} className="text-amber-500" />
+                                            Community Announcements ({availableCommunities.length})
+                                        </div>
+                                        <p className="text-[11px] text-muted-foreground">
+                                            Official announcement channels for your WhatsApp Communities.
+                                        </p>
+                                    </div>
+                                    {availableCommunities.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (selectedCommunities.length === availableCommunities.length) {
+                                                    setSelectedCommunities([]);
+                                                } else {
+                                                    setSelectedCommunities(availableCommunities.map((c) => c.id));
+                                                }
+                                            }}
+                                            className="text-[10px] text-amber-500 hover:underline font-semibold"
+                                        >
+                                            {selectedCommunities.length === availableCommunities.length ? "Deselect All" : "Select All"}
+                                        </button>
+                                    )}
+                                </div>
+
+                                {loadingChats ? (
+                                    <div className="py-2 text-[11px] text-muted-foreground flex items-center gap-1.5">
+                                        <Loader2 size={12} className="animate-spin" /> Loading community channels…
+                                    </div>
+                                ) : availableCommunities.length === 0 ? (
+                                    <p className="text-[11px] text-muted-foreground italic py-1">
+                                        No community announcement channels found on this account.
+                                    </p>
+                                ) : (
+                                    <div className="flex flex-wrap gap-1.5 pt-1 max-h-32 overflow-y-auto">
+                                        {availableCommunities.map((c) => {
+                                            const isSelected = selectedCommunities.includes(c.id);
+                                            return (
+                                                <button
+                                                    key={c.id}
+                                                    type="button"
+                                                    onClick={() => toggleCommunity(c.id)}
+                                                    className={cn(
+                                                        "px-2.5 py-1 rounded-full text-xs font-semibold border flex items-center gap-1.5 transition-colors",
+                                                        isSelected
+                                                            ? "bg-amber-500/20 border-amber-500 text-amber-400 shadow-sm"
+                                                            : "bg-muted/40 border-border text-muted-foreground hover:bg-muted"
+                                                    )}
+                                                >
+                                                    <Megaphone size={11} /> {c.name}
+                                                    {isSelected && <Check size={11} />}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 3. WhatsApp Groups */}
                             <div className="p-2.5 rounded-lg border border-border bg-card space-y-2">
                                 <div className="flex items-center justify-between">
                                     <div className="space-y-0.5">
                                         <div className="flex items-center gap-1.5 font-semibold text-foreground">
                                             <Users size={13} className="text-blue-500" />
-                                            Groups & Community Announcements ({availableGroups.length})
+                                            WhatsApp Groups ({availableGroups.length})
                                         </div>
                                         <p className="text-[11px] text-muted-foreground">
-                                            Wholesale, VIP, and community announcement group chats.
+                                            Wholesale, VIP, and general customer group chats.
                                         </p>
                                     </div>
                                     {availableGroups.length > 0 && (
                                         <button
+                                            type="button"
                                             onClick={() => {
                                                 if (selectedGroups.length === availableGroups.length) {
                                                     setSelectedGroups([]);
@@ -534,6 +637,7 @@ export function ProductBroadcastModal({
                                             return (
                                                 <button
                                                     key={c.id}
+                                                    type="button"
                                                     onClick={() => toggleGroup(c.id)}
                                                     className={cn(
                                                         "px-2.5 py-1 rounded-full text-xs font-medium border flex items-center gap-1.5 transition-colors",
@@ -634,12 +738,59 @@ export function ProductBroadcastModal({
                     /* Live Preview Tab */
                     <div className="space-y-3">
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
-                            <span>Rendered WhatsApp Message:</span>
-                            <Badge variant="outline" className="text-[10px]">{selectedProducts.length} Products Included</Badge>
+                            <span className="font-semibold text-foreground flex items-center gap-1.5">
+                                <Eye size={13} className="text-emerald-500" /> WhatsApp Message {isEditingCustomMessage ? "(Customized)" : "(Auto-Generated)"}
+                            </span>
+                            <div className="flex items-center gap-2">
+                                <Badge variant="outline" className="text-[10px]">{selectedProducts.length} Products</Badge>
+                                {!isEditingCustomMessage ? (
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => {
+                                            setCustomMessage(formattedPreview);
+                                            setIsEditingCustomMessage(true);
+                                        }}
+                                        className="h-6 text-[11px] gap-1 px-2 border-emerald-500/40 text-emerald-500 hover:bg-emerald-500/10"
+                                    >
+                                        <Pencil size={11} /> Edit Message Text
+                                    </Button>
+                                ) : (
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => {
+                                            setCustomMessage(formattedPreview);
+                                            setIsEditingCustomMessage(false);
+                                        }}
+                                        className="h-6 text-[11px] gap-1 px-2 text-muted-foreground hover:text-foreground"
+                                    >
+                                        <RotateCcw size={11} /> Reset to Auto
+                                    </Button>
+                                )}
+                            </div>
                         </div>
-                        <div className="p-3.5 rounded-xl bg-card border border-border shadow-inner font-sans text-xs whitespace-pre-wrap text-foreground max-h-96 overflow-y-auto leading-relaxed border-l-4 border-l-emerald-500">
-                            {formattedPreview}
-                        </div>
+
+                        {isEditingCustomMessage ? (
+                            <div className="space-y-1.5">
+                                <Textarea
+                                    value={customMessage}
+                                    onChange={(e) => setCustomMessage(e.target.value)}
+                                    rows={10}
+                                    className="font-mono text-xs leading-relaxed bg-background"
+                                    placeholder="Edit your broadcast message..."
+                                />
+                                <p className="text-[10px] text-muted-foreground">
+                                    You have full control over the exact text sent to channels, groups, and status.
+                                </p>
+                            </div>
+                        ) : (
+                            <div className="p-3.5 rounded-xl bg-card border border-border shadow-inner font-sans text-xs whitespace-pre-wrap text-foreground max-h-96 overflow-y-auto leading-relaxed border-l-4 border-l-emerald-500">
+                                {formattedPreview}
+                            </div>
+                        )}
                     </div>
                 )}
 

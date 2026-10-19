@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { pb } from "@/lib/pocketbase";
+import { pb, ensureAuth, getCurrentTenantEmail } from "@/lib/pocketbase";
 import { Loader2, FileText, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
 
 interface EwayBillSettings {
@@ -16,6 +16,15 @@ interface EwayBillSettings {
     username: string;
     password: string;
     is_production: boolean;
+}
+
+interface EwayBillSettingsRecord {
+    id: string;
+    eway_client_id?: string;
+    eway_client_secret?: string;
+    eway_username?: string;
+    eway_password?: string;
+    eway_is_production?: boolean;
 }
 
 export function EwayBillSettings() {
@@ -37,14 +46,17 @@ export function EwayBillSettings() {
 
     const loadSettings = async () => {
         try {
-            const record = await pb.collection("store_settings").getFirstListItem('key="eway_bill"').catch(() => null);
+            ensureAuth();
+            const userEmail = getCurrentTenantEmail();
+            const filter = userEmail ? `key="eway_bill" && account_email="${userEmail}"` : `key="eway_bill"`;
+            const record = await pb.collection("store_settings").getFirstListItem<EwayBillSettingsRecord>(filter).catch(() => null);
             if (record) {
                 setSettings({
-                    client_id: (record as any).eway_client_id || "",
-                    client_secret: (record as any).eway_client_secret || "",
-                    username: (record as any).eway_username || "",
-                    password: (record as any).eway_password || "",
-                    is_production: (record as any).eway_is_production || false,
+                    client_id: record.eway_client_id || "",
+                    client_secret: record.eway_client_secret || "",
+                    username: record.eway_username || "",
+                    password: record.eway_password || "",
+                    is_production: record.eway_is_production || false,
                 });
             }
         } catch (error) {
@@ -57,8 +69,11 @@ export function EwayBillSettings() {
     const saveSettings = async () => {
         setIsSaving(true);
         try {
+            ensureAuth();
+            const userEmail = getCurrentTenantEmail();
+            const filter = userEmail ? `key="eway_bill" && account_email="${userEmail}"` : `key="eway_bill"`;
             const existing = await pb.collection("store_settings")
-                .getFirstListItem('key="eway_bill"')
+                .getFirstListItem(filter)
                 .catch(() => null);
 
             const data = {
@@ -68,6 +83,7 @@ export function EwayBillSettings() {
                 eway_username: settings.username,
                 eway_password: settings.password,
                 eway_is_production: settings.is_production,
+                account_email: userEmail,
             };
 
             if (existing) {
@@ -103,7 +119,7 @@ export function EwayBillSettings() {
 
             setTestResult("success");
             toast.success("Connection test successful (sandbox)");
-        } catch (error) {
+        } catch {
             setTestResult("error");
             toast.error("Connection test failed");
         } finally {
@@ -165,7 +181,7 @@ export function EwayBillSettings() {
                         <div>
                             <p className="text-sm text-yellow-500 font-medium">Sandbox Mode</p>
                             <p className="text-xs text-moonstone">
-                                E-way Bills generated in sandbox won't be valid. Switch to production for real bills.
+                                E-way Bills generated in sandbox won&apos;t be valid. Switch to production for real bills.
                             </p>
                         </div>
                     </div>
@@ -271,7 +287,7 @@ export function EwayBillSettings() {
                         <a href="https://ewaybillgst.gov.in" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                             ewaybillgst.gov.in
                         </a>{" "}
-                        → Registration → For API → Enter your domain and static IP → You'll receive Client ID and Secret.
+                        → Registration → For API → Enter your domain and static IP → You&apos;ll receive Client ID and Secret.
                     </p>
                 </div>
             </CardContent>

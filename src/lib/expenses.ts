@@ -46,6 +46,34 @@ export interface ExpenseStats {
     recentExpenses: Expense[];
 }
 
+/** Raw `expenses` PocketBase record (snake_case DB fields) with expanded category. */
+interface ExpenseRecord {
+    id: string;
+    expense_number?: string;
+    expense_date: string;
+    category: string;
+    amount: number;
+    payment_mode: ExpensePaymentMode;
+    payee?: string;
+    description?: string;
+    receipt_url?: string;
+    reference_number?: string;
+    created?: string;
+    updated?: string;
+    expand?: {
+        category?: ExpenseCategory;
+    };
+}
+
+/** Raw `expense_categories` PocketBase record. */
+interface ExpenseCategoryRecord {
+    id: string;
+    name: string;
+    description?: string;
+    is_active: boolean;
+    created?: string;
+}
+
 // ==========================================
 // NUMBER GENERATION
 // ==========================================
@@ -91,13 +119,13 @@ export async function getExpenses(filters?: {
             }
         }
 
-        const records = await pb.collection('expenses').getFullList({
+        const records = await pb.collection('expenses').getFullList<ExpenseRecord>({
             filter: filterParts.join(' && ') || '',
             sort: '-expense_date,-created',
             expand: 'category',
         });
 
-        return records.map((e: any) => ({
+        return records.map((e) => ({
             id: e.id,
             expense_number: e.expense_number,
             date: e.expense_date,
@@ -199,7 +227,7 @@ export async function createExpense(expense: Omit<Expense, 'id' | 'expense_numbe
 
 export async function updateExpense(id: string, updates: Partial<Expense>): Promise<Expense | null> {
     try {
-        const { category, expense_number, id: expenseId, created_at, updated_at, ...cleanUpdates } = updates as any;
+        const cleanUpdates: Record<string, unknown> = { ...updates };
 
         // Map category_id to category (PocketBase relation field name)
         if (cleanUpdates.category_id) {
@@ -258,12 +286,12 @@ export async function deleteExpense(id: string): Promise<boolean> {
 
 export async function getCategories(): Promise<ExpenseCategory[]> {
     try {
-        const records = await pb.collection('expense_categories').getFullList({
+        const records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
             filter: 'is_active=true',
             sort: 'name',
         });
 
-        return records.map((c: any) => ({
+        return records.map((c) => ({
             id: c.id,
             name: c.name,
             description: c.description,
@@ -318,17 +346,17 @@ export async function getExpenseStats(startDate?: string, endDate?: string): Pro
         if (start) filterParts.push(`expense_date>="${start}"`);
         if (end) filterParts.push(`expense_date<="${end}"`);
 
-        const expenses = await pb.collection('expenses').getFullList({
+        const expenses = await pb.collection('expenses').getFullList<ExpenseRecord>({
             filter: filterParts.join(' && ') || '',
             expand: 'category',
         });
 
-        const totalAmount = expenses.reduce((sum: number, e: any) => sum + (Number(e.amount) || 0), 0);
+        const totalAmount = expenses.reduce((sum: number, e) => sum + (Number(e.amount) || 0), 0);
         const totalCount = expenses.length;
 
         // Group by category
         const categoryMap = new Map<string, number>();
-        expenses.forEach((e: any) => {
+        expenses.forEach((e) => {
             const catName = e.expand?.category?.name || 'Uncategorized';
             const current = categoryMap.get(catName) || 0;
             categoryMap.set(catName, current + (Number(e.amount) || 0));

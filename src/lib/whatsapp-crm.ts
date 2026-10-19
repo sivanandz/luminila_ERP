@@ -19,6 +19,12 @@ import {
 } from './customer-lookup';
 import { createGRN } from './purchase';
 import { whatsappManager } from './whatsapp';
+import {
+    generateParentSKU,
+    generateChildSKU,
+    computeNextSkuSequence,
+    deriveHSNCode,
+} from './sku-generator';
 
 // ===========================================
 // TYPES
@@ -76,6 +82,7 @@ export interface ContactContext {
     type: ContactType;
     customer?: Customer | null;
     vendor?: { id: string; name: string; company_name?: string; phone?: string; gstin?: string } | null;
+    labels?: string[];
 }
 
 /** Item shape pushed to the POS terminal (mirrors the POS page CartItem). */
@@ -137,8 +144,38 @@ export async function resolveContact(
     chatName?: string,
     opts: { autoCreateLead?: boolean } = { autoCreateLead: true }
 ): Promise<ContactContext> {
+    // Check existing whatsapp_chats record first to respect manually tagged types (like vendor groups)
+    try {
+        const existing = await pb.collection('whatsapp_chats').getFirstListItem(
+            `chat_id="${chatId}"`
+        ).catch(() => null);
+
+        if (existing && existing.contact_type) {
+            let vendor = null;
+            if (existing.vendor) {
+                try {
+                    const v = await pb.collection('vendors').getOne(existing.vendor);
+                    const vRow = v as unknown as { company_name?: string; gstin?: string };
+                    vendor = { id: v.id, name: v.name, company_name: vRow.company_name || v.name, phone: v.phone, gstin: vRow.gstin };
+                } catch { /* ignore */ }
+            }
+            let customer = null;
+            if (existing.customer) {
+                try {
+                    customer = await pb.collection('customers').getOne(existing.customer);
+                } catch { /* ignore */ }
+            }
+            return {
+                type: existing.contact_type as ContactType,
+                vendor: vendor || undefined,
+                customer: customer as any,
+                labels: (existing.labels as string[]) || [],
+            };
+        }
+    } catch { /* ignore */ }
+
     if (chatId.endsWith('@g.us') || chatId.endsWith('@newsletter')) {
-        return { type: 'lead', customer: null };
+        return { type: 'lead', customer: null, labels: [] };
     }
 
     const phone = phoneFromChatId(chatId) || '';
@@ -171,6 +208,7 @@ export async function ensureChat(opts: {
     lastMessageBody?: string;
     lastMessageTime?: string;
     unreadCount?: number;
+    labels?: string[];
 }): Promise<StoredChat | null> {
     try {
         const existing = await pb.collection('whatsapp_chats').getFirstListItem(
@@ -182,10 +220,16 @@ export async function ensureChat(opts: {
             last_message_body: opts.lastMessageBody ?? existing?.last_message_body ?? '',
             last_message_time: opts.lastMessageTime ?? existing?.last_message_time ?? new Date().toISOString(),
         };
-        if (opts.contactType) patch.contact_type = opts.contactType;
+        // Do not overwrite an existing 'vendor' categorization with a fallback 'lead'
+        if (opts.contactType) {
+            if (!existing?.contact_type || existing.contact_type === 'lead' || opts.contactType === 'vendor' || opts.contactType === 'customer') {
+                patch.contact_type = opts.contactType;
+            }
+        }
         if (opts.customer !== undefined) patch.customer = opts.customer || '';
         if (opts.vendor !== undefined) patch.vendor = opts.vendor || '';
         if (opts.unreadCount !== undefined) patch.unread_count = opts.unreadCount;
+        if (opts.labels !== undefined) patch.labels = opts.labels;
 
         if (existing) {
             const updated = await pb.collection('whatsapp_chats').update(existing.id, patch);
@@ -202,7 +246,7 @@ export async function ensureChat(opts: {
             last_message_time: opts.lastMessageTime || new Date().toISOString(),
             unread_count: opts.unreadCount ?? 0,
             status: 'active',
-            labels: [],
+            labels: opts.labels || [],
         });
         return created as unknown as StoredChat;
     } catch (err) {
@@ -215,12 +259,65 @@ export async function ensureChat(opts: {
 export async function setChatContactType(
     chatRecordId: string,
     type: ContactType,
-    links?: { customer?: string; vendor?: string }
+    links?: { customer?: string; vendor?: string; labels?: string[] }
 ): Promise<void> {
     const patch: Record<string, unknown> = { contact_type: type };
     if (links?.customer !== undefined) patch.customer = links.customer;
     if (links?.vendor !== undefined) patch.vendor = links.vendor;
+    if (links?.labels !== undefined) patch.labels = links.labels;
     await pb.collection('whatsapp_chats').update(chatRecordId, patch);
+}
+
+/**
+ * Tag or untag a chat (especially group chats) as a Vendor Group.
+ * Vendor groups are where retailers receive catalog drops and new product pricing from suppliers.
+ */
+export async function setChatVendorGroup(
+    chatId: string,
+    isVendorGroup: boolean,
+    chatName?: string
+): Promise<{ contactType: ContactType; labels: string[] }> {
+    try {
+        const existing = await pb.collection('whatsapp_chats').getFirstListItem(
+            `chat_id="${chatId}"`
+        ).catch(() => null);
+
+        let labels: string[] = existing?.labels ? (Array.isArray(existing.labels) ? [...existing.labels] : []) : [];
+
+        if (isVendorGroup) {
+            if (!labels.includes('vendor_group')) labels.push('vendor_group');
+            const contactType: ContactType = 'vendor';
+            if (existing) {
+                await pb.collection('whatsapp_chats').update(existing.id, {
+                    contact_type: contactType,
+                    labels,
+                });
+            } else {
+                await pb.collection('whatsapp_chats').create({
+                    chat_id: chatId,
+                    contact_name: chatName || 'Vendor Group',
+                    contact_type: contactType,
+                    labels,
+                    unread_count: 0,
+                    status: 'active',
+                });
+            }
+            return { contactType, labels };
+        } else {
+            labels = labels.filter((l) => l !== 'vendor_group');
+            const contactType: ContactType = 'lead';
+            if (existing) {
+                await pb.collection('whatsapp_chats').update(existing.id, {
+                    contact_type: contactType,
+                    labels,
+                });
+            }
+            return { contactType, labels };
+        }
+    } catch (err) {
+        console.error('[whatsapp-crm] setChatVendorGroup failed:', err);
+        return { contactType: isVendorGroup ? 'vendor' : 'lead', labels: [] };
+    }
 }
 
 export async function markChatRead(chatRecordId: string): Promise<void> {
@@ -411,7 +508,15 @@ export interface VendorOfferExtraction {
     weightGrams?: number;   // e.g. 14.2
     price?: number;         // vendor cost price in ₹
     quantity?: number;
-    category?: string;      // e.g. "Choker"
+    category?: string;      // e.g. "Necklaces"
+    genreCode?: string;     // e.g. "TMP"
+    categoryCode?: string;  // e.g. "NEC"
+    subcategoryCode?: string;// e.g. "CHK"
+    platingCode?: string;   // e.g. "MG"
+    colorCode?: string;     // e.g. "RB"
+    baseMetalCode?: string; // e.g. "BR"
+    stoneCode?: string;     // e.g. "KP"
+    sizeCode?: string;      // e.g. "STD"
     descriptionHint?: string;
 }
 
@@ -433,40 +538,157 @@ export function parseVendorOffer(body: string): VendorOfferExtraction {
     const qtyMatch = text.match(/(\d{1,3})\s*(?:pcs?|pieces?|nos|qty)/i);
     const quantity = qtyMatch ? parseInt(qtyMatch[1], 10) : undefined;
 
-    const categoryTable: [RegExp, string][] = [
-        [/choker/i, 'Choker'],
-        [/necklace|neck piece/i, 'Necklace'],
-        [/\bring\b/i, 'Ring'],
-        [/\bearrings?\b|jhumka|studs?/i, 'Earrings'],
-        [/bracelet|bangle|kada/i, 'Bracelet'],
-        [/chain/i, 'Chain'],
-        [/pendant/i, 'Pendant'],
-        [/anklet|payal/i, 'Anklet'],
-    ];
-    let category: string | undefined;
-    for (const [re, name] of categoryTable) {
-        if (re.test(text)) { category = name; break; }
+    // 1. Detect Genre
+    let genreCode = 'TMP'; // Default Temple
+    if (/kundan|jadau/i.test(text)) genreCode = 'KUN';
+    else if (/polki/i.test(text)) genreCode = 'POL';
+    else if (/antique|oxidized|vintage|blackened/i.test(text)) genreCode = 'ANT';
+    else if (/covering|1\s*gm|micro|1\s*gram/i.test(text)) genreCode = 'COV';
+    else if (/western|tennis|solitaire/i.test(text)) genreCode = 'WST';
+    else if (/indo|fusion/i.test(text)) genreCode = 'IND';
+
+    // 2. Detect Category & Subcategory
+    let categoryCode = 'NEC';
+    let subcategoryCode = 'CHK';
+    let category = 'Necklaces';
+
+    if (/choker/i.test(text)) {
+        categoryCode = 'NEC';
+        subcategoryCode = 'CHK';
+        category = 'Necklaces';
+    } else if (/necklace|neck piece|collar|pendant/i.test(text)) {
+        categoryCode = 'NEC';
+        subcategoryCode = /collar/i.test(text) ? 'COL' : (/pendant/i.test(text) ? 'PEN' : 'CHA');
+        category = 'Necklaces';
+    } else if (/haram|long chain|kasumalai|guttapusalu/i.test(text)) {
+        categoryCode = 'HAR';
+        subcategoryCode = /kasu/i.test(text) ? 'KAS' : (/gutta/i.test(text) ? 'GUT' : 'HAR');
+        category = 'Harams (Long Chains)';
+    } else if (/jhumka|jhumki|jimki/i.test(text)) {
+        categoryCode = 'EAR';
+        subcategoryCode = 'JHU';
+        category = 'Earrings';
+    } else if (/studs?|tops\b/i.test(text)) {
+        categoryCode = 'EAR';
+        subcategoryCode = 'STU';
+        category = 'Earrings';
+    } else if (/bali|hoops?/i.test(text)) {
+        categoryCode = 'EAR';
+        subcategoryCode = 'BAL';
+        category = 'Earrings';
+    } else if (/chandbali/i.test(text)) {
+        categoryCode = 'EAR';
+        subcategoryCode = 'CHB';
+        category = 'Earrings';
+    } else if (/danglers?|drop earrings?/i.test(text)) {
+        categoryCode = 'EAR';
+        subcategoryCode = 'DRP';
+        category = 'Earrings';
+    } else if (/earrings?/i.test(text)) {
+        categoryCode = 'EAR';
+        subcategoryCode = 'JHU';
+        category = 'Earrings';
+    } else if (/kada|kadas/i.test(text)) {
+        categoryCode = 'BAN';
+        subcategoryCode = 'KAD';
+        category = 'Bangles & Kadas';
+    } else if (/bangle|bangles/i.test(text)) {
+        categoryCode = 'BAN';
+        subcategoryCode = 'SGL';
+        category = 'Bangles & Kadas';
+    } else if (/bracelet/i.test(text)) {
+        categoryCode = 'BAN';
+        subcategoryCode = 'BRA';
+        category = 'Bangles & Kadas';
+    } else if (/ring|finger ring/i.test(text)) {
+        categoryCode = 'RIN';
+        subcategoryCode = 'ADJ';
+        category = 'Finger Rings';
+    } else if (/anklet|payal|golusu/i.test(text)) {
+        categoryCode = 'PAY';
+        subcategoryCode = 'PAY';
+        category = 'Anklets / Payal';
+    } else if (/tikka|maang|matha patti/i.test(text)) {
+        categoryCode = 'MGT';
+        subcategoryCode = 'TIK';
+        category = 'Maang Tikka';
+    } else if (/oddiyanam|waist|vaddanam|kamar/i.test(text)) {
+        categoryCode = 'HIP';
+        subcategoryCode = 'VAD';
+        category = 'Waist Belt / Oddiyanam';
+    } else if (/bridal set|set|combo/i.test(text)) {
+        categoryCode = 'SET';
+        subcategoryCode = 'SET';
+        category = 'Coordinated Sets';
     }
 
-    return { purity, weightGrams, price, quantity, category, descriptionHint: text.slice(0, 200) };
+    // 3. Detect Plating Finish
+    let platingCode = 'MG'; // Default Micro Gold
+    if (/matte finish|matte polish|matte/i.test(text)) platingCode = 'MF';
+    else if (/antique polish|antique/i.test(text)) platingCode = 'AN';
+    else if (/oxidized|black polish/i.test(text)) platingCode = 'OX';
+    else if (/rhodium|silver polish/i.test(text)) platingCode = 'RH';
+    else if (/rose gold/i.test(text)) platingCode = 'RG';
+    else if (/two tone|dual tone/i.test(text)) platingCode = 'TT';
+
+    // 4. Detect Primary Color
+    let colorCode = 'RB'; // Default Ruby Red
+    if (/ruby|kemp|kempu|red/i.test(text)) colorCode = 'RB';
+    else if (/emerald|green|pacha/i.test(text)) colorCode = 'EM';
+    else if (/white|cz|ad|clear/i.test(text)) colorCode = 'WH';
+    else if (/baby pink|pink/i.test(text)) colorCode = 'PK';
+    else if (/mint|mint green/i.test(text)) colorCode = 'MN';
+    else if (/black|black onyx/i.test(text)) colorCode = 'BK';
+    else if (/blue|royal blue/i.test(text)) colorCode = 'BL';
+    else if (/multi|navratna/i.test(text)) colorCode = 'ML';
+
+    // 5. Detect Base Metal
+    let baseMetalCode = 'BR'; // Default Brass
+    if (/copper|tamba/i.test(text)) baseMetalCode = 'CP';
+    else if (/german silver/i.test(text)) baseMetalCode = 'GS';
+    else if (/impon|panchaloha/i.test(text)) baseMetalCode = 'IP';
+
+    // 6. Detect Stone
+    let stoneCode = 'KP'; // Default Kempu
+    if (/cz|ad|american diamond/i.test(text)) stoneCode = 'CZ';
+    else if (/kundan|jadau/i.test(text)) stoneCode = 'KD';
+    else if (/pearl|moti/i.test(text)) stoneCode = 'PR';
+    else if (/plain|no stone/i.test(text)) stoneCode = 'PL';
+
+    // 7. Detect Size
+    let sizeCode = 'STD';
+    const bangleSize = text.match(/\b(2[.\-](?:2|4|6|8|10|12))\b/);
+    if (bangleSize) {
+        sizeCode = bangleSize[1].replace(/[.\-]/, '0');
+    }
+
+    return {
+        purity,
+        weightGrams,
+        price,
+        quantity,
+        category,
+        genreCode,
+        categoryCode,
+        subcategoryCode,
+        platingCode,
+        colorCode,
+        baseMetalCode,
+        stoneCode,
+        sizeCode,
+        descriptionHint: text.slice(0, 200),
+    };
 }
 
-/** Generate a vendor-ingestion SKU: VND-<CAT3>-<PURITY>-<NNN> e.g. VND-CHK-18K-001. */
-export async function generateVendorSku(category?: string, purity?: string): Promise<string> {
-    const cat = (category || 'GEN').replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase() || 'GEN';
-    const pur = (purity || 'STD').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase() || 'STD';
-    const prefix = `VND-${cat}-${pur}-`;
-    try {
-        const result = await pb.collection('products').getList(1, 1, {
-            filter: `sku~"${prefix}"`,
-            sort: '-created',
-        });
-        const lastSku: string = (result.items[0] as { sku?: string })?.sku || '';
-        const lastNum = parseInt(lastSku.split('-').pop() || '0', 10) || 0;
-        return `${prefix}${String(lastNum + 1).padStart(3, '0')}`;
-    } catch {
-        return `${prefix}001`;
-    }
+/** Generate an Architectural Master SKU for vendor product intake */
+export async function generateVendorSku(categoryCode?: string, subcategoryCode?: string, genreCode?: string): Promise<string> {
+    const genre = genreCode || 'GEN';
+    const cat = categoryCode || 'GEN';
+    const subcat = subcategoryCode || 'GEN';
+    const prefix = `${genre}${cat}${subcat}`;
+    const nextSeq = await computeNextSkuSequence(prefix);
+    const parent = generateParentSKU(genre, cat, subcat, nextSeq);
+    return generateChildSKU(parent, 'MG', 'RB', 'STD');
 }
 
 /**
@@ -486,10 +708,21 @@ export async function ingestVendorProduct(input: {
     purity?: string;
     vendorId?: string;
     description?: string;
+    hsnCode?: string;
+    platingCode?: string;
+    colorCode?: string;
+    sizeCode?: string;
+    baseMetalCode?: string;
+    stoneCode?: string;
 }): Promise<{ productId: string; variantId: string }> {
-    // 1. Resolve or auto-create category relation
+    // 1. Resolve or auto-create category relation (skip if Uncategorized/General/empty)
     let categoryId = '';
-    if (input.category) {
+    const isUncategorized = !input.category ||
+        input.category.toLowerCase() === 'uncategorized' ||
+        input.category.toLowerCase() === 'general' ||
+        input.category.toLowerCase() === 'none';
+
+    if (!isUncategorized && input.category) {
         try {
             const existingCat = await pb.collection('categories').getFirstListItem(`name~"${input.category}"`).catch(() => null);
             if (existingCat) {
@@ -507,14 +740,20 @@ export async function ingestVendorProduct(input: {
         }
     }
 
+    const isDataUri = input.imageUrl && input.imageUrl.startsWith('data:');
+    const isCleanHttp = input.imageUrl && input.imageUrl.startsWith('http') && !input.imageUrl.includes('whatsapp.net');
+
     const productPayload: Record<string, unknown> = {
         sku: input.sku,
         name: input.name,
         base_price: input.retailPrice,
         cost_price: input.costPrice,
-        image_url: input.imageUrl || '',
+        image_url: isCleanHttp ? input.imageUrl : '',
+        image_data: input.imageUrl || '',
         description: input.description || '',
         is_active: true,
+        hsn_code: input.hsnCode || '71179010',
+        account_email: pb.authStore.model?.email || '',
     };
     if (categoryId) productPayload.category = categoryId;
 
@@ -527,10 +766,18 @@ export async function ingestVendorProduct(input: {
 
     const variant = await pb.collection('product_variants').create({
         product: product.id,
-        variant_name: input.purity || 'Default',
+        variant_name: input.purity || (input.sku.includes('-') ? input.sku.split('-').slice(1).join('-') : 'Default'),
+        sku_suffix: input.sku.includes('-') ? input.sku.split('-').slice(1).join('-') : undefined,
         stock_level: initialStock,
         low_stock_threshold: 2,
         price_adjustment: 0,
+        gross_weight: input.weightGrams,
+        net_weight: input.weightGrams,
+        color: input.colorCode,
+        size: input.sizeCode,
+        plating_type: input.platingCode,
+        base_metal: input.baseMetalCode,
+        stone_type: input.stoneCode,
     });
 
     if (!hasVendorGRN && input.quantity > 0) {

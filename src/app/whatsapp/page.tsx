@@ -1,27 +1,30 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import Image from "next/image";
 import { Header } from "@/components/layout";
 import {
     whatsappManager,
     checkWPPConnectStatus,
     parseOrderFromMessage,
-    generateAutoReply,
+    normalizeMessageId,
+    getMessageStanzaId,
 } from "@/lib/whatsapp";
-import type { WPPMessage, WPPChat } from "@/lib/whatsapp";
+import type { WPPMessage } from "@/lib/whatsapp";
+import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
 import { findMatchingProducts, generateImageHash } from "@/lib/image-matcher";
 import {
     MessageCircle,
-    Wifi,
-    WifiOff,
+
+
     Send,
     User,
-    Clock,
+
     Package,
     AlertCircle,
-    Phone,
-    Video,
+
+
     MoreVertical,
     CheckCheck,
     Loader2,
@@ -52,8 +55,12 @@ import {
     Share2,
     ShieldCheck,
     ShieldAlert,
-    Lock,
-    Unlock,
+    Flame,
+    ChevronLeft,
+    PanelRightClose,
+    PanelRightOpen,
+    Building2,
+    Megaphone,
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import {
@@ -77,7 +84,9 @@ import { ChatContextMenu } from "@/components/whatsapp/ChatContextMenu";
 import { SlashCommandPalette } from "@/components/whatsapp/SlashCommandPalette";
 import { RazorpayPaymentModal } from "@/components/whatsapp/RazorpayPaymentModal";
 import { WhatsAppCatalogSyncModal } from "@/components/whatsapp/WhatsAppCatalogSyncModal";
+import { WhatsAppCatalogEditorModal } from "@/components/whatsapp/WhatsAppCatalogEditorModal";
 import { ProductBroadcastModal } from "@/components/whatsapp/ProductBroadcastModal";
+import { FlashDropModal } from "@/components/whatsapp/FlashDropModal";
 import { updateCustomerCRMProfile, setCustomerLeadStatus } from "@/lib/customer-lookup";
 import { sendPaidOrderInvoice } from "@/lib/whatsapp-notifications";
 import { ingestWhatsAppCatalogOrder } from "@/lib/whatsapp-order-ingestion";
@@ -94,6 +103,7 @@ import {
     queueLabelPrint,
     getStoredChats,
     setChatContactType,
+    setChatVendorGroup,
     detectIntent,
     sendProductCard,
     setWhatsAppOptOut,
@@ -103,8 +113,12 @@ import { startPaymentReconciler } from "@/lib/payment-reconciliation";
 import { processBroadcastQueue } from "@/lib/whatsapp-broadcast";
 import { BroadcastComposerModal } from "@/components/whatsapp/BroadcastComposerModal";
 import { AdminApprovalModal } from "@/components/whatsapp/AdminApprovalModal";
+import { MarqueeText } from "@/components/ui/marquee-text";
 import { getWhatsAppBinding, type WhatsAppBinding } from "@/lib/whatsapp-binding";
+import { getTenantWhatsAppSessionId } from "@/lib/whatsapp";
 import { useAuth } from "@/contexts/AuthContext";
+import type { Product as ProductRecord, Sale } from "@/types/database";
+import { getChannelPrice } from "@/lib/channel-pricing";
 
 // --- Types ---
 
@@ -130,6 +144,7 @@ interface Message {
         caption?: string;
         sender?: string;
         mediaUrl?: string;
+        thumbnail?: string;
         mimetype?: string;
     };
 }
@@ -141,6 +156,9 @@ interface ChatListItem {
     timestamp: number;
     unreadCount: number;
     isGroup: boolean;
+    isCommunity?: boolean;
+    isCommunityAnnounce?: boolean;
+    isNewsletter?: boolean;
     profilePic?: string | null;
 }
 
@@ -162,62 +180,242 @@ interface ImageMatch {
     similarity: number;
 }
 
+// Lead pipeline stage reused from the Customer record type (null removed for form/handler use).
+type CustomerLeadStatus = NonNullable<Customer["lead_status"]>;
+
+// WPPMessage records hydrated from the local transcript also carry a resolved sender display name.
+interface WPPMessageWithFromName extends WPPMessage {
+    fromName?: string;
+}
+
+// Local transcript Message viewed through the WPPMessage-typed context-menu contract.
+type ChatMenuMessage = Message & WPPMessage;
+
 // --- Components ---
 
-function QuotedBlock({ msg }: { msg: Message }) {
+function ChatAvatar({
+    profilePic,
+    name,
+    isChan,
+    isVendorGrp,
+    isCommAnnounce,
+    isGrp,
+    size = 40,
+}: {
+    profilePic?: string | null;
+    name?: string;
+    isChan?: boolean;
+    isVendorGrp?: boolean;
+    isCommAnnounce?: boolean;
+    isGrp?: boolean;
+    size?: number;
+}) {
+    const [imgFailed, setImgFailed] = useState(false);
+
+    useEffect(() => {
+        setImgFailed(false);
+    }, [profilePic]);
+
+    const hasPic = Boolean(profilePic && !imgFailed);
+    const iconSize = size <= 32 ? 15 : size >= 56 ? 26 : 18;
+
+    return (
+        <div
+            style={{ width: size, height: size }}
+            className={`rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden ${
+                isChan
+                    ? 'bg-violet-500/15'
+                    : isVendorGrp
+                    ? 'bg-indigo-500/15'
+                    : isCommAnnounce
+                    ? 'bg-amber-500/15'
+                    : isGrp
+                    ? 'bg-sky-500/15'
+                    : 'bg-muted'
+            }`}
+        >
+            {hasPic ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                    src={profilePic!}
+                    alt={name || "Avatar"}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                    onError={() => setImgFailed(true)}
+                />
+            ) : isChan ? (
+                <Radio size={iconSize} className="text-violet-400" />
+            ) : isVendorGrp ? (
+                <Building2 size={iconSize} className="text-indigo-400" />
+            ) : isCommAnnounce ? (
+                <Megaphone size={iconSize} className="text-amber-400" />
+            ) : isGrp ? (
+                <Users size={iconSize} className="text-sky-400" />
+            ) : (
+                <User size={iconSize} className="text-muted-foreground" />
+            )}
+        </div>
+    );
+}
+
+function QuotedBlock({
+    msg,
+    chatMessages,
+    onLoadMedia,
+}: {
+    msg: Message;
+    chatMessages?: Message[];
+    onLoadMedia?: (messageId: string) => Promise<string | null>;
+}) {
     if (!msg.quotedMsg) return null;
 
     const isMediaQuote = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.quotedMsg.type);
+    const hasImageThumbnail = ['image', 'sticker', 'video'].includes(msg.quotedMsg.type);
 
-    const handleQuoteClick = () => {
-        if (msg.quotedMsg?.id) {
-            const quotedId = msg.quotedMsg.id;
-            let quotedElement = document.getElementById(`msg-${quotedId}`);
+    // Initial thumbnail check:
+    // 1. QuotedMsg mediaUrl or thumbnail if data URL or valid non-whatsapp http URL
+    // 2. ChatMessages lookup if parent message is in memory
+    const getInitialThumbnail = (): string | null => {
+        const q = msg.quotedMsg;
+        if (!q) return null;
+        if (q.thumbnail && q.thumbnail.startsWith('data:')) return q.thumbnail;
+        if (q.mediaUrl && (q.mediaUrl.startsWith('data:') || (q.mediaUrl.startsWith('http') && !q.mediaUrl.includes('whatsapp.net')))) {
+            return q.mediaUrl;
+        }
+        if (chatMessages && q.id) {
+            const stanza = getMessageStanzaId(q.id);
+            const found = chatMessages.find(m => m.id === q.id || (stanza && getMessageStanzaId(m.id) === stanza));
+            if (found?.mediaUrl && (found.mediaUrl.startsWith('data:') || (found.mediaUrl.startsWith('http') && !found.mediaUrl.includes('whatsapp.net')))) {
+                return found.mediaUrl;
+            }
+        }
+        return null;
+    };
 
-            if (!quotedElement) {
-                quotedElement = document.querySelector(`[data-msg-id="${CSS.escape(quotedId)}"]`) as HTMLElement;
+    const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(getInitialThumbnail);
+    const [loadingThumbnail, setLoadingThumbnail] = useState(false);
+    const [imgFailed, setImgFailed] = useState(false);
+
+    useEffect(() => {
+        const initial = getInitialThumbnail();
+        if (initial) {
+            setThumbnailUrl(initial);
+            return;
+        }
+        if (hasImageThumbnail && onLoadMedia && msg.quotedMsg?.id && !thumbnailUrl && !loadingThumbnail && !imgFailed) {
+            setLoadingThumbnail(true);
+            onLoadMedia(msg.quotedMsg.id)
+                .then(url => {
+                    if (url) {
+                        setThumbnailUrl(url);
+                    } else {
+                        setImgFailed(true);
+                    }
+                })
+                .catch(() => setImgFailed(true))
+                .finally(() => setLoadingThumbnail(false));
+        }
+    }, [msg.quotedMsg?.id, hasImageThumbnail, onLoadMedia, chatMessages]);
+
+    const handleQuoteClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!msg.quotedMsg?.id) return;
+
+        const rawQuotedId = normalizeMessageId(msg.quotedMsg.id);
+        const stanzaId = getMessageStanzaId(rawQuotedId);
+
+        // 1. Try exact match by full ID
+        let targetElement: HTMLElement | null = null;
+        if (rawQuotedId) {
+            targetElement = document.getElementById(`msg-${rawQuotedId}`);
+            if (!targetElement) {
+                try {
+                    targetElement = document.querySelector(`[data-msg-id="${CSS.escape(rawQuotedId)}"]`) as HTMLElement;
+                } catch { /* ignore query error */ }
+            }
+        }
+
+        // 2. Try match by stanza ID (unique message hash)
+        if (!targetElement && stanzaId) {
+            try {
+                targetElement = document.querySelector(`[data-stanza-id="${CSS.escape(stanzaId)}"]`) as HTMLElement;
+            } catch { /* ignore */ }
+
+            if (!targetElement) {
+                try {
+                    targetElement = document.querySelector(`[data-msg-id$="${CSS.escape(stanzaId)}"]`) as HTMLElement;
+                } catch { /* ignore */ }
             }
 
-            if (quotedElement) {
-                quotedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                quotedElement.classList.add('ring-2', 'ring-primary');
-                setTimeout(() => quotedElement?.classList.remove('ring-2', 'ring-primary'), 2000);
-            } else {
-                console.log('Quoted message not found:', quotedId);
+            if (!targetElement) {
+                try {
+                    targetElement = document.querySelector(`[data-msg-id*="${CSS.escape(stanzaId)}"]`) as HTMLElement;
+                } catch { /* ignore */ }
             }
+        }
+
+        // 3. Fallback: match via chatMessages in state
+        if (!targetElement && chatMessages && (rawQuotedId || stanzaId)) {
+            const match = chatMessages.find(m =>
+                m.id === rawQuotedId ||
+                (stanzaId && getMessageStanzaId(m.id) === stanzaId) ||
+                (stanzaId && m.id.includes(stanzaId))
+            );
+            if (match) {
+                targetElement = document.getElementById(`msg-${match.id}`) ||
+                    document.querySelector(`[data-msg-id="${CSS.escape(match.id)}"]`) as HTMLElement;
+            }
+        }
+
+        if (targetElement) {
+            targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            targetElement.classList.add('ring-2', 'ring-primary', 'bg-primary/10', 'rounded-xl', 'transition-all', 'duration-500');
+            setTimeout(() => {
+                targetElement?.classList.remove('ring-2', 'ring-primary', 'bg-primary/10');
+            }, 2500);
+        } else {
+            toast.info("Original quoted message is older or not loaded in recent history");
         }
     };
 
     return (
         <div
             onClick={handleQuoteClick}
-            className={`mb-2 border-l-2 pl-2 py-1 text-xs rounded cursor-pointer hover:opacity-80 transition-opacity flex gap-2 ${msg.fromMe ? 'border-primary-foreground/50 bg-primary/20' : 'border-primary/50 bg-muted/50'}`}
+            className={`mb-2 border-l-2 pl-2 py-1 text-xs rounded cursor-pointer hover:opacity-85 transition-opacity flex items-center gap-2 select-none ${msg.fromMe ? 'border-primary-foreground/50 bg-primary/20' : 'border-primary/50 bg-muted/60'}`}
+            title="Click to view quoted message"
         >
-            {isMediaQuote && msg.quotedMsg.type === 'image' && (
-                <div className="w-10 h-10 flex-shrink-0 rounded overflow-hidden bg-muted">
-                    {msg.quotedMsg.mediaUrl ? (
+            {hasImageThumbnail && (
+                <div className="w-10 h-10 flex-shrink-0 rounded overflow-hidden bg-muted flex items-center justify-center relative border border-border/30">
+                    {thumbnailUrl && !imgFailed ? (
+                        // eslint-disable-next-line @next/next/no-img-element
                         <img
-                            src={msg.quotedMsg.mediaUrl}
-                            alt=""
+                            src={thumbnailUrl}
+                            alt="Quoted media thumbnail"
                             className="w-full h-full object-cover"
-                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                            onError={() => setImgFailed(true)}
                         />
+                    ) : loadingThumbnail ? (
+                        <Loader2 size={14} className="animate-spin text-muted-foreground" />
                     ) : (
-                        <ImageIcon size={16} className="w-full h-full p-2 text-muted-foreground" />
+                        <ImageIcon size={16} className="text-muted-foreground/70" />
                     )}
                 </div>
             )}
 
             <div className="flex-1 min-w-0">
                 {msg.quotedMsg.sender && (
-                    <p className="font-semibold opacity-80 truncate">{msg.quotedMsg.sender}</p>
+                    <p className="font-semibold opacity-90 truncate">{msg.quotedMsg.sender}</p>
                 )}
-                <p className="opacity-70 line-clamp-2">
-                    {isMediaQuote && msg.quotedMsg.type !== 'image'
-                        ? `📎 ${msg.quotedMsg.type === 'ptt' ? 'Voice message' : msg.quotedMsg.type === 'video' ? 'Video' : msg.quotedMsg.type === 'document' ? 'Document' : msg.quotedMsg.type}`
+                <p className="opacity-75 line-clamp-2">
+                    {isMediaQuote && msg.quotedMsg.type !== 'image' && msg.quotedMsg.type !== 'sticker' && msg.quotedMsg.type !== 'video'
+                        ? `📎 ${msg.quotedMsg.type === 'ptt' ? 'Voice message' : msg.quotedMsg.type === 'document' ? 'Document' : msg.quotedMsg.type}`
                         : isMediaQuote && msg.quotedMsg.type === 'image'
                             ? (msg.quotedMsg.caption || '📷 Photo')
-                            : (msg.quotedMsg.body || msg.quotedMsg.caption || '')
+                            : isMediaQuote && msg.quotedMsg.type === 'sticker'
+                                ? 'Sticker'
+                                : isMediaQuote && msg.quotedMsg.type === 'video'
+                                    ? (msg.quotedMsg.caption || '🎬 Video')
+                                    : (msg.quotedMsg.body || msg.quotedMsg.caption || '')
                     }
                 </p>
             </div>
@@ -225,10 +423,11 @@ function QuotedBlock({ msg }: { msg: Message }) {
     );
 }
 
-function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
+function MessageContent({ msg, onLoadMedia, onFindSimilar, chatMessages }: {
     msg: Message;
     onLoadMedia?: (messageId: string) => Promise<string | null>;
     onFindSimilar?: (imageUrl: string) => void;
+    chatMessages?: Message[];
 }) {
     const [mediaUrl, setMediaUrl] = useState<string | null>(null);
     const [status, setStatus] = useState<'idle' | 'loading' | 'loaded' | 'failed'>('idle');
@@ -241,6 +440,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     useEffect(() => {
         if (!isMediaType || !onLoadMedia || status !== 'idle') return;
 
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional run-once latch: synchronously moving `status` off `idle` stops this effect from re-firing on its own dependency update
         setStatus('loading');
 
         onLoadMedia(msg.id)
@@ -258,6 +458,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     if (type === "image" || type === "sticker") {
         return (
             <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
                 {status === 'loading' && (
                     <div className="flex items-center gap-2 text-muted-foreground p-3">
                         <Loader2 size={16} className="animate-spin" />
@@ -266,6 +467,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
                 )}
                 {status === 'loaded' && mediaUrl && (
                     <div className="relative group">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- WhatsApp media has inherently dynamic dimensions, so natural aspect-ratio rendering of a plain img is required */}
                         <img
                             src={mediaUrl}
                             alt="Image"
@@ -311,6 +513,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
                         >
                             &times;
                         </button>
+                        {/* eslint-disable-next-line @next/next/no-img-element -- lightbox shows full-size media of arbitrary dimensions, which a plain img renders at natural aspect ratio */}
                         <img
                             src={mediaUrl}
                             alt="Full size"
@@ -326,6 +529,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     if (type === "video") {
         return (
             <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
                 {status === 'loading' && (
                     <div className="flex items-center gap-2 text-muted-foreground p-3">
                         <Loader2 size={16} className="animate-spin" />
@@ -357,6 +561,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     if (type === "ptt" || type === "audio") {
         return (
             <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
                 {status === 'loading' && (
                     <div className="flex items-center gap-2 text-muted-foreground p-2">
                         <Loader2 size={16} className="animate-spin" />
@@ -383,6 +588,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
     if (type === "document") {
         return (
             <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
                 {status === 'loading' && (
                     <div className="flex items-center gap-2 text-muted-foreground p-2">
                         <Loader2 size={16} className="animate-spin" />
@@ -420,7 +626,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
         const parts = msg.body.split(urlRegex);
         return (
             <div>
-                <QuotedBlock msg={msg} />
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
                 <p className="text-sm leading-relaxed">
                     {parts.map((part, i) =>
                         urlRegex.test(part) ? (
@@ -437,7 +643,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
 
     return (
         <div>
-            <QuotedBlock msg={msg} />
+            <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
             <p className="text-sm leading-relaxed">{msg.body}</p>
         </div>
     );
@@ -446,21 +652,62 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar }: {
 // --- Main Page ---
 
 export default function WhatsAppPage() {
+    const { user } = useAuth();
+    const tenantSessionId = React.useMemo(
+        () => getTenantWhatsAppSessionId(user?.id || user?.email),
+        [user?.id, user?.email]
+    );
+
+    React.useEffect(() => {
+        whatsappManager.setSessionId(tenantSessionId);
+    }, [tenantSessionId]);
+
     // WhatsApp State
     const [serverStatus, setServerStatus] = useState<"checking" | "online" | "offline">("checking");
     const [sessionStatus, setSessionStatus] = useState<"disconnected" | "connecting" | "qr" | "connected">("disconnected");
     const [qrCode, setQrCode] = useState<string | null>(null);
     const [pairingCode, setPairingCode] = useState<string | null>(null);
     const [loginMethod, setLoginMethod] = useState<'qr' | 'phone'>('qr');
-    const [phoneNumber, setPhoneNumber] = useState('918884377789');
+    const [phoneNumber, setPhoneNumber] = useState('');
+    const [connectedDeviceNumber, setConnectedDeviceNumber] = useState<string | null>(null);
     const [pairingLoading, setPairingLoading] = useState(false);
     const phonePollRef = React.useRef<NodeJS.Timeout | null>(null);
-    const [messages, setMessages] = useState<Message[]>([]);
+
     const [chats, setChats] = useState<ChatListItem[]>([]);
     const [loadingChats, setLoadingChats] = useState(false);
     const [selectedChat, setSelectedChat] = useState<string | null>(null);
+    const selectedChatRef = React.useRef<string | null>(null);
+    const readChatTimestampsRef = React.useRef<Map<string, number>>(new Map());
+
+    // Hydrate read timestamps from sessionStorage on initial mount
+    useEffect(() => {
+        try {
+            const raw = sessionStorage.getItem('wa_read_timestamps');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                readChatTimestampsRef.current = new Map(Object.entries(parsed));
+            }
+        } catch { /* ignore storage error */ }
+    }, []);
+
+    const markChatAsReadLocally = useCallback((chatId: string) => {
+        const now = Math.floor(Date.now() / 1000);
+        readChatTimestampsRef.current.set(chatId, now);
+        try {
+            sessionStorage.setItem('wa_read_timestamps', JSON.stringify(Object.fromEntries(readChatTimestampsRef.current)));
+        } catch { /* ignore storage error */ }
+        setChats(prev => prev.map(c => c.id === chatId ? { ...c, unreadCount: 0 } : c));
+        whatsappManager.markAsRead(chatId).catch(() => {});
+    }, []);
+
+    useEffect(() => {
+        selectedChatRef.current = selectedChat;
+        if (selectedChat) {
+            markChatAsReadLocally(selectedChat);
+        }
+    }, [selectedChat, markChatAsReadLocally]);
     const [selectedChatMessages, setSelectedChatMessages] = useState<Message[]>([]);
-    const [loadingMessages, setLoadingMessages] = useState(false);
+    const [, setLoadingMessages] = useState(false);
     const [replyText, setReplyText] = useState("");
     const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
 
@@ -526,6 +773,7 @@ export default function WhatsAppPage() {
     const [contactType, setContactType] = useState<ContactType>('lead');
     const [contactVendor, setContactVendor] = useState<{ id: string; name: string } | null>(null);
     const [chatTypeMap, setChatTypeMap] = useState<Record<string, ContactType>>({});
+    const [chatLabelsMap, setChatLabelsMap] = useState<Record<string, string[]>>({});
     const chatRecordRef = useRef<string | null>(null);
     const connectPollRef = useRef<NodeJS.Timeout | null>(null);
     const autoConnectAttempted = useRef(false);
@@ -543,10 +791,20 @@ export default function WhatsAppPage() {
         isGroup?: boolean;
         isChannel?: boolean;
     } | null>(null);
-    const [chatFilter, setChatFilter] = useState<'all' | 'vendor' | 'customer' | 'group'>('all');
+    const [chatFilter, setChatFilter] = useState<'all' | 'vendor' | 'vendor_group' | 'community' | 'customer' | 'group'>('all');
+    // Apple-style Tag layout: 'inline' (beside name with marquee) or 'subtitle' (on message preview line with 100% name width)
+    const [badgeLayout, setBadgeLayout] = useState<'inline' | 'subtitle'>('inline');
+
+    useEffect(() => {
+        try {
+            const savedLayout = localStorage.getItem('wa_badge_layout');
+            if (savedLayout === 'inline' || savedLayout === 'subtitle') {
+                setBadgeLayout(savedLayout);
+            }
+        } catch {}
+    }, []);
 
     // WhatsApp Admin Account Binding & Protected Lock State
-    const { user, isAdmin } = useAuth();
     const [binding, setBinding] = useState<WhatsAppBinding | null>(null);
     const [approvalModalOpen, setApprovalModalOpen] = useState(false);
     const [approvalModalMode, setApprovalModalMode] = useState<"approval" | "bind" | "details">("approval");
@@ -560,6 +818,8 @@ export default function WhatsAppPage() {
     // Phase 2/3: payments reconciliation, broadcasts, order-intent banner
     const [showBroadcastModal, setShowBroadcastModal] = useState(false);
     const [showProductBroadcastModal, setShowProductBroadcastModal] = useState(false);
+    const [showFlashDropModal, setShowFlashDropModal] = useState(false);
+    const [showConciergePanel, setShowConciergePanel] = useState(true);
     const [orderBannerMsg, setOrderBannerMsg] = useState<Message | null>(null);
 
     // Payment link reconciliation (spec §7) + broadcast queue drain (spec §11)
@@ -589,12 +849,17 @@ export default function WhatsAppPage() {
         if (msg) setActionMenu({ isOpen: true, message: msg as unknown as WPPMessage, position: pos });
     });
 
-    // Hydrate previously-resolved contact types for list badges
+    // Hydrate previously-resolved contact types and labels for list badges
     useEffect(() => {
         getStoredChats().then((stored) => {
             const map: Record<string, ContactType> = {};
-            for (const s of stored) map[s.chat_id] = s.contact_type as ContactType;
+            const labelsMap: Record<string, string[]> = {};
+            for (const s of stored) {
+                map[s.chat_id] = s.contact_type as ContactType;
+                if (s.labels) labelsMap[s.chat_id] = Array.isArray(s.labels) ? s.labels : [];
+            }
             setChatTypeMap(map);
+            setChatLabelsMap(labelsMap);
         });
     }, []);
 
@@ -602,6 +867,7 @@ export default function WhatsAppPage() {
     const [razorpayModalAmount, setRazorpayModalAmount] = useState<number>(0);
     const [razorpayModalOrderId, setRazorpayModalOrderId] = useState<string>('');
     const [showCatalogSyncModal, setShowCatalogSyncModal] = useState(false);
+    const [showCatalogEditorModal, setShowCatalogEditorModal] = useState(false);
     const [slashPaletteOpen, setSlashPaletteOpen] = useState(false);
     const [slashQuery, setSlashQuery] = useState("");
 
@@ -613,7 +879,7 @@ export default function WhatsAppPage() {
         preferred_metal: "Rose Gold",
         anniversary_date: "",
         birthday_date: "",
-        lead_status: "new_lead" as any,
+        lead_status: "new_lead" as CustomerLeadStatus,
     });
     const [savingCRM, setSavingCRM] = useState(false);
 
@@ -623,19 +889,30 @@ export default function WhatsAppPage() {
         try {
             const fetchedChats = await whatsappManager.getChats();
             const chatList: ChatListItem[] = await Promise.all(fetchedChats.map(async (chat) => {
-                // Fetch profile pic for each chat
-                let profilePic: string | null = null;
-                try {
-                    profilePic = await whatsappManager.getProfilePic(chat.id);
-                } catch { /* ignore */ }
+                // Use profile pic from chat if already available, otherwise fetch
+                let profilePic: string | null = chat.profilePic || null;
+                if (!profilePic) {
+                    try {
+                        profilePic = await whatsappManager.getProfilePic(chat.id);
+                    } catch { /* ignore */ }
+                }
+
+                const lastReadAt = readChatTimestampsRef.current.get(chat.id);
+                const msgTime = chat.lastMessage?.timestamp || chat.timestamp || 0;
+                const isChatActive = chat.id === selectedChatRef.current;
+                const isReadLocally = lastReadAt !== undefined && msgTime <= lastReadAt;
+                const unreadCount = (isChatActive || isReadLocally) ? 0 : chat.unreadCount;
 
                 return {
                     id: chat.id,
                     name: chat.name,
                     lastMessage: chat.lastMessage?.body || "",
                     timestamp: chat.lastMessage?.timestamp || chat.timestamp,
-                    unreadCount: chat.unreadCount,
+                    unreadCount,
                     isGroup: chat.isGroup,
+                    isCommunity: chat.isCommunity,
+                    isCommunityAnnounce: chat.isCommunityAnnounce,
+                    isNewsletter: chat.isNewsletter,
                     profilePic
                 };
             }));
@@ -652,8 +929,8 @@ export default function WhatsAppPage() {
     useEffect(() => {
         const fetchProducts = async () => {
             try {
-                const data = await pb.collection('products').getList(1, 100);
-                setProducts(data.items.map((p: any) => ({
+                const data = await pb.collection('products').getList<ProductRecord>(1, 100);
+                setProducts(data.items.map((p) => ({
                     id: p.id,
                     name: p.name,
                     sku: p.sku,
@@ -678,7 +955,11 @@ export default function WhatsAppPage() {
             const isOnline = await checkWPPConnectStatus();
             setServerStatus(isOnline ? "online" : "offline");
             if (isOnline) {
-                const status = await whatsappManager.getStatus();
+                const detailed = await whatsappManager.getDetailedStatus().catch(() => null);
+                const status = detailed?.status || await whatsappManager.getStatus();
+                if (detailed?.connectedNumber) {
+                    setConnectedDeviceNumber(detailed.connectedNumber);
+                }
                 if (status === "CONNECTED") {
                     setSessionStatus("connected");
                     setPairingCode(null);
@@ -725,6 +1006,7 @@ export default function WhatsAppPage() {
                 return;
             }
             setLoadingMessages(true);
+            markChatAsReadLocally(selectedChat);
             try {
                 const msgs = await whatsappManager.getMessages(selectedChat, 50);
                 const parsed: Message[] = msgs.map((msg) => {
@@ -757,6 +1039,9 @@ export default function WhatsAppPage() {
                 setContactType(ctx.type);
                 setContactVendor(ctx.vendor ? { id: ctx.vendor.id, name: ctx.vendor.company_name || ctx.vendor.name } : null);
                 setChatTypeMap(prev => ({ ...prev, [selectedChat]: ctx.type }));
+                if (ctx.labels && ctx.labels.length > 0) {
+                    setChatLabelsMap(prev => ({ ...prev, [selectedChat]: ctx.labels || [] }));
+                }
 
                 const stored = await ensureChat({
                     chatId: selectedChat,
@@ -768,9 +1053,15 @@ export default function WhatsAppPage() {
                 chatRecordRef.current = stored?.id || null;
 
                 if (stored) {
+                    if (stored.labels) {
+                        setChatLabelsMap(prev => ({ ...prev, [selectedChat]: Array.isArray(stored.labels) ? stored.labels : [] }));
+                    }
+                    if (stored.contact_type) {
+                        setContactType(stored.contact_type);
+                        setChatTypeMap(prev => ({ ...prev, [selectedChat]: stored.contact_type }));
+                    }
                     persistMessages(stored.id, msgs);
                     markChatRead(stored.id);
-                    whatsappManager.markAsRead(selectedChat).catch(() => {});
                 }
 
                 // Inbound intent router (spec §2): STOP opt-out + order-intent banner
@@ -789,6 +1080,7 @@ export default function WhatsAppPage() {
             }
         };
         loadChatMessages();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- chats is only read here for the current chat's display name; adding it would re-download messages, re-persist and re-mark chats read on every 10s poll refresh of the chat list
     }, [selectedChat, sessionStatus]);
 
     // Fetch Customer Data on Chat Selection
@@ -940,8 +1232,8 @@ export default function WhatsAppPage() {
             const customerPhone = phoneFromChatId(selectedChat);
 
             // 1. Create Sale (was orders)
-            // Using 'any' cast for insert to avoid strict type checks on partial matches if types are outdated
-            const saleData = await pb.collection('sales').create({
+            // Typed against the Sales collection record so `sale` carries its real shape
+            const saleData = await pb.collection('sales').create<Sale>({
                 customer_name: customerName,
                 customer_phone: customerPhone,
                 status: 'pending',
@@ -951,7 +1243,7 @@ export default function WhatsAppPage() {
                 channel: 'whatsapp'
             });
 
-            const sale = saleData as any;
+            const sale = saleData;
 
             // 2. Create Sale Items (was order_items)
             if (sale) {
@@ -988,9 +1280,9 @@ export default function WhatsAppPage() {
             setCart([]);
             alert("Order created successfully!");
 
-        } catch (err: any) {
+        } catch (err) {
             console.error("Order creation failed:", err);
-            alert(`Failed to create order: ${err.message}`);
+            alert(`Failed to create order: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setOrderLoading(false);
         }
@@ -1080,7 +1372,7 @@ export default function WhatsAppPage() {
         await executeDisconnect();
     };
 
-    const handleApprovalSuccess = async (approver: { id: string; email: string; name: string }) => {
+    const handleApprovalSuccess = async (_approver: { id: string; email: string; name: string }) => {
         if (pendingActionType === "reset") {
             await executeResetSession();
         } else if (pendingActionType === "disconnect") {
@@ -1112,7 +1404,7 @@ export default function WhatsAppPage() {
                             clearInterval(phonePollRef.current);
                             phonePollRef.current = null;
                         }
-                        whatsappManager.setSessionId("luminila");
+                        whatsappManager.setSessionId(tenantSessionId);
                         setSessionStatus("connected");
                         setPairingCode(null);
                         setQrCode(null);
@@ -1122,8 +1414,8 @@ export default function WhatsAppPage() {
             } else {
                 setPairingCode(null);
             }
-        } catch (e: any) {
-            console.error("Error requesting pairing code:", e.message);
+        } catch (e) {
+            console.error("Error requesting pairing code:", e instanceof Error ? e.message : String(e));
             setPairingCode(null);
         } finally {
             setPairingLoading(false);
@@ -1260,7 +1552,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
         setTimeout(() => setAddedToast(null), 3500);
     };
 
-    const handleContextSetLeadStatus = async (status: any) => {
+    const handleContextSetLeadStatus = async (status: CustomerLeadStatus) => {
         if (!customer) {
             setAddedToast("Please create a customer profile first");
             setTimeout(() => setAddedToast(null), 3000);
@@ -1300,7 +1592,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 sku: best.full_sku,
                 name: best.name,
                 variant: best.variant_name,
-                price: best.price,
+                price: getChannelPrice({ base_price: best.base_price, channel_prices: best.channel_prices }, 'whatsapp', best.price_adjustment),
                 quantity: 1,
                 productId: best.id,
                 variantId: best.variant_id,
@@ -1405,6 +1697,33 @@ _Your order will be confirmed and processed immediately upon successful payment.
             await setChatContactType(chatRecordRef.current, next, links).catch(() => {});
         }
         setAddedToast(`Chat tagged as ${next.toUpperCase()}`);
+        setTimeout(() => setAddedToast(null), 2500);
+    };
+
+    /** Toggle Vendor Group tag for group chats (spec §8.1/§8.2). */
+    const handleToggleVendorGroup = async () => {
+        if (!selectedChat) return;
+        const isCurrentVendor = chatTypeMap[selectedChat] === 'vendor' || (chatLabelsMap[selectedChat] || []).includes('vendor_group');
+        const nextIsVendor = !isCurrentVendor;
+        const chatName = chats.find(c => c.id === selectedChat)?.name || 'Vendor Group';
+
+        setChatTypeMap(prev => ({ ...prev, [selectedChat]: nextIsVendor ? 'vendor' : 'lead' }));
+        setChatLabelsMap(prev => {
+            const cur = prev[selectedChat] || [];
+            const next = nextIsVendor
+                ? (cur.includes('vendor_group') ? cur : [...cur, 'vendor_group'])
+                : cur.filter(l => l !== 'vendor_group');
+            return { ...prev, [selectedChat]: next };
+        });
+        setContactType(nextIsVendor ? 'vendor' : 'lead');
+
+        try {
+            await setChatVendorGroup(selectedChat, nextIsVendor, chatName);
+            setAddedToast(nextIsVendor ? `Tagged "${chatName}" as Vendor Group` : `Removed Vendor Group tag from "${chatName}"`);
+        } catch (err) {
+            console.error('Failed to toggle vendor group:', err);
+            setAddedToast('Failed to update vendor group status');
+        }
         setTimeout(() => setAddedToast(null), 2500);
     };
 
@@ -1703,12 +2022,12 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 try {
                     const imgHash = await generateImageHash(imageUrl);
                     // Check if this image hash already exists in DB
-                    const existingProducts = await pb.collection('products').getList(1, 1, {
+                    const existingProducts = await pb.collection('products').getList<ProductRecord>(1, 1, {
                         filter: `image_hash="${imgHash}"`
                     });
 
                     if (existingProducts.items.length > 0) {
-                        const existing = existingProducts.items[0] as any;
+                        const existing = existingProducts.items[0];
                         const confirmNew = confirm(
                             `⚠️ Similar product already exists!\n\n` +
                             `Existing: ${existing.name} (${existing.sku})\n\n` +
@@ -1758,7 +2077,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
             }
 
             // Insert product
-            const productData = await pb.collection('products').create({
+            const productData = await pb.collection('products').create<ProductRecord>({
                 sku: addProductForm.sku.trim(),
                 name: addProductForm.name.trim(),
                 description: addProductForm.description.trim() || null,
@@ -1774,7 +2093,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
             // If initial stock provided, create a variant with that stock
             if (addProductForm.initial_stock > 0 && productData) {
                 await pb.collection('product_variants').create({
-                    product: (productData as any).id,
+                    product: productData.id,
                     sku_suffix: 'DEFAULT',
                     variant_name: 'Default',
                     price_adjustment: 0,
@@ -1795,76 +2114,21 @@ _Your order will be confirmed and processed immediately upon successful payment.
             setTimeout(() => setAddedToast(null), 3000);
 
             // Refresh products list
-            const productsList = await pb.collection('products').getFullList({
+            const productsList = await pb.collection('products').getFullList<ProductRecord>({
                 filter: 'is_active=true',
                 sort: 'name'
             });
-            setProducts(productsList.map((p: any) => ({ id: p.id, sku: p.sku, name: p.name, base_price: p.base_price, image_url: p.image_url, stock: 0 })));
+            setProducts(productsList.map((p) => ({ id: p.id, sku: p.sku, name: p.name, base_price: p.base_price, image_url: p.image_url || null, stock: 0 })));
 
-        } catch (err: any) {
+        } catch (err) {
             console.error('Failed to add product:', err);
-            alert(err.message || 'Failed to add product');
+            alert((err instanceof Error ? err.message : String(err)) || 'Failed to add product');
         } finally {
             setAddingProduct(false);
         }
     };
 
     // Open Add Product Modal from a message image - with duplicate detection
-    const openAddProductFromMessage = async (msg: Message) => {
-        // If message has an image, try to get the URL
-        let imageUrl = '';
-        if (msg.type === 'image' && msg.mediaUrl) {
-            imageUrl = msg.mediaUrl;
-        } else if (msg.type === 'image' && msg.id) {
-            // Download media if not already loaded
-            const mediaData = await whatsappManager.downloadMedia(msg.id);
-            if (mediaData) {
-                imageUrl = mediaData;
-            }
-        }
-
-        if (!imageUrl) {
-            // No image, open add product modal directly
-            setShowAddProductModal(true);
-            return;
-        }
-
-        // Check for matching existing products using image matcher
-        try {
-            const matches = await findMatchingProducts(imageUrl, 0.7); // 70% threshold
-
-            if (matches.length > 0) {
-                // Found matches - show match modal for stock update
-                // Map to ImageMatch format (add stock: 0 as placeholder)
-                const mappedMatches = matches.map(m => ({
-                    product: { ...m.product, stock: 0 },
-                    similarity: m.similarity
-                }));
-                setImageMatches(mappedMatches);
-                setSelectedMessageImage(imageUrl);
-                setShowMatchModal(true);
-                return;
-            }
-        } catch (err) {
-            console.warn('Image matching failed, proceeding to add new product:', err);
-        }
-
-        // No matches found - open add product modal for new product
-        setSelectedMessageImage(imageUrl);
-        setAddProductForm({
-            sku: '',
-            name: '',
-            description: msg.caption || '',
-            category: '',
-            hsn_code: '7117',
-            base_price: 0,
-            cost_price: 0,
-            image_url: imageUrl,
-            initial_stock: 0
-        });
-        setAttributeValues({});
-        setShowAddProductModal(true);
-    };
 
 
     return (
@@ -1873,32 +2137,73 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 title="WhatsApp Concierge"
                 subtitle="Chat & Create Orders"
                 action={
-                    binding?.isBound ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {/* Quick Broadcast / Drop Campaign Actions */}
                         <button
-                            onClick={() => {
-                                setApprovalModalMode("details");
-                                setApprovalModalOpen(true);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all shadow-sm"
-                            title={`Locked to Admin: ${binding.boundAdminEmail}. Click to manage or unbind.`}
+                            onClick={() => setShowBroadcastModal(true)}
+                            className="text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 px-3 py-1.5 rounded-xl flex items-center gap-1.5 font-medium transition-colors border border-amber-500/20 shadow-sm"
+                            title="Compose smart broadcast campaign (spec §11 anti-ban queue)"
+                            aria-label="Open broadcast campaign composer"
                         >
-                            <ShieldCheck className="w-4 h-4 text-emerald-500" />
-                            <span className="hidden sm:inline">Admin Bound:</span>
-                            <span className="max-w-[130px] truncate">{binding.boundAdminName || binding.boundAdminEmail}</span>
+                            <RadioTower size={14} />
+                            <span>Broadcast</span>
                         </button>
-                    ) : (
                         <button
-                            onClick={() => {
-                                setApprovalModalMode("bind");
-                                setApprovalModalOpen(true);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-amber-500/10 text-amber-500 border border-amber-500/25 hover:bg-amber-500/20 transition-all"
-                            title="Unbound instance. Click to bind to an Admin account to secure connection."
+                            onClick={() => setShowProductBroadcastModal(true)}
+                            className="text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-500 px-3 py-1.5 rounded-xl flex items-center gap-1.5 font-medium transition-colors border border-emerald-500/20 shadow-sm"
+                            title="Broadcast inventory products to WhatsApp Status, Channels, Groups & Communities"
+                            aria-label="Broadcast Products to WhatsApp"
                         >
-                            <ShieldAlert className="w-4 h-4 text-amber-500" />
-                            <span className="hidden sm:inline">Bind to Admin</span>
+                            <Share2 size={14} />
+                            <span>Product Drop</span>
                         </button>
-                    )
+                        <button
+                            onClick={() => setShowFlashDropModal(true)}
+                            className="text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 px-3 py-1.5 rounded-xl flex items-center gap-1.5 font-bold transition-colors border border-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.18)]"
+                            title="Launch exclusive timed drop to WhatsApp Channels with 10-minute reservation hold"
+                            aria-label="Timed Flash Drops"
+                        >
+                            <Flame size={14} className="text-amber-400" />
+                            <span>Flash Drop</span>
+                        </button>
+                        <button
+                            onClick={() => setShowCatalogEditorModal(true)}
+                            className="text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-500 px-3 py-1.5 rounded-xl flex items-center gap-1.5 font-semibold transition-colors border border-emerald-500/20 shadow-sm"
+                            title="Open WhatsApp Catalog Editor & Real-Time Inventory Sync"
+                            aria-label="Edit WhatsApp Catalog"
+                        >
+                            <Store size={14} />
+                            <span>Catalog Editor</span>
+                        </button>
+
+                        {/* Admin Binding Indicator & Fast Lock Status */}
+                        {binding?.isBound ? (
+                            <button
+                                onClick={() => {
+                                    setApprovalModalMode("details");
+                                    setApprovalModalOpen(true);
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all shadow-sm"
+                                title={`Locked to Admin: ${binding.boundAdminEmail}. Click to manage or unbind.`}
+                            >
+                                <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                                <span className="hidden sm:inline">Admin Bound:</span>
+                                <span className="max-w-[130px] truncate">{binding.boundAdminName || binding.boundAdminEmail}</span>
+                            </button>
+                        ) : (
+                            <button
+                                onClick={() => {
+                                    setApprovalModalMode("bind");
+                                    setApprovalModalOpen(true);
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-amber-500/10 text-amber-500 border border-amber-500/25 hover:bg-amber-500/20 transition-all shadow-sm"
+                                title="Unbound instance. Click to bind to an Admin account to secure connection."
+                            >
+                                <ShieldAlert className="w-4 h-4 text-amber-500" />
+                                <span className="hidden sm:inline">Bind to Admin</span>
+                            </button>
+                        )}
+                    </div>
                 }
             />
 
@@ -1943,96 +2248,71 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     </div>
                 )}
 
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+                <div className="flex h-full gap-4 min-w-0 overflow-hidden">
 
                     {/* LEFT: Chats List */}
-                    <div className="lg:col-span-3 bg-card rounded-xl border border-border flex flex-col overflow-hidden">
-                        <div className="p-4 border-b border-border bg-muted/20 flex flex-col gap-2">
-                            <div className="flex justify-between items-center">
+                    <div className={`w-full md:w-80 lg:w-[350px] shrink-0 bg-card rounded-xl border border-border flex flex-col overflow-hidden ${selectedChat ? 'hidden md:flex' : 'flex'}`}>
+                        <div className="p-3.5 border-b border-border bg-muted/20 flex flex-col gap-2">
+                            <div className="flex justify-between items-center gap-2">
                                 <div className="flex items-center gap-2">
                                     <span className="font-bold text-sm">Active Chats</span>
                                     {(loadingChats || sessionStatus === "connecting") && (
                                         <div className="flex items-center gap-1 text-xs text-primary animate-pulse">
                                             <RefreshCw size={12} className="animate-spin" />
-                                            <span>Syncing...</span>
+                                            <span className="text-[11px]">Syncing...</span>
                                         </div>
                                     )}
                                 </div>
                                 <div className="flex gap-1.5 items-center">
-                                    <button
-                                        onClick={() => setShowBroadcastModal(true)}
-                                        className="text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium transition-colors border border-amber-500/20"
-                                        title="Compose smart broadcast campaign (spec §11 anti-ban queue)"
-                                        aria-label="Open broadcast campaign composer"
-                                    >
-                                        <RadioTower size={13} />
-                                        <span className="hidden sm:inline">Broadcast</span>
-                                    </button>
-                                    <button
-                                        onClick={() => setShowProductBroadcastModal(true)}
-                                        className="text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-500 px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium transition-colors border border-emerald-500/20"
-                                        title="Broadcast inventory products to WhatsApp Status, Channels, Groups & Communities"
-                                        aria-label="Broadcast Products to WhatsApp"
-                                    >
-                                        <Share2 size={13} />
-                                        <span className="hidden sm:inline">Product Drop</span>
-                                    </button>
+                                    {/* Apple-style Tag Layout Toggle */}
+                                    <div className="flex items-center bg-muted/70 p-0.5 rounded-md border border-border/40 text-[10px]">
+                                        <button
+                                            onClick={() => {
+                                                setBadgeLayout('inline');
+                                                try { localStorage.setItem('wa_badge_layout', 'inline'); } catch {}
+                                            }}
+                                            className={`px-1.5 py-0.5 rounded font-semibold transition-all ${
+                                                badgeLayout === 'inline'
+                                                    ? 'bg-background text-foreground shadow-xs'
+                                                    : 'text-muted-foreground hover:text-foreground'
+                                            }`}
+                                            title="Inline: Tags beside names with smooth hover marquee"
+                                        >
+                                            Inline
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setBadgeLayout('subtitle');
+                                                try { localStorage.setItem('wa_badge_layout', 'subtitle'); } catch {}
+                                            }}
+                                            className={`px-1.5 py-0.5 rounded font-semibold transition-all ${
+                                                badgeLayout === 'subtitle'
+                                                    ? 'bg-background text-foreground shadow-xs'
+                                                    : 'text-muted-foreground hover:text-foreground'
+                                            }`}
+                                            title="Stacked: Tags on preview line, 100% width for names"
+                                        >
+                                            Stacked
+                                        </button>
+                                    </div>
+
                                     {sessionStatus === "connected" && !loadingChats && (
                                         <button
                                             onClick={() => loadExistingChats()}
-                                            className="text-xs bg-muted hover:bg-muted/80 text-foreground px-2 py-1 rounded flex items-center gap-1"
+                                            className="p-1.5 rounded-lg bg-muted/60 hover:bg-muted text-foreground transition-colors"
                                             title="Refresh chat list"
                                         >
-                                            <RefreshCw size={12} />
+                                            <RefreshCw size={13} />
                                         </button>
                                     )}
-
-                                    {/* Admin Binding Indicator & Fast Lock Status */}
-                                    {binding?.isBound ? (
-                                        <button
-                                            onClick={() => {
-                                                setApprovalModalMode("details");
-                                                setApprovalModalOpen(true);
-                                            }}
-                                            className="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/30 px-2 py-1 rounded flex items-center gap-1 transition-colors"
-                                            title={`Protected: Bound to Admin ${binding.boundAdminEmail}. Click to view details or request unbind.`}
-                                        >
-                                            <ShieldCheck size={12} className="text-emerald-500" />
-                                            <span className="hidden sm:inline font-medium">Bound:</span>
-                                            <span className="font-semibold max-w-[80px] truncate">{binding.boundAdminName || binding.boundAdminEmail}</span>
-                                        </button>
-                                    ) : (
-                                        <button
-                                            onClick={() => {
-                                                setApprovalModalMode("bind");
-                                                setApprovalModalOpen(true);
-                                            }}
-                                            className="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/30 px-2 py-1 rounded flex items-center gap-1 transition-colors"
-                                            title="Click to bind this WhatsApp instance to a designated Admin account to prevent unauthorized unbinding or disconnection."
-                                        >
-                                            <ShieldAlert size={12} />
-                                            <span className="hidden sm:inline">Bind to Admin</span>
-                                            <span className="sm:hidden">Bind</span>
-                                        </button>
-                                    )}
-
                                     {sessionStatus === "disconnected" && (
-                                        <>
-                                            <button onClick={() => handleConnect(false)} className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded hover:opacity-90">Connect</button>
-                                            <button onClick={handleResetSession} className="text-xs bg-muted hover:bg-secondary text-muted-foreground px-2 py-1 rounded" title="Wipe local session tokens for fresh QR code">Clean Login</button>
-                                        </>
+                                        <button onClick={() => handleConnect(false)} className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded hover:opacity-90">Connect</button>
                                     )}
                                     {sessionStatus === "connected" && (
-                                        <>
-                                            <button onClick={handleResetSession} className="text-xs bg-muted hover:bg-destructive/10 text-muted-foreground hover:text-destructive border border-border px-2 py-1 rounded" title="Wipe session and relogin fresh">Reset</button>
-                                            <button onClick={handleDisconnect} className="text-xs bg-secondary hover:bg-secondary/80 px-2 py-1 rounded">Log Out</button>
-                                        </>
+                                        <button onClick={handleDisconnect} className="text-[11px] text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors">Log Out</button>
                                     )}
                                     {(sessionStatus === "qr" || sessionStatus === "connecting") && (
-                                        <>
-                                            <button onClick={handleResetSession} className="text-xs bg-muted hover:bg-destructive/10 text-destructive border border-destructive/20 px-2 py-1 rounded" title="Reset session files">Reset</button>
-                                            <button onClick={handleDisconnect} className="text-xs bg-muted hover:bg-destructive/10 text-destructive border border-destructive/20 px-2 py-1 rounded">Cancel</button>
-                                        </>
+                                        <button onClick={handleDisconnect} className="text-xs bg-muted hover:bg-destructive/10 text-destructive border border-destructive/20 px-2 py-1 rounded">Cancel</button>
                                     )}
                                 </div>
                             </div>
@@ -2067,7 +2347,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                     qrCode ? (
                                         <>
                                             <div className="bg-white p-2 rounded-xl mb-2">
-                                                <img src={qrCode} className="w-64 h-64 object-contain" alt="QR Code" />
+                                                <Image src={qrCode} width={256} height={256} className="w-64 h-64 object-contain" alt="QR Code" />
                                             </div>
                                             <p className="text-sm text-center text-muted-foreground font-medium">Scan with WhatsApp</p>
                                             <div className="text-[10px] text-muted-foreground max-w-[200px] text-center mt-1">
@@ -2131,7 +2411,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                 <div className="text-[10px] text-muted-foreground bg-muted/30 p-3 rounded-lg text-center max-w-[250px]">
                                                     1. Open WhatsApp on your phone<br />
                                                     2. Go to <b>Linked Devices &gt; Link a Device</b><br />
-                                                    3. Tap <b>"Link with phone number instead"</b><br />
+                                                    3. Tap <b>&quot;Link with phone number instead&quot;</b><br />
                                                     4. Enter the code shown above
                                                 </div>
 
@@ -2154,11 +2434,58 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             </div>
                         )}
 
-                        {/* Chat Category Filter Tabs */}
-                        <div className="flex items-center gap-1 p-2 border-b border-border bg-background/50 overflow-x-auto text-[11px] no-scrollbar">
+                        {/* Chat Category Filter: Dropdown on Mobile/Narrow, Pill Buttons on Desktop */}
+                        <div className="block sm:hidden p-2 border-b border-border bg-background/50">
+                            {(() => {
+                                const vendorCount = chats.filter(c => chatTypeMap[c.id] === 'vendor' || chatLabelsMap[c.id]?.includes('vendor_group')).length;
+                                const vendorGroupCount = chats.filter(c => chatLabelsMap[c.id]?.includes('vendor_group') || ((c.isGroup || c.id.includes('@g.us')) && chatTypeMap[c.id] === 'vendor')).length;
+                                const communityCount = chats.filter(c => c.isCommunity || c.isCommunityAnnounce || chatLabelsMap[c.id]?.includes('community_announcement') || (c.name || '').toLowerCase().includes('announcement') || (c.name || '').toLowerCase().includes('community')).length;
+
+                                const filterLabelMap: Record<string, string> = {
+                                    all: `All Chats (${chats.length})`,
+                                    vendor: `Vendors (${vendorCount})`,
+                                    vendor_group: `Vendor Groups (${vendorGroupCount})`,
+                                    community: `Communities (${communityCount})`,
+                                    group: 'Groups & Channels',
+                                    customer: 'Customers',
+                                };
+
+                                return (
+                                    <Select value={chatFilter} onValueChange={(v) => v && setChatFilter(v as any)}>
+                                        <SelectTrigger className="w-full h-9 bg-card border-border text-xs font-semibold px-2.5 rounded-lg flex items-center justify-between shadow-xs">
+                                            <span className="text-xs font-semibold text-foreground">
+                                                {filterLabelMap[chatFilter] || 'All Chats'}
+                                            </span>
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-popover border-border">
+                                            <SelectItem value="all" className="text-xs font-medium py-2">
+                                                All Chats ({chats.length})
+                                            </SelectItem>
+                                            <SelectItem value="vendor" className="text-xs font-medium py-2">
+                                                Vendors ({vendorCount})
+                                            </SelectItem>
+                                            <SelectItem value="vendor_group" className="text-xs font-medium py-2">
+                                                Vendor Groups ({vendorGroupCount})
+                                            </SelectItem>
+                                            <SelectItem value="community" className="text-xs font-medium py-2">
+                                                Communities ({communityCount})
+                                            </SelectItem>
+                                            <SelectItem value="group" className="text-xs font-medium py-2">
+                                                Groups &amp; Channels
+                                            </SelectItem>
+                                            <SelectItem value="customer" className="text-xs font-medium py-2">
+                                                Customers
+                                            </SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                );
+                            })()}
+                        </div>
+
+                        <div className="hidden sm:flex flex-wrap items-center gap-1.5 p-2 border-b border-border bg-background/50 text-[11px]">
                             <button
                                 onClick={() => setChatFilter('all')}
-                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 ${
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
                                     chatFilter === 'all' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
                                 }`}
                             >
@@ -2166,15 +2493,37 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             </button>
                             <button
                                 onClick={() => setChatFilter('vendor')}
-                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 ${
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors flex items-center gap-1 ${
                                     chatFilter === 'vendor' ? 'bg-indigo-600 text-white' : 'text-muted-foreground hover:bg-muted'
                                 }`}
+                                title="All vendors (individual supplier contacts and vendor drop groups)"
                             >
-                                Vendors
+                                <Building2 size={11} />
+                                Vendors ({chats.filter(c => chatTypeMap[c.id] === 'vendor' || chatLabelsMap[c.id]?.includes('vendor_group')).length})
+                            </button>
+                            <button
+                                onClick={() => setChatFilter('vendor_group')}
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors flex items-center gap-1 ${
+                                    chatFilter === 'vendor_group' ? 'bg-purple-600 text-white' : 'text-muted-foreground hover:bg-muted'
+                                }`}
+                                title="Vendor groups where product drops, catalogs, and supplier rates are received"
+                            >
+                                <Building2 size={11} />
+                                Vendor Groups ({chats.filter(c => chatLabelsMap[c.id]?.includes('vendor_group') || ((c.isGroup || c.id.includes('@g.us')) && chatTypeMap[c.id] === 'vendor')).length})
+                            </button>
+                            <button
+                                onClick={() => setChatFilter('community')}
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors flex items-center gap-1 ${
+                                    chatFilter === 'community' ? 'bg-amber-600 text-white' : 'text-muted-foreground hover:bg-muted'
+                                }`}
+                                title="WhatsApp Communities & Community Announcement channels"
+                            >
+                                <Megaphone size={11} />
+                                Communities ({chats.filter(c => c.isCommunity || c.isCommunityAnnounce || chatLabelsMap[c.id]?.includes('community_announcement') || (c.name || '').toLowerCase().includes('announcement') || (c.name || '').toLowerCase().includes('community')).length})
                             </button>
                             <button
                                 onClick={() => setChatFilter('group')}
-                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 flex items-center gap-1 ${
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors flex items-center gap-1 ${
                                     chatFilter === 'group' ? 'bg-sky-600 text-white' : 'text-muted-foreground hover:bg-muted'
                                 }`}
                             >
@@ -2183,7 +2532,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             </button>
                             <button
                                 onClick={() => setChatFilter('customer')}
-                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors shrink-0 ${
+                                className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
                                     chatFilter === 'customer' ? 'bg-emerald-600 text-white' : 'text-muted-foreground hover:bg-muted'
                                 }`}
                             >
@@ -2195,62 +2544,99 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             {chats.filter((c) => {
                                 const isGrp = c.isGroup || c.id.includes('@g.us');
                                 const isChan = c.id.includes('@newsletter');
+                                const isVendorGrp = chatLabelsMap[c.id]?.includes('vendor_group') || (isGrp && chatTypeMap[c.id] === 'vendor');
+                                const isComm = Boolean(c.isCommunity || c.isCommunityAnnounce || chatLabelsMap[c.id]?.includes('community_announcement') || (c.name || '').toLowerCase().includes('announcement') || (c.name || '').toLowerCase().includes('community'));
+
+                                if (chatFilter === 'vendor') return chatTypeMap[c.id] === 'vendor' || isVendorGrp;
+                                if (chatFilter === 'vendor_group') return isVendorGrp;
+                                if (chatFilter === 'community') return isComm;
                                 if (chatFilter === 'group') return isGrp || isChan;
-                                if (chatFilter === 'vendor') return chatTypeMap[c.id] === 'vendor';
                                 if (chatFilter === 'customer') return chatTypeMap[c.id] === 'customer';
                                 return true;
                             }).map(chat => {
                                 const isGrp = chat.isGroup || chat.id.includes('@g.us');
                                 const isChan = chat.id.includes('@newsletter');
+                                const isVendorGrp = chatLabelsMap[chat.id]?.includes('vendor_group') || (isGrp && chatTypeMap[chat.id] === 'vendor');
+                                const isCommAnnounce = Boolean(chat.isCommunityAnnounce || chatLabelsMap[chat.id]?.includes('community_announcement') || (isGrp && ((chat.name || '').toLowerCase().includes('announcement') || (chat.name || '').toLowerCase().includes('announcements'))));
+
+                                const badgeElement = isChan ? (
+                                    <span className="text-[8.5px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-400 border border-violet-500/25 shrink-0 whitespace-nowrap shadow-xs">
+                                        Channel
+                                    </span>
+                                ) : isVendorGrp ? (
+                                    <span className="text-[8.5px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1 shrink-0 whitespace-nowrap shadow-xs">
+                                        <Building2 size={9} /> Vendor Group
+                                    </span>
+                                ) : isCommAnnounce ? (
+                                    <span className="text-[8.5px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 shrink-0 whitespace-nowrap shadow-xs">
+                                        <Megaphone size={9} /> Announcement
+                                    </span>
+                                ) : chat.isCommunity ? (
+                                    <span className="text-[8.5px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 flex items-center gap-1 shrink-0 whitespace-nowrap shadow-xs">
+                                        <Users size={9} /> Community
+                                    </span>
+                                ) : isGrp ? (
+                                    <span className="text-[8.5px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/25 shrink-0 whitespace-nowrap shadow-xs">
+                                        Group
+                                    </span>
+                                ) : chatTypeMap[chat.id] ? (
+                                    <span className={`text-[8.5px] font-bold uppercase px-1.5 py-0.5 rounded-full shrink-0 whitespace-nowrap shadow-xs ${
+                                        chatTypeMap[chat.id] === 'vendor' ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/25'
+                                        : chatTypeMap[chat.id] === 'customer' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
+                                        : 'bg-amber-500/15 text-amber-400 border border-amber-500/25'
+                                    }`}>
+                                        {chatTypeMap[chat.id]}
+                                    </span>
+                                ) : null;
 
                                 return (
                                 <div
                                     key={chat.id}
-                                    onClick={() => setSelectedChat(chat.id)}
-                                    className={`p-3 border-b border-border cursor-pointer hover:bg-muted/50 flex gap-3 ${selectedChat === chat.id ? 'bg-primary/10 border-l-4 border-l-primary' : ''}`}
+                                    onClick={() => {
+                                        setSelectedChat(chat.id);
+                                        markChatAsReadLocally(chat.id);
+                                    }}
+                                    className={`group p-3 border-b border-border cursor-pointer hover:bg-muted/50 transition-colors flex gap-3 ${selectedChat === chat.id ? 'bg-primary/10 border-l-4 border-l-primary' : ''}`}
                                 >
                                     {/* Profile Pic / Avatar */}
-                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden ${
-                                        isChan ? 'bg-violet-500/15' : isGrp ? 'bg-sky-500/15' : 'bg-muted'
-                                    }`}>
-                                        {chat.profilePic ? (
-                                            <img src={chat.profilePic} alt="" className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-                                        ) : isChan ? (
-                                            <Radio size={18} className="text-violet-400" />
-                                        ) : isGrp ? (
-                                            <Users size={18} className="text-sky-400" />
-                                        ) : (
-                                            <User size={18} className="text-muted-foreground" />
-                                        )}
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="flex justify-between items-center gap-1.5">
-                                            <span className="font-bold text-sm truncate flex items-center gap-1.5">
-                                                {chat.name}
-                                                {isChan ? (
-                                                    <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-violet-500/15 text-violet-400 flex-shrink-0">
-                                                        Channel
-                                                    </span>
-                                                ) : isGrp ? (
-                                                    <span className="text-[9px] font-bold uppercase px-1 py-px rounded bg-sky-500/15 text-sky-400 flex-shrink-0">
-                                                        Group
-                                                    </span>
-                                                ) : chatTypeMap[chat.id] ? (
-                                                    <span className={`text-[9px] font-bold uppercase px-1 py-px rounded flex-shrink-0 ${
-                                                        chatTypeMap[chat.id] === 'vendor' ? 'bg-indigo-500/15 text-indigo-400'
-                                                        : chatTypeMap[chat.id] === 'customer' ? 'bg-emerald-500/15 text-emerald-400'
-                                                        : 'bg-amber-500/15 text-amber-400'
-                                                    }`}>
-                                                        {chatTypeMap[chat.id]}
-                                                    </span>
-                                                ) : null}
+                                    <ChatAvatar
+                                        profilePic={chat.profilePic}
+                                        name={chat.name}
+                                        isChan={isChan}
+                                        isVendorGrp={isVendorGrp}
+                                        isCommAnnounce={isCommAnnounce}
+                                        isGrp={isGrp}
+                                        size={40}
+                                    />
+                                    <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                        {/* Row 1: Chat Name with Smooth Marquee + (Inline Badge if selected) + Timestamp */}
+                                        <div className="flex justify-between items-center gap-1.5 min-w-0">
+                                            <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+                                                <MarqueeText
+                                                    text={chat.name || 'Unknown Chat'}
+                                                    className="font-bold text-sm text-foreground flex-1 min-w-0"
+                                                />
+                                                {badgeLayout === 'inline' && badgeElement}
+                                            </div>
+                                            <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                                                {new Date(chat.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                             </span>
-                                            <span className="text-[10px] text-muted-foreground flex-shrink-0">{new Date(chat.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                                         </div>
-                                        <p className="text-xs text-muted-foreground truncate">{chat.lastMessage}</p>
-                                        {chat.unreadCount > 0 && (
-                                            <span className="text-[10px] bg-primary text-primary-foreground px-1.5 py-0.5 rounded-full">{chat.unreadCount}</span>
-                                        )}
+
+                                        {/* Row 2: (Stacked Badge if selected) + Last Message Snippet + Unread Counter */}
+                                        <div className="flex items-center justify-between gap-1.5 mt-0.5 min-w-0">
+                                            <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden">
+                                                {badgeLayout === 'subtitle' && badgeElement}
+                                                <p className="text-xs text-muted-foreground truncate flex-1 min-w-0">
+                                                    {chat.lastMessage || <span className="italic opacity-50">No messages yet</span>}
+                                                </p>
+                                            </div>
+                                            {chat.unreadCount > 0 && (
+                                                <span className="text-[10px] font-bold bg-primary text-primary-foreground min-w-4 h-4 px-1 rounded-full flex items-center justify-center shrink-0 shadow-xs">
+                                                    {chat.unreadCount}
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             );})}
@@ -2258,38 +2644,84 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     </div>
 
                     {/* MIDDLE: Chat Window */}
-                    <div className="lg:col-span-6 bg-card rounded-xl border border-border flex flex-col overflow-hidden relative">
+                    <div className={`flex-1 min-w-[320px] bg-card rounded-xl border border-border flex flex-col overflow-hidden relative ${!selectedChat ? 'hidden md:flex' : 'flex'}`}>
                         {selectedChat ? (
                             <>
-                                <div className="h-14 border-b border-border flex items-center px-4 bg-background/50 backdrop-blur justify-between">
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden">
-                                            {chats.find(c => c.id === selectedChat)?.profilePic ? (
-                                                <img
-                                                    src={chats.find(c => c.id === selectedChat)?.profilePic || ''}
-                                                    alt=""
-                                                    className="w-full h-full object-cover"
-                                                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                <div className="h-14 border-b border-border flex items-center px-4 bg-background/50 backdrop-blur justify-between gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <button
+                                            onClick={() => setSelectedChat(null)}
+                                            className="md:hidden p-1.5 -ml-1 text-muted-foreground hover:text-foreground rounded-lg hover:bg-muted transition-colors shrink-0"
+                                            title="Back to chat list"
+                                        >
+                                            <ChevronLeft size={18} />
+                                        </button>
+                                        {(() => {
+                                            const activeChat = chats.find(c => c.id === selectedChat);
+                                            const isChan = Boolean(selectedChat?.includes('@newsletter'));
+                                            const isGrp = Boolean(selectedChat?.includes('@g.us') || activeChat?.isGroup);
+                                            const isVendorGrp = Boolean(chatTypeMap[selectedChat!] === 'vendor' || chatLabelsMap[selectedChat!]?.includes('vendor_group'));
+                                            const isCommAnnounce = Boolean(activeChat?.isCommunityAnnounce || chatLabelsMap[selectedChat!]?.includes('community_announcement') || (activeChat?.name || '').toLowerCase().includes('announcement'));
+
+                                            return (
+                                                <ChatAvatar
+                                                    profilePic={activeChat?.profilePic}
+                                                    name={activeChat?.name}
+                                                    isChan={isChan}
+                                                    isVendorGrp={isVendorGrp}
+                                                    isCommAnnounce={isCommAnnounce}
+                                                    isGrp={isGrp}
+                                                    size={32}
                                                 />
-                                            ) : (
-                                                <User size={16} className="text-primary" />
-                                            )}
-                                        </div>
-                                        <span className="font-bold text-sm">{chats.find(c => c.id === selectedChat)?.name}</span>
-                                        {/* Group / Channel indicator or 1-click contact-type toggle (spec §8.1) */}
+                                            );
+                                        })()}
+                                        <MarqueeText
+                                            text={chats.find(c => c.id === selectedChat)?.name || ''}
+                                            className="font-bold text-sm text-foreground max-w-[200px] sm:max-w-[300px] md:max-w-[380px]"
+                                        />
+                                        {/* Group / Channel / Community / Vendor Group indicator or 1-click contact-type toggle */}
                                         {selectedChat.includes('@newsletter') ? (
-                                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 flex items-center gap-1">
+                                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 flex items-center gap-1 shrink-0">
                                                 <Radio size={11} /> Channel
                                             </span>
                                         ) : (selectedChat.includes('@g.us') || chats.find(c => c.id === selectedChat)?.isGroup) ? (
-                                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 flex items-center gap-1">
-                                                <Users size={11} /> Group
-                                            </span>
+                                            <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                                                {/* Community Announcement indicator */}
+                                                {(chats.find(c => c.id === selectedChat)?.isCommunityAnnounce || chatLabelsMap[selectedChat]?.includes('community_announcement') || (chats.find(c => c.id === selectedChat)?.name || '').toLowerCase().includes('announcement')) && (
+                                                    <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                                                        <Megaphone size={11} /> Community Announcement
+                                                    </span>
+                                                )}
+                                                {/* Vendor Group toggle button */}
+                                                {(chatTypeMap[selectedChat] === 'vendor' || chatLabelsMap[selectedChat]?.includes('vendor_group')) ? (
+                                                    <button
+                                                        onClick={handleToggleVendorGroup}
+                                                        title="Click to remove Vendor Group tag"
+                                                        className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 border border-indigo-500/40 flex items-center gap-1 transition-colors"
+                                                    >
+                                                        <Building2 size={11} /> Vendor Group
+                                                        <span className="text-[9px] text-muted-foreground hover:text-foreground ml-1">✕</span>
+                                                    </button>
+                                                ) : (
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 flex items-center gap-1">
+                                                            <Users size={11} /> Group
+                                                        </span>
+                                                        <button
+                                                            onClick={handleToggleVendorGroup}
+                                                            title="Tag this group as a Vendor Group (where you receive new product updates & vendor pricing)"
+                                                            className="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/25 flex items-center gap-1 transition-colors"
+                                                        >
+                                                            <Building2 size={10} /> + Tag as Vendor Group
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
                                         ) : (
                                             <button
                                                 onClick={handleToggleContactType}
                                                 title="Toggle Customer / Vendor / Lead"
-                                                className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded transition-colors ${
+                                                className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded transition-colors shrink-0 ${
                                                     contactType === 'vendor' ? 'bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25'
                                                     : contactType === 'customer' ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
                                                     : 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
@@ -2299,11 +2731,18 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             </button>
                                         )}
                                     </div>
-                                    <div className="flex gap-2">
-                                        <label className="text-xs flex items-center gap-1 cursor-pointer">
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <label className="text-xs hidden sm:flex items-center gap-1 cursor-pointer select-none">
                                             <input type="checkbox" checked={autoReplyEnabled} onChange={e => setAutoReplyEnabled(e.target.checked)} className="accent-primary" />
                                             Auto-Reply
                                         </label>
+                                        <button
+                                            onClick={() => setShowConciergePanel(prev => !prev)}
+                                            className={`p-1.5 rounded-lg border transition-colors ${showConciergePanel ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+                                            title={showConciergePanel ? "Hide Concierge Sidebar" : "Show Concierge Sidebar"}
+                                        >
+                                            {showConciergePanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+                                        </button>
                                     </div>
                                 </div>
 
@@ -2311,76 +2750,81 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                     {...longPressHandlers}
                                     className={`flex-1 overflow-y-auto p-4 space-y-3 bg-muted/10 ${longPressing ? 'select-none' : ''}`}
                                 >
-                                    {selectedChatMessages.map(msg => (
-                                        <div
-                                            key={msg.id}
-                                            id={`msg-${msg.id}`}
-                                            data-msg-id={msg.id}
-                                            onContextMenu={(e) => {
-                                                e.preventDefault();
-                                                setActionMenu({
-                                                    isOpen: true,
-                                                    message: msg as unknown as WPPMessage,
-                                                    position: { x: e.clientX, y: e.clientY }
-                                                });
-                                            }}
-                                            className={`flex items-center gap-1 transition-all duration-300 group relative ${msg.fromMe ? 'justify-end' : 'justify-start'}`}
-                                        >
-                                            {!msg.fromMe && (
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        const rect = e.currentTarget.getBoundingClientRect();
-                                                        setActionMenu({
-                                                            isOpen: true,
-                                                            message: msg as unknown as WPPMessage,
-                                                            position: { x: rect.left, y: rect.bottom + 4 }
-                                                        });
-                                                    }}
-                                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground"
-                                                    title="Message Actions"
-                                                >
-                                                    <MoreVertical size={13} />
-                                                </button>
-                                            )}
-                                            <div className={`max-w-[80%] p-3 rounded-xl text-sm ${msg.fromMe ? 'bg-primary text-primary-foreground rounded-br-none' : 'bg-card border border-border rounded-tl-none'}`}>
-                                                {!msg.fromMe && (selectedChat.includes('@g.us') || selectedChat.includes('@newsletter') || chats.find(c => c.id === selectedChat)?.isGroup) && msg.fromName && (
-                                                    <p className="text-[11px] font-bold text-primary mb-1 truncate">
-                                                        {msg.fromName}
-                                                    </p>
+                                    {selectedChatMessages.map(msg => {
+                                        const stanzaId = getMessageStanzaId(msg.id);
+                                        return (
+                                            <div
+                                                key={msg.id}
+                                                id={`msg-${msg.id}`}
+                                                data-msg-id={msg.id}
+                                                data-stanza-id={stanzaId}
+                                                onContextMenu={(e) => {
+                                                    e.preventDefault();
+                                                    setActionMenu({
+                                                        isOpen: true,
+                                                        message: msg as unknown as WPPMessage,
+                                                        position: { x: e.clientX, y: e.clientY }
+                                                    });
+                                                }}
+                                                className={`flex items-center gap-1 transition-all duration-300 group relative ${msg.fromMe ? 'justify-end' : 'justify-start'}`}
+                                            >
+                                                {!msg.fromMe && (
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const rect = e.currentTarget.getBoundingClientRect();
+                                                            setActionMenu({
+                                                                isOpen: true,
+                                                                message: msg as unknown as WPPMessage,
+                                                                position: { x: rect.left, y: rect.bottom + 4 }
+                                                            });
+                                                        }}
+                                                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground"
+                                                        title="Message Actions"
+                                                    >
+                                                        <MoreVertical size={13} />
+                                                    </button>
                                                 )}
-                                                <MessageContent
-                                                    msg={msg}
-                                                    onLoadMedia={id => whatsappManager.downloadMedia(id)}
-                                                    onFindSimilar={handleFindSimilar}
-                                                />
+                                                <div className={`max-w-[80%] p-3 rounded-xl text-sm ${msg.fromMe ? 'bg-primary text-primary-foreground rounded-br-none' : 'bg-card border border-border rounded-tl-none'}`}>
+                                                    {!msg.fromMe && (selectedChat.includes('@g.us') || selectedChat.includes('@newsletter') || chats.find(c => c.id === selectedChat)?.isGroup) && msg.fromName && (
+                                                        <p className="text-[11px] font-bold text-primary mb-1 truncate">
+                                                            {msg.fromName}
+                                                        </p>
+                                                    )}
+                                                    <MessageContent
+                                                        msg={msg}
+                                                        onLoadMedia={id => whatsappManager.downloadMedia(id)}
+                                                        onFindSimilar={handleFindSimilar}
+                                                        chatMessages={selectedChatMessages}
+                                                    />
+                                                </div>
+                                                {msg.fromMe && (
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const rect = e.currentTarget.getBoundingClientRect();
+                                                            setContextMenu({
+                                                                isOpen: true,
+                                                                message: msg as ChatMenuMessage,
+                                                                position: { x: rect.left, y: rect.bottom + 4 }
+                                                            });
+                                                        }}
+                                                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground"
+                                                        title="Message Actions"
+                                                    >
+                                                        <MoreVertical size={13} />
+                                                    </button>
+                                                )}
                                             </div>
-                                            {msg.fromMe && (
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        const rect = e.currentTarget.getBoundingClientRect();
-                                                        setContextMenu({
-                                                            isOpen: true,
-                                                            message: msg as any,
-                                                            position: { x: rect.left, y: rect.bottom + 4 }
-                                                        });
-                                                    }}
-                                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground"
-                                                    title="Message Actions"
-                                                >
-                                                    <MoreVertical size={13} />
-                                                </button>
-                                            )}
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
 
                                 {/* Attachment Preview */}
                                 {attachmentFile && (
                                     <div className="px-3 py-2 bg-muted/50 border-t border-border flex items-center gap-2">
                                         {attachmentPreview ? (
-                                            <img src={attachmentPreview} alt="Preview" className="w-16 h-16 object-cover rounded-lg" />
+                                            <Image src={attachmentPreview} alt="Preview" width={64} height={64} className="w-16 h-16 object-cover rounded-lg" />
                                         ) : (
                                             <div className="w-16 h-16 bg-muted rounded-lg flex items-center justify-center">
                                                 <FileText size={24} className="text-muted-foreground" />
@@ -2477,7 +2921,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             }}
                                             onKeyDown={e => {
                                                 if (e.key === 'Enter' && !slashPaletteOpen) {
-                                                    attachmentFile ? handleSendAttachment() : sendReply();
+                                                    if (attachmentFile) { handleSendAttachment(); } else { sendReply(); }
                                                 }
                                             }}
                                         />
@@ -2524,7 +2968,8 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
                     {/* RIGHT: Concierge Overlay */}
                     {/* RIGHT: Multi-function Sidebar */}
-                    <div className="lg:col-span-3 bg-card rounded-xl border border-border flex flex-col overflow-hidden">
+                    {showConciergePanel && (
+                        <div className="w-80 xl:w-96 shrink-0 bg-card rounded-xl border border-border flex flex-col overflow-hidden">
                         {/* Tab Bar */}
                         <div className="flex border-b border-border bg-muted/20">
                             <button
@@ -2696,9 +3141,27 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             ) : customer ? (
                                                 <div className="space-y-4">
                                                     <div className="text-center">
-                                                        <div className="w-14 h-14 bg-primary/20 rounded-full flex items-center justify-center mx-auto mb-2 text-primary">
-                                                            <User size={28} />
-                                                        </div>
+                                                        {(() => {
+                                                            const activeChat = chats.find(c => c.id === selectedChat);
+                                                            const isChan = Boolean(selectedChat?.includes('@newsletter'));
+                                                            const isGrp = Boolean(selectedChat?.includes('@g.us') || activeChat?.isGroup);
+                                                            const isVendorGrp = Boolean(chatTypeMap[selectedChat!] === 'vendor' || chatLabelsMap[selectedChat!]?.includes('vendor_group'));
+                                                            const isCommAnnounce = Boolean(activeChat?.isCommunityAnnounce || chatLabelsMap[selectedChat!]?.includes('community_announcement') || (activeChat?.name || '').toLowerCase().includes('announcement'));
+
+                                                            return (
+                                                                <div className="flex justify-center mb-2">
+                                                                    <ChatAvatar
+                                                                        profilePic={activeChat?.profilePic}
+                                                                        name={customer.name || activeChat?.name}
+                                                                        isChan={isChan}
+                                                                        isVendorGrp={isVendorGrp}
+                                                                        isCommAnnounce={isCommAnnounce}
+                                                                        isGrp={isGrp}
+                                                                        size={56}
+                                                                    />
+                                                                </div>
+                                                            );
+                                                        })()}
                                                         <h2 className="text-base font-bold">{customer.name}</h2>
                                                         <p className="text-xs text-muted-foreground">{customer.phone}</p>
                                                         <div className="flex justify-center items-center gap-1.5 mt-2 flex-wrap">
@@ -2812,7 +3275,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                                     <label className="text-[10px] text-muted-foreground">Lead Pipeline Stage</label>
                                                                     <select
                                                                         value={crmForm.lead_status}
-                                                                        onChange={e => setCrmForm({ ...crmForm, lead_status: e.target.value as any })}
+                                                                        onChange={e => setCrmForm({ ...crmForm, lead_status: e.target.value as CustomerLeadStatus })}
                                                                         className="w-full bg-muted rounded px-2 py-1 text-xs border border-border"
                                                                     >
                                                                         <option value="new_lead">New Lead</option>
@@ -2859,7 +3322,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                     {customer.notes && (
                                                         <div className="bg-yellow-500/10 border border-yellow-500/20 p-3 rounded-lg">
                                                             <p className="text-xs font-bold text-yellow-600 mb-1 flex items-center gap-1"><Tag size={10} /> Notes</p>
-                                                            <p className="text-xs text-muted-foreground italic">"{customer.notes}"</p>
+                                                            <p className="text-xs text-muted-foreground italic">&quot;{customer.notes}&quot;</p>
                                                         </div>
                                                     )}
 
@@ -2966,12 +3429,20 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                     </div>
                                                 </div>
 
-                                                <button
-                                                    onClick={() => setShowCatalogSyncModal(true)}
-                                                    className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-xs py-3 rounded-lg flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95"
-                                                >
-                                                    <Store size={14} /> Open Catalog Publisher
-                                                </button>
+                                                <div className="flex flex-col gap-2">
+                                                    <button
+                                                        onClick={() => setShowCatalogEditorModal(true)}
+                                                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5 rounded-lg flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95"
+                                                    >
+                                                        <Store size={14} /> Edit Catalog & Inventory Sync
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setShowCatalogSyncModal(true)}
+                                                        className="w-full bg-secondary hover:bg-secondary/80 text-secondary-foreground font-semibold text-xs py-2 rounded-lg flex items-center justify-center gap-2 transition-all border border-border active:scale-95"
+                                                    >
+                                                        <Package size={14} /> Open Batch Publisher
+                                                    </button>
+                                                </div>
                                             </div>
 
                                             <div className="text-[10px] text-muted-foreground text-center">
@@ -2983,6 +3454,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             )}
                         </div>
                     </div>
+                    )}
 
                 </div>
             </div>
@@ -2997,7 +3469,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
             {/* Image Match Modal - Search First UX */}
             {showMatchModal && imageMatches.length > 0 && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowMatchModal(false)}>
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4" onClick={() => setShowMatchModal(false)}>
                     <div className="bg-card rounded-xl border border-border max-w-md w-full max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
                         <div className="p-4 border-b border-border flex justify-between items-center">
                             <h3 className="font-bold flex items-center gap-2">
@@ -3016,7 +3488,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                 <div key={match.product.id} className="flex gap-3 p-3 bg-muted/20 rounded-lg border border-border">
                                     <div className="w-16 h-16 rounded-lg bg-muted overflow-hidden flex-shrink-0">
                                         {match.product.image_url ? (
-                                            <img src={match.product.image_url} alt="" className="w-full h-full object-cover" />
+                                            <Image src={match.product.image_url} alt="" width={64} height={64} className="w-full h-full object-cover" />
                                         ) : (
                                             <div className="w-full h-full flex items-center justify-center text-muted-foreground">
                                                 <Package size={24} />
@@ -3072,7 +3544,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
             {/* Add Product to Inventory Modal */}
             {showAddProductModal && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50 p-4">
                     <div className="bg-card rounded-xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-hidden">
                         {/* Header */}
                         <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
@@ -3093,9 +3565,11 @@ _Your order will be confirmed and processed immediately upon successful payment.
                             {/* Image Preview */}
                             {(selectedMessageImage || addProductForm.image_url) && (
                                 <div className="flex justify-center">
-                                    <img
+                                    <Image
                                         src={selectedMessageImage || addProductForm.image_url}
                                         alt="Product"
+                                        width={128}
+                                        height={128}
                                         className="w-32 h-32 object-cover rounded-xl border border-border"
                                     />
                                 </div>
@@ -3395,22 +3869,32 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     const activeChatObj = chats.find(c => c.id === selectedChat);
                     setIngestSourceContext({
                         chatName: activeChatObj?.name,
-                        senderName: msg.sender?.pushname || msg.sender?.name || (msg as any)?.fromName,
+                        senderName: msg.sender?.pushname || msg.sender?.name || (msg as WPPMessageWithFromName)?.fromName,
                         isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
                         isChannel: selectedChat?.includes('@newsletter'),
                     });
                     setAddInventoryMsg(text);
                 }}
-                onCreateProduct={(msg) => {
+                onCreateProduct={async (msg) => {
                     const text = msg.caption || msg.body || '';
                     const activeChatObj = chats.find(c => c.id === selectedChat);
                     setIngestSourceContext({
                         chatName: activeChatObj?.name,
-                        senderName: msg.sender?.pushname || msg.sender?.name || (msg as any)?.fromName,
+                        senderName: msg.sender?.pushname || msg.sender?.name || (msg as WPPMessageWithFromName)?.fromName,
                         isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
                         isChannel: selectedChat?.includes('@newsletter'),
                     });
-                    setVendorIngestImage(msg.mediaUrl || null);
+
+                    let imageToUse: string | null = msg.mediaUrl || null;
+                    if (msg.id && (!imageToUse || imageToUse.includes('whatsapp.net') || imageToUse.startsWith('http'))) {
+                        try {
+                            const decrypted = await whatsappManager.downloadMedia(msg.id);
+                            if (decrypted) imageToUse = decrypted;
+                        } catch (e) {
+                            console.warn('[onCreateProduct] downloadMedia error:', e);
+                        }
+                    }
+                    setVendorIngestImage(imageToUse);
                     setVendorIngestMsg(text);
                 }}
                 onSetLeadStatus={handleContextSetLeadStatus}
@@ -3425,7 +3909,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 contactType={contactType}
                 isGroupOrChannel={selectedChat?.includes('@g.us') || selectedChat?.includes('@newsletter') || !!chats.find(c => c.id === selectedChat)?.isGroup}
                 isChannel={selectedChat?.includes('@newsletter')}
-                senderName={actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name || (actionMenu.message as any)?.fromName}
+                senderName={actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name || (actionMenu.message as WPPMessageWithFromName)?.fromName}
                 chatName={chats.find(c => c.id === selectedChat)?.name}
                 position={actionMenu.position}
                 detectedAmount={(() => {
@@ -3443,23 +3927,33 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     const activeChatObj = chats.find(c => c.id === selectedChat);
                     setIngestSourceContext({
                         chatName: activeChatObj?.name,
-                        senderName: m?.sender?.pushname || m?.sender?.name || (m as any)?.fromName,
+                        senderName: m?.sender?.pushname || m?.sender?.name || (m as WPPMessageWithFromName)?.fromName,
                         isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
                         isChannel: selectedChat?.includes('@newsletter'),
                     });
                     setAddInventoryMsg(text);
                 }}
-                onCreateProduct={() => {
+                onCreateProduct={async () => {
                     const m = actionMenu.message;
                     const text = m?.caption || m?.body || '';
                     const activeChatObj = chats.find(c => c.id === selectedChat);
                     setIngestSourceContext({
                         chatName: activeChatObj?.name,
-                        senderName: m?.sender?.pushname || m?.sender?.name || (m as any)?.fromName,
+                        senderName: m?.sender?.pushname || m?.sender?.name || (m as WPPMessageWithFromName)?.fromName,
                         isGroup: selectedChat?.includes('@g.us') || !!activeChatObj?.isGroup,
                         isChannel: selectedChat?.includes('@newsletter'),
                     });
-                    setVendorIngestImage(m?.mediaUrl || null);
+
+                    let imageToUse: string | null = m?.mediaUrl || null;
+                    if (m?.id && (!imageToUse || imageToUse.includes('whatsapp.net') || imageToUse.startsWith('http'))) {
+                        try {
+                            const decrypted = await whatsappManager.downloadMedia(m.id);
+                            if (decrypted) imageToUse = decrypted;
+                        } catch (e) {
+                            console.warn('[onCreateProduct] downloadMedia error:', e);
+                        }
+                    }
+                    setVendorIngestImage(imageToUse);
                     setVendorIngestMsg(text);
                 }}
                 onAutoBarcodeTag={() => handleAutoBarcodeTag(actionMenu.message!)}
@@ -3508,6 +4002,12 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 onClose={() => setShowProductBroadcastModal(false)}
             />
 
+            {/* Timed Flash Drops Modal (Option B: WhatsApp Commerce 2.0) */}
+            <FlashDropModal
+                isOpen={showFlashDropModal}
+                onClose={() => setShowFlashDropModal(false)}
+            />
+
             {/* Razorpay Payment Link Modal */}
             <RazorpayPaymentModal
                 isOpen={showRazorpayModal}
@@ -3529,6 +4029,12 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 onClose={() => setShowCatalogSyncModal(false)}
             />
 
+            {/* Dedicated WhatsApp Catalog Editor & Live Inventory Sync Window */}
+            <WhatsAppCatalogEditorModal
+                isOpen={showCatalogEditorModal}
+                onClose={() => setShowCatalogEditorModal(false)}
+            />
+
             {/* WhatsApp Admin Account Binding & Approval Modal */}
             <AdminApprovalModal
                 isOpen={approvalModalOpen}
@@ -3536,7 +4042,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 mode={approvalModalMode}
                 actionType={pendingActionType}
                 binding={binding}
-                connectedPhone={phoneNumber ? `+${phoneNumber}` : undefined}
+                connectedPhone={connectedDeviceNumber ? (connectedDeviceNumber.startsWith('+') ? connectedDeviceNumber : `+${connectedDeviceNumber}`) : (phoneNumber ? `+${phoneNumber}` : undefined)}
                 onApprovalSuccess={handleApprovalSuccess}
                 onBindingUpdated={(newBinding) => setBinding(newBinding)}
             />

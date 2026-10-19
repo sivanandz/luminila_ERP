@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, ChangeEvent } from "react";
-import { Upload, X, Image as ImageIcon } from "lucide-react";
+import { useState, useEffect, useRef, ChangeEvent } from "react";
+import { X, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface LogoUploadProps {
@@ -14,6 +14,11 @@ export function LogoUpload({ currentLogo, onLogoChange, className }: LogoUploadP
     const [preview, setPreview] = useState<string | null>(currentLogo || null);
     const [dragActive, setDragActive] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- intentionally mirrors the parent's currentLogo prop into local preview state so the preview follows external resets such as settings being reloaded after mount
+        setPreview(currentLogo || null);
+    }, [currentLogo]);
 
     const handleFile = (file: File) => {
         if (!file.type.startsWith("image/")) {
@@ -85,6 +90,7 @@ export function LogoUpload({ currentLogo, onLogoChange, className }: LogoUploadP
             {preview ? (
                 <div className="relative inline-block">
                     <div className="w-40 h-24 rounded-lg border border-border bg-white flex items-center justify-center overflow-hidden">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- preview is a base64 data URL of unknown intrinsic size that must render at natural size capped by max-w/max-h; next/image fill or fixed dimensions would upscale small logos */}
                         <img
                             src={preview}
                             alt="Company Logo"

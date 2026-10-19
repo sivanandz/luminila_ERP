@@ -40,8 +40,8 @@ export interface ActivityLog {
     entity_type: EntityType;
     entity_id?: string;
     description: string;
-    old_values?: Record<string, any>;
-    new_values?: Record<string, any>;
+    old_values?: Record<string, unknown>;
+    new_values?: Record<string, unknown>;
     user_id?: string;
     user_name?: string;
     created_at: string;
@@ -54,6 +54,20 @@ export interface ActivityFilter {
     startDate?: string;
     endDate?: string;
     search?: string;
+}
+
+/** Raw activity_logs record as stored in PocketBase (uses `created`, not `created_at`). */
+interface ActivityLogRecord {
+    id: string;
+    action: ActivityAction;
+    entity_type: EntityType;
+    entity_id?: string;
+    description: string;
+    old_values?: Record<string, unknown>;
+    new_values?: Record<string, unknown>;
+    user_id?: string;
+    user_name?: string;
+    created: string;
 }
 
 // ===========================================
@@ -86,12 +100,12 @@ export async function getActivityLogs(
         }
 
         const page = Math.floor(offset / limit) + 1;
-        const result = await pb.collection('activity_logs').getList(page, limit, {
+        const result = await pb.collection('activity_logs').getList<ActivityLogRecord>(page, limit, {
             filter: filterParts.join(' && ') || '',
             sort: '-created',
         });
 
-        let logs = result.items.map((log: any) => ({
+        let logs = result.items.map((log) => ({
             id: log.id,
             action: log.action,
             entity_type: log.entity_type,
@@ -131,8 +145,8 @@ export async function logActivity(
     description: string,
     options?: {
         entityId?: string;
-        oldValues?: Record<string, any>;
-        newValues?: Record<string, any>;
+        oldValues?: Record<string, unknown>;
+        newValues?: Record<string, unknown>;
         userName?: string;
     }
 ): Promise<void> {
@@ -204,12 +218,12 @@ export async function getActivityStats(): Promise<{
             filter: `created>="${today.toISOString()}"`,
         });
 
-        const weekLogs = await pb.collection('activity_logs').getFullList({
+        const weekLogs = await pb.collection('activity_logs').getFullList<ActivityLogRecord>({
             filter: `created>="${weekAgo.toISOString()}"`,
         });
 
         const byAction: Record<string, number> = {};
-        weekLogs.forEach((log: any) => {
+        weekLogs.forEach((log) => {
             byAction[log.action] = (byAction[log.action] || 0) + 1;
         });
 

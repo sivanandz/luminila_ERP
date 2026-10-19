@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { X, Loader2, CheckCircle2, XCircle, Phone, ExternalLink } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
-import { initiatePayment, checkPaymentStatus, toPaise, type PaymentStatusResponse } from "@/lib/phonepe";
+import { initiatePayment, checkPaymentStatus, toPaise } from "@/lib/phonepe";
 
 interface PhonePePaymentProps {
     isOpen: boolean;
@@ -33,6 +33,7 @@ export function PhonePePayment({
     // Reset state when modal opens
     useEffect(() => {
         if (isOpen) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional one-shot reset when the modal reopens; the component stays mounted while closed so this state cannot be cleared at initialization
             setStatus('input');
             setCustomerPhone('');
             setTransactionId(null);
@@ -122,7 +123,7 @@ export function PhonePePayment({
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50 p-4">
             <div className="bg-surface-navy rounded-xl shadow-2xl max-w-md w-full border border-surface-hover overflow-hidden">
                 {/* Header */}
                 <div className="bg-bg-navy p-4 flex items-center justify-between border-b border-surface-hover">

@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { Header } from "@/components/layout";
 import { getCategories, createCategory, toggleCategoryStatus, type ExpenseCategory } from "@/lib/expenses";
-import { Plus, Tag, Check, X } from "lucide-react";
+import { Plus, Tag } from "lucide-react";
 import { toast } from "sonner";
 import {
     Dialog,
@@ -20,7 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 export default function ExpenseCategoriesPage() {
     const [categories, setCategories] = useState<ExpenseCategory[]>([]);
-    const [loading, setLoading] = useState(true);
+    const [, setLoading] = useState(true);
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [newCategory, setNewCategory] = useState({ name: "", description: "" });
 
@@ -32,6 +32,7 @@ export default function ExpenseCategoriesPage() {
     };
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- loadData is the shared mount-fetch/reload helper; its synchronous setLoading(true) intentionally starts the loading lifecycle before the fetch resolves.
         loadData();
     }, []);
 

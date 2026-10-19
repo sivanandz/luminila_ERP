@@ -3,6 +3,13 @@
 
 import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import { formatPrice, formatDate } from "@/lib/utils";
 import {
 
@@ -98,31 +105,56 @@ export default function OrdersPage() {
                 title="Sales & Estimates"
                 subtitle="Manage customer orders and quotations"
             >
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
                     <Button
                         variant="outline"
+                        size="sm"
                         onClick={() => {
                             setSelectedOrderForScan(null);
                             setScanModalOpen(true);
                         }}
-                        className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300 font-bold"
+                        className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300 font-bold text-xs"
                     >
-                        <ScanBarcode size={16} className="mr-2 text-emerald-400" />
-                        Scan AWB & Dispatch
+                        <ScanBarcode size={14} className="mr-1.5 text-emerald-400" />
+                        Scan AWB
                     </Button>
                     <Button
+                        size="sm"
                         onClick={() => router.push('/orders/create')}
+                        className="text-xs"
                     >
-                        <Plus size={16} className="mr-2" />
-                        New Order / Estimate
+                        <Plus size={14} className="mr-1.5" />
+                        New Order
                     </Button>
                 </div>
             </Header>
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 {/* Tabs & Filters */}
                 <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6">
-                    <div className="flex items-center gap-1 bg-surface-navy p-1 rounded-lg border border-surface-hover">
+                    {/* Order Tabs: Dropdown on Mobile/Narrow, Pill Bar on Desktop */}
+                    <div className="block sm:hidden w-full">
+                        <Select value={activeTab} onValueChange={(v) => v && setActiveTab(v as any)}>
+                            <SelectTrigger className="w-full h-10 bg-card border-border text-xs font-semibold px-3 rounded-xl flex items-center justify-between shadow-xs">
+                                <span className="font-semibold text-xs text-foreground">
+                                    {activeTab === 'all' ? 'All Orders & Estimates' : activeTab === 'sales_order' ? 'Confirmed Orders' : 'Estimates & Quotes'}
+                                </span>
+                            </SelectTrigger>
+                            <SelectContent className="bg-popover border-border">
+                                <SelectItem value="all" className="text-xs font-medium py-2">
+                                    All Orders &amp; Estimates
+                                </SelectItem>
+                                <SelectItem value="sales_order" className="text-xs font-medium py-2">
+                                    Confirmed Orders
+                                </SelectItem>
+                                <SelectItem value="estimate" className="text-xs font-medium py-2">
+                                    Estimates &amp; Quotes
+                                </SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+
+                    <div className="hidden sm:flex items-center gap-1 bg-surface-navy p-1 rounded-lg border border-surface-hover">
                         {(['all', 'sales_order', 'estimate'] as const).map((tab) => (
                             <button
                                 key={tab}
@@ -168,8 +200,84 @@ export default function OrdersPage() {
                             </div>
                         </div>
                     ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left">
+                        <>
+                            {/* Mobile Card List View (< md) */}
+                            <div className="md:hidden flex flex-col gap-3 p-3">
+                                {filteredOrders.map((order) => {
+                                    const statusBadge = getStatusBadge(order.status);
+                                    const typeBadge = getTypeBadge(order.order_type);
+                                    return (
+                                        <div
+                                            key={order.id}
+                                            onClick={() => router.push(`/orders/detail?id=${order.id}`)}
+                                            className="bg-bg-navy/80 border border-surface-hover hover:border-primary/50 rounded-xl p-3.5 transition-all shadow-sm active:scale-[0.99] cursor-pointer"
+                                        >
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-mono font-bold text-sm text-white">#{order.order_number}</span>
+                                                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${typeBadge.bg} ${typeBadge.text} ${typeBadge.border}`}>
+                                                        {typeBadge.label}
+                                                    </span>
+                                                </div>
+                                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${statusBadge.className}`}>
+                                                    {statusBadge.icon}
+                                                    {statusBadge.label}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex items-center justify-between text-xs my-1.5">
+                                                <div className="min-w-0 pr-2">
+                                                    <p className="font-bold text-white truncate">{order.customer_name || 'Walk-in Customer'}</p>
+                                                    {order.customer_phone && (
+                                                        <p className="text-[11px] text-moonstone truncate font-mono mt-0.5">{order.customer_phone}</p>
+                                                    )}
+                                                </div>
+                                                <div className="text-right shrink-0">
+                                                    <p className="font-bold text-primary text-base font-mono">{formatPrice(order.total)}</p>
+                                                    <p className="text-[10px] text-moonstone">{formatDate(order.created || order.created_at)}</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-hover/60 mt-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setSelectedOrderForScan({
+                                                            id: order.id,
+                                                            order_number: order.order_number,
+                                                            customer_name: order.customer_name,
+                                                            customer_phone: order.customer_phone,
+                                                            status: order.status,
+                                                            total: order.total,
+                                                        });
+                                                        setScanModalOpen(true);
+                                                    }}
+                                                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/30 transition-colors"
+                                                >
+                                                    <ScanBarcode size={13} />
+                                                    Dispatch AWB
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        router.push(`/orders/detail?id=${order.id}`);
+                                                    }}
+                                                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-surface-navy hover:bg-surface-hover px-2.5 py-1 rounded-lg border border-surface-hover transition-colors"
+                                                >
+                                                    <Eye size={13} />
+                                                    View
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Desktop Table View (>= md) */}
+                            <div className="hidden md:block overflow-x-auto">
+                                <table className="w-full text-left">
                                 <thead>
                                     <tr className="border-b border-surface-hover bg-bg-navy/50">
                                         <th className="py-4 px-6 text-xs font-bold text-moonstone uppercase tracking-wider">Order #</th>
@@ -254,6 +362,7 @@ export default function OrdersPage() {
                                 </tbody>
                             </table>
                         </div>
+                    </>
                     )}
                 </div>
             </div>

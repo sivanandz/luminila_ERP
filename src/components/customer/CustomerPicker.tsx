@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Search, User, Plus, X, Crown, Building2 } from "lucide-react";
+import { Search, User, Plus, X, Crown, Building2, type LucideIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { searchCustomers, type Customer, type CustomerType } from "@/lib/customers";
@@ -13,7 +13,7 @@ interface CustomerPickerProps {
     className?: string;
 }
 
-const typeIcons: Record<CustomerType, any> = {
+const typeIcons: Record<CustomerType, LucideIcon> = {
     retail: User,
     wholesale: Building2,
     vip: Crown,

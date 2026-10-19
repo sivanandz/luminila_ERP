@@ -7,6 +7,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Eye, EyeOff, Loader2, Sparkles } from "lucide-react";
+import { ClientResponseError } from "pocketbase";
+
+interface PocketBaseFieldError {
+    message?: string;
+}
 
 import { useAuth } from "@/contexts/AuthContext";
 import Link from "next/link";
@@ -30,12 +35,14 @@ export default function LoginPage() {
             await login(formData.email, formData.password);
             toast.success("Welcome back!");
             router.push("/");
-        } catch (err: any) {
+        } catch (err) {
             console.error("Auth error:", err);
-            let message = err?.response?.message || err?.message || "Authentication failed";
-            if (err?.response?.data && Object.keys(err.response.data).length > 0) {
-                const fieldErrors = Object.entries(err.response.data)
-                    .map(([field, errObj]: [string, any]) => `${field}: ${errObj?.message || 'invalid'}`)
+            const pbErr = err instanceof ClientResponseError ? err : null;
+            let message = pbErr?.response?.message || (err instanceof Error ? err.message : undefined) || "Authentication failed";
+            const responseData = pbErr?.response?.data;
+            if (responseData && Object.keys(responseData).length > 0) {
+                const fieldErrors = Object.entries(responseData)
+                    .map(([field, errObj]) => `${field}: ${(errObj as PocketBaseFieldError | undefined)?.message || 'invalid'}`)
                     .join(", ");
                 if (fieldErrors) message = fieldErrors;
             }
@@ -116,16 +123,7 @@ export default function LoginPage() {
                             Sign In
                         </Button>
 
-                        <div className="pt-1">
-                            <button
-                                type="button"
-                                onClick={() => setFormData({ email: "admin@luminila.local", password: "Luminila2026!" })}
-                                className="w-full text-xs text-muted-foreground hover:text-primary transition-colors py-1.5 px-3 rounded-lg border border-dashed border-border/80 hover:border-primary/50 bg-muted/30 hover:bg-muted/60 flex items-center justify-center gap-1.5 cursor-pointer"
-                            >
-                                <Sparkles className="w-3.5 h-3.5 text-primary" />
-                                <span>Fill Default Admin: <strong className="text-foreground">admin@luminila.local</strong></span>
-                            </button>
-                        </div>
+                        <div className="pt-1" />
                     </form>
 
                     <div className="mt-6 text-center space-y-2">

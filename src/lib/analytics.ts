@@ -4,6 +4,15 @@
  */
 
 import { pb } from './pocketbase';
+import type {
+    ProductVariant,
+    PurchaseOrder,
+    Sale,
+    SaleItem,
+    SalesOrder,
+    StockMovement,
+    Vendor,
+} from '@/types/database';
 
 // ===========================================
 // TYPES
@@ -38,6 +47,9 @@ export interface ChannelBreakdown {
     orders: number;
     revenue: number;
     percentage: number;
+    // Recharts v3 types chart rows as Record<string, unknown>, which requires
+    // an index signature on plain data interfaces for assignability.
+    [key: string]: string | number;
 }
 
 export interface RecentActivity {
@@ -49,12 +61,41 @@ export interface RecentActivity {
     timestamp: string;
 }
 
+/** Sale item with its variant (and the variant's product) expanded */
+export interface SaleItemWithExpand extends SaleItem {
+    expand?: {
+        variant?: ProductVariant;
+    };
+}
+
+/** Purchase order with its vendor record expanded */
+export interface PurchaseOrderWithVendor extends PurchaseOrder {
+    expand?: {
+        vendor?: Vendor;
+    };
+}
+
+/** Stock movement with its variant (and the variant's product) expanded */
+export interface StockMovementWithVariant extends StockMovement {
+    expand?: {
+        variant?: ProductVariant;
+    };
+}
+
 // ===========================================
 // DASHBOARD STATS
 // ===========================================
 
 export async function getDashboardStats(): Promise<DashboardStats> {
     try {
+        const currentUserEmail = pb.authStore.model?.email;
+        if (!currentUserEmail) {
+            return {
+                totalRevenue: 0, totalOrders: 0, totalProducts: 0, lowStockCount: 0,
+                todayRevenue: 0, todayOrders: 0, pendingOrders: 0, revenueChange: 0,
+            };
+        }
+
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const todayISO = today.toISOString();
@@ -68,31 +109,31 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         const sixtyDaysAgoISO = sixtyDaysAgo.toISOString();
 
         // Fetch sales data
-        const salesData = await pb.collection('sales').getFullList({
-            filter: `created>="${sixtyDaysAgoISO}"`,
+        const salesData = await pb.collection('sales').getFullList<Sale>({
+            filter: `account_email="${currentUserEmail}" && created>="${sixtyDaysAgoISO}"`,
         });
 
         // Fetch sales orders: prioritize order_date (business date), fallback to created
-        let ordersData: any[] = [];
+        let ordersData: SalesOrder[] = [];
         try {
-            ordersData = await pb.collection('sales_orders').getFullList({
-                filter: `(order_date>="${sixtyDaysAgoISO}" || (order_date="" && created>="${sixtyDaysAgoISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+            ordersData = await pb.collection('sales_orders').getFullList<SalesOrder>({
+                filter: `account_email="${currentUserEmail}" && (order_date>="${sixtyDaysAgoISO}" || (order_date="" && created>="${sixtyDaysAgoISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
         } catch (e) {
             console.error('Failed to fetch sales_orders for stats:', e);
         }
 
-        const sumRevenue = (items: any[]) => items.reduce((sum, item) => sum + (item.total || 0), 0);
-        const getOrderDate = (o: any): string => o.order_date || o.created;
+        const sumRevenue = (items: Array<{ total?: number }>) => items.reduce((sum, item) => sum + (item.total || 0), 0);
+        const getOrderDate = (o: SalesOrder): string => o.order_date || o.created;
 
-        const salesLast30 = salesData.filter((s: any) => s.created >= thirtyDaysAgoISO);
-        const ordersLast30 = ordersData.filter((o: any) => getOrderDate(o) >= thirtyDaysAgoISO);
+        const salesLast30 = salesData.filter((s) => s.created >= thirtyDaysAgoISO);
+        const ordersLast30 = ordersData.filter((o) => getOrderDate(o) >= thirtyDaysAgoISO);
 
-        const salesPrev30 = salesData.filter((s: any) => s.created < thirtyDaysAgoISO && s.created >= sixtyDaysAgoISO);
-        const ordersPrev30 = ordersData.filter((o: any) => getOrderDate(o) < thirtyDaysAgoISO && getOrderDate(o) >= sixtyDaysAgoISO);
+        const salesPrev30 = salesData.filter((s) => s.created < thirtyDaysAgoISO && s.created >= sixtyDaysAgoISO);
+        const ordersPrev30 = ordersData.filter((o) => getOrderDate(o) < thirtyDaysAgoISO && getOrderDate(o) >= sixtyDaysAgoISO);
 
-        const salesToday = salesData.filter((s: any) => s.created >= todayISO);
-        const ordersToday = ordersData.filter((o: any) => getOrderDate(o) >= todayISO);
+        const salesToday = salesData.filter((s) => s.created >= todayISO);
+        const ordersToday = ordersData.filter((o) => getOrderDate(o) >= todayISO);
 
         const totalRevenue = sumRevenue(salesLast30) + sumRevenue(ordersLast30);
         const totalOrders = salesLast30.length + ordersLast30.length;
@@ -105,19 +146,23 @@ export async function getDashboardStats(): Promise<DashboardStats> {
             ? Math.round(((totalRevenue - prevRevenue) / prevRevenue) * 100)
             : 0;
 
-        // Product count
-        const products = await pb.collection('products').getList(1, 1, { filter: 'is_active=true' });
+        // Product count strictly scoped to tenant
+        const products = await pb.collection('products').getList(1, 1, { 
+            filter: `account_email="${currentUserEmail}" && is_active=true` 
+        });
         const totalProducts = products.totalItems;
 
-        // Low stock count
-        const lowStock = await pb.collection('product_variants').getList(1, 1, { filter: 'stock_level<10' });
+        // Low stock count strictly scoped to tenant and active products only
+        const lowStock = await pb.collection('product_variants').getList(1, 1, { 
+            filter: `account_email="${currentUserEmail}" && stock_level<10 && product.is_active=true` 
+        });
         const lowStockCount = lowStock.totalItems;
 
-        // Pending orders
+        // Pending orders strictly scoped to tenant
         let pendingOrders = 0;
         try {
             const pending = await pb.collection('sales_orders').getList(1, 1, {
-                filter: 'status="draft" || status="sent" || status="confirmed" || status="shipped"',
+                filter: `account_email="${currentUserEmail}" && (status="draft" || status="sent" || status="confirmed" || status="shipped")`,
             });
             pendingOrders = pending.totalItems;
         } catch (e) {
@@ -149,19 +194,22 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
 export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]> {
     try {
+        const currentUserEmail = pb.authStore.model?.email;
+        if (!currentUserEmail) return [];
+
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
         startDate.setHours(0, 0, 0, 0);
         const startDateISO = startDate.toISOString();
 
-        const sales = await pb.collection('sales').getFullList({
-            filter: `created>="${startDateISO}"`,
+        const sales = await pb.collection('sales').getFullList<Sale>({
+            filter: `account_email="${currentUserEmail}" && created>="${startDateISO}"`,
         });
 
-        let orders: any[] = [];
+        let orders: SalesOrder[] = [];
         try {
-            orders = await pb.collection('sales_orders').getFullList({
-                filter: `(order_date>="${startDateISO}" || (order_date="" && created>="${startDateISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+            orders = await pb.collection('sales_orders').getFullList<SalesOrder>({
+                filter: `account_email="${currentUserEmail}" && (order_date>="${startDateISO}" || (order_date="" && created>="${startDateISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
         } catch (e) {
             console.error('Failed to fetch sales_orders for trend:', e);
@@ -176,8 +224,8 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
             byDate.set(key, { revenue: 0, orders: 0 });
         }
 
-        const aggregate = (items: any[], isOrder = false) => {
-            items.forEach((item: any) => {
+        const aggregate = (items: Array<{ total?: number; created: string; order_date?: string }>, isOrder = false) => {
+            items.forEach((item) => {
                 const rawDate = isOrder ? (item.order_date || item.created) : item.created;
                 const dateKey = new Date(rawDate).toISOString().split('T')[0];
                 const existing = byDate.get(dateKey);
@@ -210,17 +258,20 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
 
 export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> {
     try {
+        const currentUserEmail = pb.authStore.model?.email;
+        if (!currentUserEmail) return [];
+
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-        const saleItems = await pb.collection('sale_items').getFullList({
-            filter: `created>="${thirtyDaysAgo.toISOString()}"`,
+        const saleItems = await pb.collection('sale_items').getFullList<SaleItemWithExpand>({
+            filter: `account_email="${currentUserEmail}" && created>="${thirtyDaysAgo.toISOString()}"`,
             expand: 'variant,variant.product',
         });
 
         const byProduct = new Map<string, { name: string; sku: string; sold: number; revenue: number }>();
 
-        saleItems.forEach((item: any) => {
+        saleItems.forEach((item) => {
             const product = item.expand?.variant?.expand?.product;
             if (!product) return;
 
@@ -261,6 +312,9 @@ export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> 
 
 export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
     try {
+        const currentUserEmail = pb.authStore.model?.email;
+        if (!currentUserEmail) return [];
+
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -268,11 +322,11 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
 
         // Sales Orders
         try {
-            const salesOrders = await pb.collection('sales_orders').getFullList({
-                filter: `(order_date>="${thirtyDaysAgo.toISOString()}" || (order_date="" && created>="${thirtyDaysAgo.toISOString()}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+            const salesOrders = await pb.collection('sales_orders').getFullList<SalesOrder>({
+                filter: `account_email="${currentUserEmail}" && (order_date>="${thirtyDaysAgo.toISOString()}" || (order_date="" && created>="${thirtyDaysAgo.toISOString()}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
 
-            salesOrders.forEach((order: any) => {
+            salesOrders.forEach((order) => {
                 const channel = 'B2B / Online';
                 const existing = byChannel.get(channel) || { orders: 0, revenue: 0 };
                 byChannel.set(channel, {
@@ -285,11 +339,11 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
         }
 
         // POS Sales
-        const posData = await pb.collection('sales').getFullList({
-            filter: `created>="${thirtyDaysAgo.toISOString()}"`,
+        const posData = await pb.collection('sales').getFullList<Sale>({
+            filter: `account_email="${currentUserEmail}" && created>="${thirtyDaysAgo.toISOString()}"`,
         });
 
-        posData.forEach((sale: any) => {
+        posData.forEach((sale) => {
             const channel = sale.channel === 'pos' ? 'In-Store (POS)' : (sale.channel || 'Other');
             const existing = byChannel.get(channel) || { orders: 0, revenue: 0 };
             byChannel.set(channel, {
@@ -320,11 +374,16 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
 
 export async function getRecentActivity(limit: number = 10): Promise<RecentActivity[]> {
     const activities: RecentActivity[] = [];
+    const currentUserEmail = pb.authStore.model?.email;
+    if (!currentUserEmail) return [];
 
     try {
         // Recent sales
-        const sales = await pb.collection('sales').getList(1, 5, { sort: '-created' });
-        sales.items.forEach((sale: any) => {
+        const sales = await pb.collection('sales').getList<Sale>(1, 5, { 
+            filter: `account_email="${currentUserEmail}"`,
+            sort: '-created' 
+        });
+        sales.items.forEach((sale) => {
             activities.push({
                 id: sale.id,
                 type: 'sale',
@@ -337,8 +396,11 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
 
         // Recent sales orders
         try {
-            const orders = await pb.collection('sales_orders').getList(1, 5, { sort: '-created' });
-            orders.items.forEach((order: any) => {
+            const orders = await pb.collection('sales_orders').getList<SalesOrder>(1, 5, { 
+                filter: `account_email="${currentUserEmail}"`,
+                sort: '-created' 
+            });
+            orders.items.forEach((order) => {
                 activities.push({
                     id: order.id,
                     type: 'order',
@@ -354,11 +416,12 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
 
         // Recent purchase orders
         try {
-            const purchases = await pb.collection('purchase_orders').getList(1, 5, {
+            const purchases = await pb.collection('purchase_orders').getList<PurchaseOrderWithVendor>(1, 5, {
+                filter: `account_email="${currentUserEmail}"`,
                 sort: '-created',
                 expand: 'vendor',
             });
-            purchases.items.forEach((po: any) => {
+            purchases.items.forEach((po) => {
                 activities.push({
                     id: po.id,
                     type: 'invoice',
@@ -374,11 +437,12 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
 
         // Recent stock movements
         try {
-            const movements = await pb.collection('stock_movements').getList(1, 5, {
+            const movements = await pb.collection('stock_movements').getList<StockMovementWithVariant>(1, 5, {
+                filter: `account_email="${currentUserEmail}"`,
                 sort: '-created',
                 expand: 'variant,variant.product',
             });
-            movements.items.forEach((mov: any) => {
+            movements.items.forEach((mov) => {
                 const productName = mov.expand?.variant?.expand?.product?.name || 'Unknown';
                 activities.push({
                     id: mov.id,
@@ -410,6 +474,9 @@ export async function getRevenueSummary(period: 'today' | 'week' | 'month' | 'ye
     avgOrderValue: number;
 }> {
     try {
+        const currentUserEmail = pb.authStore.model?.email;
+        if (!currentUserEmail) return { revenue: 0, orders: 0, avgOrderValue: 0 };
+
         const now = new Date();
         let startDate: Date;
 
@@ -433,21 +500,21 @@ export async function getRevenueSummary(period: 'today' | 'week' | 'month' | 'ye
 
         const startDateISO = startDate.toISOString();
 
-        const sales = await pb.collection('sales').getFullList({
-            filter: `created>="${startDateISO}"`,
+        const sales = await pb.collection('sales').getFullList<Sale>({
+            filter: `account_email="${currentUserEmail}" && created>="${startDateISO}"`,
         });
 
-        let orders: any[] = [];
+        let orders: SalesOrder[] = [];
         try {
-            orders = await pb.collection('sales_orders').getFullList({
-                filter: `created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
+            orders = await pb.collection('sales_orders').getFullList<SalesOrder>({
+                filter: `account_email="${currentUserEmail}" && created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
             });
         } catch (e) {
             console.error('Failed to fetch sales_orders for revenue summary:', e);
         }
 
-        const revenue = sales.reduce((sum: number, s: any) => sum + (s.total || 0), 0) +
-            orders.reduce((sum: number, o: any) => sum + (o.total || 0), 0);
+        const revenue = sales.reduce((sum: number, s) => sum + (s.total || 0), 0) +
+            orders.reduce((sum: number, o) => sum + (o.total || 0), 0);
 
         const count = sales.length + orders.length;
         const avgOrderValue = count > 0 ? Math.round(revenue / count) : 0;

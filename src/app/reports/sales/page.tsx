@@ -1,20 +1,20 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { format, startOfMonth, endOfMonth, subMonths } from "date-fns";
+import { format, startOfMonth, endOfMonth } from "date-fns";
 import {
     ArrowLeft,
     Download,
     Printer,
-    Calendar,
-    TrendingUp,
+
+
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
     Table,
     TableBody,
@@ -25,14 +25,19 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 
-import { getSalesReport, exportToCSV, printReport, type SalesReportRow } from "@/lib/reports";
+import { getSalesReport, exportToCSV, printReport, type SalesReportRow, type ReportSummary } from "@/lib/reports";
 import { formatINR } from "@/lib/gst";
 
 export default function SalesReportPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
     const [rows, setRows] = useState<SalesReportRow[]>([]);
-    const [summary, setSummary] = useState<any>({});
+    const [summary, setSummary] = useState<ReportSummary>({
+        totalSales: 0,
+        totalTax: 0,
+        totalOrders: 0,
+        totalItems: 0,
+    });
 
     // Default to current month
     const [startDate, setStartDate] = useState(
@@ -42,17 +47,18 @@ export default function SalesReportPage() {
         format(endOfMonth(new Date()), "yyyy-MM-dd")
     );
 
-    const loadReport = async () => {
+    const loadReport = useCallback(async () => {
         setLoading(true);
         const { rows, summary } = await getSalesReport(startDate, endDate);
         setRows(rows);
         setSummary(summary);
         setLoading(false);
-    };
+    }, [startDate, endDate]);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- setLoading(true) must run synchronously before the async fetch so the Loading UI appears when the date range changes; the remaining setStates happen after awaits
         loadReport();
-    }, [startDate, endDate]);
+    }, [loadReport]);
 
     const handleExport = () => {
         exportToCSV(rows, "sales_report");

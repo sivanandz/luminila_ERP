@@ -96,6 +96,7 @@ export default function ChallansPage() {
 
     useEffect(() => {
         fetchChallans();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchChallans reads only the typeFilter/statusFilter states listed here, and adding its per-render identity would rerun this effect after every render causing an infinite fetch loop
     }, [typeFilter, statusFilter]);
 
     useEffect(() => {
@@ -103,6 +104,7 @@ export default function ChallansPage() {
             fetchChallans();
         }, 500);
         return () => clearTimeout(timeout);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the 500ms debounce must fire only on searchQuery change, and adding fetchChallans's per-render identity would cause an infinite refetch loop
     }, [searchQuery]);
 
     const filteredChallans = challans;
@@ -122,7 +124,7 @@ export default function ChallansPage() {
                 }
             />
 
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
                 {/* Filters */}
                 <div className="flex flex-wrap items-center gap-4 mb-6">
                     <div className="relative flex-1 max-w-md">

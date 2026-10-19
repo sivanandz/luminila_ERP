@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useCallback, useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Header } from "@/components/layout";
 import {
@@ -12,10 +12,10 @@ import {
     XCircle,
     Printer,
     FileText,
-    Edit,
+
     ArrowRightLeft
 } from "lucide-react";
-import { formatDate, formatPrice } from "@/lib/utils";
+import { formatPrice } from "@/lib/utils";
 import {
     getChallan,
     updateChallanStatus,
@@ -55,7 +55,7 @@ function ChallanDetailContent() {
     });
     const [supplierGstin, setSupplierGstin] = useState("");
 
-    const fetchChallan = async () => {
+    const fetchChallan = useCallback(async () => {
         if (!id) {
             router.push("/challan");
             return;
@@ -70,11 +70,12 @@ function ChallanDetailContent() {
             router.push("/challan");
         }
         setLoading(false);
-    };
+    }, [id, router]);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchChallan flips `loading` synchronously before its first await so the spinner shows during refetches triggered by status updates; deferring it past the await would change what renders while the challan reloads
         fetchChallan();
-    }, [id]);
+    }, [fetchChallan]);
 
     const handleStatusUpdate = async (newStatus: ChallanStatus) => {
         if (!challan?.id) return;

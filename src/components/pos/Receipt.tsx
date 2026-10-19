@@ -34,9 +34,9 @@ export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
             total,
             paymentMethod,
             cashierName = "Staff",
-            storeName = "Zennila",
-            storeAddress = "Mumbai, Maharashtra",
-            storePhone = "+91 98765 43210",
+            storeName = "Store Receipt",
+            storeAddress = "",
+            storePhone = "",
         },
         ref
     ) {
@@ -49,8 +49,8 @@ export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
                 {/* Store Header */}
                 <div className="text-center mb-4">
                     <h1 className="text-lg font-bold">{storeName}</h1>
-                    <p className="text-[10px]">{storeAddress}</p>
-                    <p className="text-[10px]">{storePhone}</p>
+                    {storeAddress ? <p className="text-[10px]">{storeAddress}</p> : null}
+                    {storePhone ? <p className="text-[10px]">{storePhone}</p> : null}
                 </div>
 
                 {/* Divider */}
@@ -123,7 +123,6 @@ export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
                 <div className="text-center text-[10px]">
                     <p className="font-bold">Thank you for shopping!</p>
                     <p className="mt-1">Visit us again</p>
-                    <p className="mt-2">www.zennila.com</p>
                 </div>
 
                 {/* Barcode placeholder */}

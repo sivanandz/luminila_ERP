@@ -5,20 +5,19 @@ import {
     X,
     RefreshCw,
     CheckCircle,
-    AlertCircle,
+
     Package,
     Search,
     Loader2,
-    Trash2,
-    ExternalLink,
+    Zap,
 } from "lucide-react";
 import {
     getPublishableProducts,
     syncProductToWhatsApp,
     batchSyncCatalog,
-    removeProductFromWhatsApp,
     WhatsAppProductItem,
 } from "@/lib/whatsapp-catalog";
+import { isAutoSyncEnabled, setAutoSyncEnabled } from "@/lib/whatsapp-event-sync";
 
 export interface WhatsAppCatalogSyncModalProps {
     isOpen: boolean;
@@ -34,9 +33,11 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
     const [searchQuery, setSearchQuery] = useState("");
     const [filterSynced, setFilterSynced] = useState<"all" | "synced" | "unsynced">("all");
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
+    const [autoSync, setAutoSync] = useState<boolean>(true);
 
     useEffect(() => {
         if (isOpen) {
+            setAutoSync(isAutoSyncEnabled());
             loadProducts();
         }
     }, [isOpen]);
@@ -47,8 +48,8 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
         try {
             const items = await getPublishableProducts();
             setProducts(items);
-        } catch (err: any) {
-            setStatusMessage(`Error loading products: ${err.message}`);
+        } catch (err) {
+            setStatusMessage(`Error loading products: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setLoading(false);
         }
@@ -99,8 +100,8 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
             setStatusMessage(`Sync complete: ${res.synced} published, ${res.failed} failed.`);
             await loadProducts();
             setSelectedIds(new Set());
-        } catch (err: any) {
-            setStatusMessage(`Sync failed: ${err.message}`);
+        } catch (err) {
+            setStatusMessage(`Sync failed: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setSyncing(false);
             setProgress(null);
@@ -117,8 +118,8 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
             } else {
                 setStatusMessage(`Failed to sync: ${res.error}`);
             }
-        } catch (err: any) {
-            setStatusMessage(`Sync error: ${err.message}`);
+        } catch (err) {
+            setStatusMessage(`Sync error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setSyncing(false);
         }
@@ -127,7 +128,7 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
     const syncedCount = products.filter((p) => !!p.whatsappProductId).length;
 
     return (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
             <div className="w-full max-w-3xl max-h-[85vh] bg-card border border-border rounded-2xl shadow-2xl flex flex-col text-foreground overflow-hidden animate-in zoom-in-95 duration-150">
                 {/* Header */}
                 <div className="p-5 border-b border-border flex items-center justify-between">
@@ -150,6 +151,39 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
                     </button>
                 </div>
 
+                {/* Event-Driven Auto-Sync Bar */}
+                <div className="px-5 py-2.5 bg-emerald-500/5 border-b border-border flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                        <span className="flex h-2 w-2 relative">
+                            {autoSync && (
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            )}
+                            <span className={`relative inline-flex rounded-full h-2 w-2 ${autoSync ? 'bg-emerald-500' : 'bg-muted-foreground'}`}></span>
+                        </span>
+                        <span className="font-semibold flex items-center gap-1.5">
+                            <Zap size={13} className={autoSync ? "text-emerald-500" : "text-muted-foreground"} />
+                            Event-Driven Auto-Sync:
+                        </span>
+                        <span className="text-muted-foreground hidden sm:inline">
+                            {autoSync ? "Active — auto-syncs catalog on inventory edits & POS checkouts with WhatsApp channel price" : "Paused — manual sync only"}
+                        </span>
+                    </div>
+                    <button
+                        onClick={() => {
+                            const next = !autoSync;
+                            setAutoSync(next);
+                            setAutoSyncEnabled(next);
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                            autoSync
+                                ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/30"
+                                : "bg-muted text-muted-foreground hover:bg-muted/80"
+                        }`}
+                    >
+                        {autoSync ? "Enabled" : "Disabled"}
+                    </button>
+                </div>
+
                 {/* Filters & Actions Bar */}
                 <div className="p-4 bg-muted/20 border-b border-border flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2 flex-1 min-w-[240px]">
@@ -165,7 +199,7 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
                         </div>
                         <select
                             value={filterSynced}
-                            onChange={(e: any) => setFilterSynced(e.target.value)}
+                            onChange={(e) => setFilterSynced(e.target.value as "all" | "synced" | "unsynced")}
                             className="bg-background border border-border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none"
                         >
                             <option value="all">All ({products.length})</option>

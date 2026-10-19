@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 import {
     Dialog,
     DialogContent,
@@ -23,6 +23,10 @@ import {
     Users,
     Radio,
     Image as ImageIcon,
+    Camera,
+    ChevronDown,
+    ChevronUp,
+    Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getTypeAheadProducts } from "@/lib/products";
@@ -32,8 +36,18 @@ import {
     addToExistingInventory,
     queueLabelPrint,
     parseVendorOffer,
-    generateVendorSku,
 } from "@/lib/whatsapp-crm";
+import {
+    getSKUTaxonomies,
+    loadSKUTaxonomies,
+    subscribeSKUTaxonomies,
+    type SKUTaxonomies,
+    generateParentSKU,
+    generateChildSKU,
+    deriveHSNCode,
+    getSubcategoriesForCategory,
+    computeNextSkuSequence,
+} from "@/lib/sku-generator";
 
 // ============================================
 // 1. Create New Product from Message (spec §8.2)
@@ -68,6 +82,20 @@ export function VendorIngestionModal({
 }: VendorIngestionModalProps) {
     const parsed = useMemo(() => (isOpen ? parseVendorOffer(messageBody) : null), [isOpen, messageBody]);
 
+    const [taxonomies, setTaxonomies] = useState<SKUTaxonomies>(getSKUTaxonomies());
+    const [skuGenre, setSkuGenre] = useState(parsed?.genreCode || 'TMP');
+    const [skuCategory, setSkuCategory] = useState(parsed?.categoryCode || 'NEC');
+    const [skuSubcat, setSkuSubcat] = useState(parsed?.subcategoryCode || 'CHK');
+    const [skuPlating, setSkuPlating] = useState(parsed?.platingCode || 'MG');
+    const [skuColor, setSkuColor] = useState(parsed?.colorCode || 'RB');
+    const [skuSize, setSkuSize] = useState(parsed?.sizeCode || 'STD');
+    const [skuBaseMetal, setSkuBaseMetal] = useState(parsed?.baseMetalCode || 'BR');
+    const [skuStone, setSkuStone] = useState(parsed?.stoneCode || 'KP');
+    const [nextSkuSeq, setNextSkuSeq] = useState(1);
+    const [showAdvancedAttributes, setShowAdvancedAttributes] = useState(false);
+    const [skipTaxonomy, setSkipTaxonomy] = useState(false);
+    const [customSku, setCustomSku] = useState('');
+
     const [name, setName] = useState(() => {
         const cat = parsed?.category || 'Jewelry';
         const pur = parsed?.purity || '';
@@ -82,10 +110,41 @@ export function VendorIngestionModal({
     const [submitting, setSubmitting] = useState(false);
     const [ingested, setIngested] = useState<{ sku: string; variantId: string } | null>(null);
 
+    // Product Photo Handling (handles WhatsApp decrypted base64, CDN URLs, and manual replacement)
+    const [activeImage, setActiveImage] = useState<string | null>(imageUrl || null);
+    const [imageLoadError, setImageLoadError] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        setActiveImage(imageUrl || null);
+        setImageLoadError(false);
+    }, [imageUrl, isOpen]);
+
+    const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            if (typeof reader.result === 'string') {
+                setActiveImage(reader.result);
+                setImageLoadError(false);
+                toast.success('Product photo attached');
+            }
+        };
+        reader.readAsDataURL(file);
+    };
+
     // Vendor Selection
     const [vendorsList, setVendorsList] = useState<Vendor[]>([]);
     const [selectedVendorId, setSelectedVendorId] = useState<string>(vendorId || '');
     const [selectedVendorName, setSelectedVendorName] = useState<string>(vendorName || '');
+
+    // Load registered taxonomies
+    React.useEffect(() => {
+        loadSKUTaxonomies().then(setTaxonomies);
+        const unsubscribe = subscribeSKUTaxonomies(setTaxonomies);
+        return () => unsubscribe();
+    }, []);
 
     // Load registered vendors
     React.useEffect(() => {
@@ -96,9 +155,28 @@ export function VendorIngestionModal({
     // Re-run smart extraction each time the modal opens with a new message
     React.useEffect(() => {
         if (!isOpen) return;
+        setSkipTaxonomy(false);
+        setCustomSku('');
         const p = parseVendorOffer(messageBody);
-        setName(`${p.purity ? p.purity + ' ' : ''}${p.category || 'Jewelry'}`.trim());
-        setCategory(p.category || '');
+        const g = p.genreCode || 'TMP';
+        const c = p.categoryCode || 'NEC';
+        const s = p.subcategoryCode || 'CHK';
+        setSkuGenre(g);
+        setSkuCategory(c);
+        setSkuSubcat(s);
+        setSkuPlating(p.platingCode || 'MG');
+        setSkuColor(p.colorCode || 'RB');
+        setSkuSize(p.sizeCode || 'STD');
+        setSkuBaseMetal(p.baseMetalCode || 'BR');
+        setSkuStone(p.stoneCode || 'KP');
+
+        const gLabel = taxonomies.genres.find(x => x.code === g)?.label.split(' ')[0] || '';
+        const cLabel = taxonomies.categories.find(x => x.code === c)?.label || '';
+        const sLabel = taxonomies.subcategories.find(x => x.code === s)?.label || '';
+        const defaultName = `${gLabel} ${cLabel} ${sLabel}`.trim() || `${p.purity ? p.purity + ' ' : ''}${p.category || 'Jewelry'}`.trim();
+        setName(defaultName);
+
+        setCategory(cLabel || p.category || '');
         setPurity(p.purity || '');
         setWeight(p.weightGrams?.toString() || '');
         setCostPrice(p.price?.toString() || '');
@@ -106,7 +184,49 @@ export function VendorIngestionModal({
         setIngested(null);
         setSelectedVendorId(vendorId || '');
         setSelectedVendorName(vendorName || '');
-    }, [isOpen, messageBody, vendorId, vendorName]);
+    }, [isOpen, messageBody, vendorId, vendorName, taxonomies.genres, taxonomies.categories, taxonomies.subcategories]);
+
+    // Keep SKU sequence in sync with DB
+    React.useEffect(() => {
+        if (!isOpen) return;
+        let cancelled = false;
+        const prefix = `${skuGenre}${skuCategory}${skuSubcat}`.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        computeNextSkuSequence(prefix).then(seq => {
+            if (!cancelled) setNextSkuSeq(seq);
+        });
+        return () => { cancelled = true; };
+    }, [isOpen, skuGenre, skuCategory, skuSubcat]);
+
+    // Dynamically filter subcategories based on selected Category
+    const filteredSubcategories = useMemo(() => {
+        return getSubcategoriesForCategory(skuCategory, taxonomies.subcategories);
+    }, [skuCategory, taxonomies.subcategories]);
+
+    const handleCategoryChange = (catCode: string) => {
+        setSkuCategory(catCode);
+        const valid = getSubcategoriesForCategory(catCode, taxonomies.subcategories);
+        let nextSub = skuSubcat;
+        if (valid.length > 0 && !valid.some(s => s.code === skuSubcat)) {
+            nextSub = valid[0].code;
+            setSkuSubcat(nextSub);
+        }
+        if (catCode === "GEN") {
+            setCategory("Uncategorized");
+        } else {
+            const gLabel = taxonomies.genres.find(x => x.code === skuGenre)?.label.split(' ')[0] || '';
+            const cLabel = taxonomies.categories.find(x => x.code === catCode)?.label || '';
+            const sLabel = taxonomies.subcategories.find(x => x.code === nextSub)?.label || '';
+            setName(`${gLabel} ${cLabel} ${sLabel}`.trim());
+        }
+    };
+
+    const handleSubcatChange = (subcatCode: string) => {
+        setSkuSubcat(subcatCode);
+        const gLabel = taxonomies.genres.find(x => x.code === skuGenre)?.label.split(' ')[0] || '';
+        const cLabel = taxonomies.categories.find(x => x.code === skuCategory)?.label || '';
+        const sLabel = taxonomies.subcategories.find(x => x.code === subcatCode)?.label || '';
+        setName(`${gLabel} ${cLabel} ${sLabel}`.trim());
+    };
 
     const suggestedRetail = useMemo(() => {
         const cost = parseFloat(costPrice) || 0;
@@ -114,11 +234,27 @@ export function VendorIngestionModal({
         return Math.ceil(cost * (1 + margin / 100));
     }, [costPrice, marginPercent]);
 
-    const suggestedSku = useMemo(() => {
-        const cat = (category || 'GEN').replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase() || 'GEN';
-        const pur = (purity || 'STD').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase() || 'STD';
-        return `VND-${cat}-${pur}-…`;
-    }, [category, purity]);
+    // Deterministic Parent and Child SKU Preview
+    const liveParentSku = useMemo(() => {
+        return generateParentSKU(skuGenre, skuCategory, skuSubcat, nextSkuSeq);
+    }, [skuGenre, skuCategory, skuSubcat, nextSkuSeq]);
+
+    const liveChildSku = useMemo(() => {
+        return generateChildSKU(liveParentSku, skuPlating, skuColor, skuSize);
+    }, [liveParentSku, skuPlating, skuColor, skuSize]);
+
+    // Effective SKU depending on whether taxonomy is skipped
+    const effectiveSku = useMemo(() => {
+        if (skipTaxonomy) {
+            if (customSku.trim()) return customSku.trim().toUpperCase();
+            return `GEN-${String(nextSkuSeq).padStart(5, '0')}`;
+        }
+        return liveChildSku;
+    }, [skipTaxonomy, customSku, nextSkuSeq, liveChildSku]);
+
+    const derivedHsn = useMemo(() => {
+        return deriveHSNCode(skuCategory, skuBaseMetal, skuStone);
+    }, [skuCategory, skuBaseMetal, skuStone]);
 
     const handleIngest = async () => {
         if (!name.trim() || !(parseFloat(costPrice) > 0)) {
@@ -129,19 +265,29 @@ export function VendorIngestionModal({
         try {
             const effectiveVendorId = selectedVendorId || vendorId || undefined;
             const effectiveVendorName = selectedVendorName || vendorName;
-            const sku = await generateVendorSku(category || undefined, purity || undefined);
+            const sku = effectiveSku;
+            const isSkippedOrGen = skipTaxonomy || skuCategory === 'GEN';
+            const catLabel = isSkippedOrGen ? undefined : (taxonomies.categories.find(c => c.code === skuCategory)?.label || category || undefined);
+            const effectiveHsn = isSkippedOrGen ? '71179090' : derivedHsn;
+
             const result = await ingestVendorProduct({
                 name: name.trim(),
                 sku,
-                category: category.trim() || undefined,
+                category: catLabel,
                 costPrice: parseFloat(costPrice) || 0,
                 retailPrice: suggestedRetail,
                 quantity: parseInt(quantity, 10) || 0,
                 weightGrams: parseFloat(weight) || undefined,
                 purity: purity.trim() || undefined,
-                imageUrl: imageUrl || undefined,
+                imageUrl: activeImage || undefined,
                 vendorId: effectiveVendorId,
                 description: `Ingested from WhatsApp ${sourceContext?.chatName ? `[${sourceContext.chatName}] ` : ''}${effectiveVendorName ? `(${effectiveVendorName})` : ''}:\n${messageBody}`,
+                hsnCode: effectiveHsn,
+                platingCode: skipTaxonomy ? undefined : skuPlating,
+                colorCode: skipTaxonomy ? undefined : skuColor,
+                sizeCode: skipTaxonomy ? undefined : skuSize,
+                baseMetalCode: skipTaxonomy ? undefined : skuBaseMetal,
+                stoneCode: skipTaxonomy ? undefined : skuStone,
             });
 
             // Automatically queue barcode tag (spec §8.2)
@@ -169,14 +315,14 @@ export function VendorIngestionModal({
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-            <DialogContent className="sm:max-w-md bg-card border-border max-h-[85vh] overflow-y-auto">
+            <DialogContent className="sm:max-w-lg bg-card border-border max-h-[88vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2 text-base">
                         <Sparkles size={16} className="text-amber-400" />
                         Create New Product from Message
                     </DialogTitle>
                     <DialogDescription className="text-xs">
-                        Smart extraction pre-filled the fields below — verify and adjust before ingesting
+                        Deterministic Master Jewelry SKU engine pre-filled from vendor message. Review &amp; ingest
                         {selectedVendorName ? ` for ${selectedVendorName}` : ''}.
                     </DialogDescription>
                 </DialogHeader>
@@ -196,19 +342,64 @@ export function VendorIngestionModal({
                     </div>
                 )}
 
-                {/* Image preview if extracted from message */}
-                {imageUrl && (
-                    <div className="flex items-center gap-3 p-2 rounded-lg bg-muted/40 border border-border/60">
-                        <img src={imageUrl} alt="" className="size-12 rounded object-cover border border-border/40 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                            <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                                <ImageIcon size={12} className="text-pink-500" />
-                                Product Photo Attached
-                            </p>
-                            <p className="text-[10px] text-muted-foreground truncate">Auto-assigned to product catalog &amp; POS</p>
+                {/* Image preview / upload (supports WhatsApp decrypted base64 or manual upload) */}
+                <div className="flex items-center gap-3 p-2.5 rounded-lg bg-muted/40 border border-border/60">
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handlePhotoUpload}
+                    />
+                    {activeImage && !imageLoadError ? (
+                        <div className="relative group size-12 shrink-0">
+                            {/* eslint-disable-next-line @next/next/no-img-element -- supports dynamic WhatsApp base64 data URIs and blob urls */}
+                            <img
+                                src={activeImage}
+                                alt="Product Photo"
+                                className="size-12 rounded object-cover border border-border/40 shrink-0 bg-background"
+                                onError={() => setImageLoadError(true)}
+                            />
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                title="Change photo"
+                                className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-center justify-center text-white"
+                            >
+                                <Camera size={14} />
+                            </button>
                         </div>
+                    ) : (
+                        <div
+                            onClick={() => fileInputRef.current?.click()}
+                            className="size-12 rounded border border-dashed border-border/80 flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 bg-background/50 text-muted-foreground hover:text-foreground shrink-0 transition-colors"
+                            title="Click to attach a product photo"
+                        >
+                            <Camera size={16} />
+                            <span className="text-[8px] mt-0.5 font-medium">+ Photo</span>
+                        </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                                <ImageIcon size={12} className={activeImage && !imageLoadError ? "text-pink-500" : "text-muted-foreground"} />
+                                {activeImage && !imageLoadError ? "Product Photo Attached" : "No Photo Attached"}
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                className="text-[10px] text-primary hover:underline font-medium"
+                            >
+                                {activeImage && !imageLoadError ? "Replace Photo" : "Upload Photo"}
+                            </button>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground truncate">
+                            {activeImage && !imageLoadError
+                                ? "Auto-synced to Catalog, POS, Labels & Storefront"
+                                : "Attach photo from device or vendor WhatsApp"}
+                        </p>
                     </div>
-                )}
+                </div>
 
                 {parsed && (
                     <div className="rounded-lg bg-muted/50 border border-border/60 px-3 py-2 text-[11px] text-muted-foreground leading-relaxed max-h-16 overflow-y-auto">
@@ -227,7 +418,7 @@ export function VendorIngestionModal({
                             <div className="flex-1">
                                 <p className="text-xs font-semibold text-foreground">Barcode Tag Queued</p>
                                 <p className="text-[11px] text-muted-foreground">
-                                    Code128 dumbbell tag added to queue. Print it anytime from the Labels module.
+                                    Dumbbell tag with SKU {ingested.sku} added to queue. Print it anytime from the Labels module.
                                 </p>
                             </div>
                         </div>
@@ -243,8 +434,49 @@ export function VendorIngestionModal({
                     </div>
                 ) : (
                     <div className="grid gap-3 py-1">
-                        {/* Vendor Attribution Selector */}
-                        <div className="grid gap-1.5">
+                        {/* 1. Architectural Master SKU or General SKU Preview Card */}
+                        <div className={`rounded-xl border p-3 space-y-2 transition-colors ${skipTaxonomy ? 'border-amber-500/40 bg-amber-500/5' : 'border-primary/30 bg-primary/5'}`}>
+                            <div className="flex items-center justify-between">
+                                <span className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${skipTaxonomy ? 'text-amber-400' : 'text-primary'}`}>
+                                    <Tag size={12} />
+                                    {skipTaxonomy ? 'General SKU (Taxonomy Skipped)' : 'Master Architectural SKU'}
+                                </span>
+                                <span className="text-[10px] font-mono text-amber-400 font-semibold">
+                                    HSN {skipTaxonomy || skuCategory === 'GEN' ? '71179090' : derivedHsn} (3% GST)
+                                </span>
+                            </div>
+                            {skipTaxonomy ? (
+                                <div className="space-y-1.5">
+                                    <div className="flex items-center gap-2">
+                                        <Input
+                                            value={customSku || effectiveSku}
+                                            onChange={(e) => setCustomSku(e.target.value.toUpperCase())}
+                                            placeholder="e.g. GEN-00001 or VENDOR-101"
+                                            className="h-8 font-mono text-xs font-bold text-amber-300 bg-background border-border"
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => setCustomSku(`GEN-${String(nextSkuSeq).padStart(5, '0')}`)}
+                                            className="h-8 text-[11px] px-2 text-amber-400 border-amber-500/30 hover:bg-amber-500/10 shrink-0"
+                                            title="Reset to sequential generic SKU"
+                                        >
+                                            Auto GEN
+                                        </Button>
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">Freeform custom SKU or auto-generated sequential fallback</p>
+                                </div>
+                            ) : (
+                                <div className="font-mono text-xs font-bold text-foreground bg-background px-2.5 py-1.5 rounded-lg border border-border flex items-center justify-between shadow-sm">
+                                    <span className="text-primary truncate">{effectiveSku}</span>
+                                    <span className="text-[10px] text-muted-foreground ml-2 shrink-0">Seq #{String(nextSkuSeq).padStart(5, '0')}</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 2. Vendor Attribution Selector */}
+                        <div className="grid gap-1">
                             <Label htmlFor="vi-vendor" className="text-xs flex items-center gap-1.5">
                                 <Building2 size={12} className="text-muted-foreground" />
                                 Vendor / Supplier
@@ -268,45 +500,233 @@ export function VendorIngestionModal({
                             </select>
                         </div>
 
-                        <div className="grid gap-1.5">
+                        {/* 3. Taxonomic Hierarchy Toggle & Configuration */}
+                        <div className="flex items-center justify-between px-2.5 py-2 rounded-lg bg-muted/40 border border-border/60">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <Layers size={14} className={skipTaxonomy ? "text-amber-400" : "text-primary"} />
+                                <div className="min-w-0">
+                                    <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                                        Taxonomic Hierarchy
+                                        {skipTaxonomy && (
+                                            <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                                Skipped
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="text-[10px] text-muted-foreground truncate">
+                                        {skipTaxonomy ? "Product registered as Uncategorized" : "Genre, Category & Subcategory mapping"}
+                                    </div>
+                                </div>
+                            </div>
+                            <Button
+                                type="button"
+                                variant={skipTaxonomy ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => {
+                                    const next = !skipTaxonomy;
+                                    setSkipTaxonomy(next);
+                                    if (next) {
+                                        setSkuGenre("GEN");
+                                        setSkuCategory("GEN");
+                                        setSkuSubcat("GEN");
+                                        setCategory("Uncategorized");
+                                    } else {
+                                        setSkuGenre("TMP");
+                                        setSkuCategory("NEC");
+                                        setSkuSubcat("CHK");
+                                    }
+                                }}
+                                className={`h-7 text-[11px] px-2.5 font-medium shrink-0 ${skipTaxonomy ? "bg-amber-500 hover:bg-amber-600 text-black font-semibold" : "border-border text-foreground hover:bg-muted"}`}
+                            >
+                                {skipTaxonomy ? "Restore Taxonomy" : "Skip Taxonomy"}
+                            </Button>
+                        </div>
+
+                        {skipTaxonomy ? (
+                            <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 flex items-center justify-between text-xs">
+                                <div className="space-y-0.5">
+                                    <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+                                        <Layers size={13} className="text-amber-400" />
+                                        Taxonomic Category Skipped
+                                    </div>
+                                    <div className="text-[11px] text-muted-foreground">
+                                        Product will be saved under <span className="text-amber-200 font-mono">Uncategorized</span> with statutory general HSN <span className="font-mono">71179090</span>.
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSkipTaxonomy(false);
+                                        setSkuGenre("TMP");
+                                        setSkuCategory("NEC");
+                                        setSkuSubcat("CHK");
+                                    }}
+                                    className="text-[11px] text-amber-400 hover:underline font-medium ml-2 shrink-0"
+                                >
+                                    Classify
+                                </button>
+                            </div>
+                        ) : (
+                            <>
+                                {/* 3. Taxonomic Hierarchy (Genre, Category, Dynamic Subcategory) */}
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div className="grid gap-1">
+                                        <Label htmlFor="vi-genre" className="text-[11px] text-muted-foreground">Style Genre</Label>
+                                        <select
+                                            id="vi-genre"
+                                            value={skuGenre}
+                                            onChange={(e) => setSkuGenre(e.target.value)}
+                                            className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary truncate"
+                                        >
+                                            {taxonomies.genres.map(g => (
+                                                <option key={g.code} value={g.code}>{g.code} - {g.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="grid gap-1">
+                                        <Label htmlFor="vi-cat" className="text-[11px] text-muted-foreground">Category</Label>
+                                        <select
+                                            id="vi-cat"
+                                            value={skuCategory}
+                                            onChange={(e) => handleCategoryChange(e.target.value)}
+                                            className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary truncate"
+                                        >
+                                            {taxonomies.categories.map(c => (
+                                                <option key={c.code} value={c.code}>{c.code} - {c.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="grid gap-1">
+                                        <Label htmlFor="vi-subcat" className="text-[11px] text-muted-foreground">Subcategory</Label>
+                                        <select
+                                            id="vi-subcat"
+                                            value={skuSubcat}
+                                            onChange={(e) => handleSubcatChange(e.target.value)}
+                                            className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary truncate"
+                                        >
+                                            {filteredSubcategories.map(s => (
+                                                <option key={s.code} value={s.code}>{s.code} - {s.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                {/* 4. Child Variant Finishes & Dimensions */}
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div className="grid gap-1">
+                                        <Label htmlFor="vi-plating" className="text-[11px] text-muted-foreground">Plating Finish</Label>
+                                        <select
+                                            id="vi-plating"
+                                            value={skuPlating}
+                                            onChange={(e) => setSkuPlating(e.target.value)}
+                                            className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary truncate"
+                                        >
+                                            {taxonomies.platings.map(p => (
+                                                <option key={p.code} value={p.code}>{p.code} - {p.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="grid gap-1">
+                                        <Label htmlFor="vi-color" className="text-[11px] text-muted-foreground">Primary Color</Label>
+                                        <select
+                                            id="vi-color"
+                                            value={skuColor}
+                                            onChange={(e) => setSkuColor(e.target.value)}
+                                            className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary truncate"
+                                        >
+                                            {taxonomies.colors.map(col => (
+                                                <option key={col.code} value={col.code}>{col.code} - {col.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="grid gap-1">
+                                        <Label htmlFor="vi-size" className="text-[11px] text-muted-foreground">Size / Spec</Label>
+                                        <select
+                                            id="vi-size"
+                                            value={skuSize}
+                                            onChange={(e) => setSkuSize(e.target.value)}
+                                            className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary truncate"
+                                        >
+                                            {taxonomies.sizes.map(sz => (
+                                                <option key={sz.code} value={sz.code}>{sz.code} - {sz.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                {/* 5. Collapsible Base Metal & Stone (for HSN accuracy) */}
+                                <div className="rounded-lg border border-border/60 bg-muted/20 p-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAdvancedAttributes(prev => !prev)}
+                                        className="w-full text-[11px] text-primary/90 hover:text-primary flex items-center justify-between font-medium"
+                                    >
+                                        <span>Metallurgy &amp; Stone ({skuBaseMetal} / {skuStone})</span>
+                                        {showAdvancedAttributes ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                                    </button>
+                                    {showAdvancedAttributes && (
+                                        <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-border/50">
+                                            <div className="grid gap-1">
+                                                <Label htmlFor="vi-metal" className="text-[10px] text-muted-foreground">Base Metal</Label>
+                                                <select
+                                                    id="vi-metal"
+                                                    value={skuBaseMetal}
+                                                    onChange={(e) => setSkuBaseMetal(e.target.value)}
+                                                    className="h-7.5 rounded border border-input bg-background px-2 py-0.5 text-xs text-foreground"
+                                                >
+                                                    {taxonomies.baseMetals.map(m => (
+                                                        <option key={m.code} value={m.code}>{m.code} - {m.label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div className="grid gap-1">
+                                                <Label htmlFor="vi-stone" className="text-[10px] text-muted-foreground">Stone Type</Label>
+                                                <select
+                                                    id="vi-stone"
+                                                    value={skuStone}
+                                                    onChange={(e) => setSkuStone(e.target.value)}
+                                                    className="h-7.5 rounded border border-input bg-background px-2 py-0.5 text-xs text-foreground"
+                                                >
+                                                    {taxonomies.stones.map(s => (
+                                                        <option key={s.code} value={s.code}>{s.code} - {s.label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        )}
+
+                        {/* 6. Product Name */}
+                        <div className="grid gap-1">
                             <Label htmlFor="vi-name" className="text-xs">Product Name</Label>
-                            <Input id="vi-name" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
+                            <Input id="vi-name" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs font-medium" />
                         </div>
-                        <div className="grid grid-cols-3 gap-2">
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="vi-cat" className="text-xs">Category</Label>
-                                <Input id="vi-cat" value={category} onChange={(e) => setCategory(e.target.value)} className="h-8 text-xs" placeholder="Ring" />
-                            </div>
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="vi-purity" className="text-xs">Purity</Label>
-                                <Input id="vi-purity" value={purity} onChange={(e) => setPurity(e.target.value)} className="h-8 text-xs" placeholder="18K" />
-                            </div>
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="vi-weight" className="text-xs">Net Wt (g)</Label>
-                                <Input id="vi-weight" value={weight} onChange={(e) => setWeight(e.target.value)} className="h-8 text-xs" placeholder="14.2" inputMode="decimal" />
-                            </div>
-                        </div>
-                        <div className="grid grid-cols-3 gap-2">
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="vi-cost" className="text-xs">Vendor Cost (₹)</Label>
+
+                        {/* 7. Commercials & Weights */}
+                        <div className="grid grid-cols-4 gap-2">
+                            <div className="grid gap-1">
+                                <Label htmlFor="vi-cost" className="text-xs">Cost (₹)</Label>
                                 <Input id="vi-cost" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} className="h-8 text-xs" inputMode="decimal" />
                             </div>
-                            <div className="grid gap-1.5">
+                            <div className="grid gap-1">
                                 <Label htmlFor="vi-margin" className="text-xs">Margin %</Label>
                                 <Input id="vi-margin" value={marginPercent} onChange={(e) => setMarginPercent(e.target.value)} className="h-8 text-xs" inputMode="decimal" />
                             </div>
-                            <div className="grid gap-1.5">
+                            <div className="grid gap-1">
                                 <Label htmlFor="vi-qty" className="text-xs">Qty</Label>
                                 <Input id="vi-qty" value={quantity} onChange={(e) => setQuantity(e.target.value)} className="h-8 text-xs" inputMode="numeric" />
                             </div>
+                            <div className="grid gap-1">
+                                <Label htmlFor="vi-weight" className="text-xs">Wt (g)</Label>
+                                <Input id="vi-weight" value={weight} onChange={(e) => setWeight(e.target.value)} className="h-8 text-xs" placeholder="14.2" inputMode="decimal" />
+                            </div>
                         </div>
+
                         <div className="flex items-center justify-between rounded-lg bg-primary/5 border border-primary/20 px-3 py-2">
-                            <span className="text-[11px] text-muted-foreground">Suggested retail</span>
+                            <span className="text-[11px] text-muted-foreground">Suggested Retail</span>
                             <span className="text-sm font-bold text-primary">₹{suggestedRetail.toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                            <Package size={12} />
-                            Auto SKU: <span className="font-mono text-foreground/80">{suggestedSku}</span>
                         </div>
                     </div>
                 )}

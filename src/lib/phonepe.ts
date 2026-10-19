@@ -5,6 +5,8 @@
  * @see https://developer.phonepe.com/payment-gateway
  */
 
+import { getTenantStorageKey } from './pocketbase';
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -29,7 +31,7 @@ let config: PhonePeConfig = {
 function loadConfigFromStorage() {
     if (typeof window === 'undefined') return;
     try {
-        const saved = localStorage.getItem("luminila_settings");
+        const saved = localStorage.getItem(getTenantStorageKey("luminila_settings"));
         if (saved) {
             const parsed = JSON.parse(saved);
             // Only override if settings exist in storage
@@ -82,6 +84,9 @@ export function getPhonePeConfig(): Omit<PhonePeConfig, 'saltKey'> & { saltKey: 
 
 export function isPhonePeConfigured(): boolean {
     loadConfigFromStorage();
+    if (typeof window !== 'undefined') {
+        return !!config.merchantId;
+    }
     return !!(config.merchantId && config.saltKey && config.saltIndex);
 }
 
@@ -177,6 +182,23 @@ export interface PaymentStatusResponse {
  * @returns Payment response with redirect URL
  */
 export async function initiatePayment(request: PaymentRequest): Promise<PaymentResponse> {
+    if (typeof window !== 'undefined') {
+        try {
+            const res = await fetch('/api/pos/payment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'phonepe_initiate', payload: request }),
+            });
+            return await res.json();
+        } catch (err: any) {
+            return {
+                success: false,
+                transactionId: '',
+                error: err.message || 'Payment initiation proxy failed',
+            };
+        }
+    }
+
     if (!isPhonePeConfigured()) {
         return {
             success: false,
@@ -207,9 +229,7 @@ export async function initiatePayment(request: PaymentRequest): Promise<PaymentR
     // Use Web API btoa (or Buffer if polyfilled, but manual is safer for browser)
     const jsonPayload = JSON.stringify(payload);
     // Handle potential unicode strings safely
-    const base64Payload = typeof window !== 'undefined'
-        ? window.btoa(unescape(encodeURIComponent(jsonPayload)))
-        : Buffer.from(jsonPayload).toString('base64');
+    const base64Payload = Buffer.from(jsonPayload).toString('base64');
 
     // Generate X-VERIFY checksum
     const xVerify = await generateChecksum(base64Payload, endpoints.pay);
@@ -262,6 +282,23 @@ export async function initiatePayment(request: PaymentRequest): Promise<PaymentR
 export async function checkPaymentStatus(
     merchantTransactionId: string
 ): Promise<PaymentStatusResponse> {
+    if (typeof window !== 'undefined') {
+        try {
+            const res = await fetch('/api/pos/payment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'phonepe_status', payload: { transactionId: merchantTransactionId } }),
+            });
+            return await res.json();
+        } catch (err: any) {
+            return {
+                success: false,
+                code: 'NETWORK_ERROR',
+                message: err.message || 'Status check proxy failed',
+            };
+        }
+    }
+
     if (!isPhonePeConfigured()) {
         return {
             success: false,

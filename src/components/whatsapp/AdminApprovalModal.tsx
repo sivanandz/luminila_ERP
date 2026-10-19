@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
     ShieldCheck,
     ShieldAlert,
@@ -14,7 +14,7 @@ import {
     Calendar,
     Phone,
     User,
-    CheckCircle2,
+
 } from "lucide-react";
 import {
     WhatsAppBinding,
@@ -48,7 +48,7 @@ export function AdminApprovalModal({
     onApprovalSuccess,
     onBindingUpdated,
 }: AdminApprovalModalProps) {
-    const { user, isAdmin } = useAuth();
+    const { user } = useAuth();
     const [currentMode, setCurrentMode] = useState<"approval" | "bind" | "details">(initialMode);
     const [activeActionType, setActiveActionType] = useState<"unbind" | "reset" | "disconnect">(actionType);
     
@@ -63,6 +63,22 @@ export function AdminApprovalModal({
     const [selectedAdminId, setSelectedAdminId] = useState<string>("");
     const [bindingLoading, setBindingLoading] = useState(false);
     const [loadingAdmins, setLoadingAdmins] = useState(false);
+
+    const loadAdmins = useCallback(async () => {
+        setLoadingAdmins(true);
+        try {
+            const list = await getAdminUsers();
+            setAdminUsers(list);
+            if (list.length > 0) {
+                const currentMatch = list.find((a) => a.id === user?.id || a.email === user?.email);
+                setSelectedAdminId(currentMatch ? currentMatch.id : list[0].id);
+            }
+        } catch (err) {
+            console.error("Failed to load admin options:", err);
+        } finally {
+            setLoadingAdmins(false);
+        }
+    }, [user]);
 
     useEffect(() => {
         if (isOpen) {
@@ -85,23 +101,7 @@ export function AdminApprovalModal({
                 loadAdmins();
             }
         }
-    }, [isOpen, initialMode, binding, user]);
-
-    const loadAdmins = async () => {
-        setLoadingAdmins(true);
-        try {
-            const list = await getAdminUsers();
-            setAdminUsers(list);
-            if (list.length > 0) {
-                const currentMatch = list.find((a) => a.id === user?.id || a.email === user?.email);
-                setSelectedAdminId(currentMatch ? currentMatch.id : list[0].id);
-            }
-        } catch (err: any) {
-            console.error("Failed to load admin options:", err);
-        } finally {
-            setLoadingAdmins(false);
-        }
-    };
+    }, [isOpen, initialMode, actionType, binding, user, loadAdmins]);
 
     if (!isOpen) return null;
 
@@ -154,8 +154,11 @@ export function AdminApprovalModal({
 
             onApprovalSuccess?.(result.adminUser);
             onClose();
-        } catch (err: any) {
-            setErrorMessage(err.message || "An unexpected error occurred during authorization.");
+        } catch (err) {
+            setErrorMessage(
+                (err instanceof Error ? err.message : String(err)) ||
+                    "An unexpected error occurred during authorization."
+            );
         } finally {
             setVerifying(false);
         }
@@ -184,15 +187,15 @@ export function AdminApprovalModal({
             toast.success(`WhatsApp account securely bound to Admin: ${selected.email}`);
             onBindingUpdated?.(newBinding);
             onClose();
-        } catch (err: any) {
-            setErrorMessage(err.message || "Failed to save account binding.");
+        } catch (err) {
+            setErrorMessage((err instanceof Error ? err.message : String(err)) || "Failed to save account binding.");
         } finally {
             setBindingLoading(false);
         }
     };
 
     return (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
             <div className="bg-card border border-border/80 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col">
                 {/* Header */}
                 <div className="p-5 border-b border-border/60 bg-muted/30 flex items-center justify-between">

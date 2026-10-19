@@ -1,6 +1,26 @@
 import { pb } from '@/lib/pocketbase';
 
 /**
+ * Ledger row written to the payment_links collection for the Razorpay reconciler.
+ */
+interface PaymentLinkLedgerRecord {
+    provider: string;
+    link_id: string;
+    short_url: string;
+    amount: number;
+    currency: string;
+    status: string;
+    order: string;
+    customer?: string;
+    notes: {
+        source: string;
+        customer_name: string;
+        customer_phone: string;
+        order_ref: string;
+    };
+}
+
+/**
  * Parses and executes admin commands from WhatsApp messages.
  * Supported commands:
  * !paid <order_id_snippet>
@@ -8,7 +28,7 @@ import { pb } from '@/lib/pocketbase';
  * !cancel <order_id_snippet>
  * !status <order_id_snippet>
  */
-export async function processAdminCommand(body: string, sender: string): Promise<string | null> {
+export async function processAdminCommand(body: string, _sender: string): Promise<string | null> {
     if (!body.startsWith("!")) return null;
 
     const parts = body.slice(1).trim().split(" ");
@@ -66,7 +86,7 @@ export async function processAdminCommand(body: string, sender: string): Promise
 
                     // Ledger link in PocketBase (spec §12.1 payment_links) for reconciler
                     try {
-                        const payload: Record<string, any> = {
+                        const payload: PaymentLinkLedgerRecord = {
                             provider: 'razorpay',
                             link_id: linkRes.data.id,
                             short_url: linkRes.data.short_url,
@@ -106,9 +126,9 @@ export async function processAdminCommand(body: string, sender: string): Promise
             default:
                 return null;
         }
-    } catch (err: any) {
+    } catch (err) {
         console.error("Command Error:", err);
-        return `⚠️ Error executing command: ${err.message}`;
+        return `⚠️ Error executing command: ${err instanceof Error ? err.message : String(err)}`;
     }
 }
 

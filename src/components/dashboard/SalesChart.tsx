@@ -23,7 +23,13 @@ interface SalesChartProps {
     title?: string;
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+interface CustomTooltipProps {
+    active?: boolean;
+    label?: string;
+    payload?: Array<{ value: number }>;
+}
+
+const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
     if (active && payload && payload.length) {
         return (
             <div className="bg-card border border-border rounded-lg p-3 shadow-lg">

@@ -12,7 +12,7 @@ export interface PendingMutation {
     collection: string;
     action: 'create' | 'update' | 'delete';
     recordId?: string;
-    data?: Record<string, any>;
+    data?: Record<string, unknown>;
     retries: number;
     error?: string;
 }
@@ -51,7 +51,7 @@ export class OfflineQueue {
     static enqueue(
         collection: string,
         action: 'create' | 'update' | 'delete',
-        data?: Record<string, any>,
+        data?: Record<string, unknown>,
         recordId?: string
     ): PendingMutation {
         const queue = this.getQueue();
@@ -104,13 +104,16 @@ export class OfflineQueue {
                 }
                 this.remove(mutation.id);
                 processed++;
-            } catch (err: any) {
+            } catch (err) {
                 console.warn(`Failed to process mutation ${mutation.id}:`, err);
                 mutation.retries++;
-                mutation.error = err?.message || 'Replay failed';
+                mutation.error = err instanceof Error ? err.message || 'Replay failed' : String(err);
                 failed++;
                 // If network is completely unreachable, stop draining early
-                if (err?.status === 0 || err?.name === 'ClientResponseError 0') {
+                if (
+                    (typeof err === 'object' && err !== null && 'status' in err && err.status === 0) ||
+                    (typeof err === 'object' && err !== null && 'name' in err && err.name === 'ClientResponseError 0')
+                ) {
                     break;
                 }
             }

@@ -1,6 +1,6 @@
 "use client";
 
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, Legend } from "recharts";
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatINR } from "@/lib/gst";
 
@@ -9,7 +9,9 @@ interface ChannelData {
     orders: number;
     revenue: number;
     percentage: number;
-    [key: string]: any;
+    // Recharts v3 types chart rows as Record<string, unknown>, which requires
+    // an index signature on plain data interfaces for assignability.
+    [key: string]: string | number;
 }
 
 interface ChannelBreakdownProps {
@@ -19,7 +21,12 @@ interface ChannelBreakdownProps {
 
 const COLORS = ['#b8860b', '#4CAF50', '#2196F3', '#9C27B0', '#FF5722', '#607D8B'];
 
-const CustomTooltip = ({ active, payload }: any) => {
+interface CustomTooltipProps {
+    active?: boolean;
+    payload?: Array<{ payload: ChannelData }>;
+}
+
+const CustomTooltip = ({ active, payload }: CustomTooltipProps) => {
     if (active && payload && payload.length) {
         const data = payload[0].payload;
         return (

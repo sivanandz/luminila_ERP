@@ -81,8 +81,8 @@ function CreateReturnContent() {
             // Initialize return items from invoice items
             if (data?.items) {
                 setReturnItems(
-                    data.items.map((item: any) => ({
-                        invoice_item_id: item.id,
+                    data.items.map((item) => ({
+                        invoice_item_id: item.id!,
                         description: item.description,
                         max_qty: item.quantity,
                         quantity: 0,

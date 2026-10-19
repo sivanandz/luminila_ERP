@@ -59,7 +59,7 @@ export async function getNextSequenceNumber(options: SequenceOptions): Promise<s
 
     return enqueueSequenceTask(seqName, async () => {
         let attempt = 0;
-        let lastError: any = null;
+        let lastError: unknown = null;
 
         while (attempt < maxRetries) {
             attempt++;
@@ -90,7 +90,7 @@ export async function getNextSequenceNumber(options: SequenceOptions): Promise<s
                             current_number: nextValue,
                             padding: padding,
                         });
-                    } catch (createErr: any) {
+                    } catch {
                         // If another process created the record concurrently, re-read and retry
                         const backoffMs = Math.floor(Math.random() * 40) + 20; // 20-60ms jitter
                         await new Promise((resolve) => setTimeout(resolve, backoffMs));
@@ -103,7 +103,7 @@ export async function getNextSequenceNumber(options: SequenceOptions): Promise<s
                 }
 
                 return `${prefix}-${nextValue.toString().padStart(padding, '0')}`;
-            } catch (err: any) {
+            } catch (err) {
                 lastError = err;
                 // Randomized exponential backoff with jitter
                 const backoffMs = Math.floor(Math.random() * 50 * attempt) + 25;
@@ -125,7 +125,12 @@ export async function getNextSequenceNumber(options: SequenceOptions): Promise<s
                     seqName,
                     fallbackSerial,
                     exhaustedAttempts: maxRetries,
-                    error: String(lastError?.message || lastError || ''),
+                    error:
+                        String(
+                            (lastError instanceof Error ? lastError.message : '') ||
+                                lastError ||
+                                '',
+                        ),
                     timestamp: new Date().toISOString(),
                 },
             });
@@ -138,16 +143,28 @@ export async function getNextSequenceNumber(options: SequenceOptions): Promise<s
 }
 
 /**
+ * Structural shape of the thrown values inspected here — PocketBase ClientResponseError,
+ * native Errors, or plain objects. All fields optional and unknown-typed so that any
+ * thrown value can be narrowed without altering the runtime string checks.
+ */
+interface ThrownErrorLike {
+    message?: unknown;
+    originalError?: { message?: unknown } | null;
+    response?: { data?: unknown } | null;
+}
+
+/**
  * Checks if a database error corresponds to a UNIQUE constraint collision.
  */
-export function isUniqueConstraintError(err: any): boolean {
+export function isUniqueConstraintError(err: unknown): boolean {
     if (!err) return false;
+    const e = err as ThrownErrorLike;
     const msg = (
-        String(err.message || '') +
+        String(e.message || '') +
         ' ' +
-        String(err.originalError?.message || '') +
+        String(e.originalError?.message || '') +
         ' ' +
-        JSON.stringify(err.response?.data || '')
+        JSON.stringify(e.response?.data || '')
     ).toLowerCase();
 
     return (
@@ -167,13 +184,13 @@ export async function createWithUniqueRetry<T>(
     maxRetries = 3
 ): Promise<T> {
     let attempt = 0;
-    let lastError: any = null;
+    let lastError: unknown = null;
     while (attempt < maxRetries) {
         attempt++;
         const docNumber = await generatorFn();
         try {
             return await createFn(docNumber);
-        } catch (err: any) {
+        } catch (err) {
             lastError = err;
             if (isUniqueConstraintError(err) && attempt < maxRetries) {
                 console.warn(

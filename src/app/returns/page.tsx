@@ -7,12 +7,13 @@ import {
     RotateCcw,
     Plus,
     Search,
-    Filter,
+
     FileText,
     Clock,
     CheckCircle,
     XCircle,
     DollarSign,
+    type LucideIcon,
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
@@ -44,7 +45,7 @@ import {
 } from "@/lib/returns";
 import { formatINR } from "@/lib/gst";
 
-const statusConfig: Record<CreditNoteStatus, { label: string; color: string; icon: any }> = {
+const statusConfig: Record<CreditNoteStatus, { label: string; color: string; icon: LucideIcon }> = {
     pending: { label: "Pending", color: "bg-yellow-500/20 text-yellow-400", icon: Clock },
     approved: { label: "Approved", color: "bg-blue-500/20 text-blue-400", icon: CheckCircle },
     refunded: { label: "Refunded", color: "bg-green-500/20 text-green-400", icon: DollarSign },
@@ -56,7 +57,7 @@ export default function ReturnsPage() {
     const router = useRouter();
     const [creditNotes, setCreditNotes] = useState<CreditNote[]>([]);
     const [loading, setLoading] = useState(true);
-    const [stats, setStats] = useState<any>(null);
+    const [stats, setStats] = useState<Awaited<ReturnType<typeof getReturnsStats>> | null>(null);
     const [statusFilter, setStatusFilter] = useState<string>("all");
     const [searchQuery, setSearchQuery] = useState("");
 
@@ -75,6 +76,7 @@ export default function ReturnsPage() {
 
     useEffect(() => {
         loadData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- loadData is recreated every render and sets state, so adding it would cause an infinite refetch loop; the effect intentionally refetches only when statusFilter changes
     }, [statusFilter]);
 
     const filteredNotes = creditNotes.filter((cn) => {
@@ -93,9 +95,9 @@ export default function ReturnsPage() {
                 subtitle={`${stats?.totalReturns || 0} returns processed`}
             />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 {/* Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 md:gap-4 mb-6">
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6 flex items-center gap-4">
                             <div className="p-3 rounded-lg bg-primary/10">

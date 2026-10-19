@@ -5,7 +5,7 @@ import { format } from "date-fns";
 import {
     Activity,
     Search,
-    Filter,
+
     RefreshCw,
     Package,
     Receipt,
@@ -20,11 +20,12 @@ import {
     Trash2,
     Plus,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
     Select,
     SelectContent,
@@ -42,7 +43,7 @@ import {
     type EntityType,
 } from "@/lib/activity";
 
-const actionIcons: Record<ActivityAction, any> = {
+const actionIcons: Record<ActivityAction, LucideIcon> = {
     create: Plus,
     update: Edit,
     delete: Trash2,
@@ -68,7 +69,7 @@ const actionColors: Record<ActivityAction, string> = {
     sync: "bg-cyan-500/20 text-cyan-400",
 };
 
-const entityIcons: Record<EntityType, any> = {
+const entityIcons: Record<EntityType, LucideIcon> = {
     product: Package,
     invoice: FileText,
     sale: ShoppingCart,
@@ -84,7 +85,7 @@ const entityIcons: Record<EntityType, any> = {
 export default function ActivityPage() {
     const [logs, setLogs] = useState<ActivityLog[]>([]);
     const [loading, setLoading] = useState(true);
-    const [stats, setStats] = useState<any>(null);
+    const [stats, setStats] = useState<Awaited<ReturnType<typeof getActivityStats>> | null>(null);
     const [search, setSearch] = useState("");
     const [actionFilter, setActionFilter] = useState<string>("all");
     const [entityFilter, setEntityFilter] = useState<string>("all");
@@ -106,6 +107,7 @@ export default function ActivityPage() {
 
     useEffect(() => {
         loadData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- loadData is recreated every render and reads the latest `search`, so adding it would refetch on every render; the effect intentionally refetches only when the filters change
     }, [actionFilter, entityFilter]);
 
     const handleSearch = () => {
@@ -116,9 +118,9 @@ export default function ActivityPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="Activity Log" subtitle="System audit trail" />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 {/* Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 md:gap-4 mb-6">
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6 flex items-center gap-4">
                             <div className="p-3 rounded-lg bg-primary/10">

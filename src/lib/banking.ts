@@ -111,7 +111,7 @@ export async function createBankAccount(account: NewBankAccount): Promise<BankAc
 
 export async function updateBankAccount(id: string, updates: Partial<BankAccount>): Promise<BankAccount> {
     try {
-        const payload: Record<string, any> = { ...updates };
+        const payload: Record<string, unknown> = { ...updates };
         if (updates.opening_balance !== undefined) {
             payload.opening_balance = Number(updates.opening_balance) || 0;
         }
@@ -170,11 +170,11 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
             }
         }
 
-        let record: any = null;
-        let destRecord: any = null;
+        let record: BankTransaction | null = null;
+        let destRecord: BankTransaction | null = null;
         let destCredited = false;
         try {
-            record = await pb.collection('bank_transactions').create(transaction);
+            record = await pb.collection('bank_transactions').create<BankTransaction>(transaction);
 
             const balanceUpdate: Record<string, number> = {};
             if (transaction.type === 'deposit') {
@@ -200,7 +200,7 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
                     destCredited = true;
 
                     // Automatically post matching deposit to destination ledger
-                    destRecord = await pb.collection('bank_transactions').create({
+                    destRecord = await pb.collection('bank_transactions').create<BankTransaction>({
                         account: transaction.related_entity_id,
                         transaction_date: transaction.transaction_date,
                         type: 'deposit',
@@ -278,7 +278,7 @@ export async function getBankingStats(): Promise<{
             totalBalance,
             totalAccounts: accounts.length
         };
-    } catch (error) {
+    } catch {
         return { totalBalance: 0, totalAccounts: 0 };
     }
 }

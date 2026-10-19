@@ -302,11 +302,11 @@ export function useSales() {
         setIsLoading(true);
 
         try {
-            const records = await pb.collection('sales').getList(1, limit, {
+            const records = await pb.collection('sales').getList<Sale>(1, limit, {
                 sort: '-created',
             });
 
-            const mappedSales: Sale[] = records.items.map((s: any) => ({
+            const mappedSales: Sale[] = records.items.map((s) => ({
                 id: s.id,
                 created: s.created,
                 updated: s.updated,

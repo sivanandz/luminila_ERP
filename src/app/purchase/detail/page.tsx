@@ -11,11 +11,19 @@ import {
     Clock,
     XCircle,
     AlertCircle,
-
     Send,
     PackageCheck,
     Printer,
     Tag,
+    ExternalLink,
+    Sparkles,
+    Check,
+    AlertTriangle,
+    Loader2,
+    Coins,
+    ShieldAlert,
+    ShieldCheck,
+    FileSpreadsheet,
     type LucideIcon,
 } from "lucide-react";
 
@@ -23,9 +31,10 @@ import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
     Table,
     TableBody,
@@ -39,6 +48,8 @@ import {
     DialogContent,
     DialogHeader,
     DialogTitle,
+    DialogDescription,
+    DialogFooter,
 } from "@/components/ui/dialog";
 import {
     AlertDialog,
@@ -50,17 +61,33 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 
 import {
     getPurchaseOrder,
     updatePOStatus,
     cancelPurchaseOrder,
     createGRN,
+    getGRNsForPO,
+    quickCreateInventoryProductForPOItem,
+    linkPOItemToVariant,
+    approvePODiscrepancy,
     type PurchaseOrder,
     type POStatus,
     type GRNItem,
+    type GoodsReceivedNote,
+    type PurchaseOrderItem,
 } from "@/lib/purchase";
+import { pb } from "@/lib/pocketbase";
 import { formatINR } from "@/lib/gst";
+import { toast } from "sonner";
+import { QuickProductModal, type QuickProductCreatedResult } from "@/components/inventory";
 
 const statusConfig: Record<POStatus, { label: string; icon: LucideIcon; color: string }> = {
     draft: { label: "Draft", icon: Clock, color: "bg-gray-500/20 text-gray-400 border-gray-500/30" },
@@ -76,6 +103,15 @@ function PurchaseOrderDetailContent() {
     const poId = searchParams.get("id");
 
     const [po, setPo] = useState<PurchaseOrder | null>(null);
+    const [grns, setGrns] = useState<GoodsReceivedNote[]>([]);
+    const [availableVariants, setAvailableVariants] = useState<Array<{ id: string; name: string; sku: string; stock_level: number }>>([]);
+    const [matchedVariants, setMatchedVariants] = useState<Record<string, string>>({});
+    const [creatingSkuForItemId, setCreatingSkuForItemId] = useState<string | null>(null);
+
+    // Modal state for registering uncataloged vendor items into inventory with specs
+    const [showRegisterModal, setShowRegisterModal] = useState(false);
+    const [registerTargetItem, setRegisterTargetItem] = useState<PurchaseOrderItem | null>(null);
+
     const [loading, setLoading] = useState(true);
     const [showReceiveModal, setShowReceiveModal] = useState(false);
     const [showCancelConfirm, setShowCancelConfirm] = useState(false);
@@ -84,21 +120,63 @@ function PurchaseOrderDetailContent() {
     const [grnNotes, setGrnNotes] = useState("");
     const [processing, setProcessing] = useState(false);
 
+    // Discrepancy approval modal state
+    const [showApprovalModal, setShowApprovalModal] = useState(false);
+    const [approvalRemarks, setApprovalRemarks] = useState("");
+    const [approverName, setApproverName] = useState("");
+    const [approving, setApproving] = useState(false);
+
+    const handleApproveDiscrepancy = async () => {
+        if (!approvalRemarks.trim()) {
+            toast.error("Manager remarks are strictly required to approve this discrepancy.");
+            return;
+        }
+        if (!po?.id) return;
+        setApproving(true);
+        try {
+            const updated = await approvePODiscrepancy(po.id, approvalRemarks, approverName);
+            setPo(updated);
+            setShowApprovalModal(false);
+            setApprovalRemarks("");
+            toast.success("PO cost discrepancy approved successfully!");
+        } catch (err: any) {
+            console.error("Discrepancy approval error:", err);
+            toast.error(err.message || "Failed to approve discrepancy");
+        } finally {
+            setApproving(false);
+        }
+    };
+
     const fetchPO = useCallback(async () => {
         if (!poId) return;
         setLoading(true);
-        const data = await getPurchaseOrder(poId);
-        setPo(data);
-        setLoading(false);
+        try {
+            const [data, grnList] = await Promise.all([
+                getPurchaseOrder(poId),
+                getGRNsForPO(poId),
+            ]);
+            setPo(data);
+            setGrns(grnList);
 
-        // Initialize receiving quantities
-        if (data?.items) {
-            const initial: Record<string, number> = {};
-            data.items.forEach((item) => {
-                const remaining = item.quantity_ordered - item.quantity_received;
-                initial[item.id!] = remaining > 0 ? remaining : 0;
-            });
-            setReceivingQuantities(initial);
+            // Initialize receiving quantities and variant linkages
+            if (data?.items) {
+                const initial: Record<string, number> = {};
+                const linkages: Record<string, string> = {};
+                data.items.forEach((item) => {
+                    const remaining = item.quantity_ordered - item.quantity_received;
+                    initial[item.id!] = remaining > 0 ? remaining : 0;
+                    if (item.variant_id) {
+                        linkages[item.id!] = item.variant_id;
+                    }
+                });
+                setReceivingQuantities(initial);
+                setMatchedVariants(linkages);
+            }
+        } catch (err) {
+            console.error("Error loading PO or GRNs:", err);
+            toast.error("Failed to load purchase order details");
+        } finally {
+            setLoading(false);
         }
     }, [poId]);
 
@@ -106,14 +184,82 @@ function PurchaseOrderDetailContent() {
         fetchPO();
     }, [fetchPO]);
 
+    useEffect(() => {
+        const loadVariants = async () => {
+            try {
+                const vars = await pb.collection('product_variants').getFullList({
+                    expand: 'product',
+                    sort: 'product.name',
+                });
+                setAvailableVariants(
+                    vars.map((v: any) => ({
+                        id: v.id,
+                        name: v.expand?.product?.name ? `${v.expand.product.name} (${v.variant_name})` : v.variant_name,
+                        sku: v.expand?.product?.sku ? (v.sku_suffix ? `${v.expand.product.sku}-${v.sku_suffix}` : v.expand.product.sku) : v.id,
+                        stock_level: v.stock_level || 0,
+                    }))
+                );
+            } catch (err) {
+                console.error("Failed to load variants:", err);
+            }
+        };
+        loadVariants();
+    }, []);
+
+    const handleAutoCreateSKU = async (item: PurchaseOrderItem) => {
+        if (!item.id) return;
+        setCreatingSkuForItemId(item.id);
+        try {
+            const result = await quickCreateInventoryProductForPOItem(item.id, {
+                name: item.description,
+                cost_price: item.unit_price,
+                hsn_code: item.hsn_code,
+            });
+            setMatchedVariants(prev => ({ ...prev, [item.id!]: result.variantId }));
+            toast.success(`Created SKU ${result.sku} and linked to this PO line!`);
+            fetchPO();
+        } catch (err) {
+            console.error("Error auto-creating SKU:", err);
+            toast.error("Failed to create SKU in inventory");
+        } finally {
+            setCreatingSkuForItemId(null);
+        }
+    };
+
+    const openRegisterModalForPOItem = (item: PurchaseOrderItem) => {
+        setRegisterTargetItem(item);
+        setShowRegisterModal(true);
+    };
+
+    const handleRegisterSuccess = (result: QuickProductCreatedResult) => {
+        if (registerTargetItem?.id) {
+            setMatchedVariants(prev => ({ ...prev, [registerTargetItem.id!]: result.variantId }));
+            fetchPO();
+        }
+    };
+
+    const handleSelectVariant = async (itemId: string, variantId: string) => {
+        setMatchedVariants(prev => ({ ...prev, [itemId]: variantId }));
+        try {
+            await linkPOItemToVariant(itemId, variantId);
+            toast.success("Linked item to inventory SKU");
+            fetchPO();
+        } catch (err) {
+            console.error("Error linking item to variant:", err);
+            toast.error("Failed to link item");
+        }
+    };
+
     const handleSendPO = async () => {
         if (!po) return;
         setProcessing(true);
         try {
             await updatePOStatus(po.id!, "sent");
+            toast.success("Purchase order marked as Sent");
             fetchPO();
         } catch (error) {
             console.error("Error:", error);
+            toast.error("Failed to update status");
         } finally {
             setProcessing(false);
         }
@@ -123,9 +269,11 @@ function PurchaseOrderDetailContent() {
         if (!po) return;
         try {
             await cancelPurchaseOrder(po.id!);
+            toast.success("Purchase order cancelled");
             fetchPO();
         } catch (error) {
             console.error("Error:", error);
+            toast.error("Failed to cancel purchase order");
         }
         setShowCancelConfirm(false);
     };
@@ -134,22 +282,30 @@ function PurchaseOrderDetailContent() {
         if (!po) return;
 
         const grnItems: GRNItem[] = po.items
-            .filter((item) => receivingQuantities[item.id!] > 0)
+            .filter((item) => (receivingQuantities[item.id!] || 0) > 0)
             .map((item) => ({
                 po_item_id: item.id,
-                variant_id: item.variant_id,
+                variant_id: matchedVariants[item.id!] || item.variant_id,
                 quantity_received: receivingQuantities[item.id!] || 0,
                 quantity_rejected: 0,
             }));
 
         if (grnItems.length === 0) {
-            alert("Please enter quantities to receive");
+            toast.error("Please enter at least one quantity to receive");
             return;
+        }
+
+        const unlinked = grnItems.filter(i => !i.variant_id);
+        if (unlinked.length > 0) {
+            const proceed = confirm(
+                `${unlinked.length} item(s) are not matched to an Inventory SKU. Their delivery will be recorded on the PO, but stock won't be incremented in Inventory until matched. Continue?`
+            );
+            if (!proceed) return;
         }
 
         setProcessing(true);
         try {
-            await createGRN({
+            const grn = await createGRN({
                 po_id: po.id,
                 vendor_id: po.vendor_id,
                 received_date: new Date().toISOString(),
@@ -158,11 +314,12 @@ function PurchaseOrderDetailContent() {
                 items: grnItems,
             });
 
+            toast.success(`Receipt confirmed! GRN #${grn.grn_number} created and inventory stock updated.`);
             setShowReceiveModal(false);
             fetchPO();
         } catch (error) {
             console.error("Error creating GRN:", error);
-            alert("Failed to receive goods");
+            toast.error("Failed to receive goods");
         } finally {
             setProcessing(false);
         }
@@ -273,6 +430,139 @@ function PurchaseOrderDetailContent() {
                         </div>
                     </div>
 
+                    {/* Blanket PO Value-Based Banner & Discrepancy Gate */}
+                    {po.po_type === 'blanket' && (
+                        <Card className={`border ${
+                            po.discrepancy_status === 'over_budget'
+                                ? 'bg-red-500/10 border-red-500/40'
+                                : po.discrepancy_status === 'under_budget'
+                                ? 'bg-amber-500/10 border-amber-500/40'
+                                : 'bg-card border-border'
+                        }`}>
+                            <CardHeader className="pb-3">
+                                <div className="flex items-center justify-between flex-wrap gap-2">
+                                    <div className="flex items-center gap-2">
+                                        <Coins className="w-5 h-5 text-amber-500" />
+                                        <CardTitle className="text-base font-semibold">Blanket / Budget Procurement PO</CardTitle>
+                                        <Badge variant="outline" className="font-mono text-xs border-amber-500/30 text-amber-500">
+                                            Value-Based
+                                        </Badge>
+                                    </div>
+
+                                    {/* Discrepancy Badges & Approval Trigger */}
+                                    <div className="flex items-center gap-2">
+                                        {po.discrepancy_status === 'over_budget' && (
+                                            <Badge className="bg-red-500/20 text-red-400 border border-red-500/30">
+                                                Over Budget by {formatINR(Math.abs(po.discrepancy_amount || 0))}
+                                            </Badge>
+                                        )}
+                                        {po.discrepancy_status === 'under_budget' && (
+                                            <Badge className="bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                                                Under Budget by {formatINR(Math.abs(po.discrepancy_amount || 0))}
+                                            </Badge>
+                                        )}
+                                        {po.discrepancy_status === 'balanced' && (
+                                            <Badge className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                                Balanced
+                                            </Badge>
+                                        )}
+
+                                        {po.approval_status === 'pending_approval' && (
+                                            <Button
+                                                size="sm"
+                                                onClick={() => setShowApprovalModal(true)}
+                                                className="h-7 text-xs bg-amber-600 hover:bg-amber-500 text-white font-bold"
+                                            >
+                                                <ShieldAlert className="w-3.5 h-3.5 mr-1" />
+                                                Approve Discrepancy
+                                            </Button>
+                                        )}
+                                        {po.approval_status === 'approved' && (
+                                            <Badge className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 text-xs">
+                                                <ShieldCheck className="w-3.5 h-3.5" />
+                                                Approved
+                                            </Badge>
+                                        )}
+                                    </div>
+                                </div>
+                                <CardDescription className="text-xs">
+                                    Budgeted procurement commitment for stock intake with timestamp reference <span className="font-mono text-primary font-semibold">{po.po_number}</span>.
+                                </CardDescription>
+                            </CardHeader>
+
+                            <CardContent className="space-y-4 pt-1">
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-xl bg-muted/20 border border-border/50 text-sm font-mono">
+                                    <div>
+                                        <span className="text-xs text-muted-foreground block">Budgeted Value</span>
+                                        <span className="text-lg font-bold text-foreground">{formatINR(po.budget_amount || po.subtotal)}</span>
+                                    </div>
+                                    <div>
+                                        <span className="text-xs text-muted-foreground block">Inward Goods Received</span>
+                                        <span className="text-lg font-bold text-primary">{formatINR(po.inward_goods_cost || 0)}</span>
+                                    </div>
+                                    <div>
+                                        <span className="text-xs text-muted-foreground block">Overheads (GST + Ship)</span>
+                                        <span className="text-base font-semibold text-foreground">
+                                            {formatINR((po.gst_paid_overhead || 0) + (po.shipping_overhead || 0))}
+                                        </span>
+                                        <span className="text-[10px] text-muted-foreground block font-sans">
+                                            {po.absorb_overhead ? "✓ Absorbed into Unit Cost" : "Separate PO Expense"}
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <span className="text-xs text-muted-foreground block">Cost Variance</span>
+                                        <span className={`text-lg font-bold ${
+                                            (po.discrepancy_amount || 0) > 0 ? "text-red-400" : (po.discrepancy_amount || 0) < 0 ? "text-amber-400" : "text-emerald-400"
+                                        }`}>
+                                            {(po.discrepancy_amount || 0) > 0 ? "+" : ""}{formatINR(po.discrepancy_amount || 0)}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* Approval History Audit Box */}
+                                {po.approval_status === 'approved' && (
+                                    <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-400 space-y-1">
+                                        <div className="flex items-center gap-2 font-medium">
+                                            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                                            <span>Discrepancy Authorized &amp; Approved by {po.approved_by || 'Store Manager'}</span>
+                                            {po.approved_at && (
+                                                <span className="text-muted-foreground text-[11px]">
+                                                    ({format(new Date(po.approved_at), "dd MMM yyyy, HH:mm")})
+                                                </span>
+                                            )}
+                                        </div>
+                                        {po.approval_remarks && (
+                                            <p className="italic text-muted-foreground pl-6">
+                                                Remarks: &ldquo;{po.approval_remarks}&rdquo;
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Intake Action Helpers */}
+                                <div className="flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-border/40">
+                                    <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                        <span>Seller Tax Profile:</span>
+                                        <Badge variant="outline" className="text-[10px]">
+                                            {po.is_unregistered_seller ? "Unregistered (No GST Refund)" : "Registered GST Vendor"}
+                                        </Badge>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => router.push(`/inventory?inwardPo=${encodeURIComponent(po.po_number || '')}`)}
+                                            className="h-8 text-xs border-primary/40 text-primary hover:bg-primary/10"
+                                        >
+                                            <Package className="w-3.5 h-3.5 mr-1" />
+                                            Scan / Inward Items under this PO
+                                        </Button>
+                                    </div>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    )}
+
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                         {/* Main Content */}
                         <div className="lg:col-span-2 space-y-6">
@@ -303,10 +593,24 @@ function PurchaseOrderDetailContent() {
                                                         <TableCell>
                                                             <div>
                                                                 <p className="font-medium">{item.description}</p>
-                                                                {item.variant && (
-                                                                    <p className="text-xs text-muted-foreground">
-                                                                        {item.variant.product?.sku}-{item.variant.sku_suffix}
+                                                                {item.variant ? (
+                                                                    <p className="text-xs text-muted-foreground font-mono">
+                                                                        SKU: {item.variant.product?.sku}-{item.variant.sku_suffix}
                                                                     </p>
+                                                                ) : (
+                                                                    <div className="flex items-center gap-2 mt-1">
+                                                                        <Badge className="bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px]">
+                                                                            <Sparkles className="size-2.5 mr-1" />
+                                                                            Fresh Vendor Item (Uncataloged)
+                                                                        </Badge>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => openRegisterModalForPOItem(item)}
+                                                                            className="text-[10px] text-amber-400 hover:text-amber-300 underline font-medium"
+                                                                        >
+                                                                            + Register in Catalog
+                                                                        </button>
+                                                                    </div>
                                                                 )}
                                                             </div>
                                                         </TableCell>
@@ -364,6 +668,115 @@ function PurchaseOrderDetailContent() {
                                             </div>
                                         </div>
                                     </div>
+                                </CardContent>
+                            </Card>
+
+                            {/* Delivered Shipments & Stock Intake History */}
+                            <Card className="bg-card/50 border-border/50">
+                                <CardHeader className="flex flex-row items-center justify-between">
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Truck className="w-5 h-5 text-emerald-400" />
+                                        <span>Delivered Shipments & Stock Intake (GRNs)</span>
+                                    </CardTitle>
+                                    <Badge variant="outline" className="text-xs border-emerald-500/30 text-emerald-400 font-mono">
+                                        {grns.length} {grns.length === 1 ? 'Shipment' : 'Shipments'}
+                                    </Badge>
+                                </CardHeader>
+                                <CardContent>
+                                    {grns.length === 0 ? (
+                                        <div className="text-center py-6 text-muted-foreground text-sm border border-dashed border-border/50 rounded-lg">
+                                            <PackageCheck className="w-8 h-8 mx-auto mb-2 opacity-40 text-muted-foreground" />
+                                            <p>No goods have been received for this Purchase Order yet.</p>
+                                            {canReceive && (
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="mt-3 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"
+                                                    onClick={() => setShowReceiveModal(true)}
+                                                >
+                                                    <PackageCheck className="w-4 h-4 mr-1.5" />
+                                                    Take First Delivery
+                                                </Button>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-4">
+                                            {grns.map((grn) => (
+                                                <div key={grn.id} className="border border-border/50 rounded-lg p-4 bg-bg-navy/40 space-y-3">
+                                                    <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-border/40 text-xs">
+                                                        <div className="flex items-center gap-2">
+                                                            <Badge className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono font-bold">
+                                                                {grn.grn_number}
+                                                            </Badge>
+                                                            <span className="text-muted-foreground">
+                                                                Received: {format(new Date(grn.received_date), "dd MMM yyyy, HH:mm")}
+                                                            </span>
+                                                        </div>
+                                                        {grn.received_by && (
+                                                            <span className="text-muted-foreground">
+                                                                Receiver: <strong className="text-white">{grn.received_by}</strong>
+                                                            </span>
+                                                        )}
+                                                    </div>
+
+                                                    {grn.notes && (
+                                                        <p className="text-xs italic text-muted-foreground bg-surface-navy/40 px-2.5 py-1 rounded">
+                                                            &ldquo;{grn.notes}&rdquo;
+                                                        </p>
+                                                    )}
+
+                                                    <Table>
+                                                        <TableHeader>
+                                                            <TableRow className="border-border/30 text-xs">
+                                                                <TableHead className="py-1">Received Item</TableHead>
+                                                                <TableHead className="py-1">Matched SKU</TableHead>
+                                                                <TableHead className="py-1 text-center">Qty Added</TableHead>
+                                                                <TableHead className="py-1 text-right">Inventory Action</TableHead>
+                                                            </TableRow>
+                                                        </TableHeader>
+                                                        <TableBody>
+                                                            {grn.items.map((item, idx) => {
+                                                                const variantSku = item.variant?.product?.sku
+                                                                    ? (item.variant.sku_suffix ? `${item.variant.product.sku}-${item.variant.sku_suffix}` : item.variant.product.sku)
+                                                                    : null;
+                                                                return (
+                                                                    <TableRow key={item.id || idx} className="border-border/20 text-xs">
+                                                                        <TableCell className="py-2 font-medium">
+                                                                            {item.po_item?.description || "PO Line Item"}
+                                                                        </TableCell>
+                                                                        <TableCell className="py-2 font-mono">
+                                                                            {variantSku ? (
+                                                                                <Badge variant="outline" className="border-primary/40 text-primary text-[11px]">
+                                                                                    {variantSku}
+                                                                                </Badge>
+                                                                            ) : (
+                                                                                <span className="text-amber-400 text-xs">Unlinked</span>
+                                                                            )}
+                                                                        </TableCell>
+                                                                        <TableCell className="py-2 text-center font-mono font-bold text-emerald-400">
+                                                                            +{item.quantity_received} units
+                                                                        </TableCell>
+                                                                        <TableCell className="py-2 text-right">
+                                                                            {variantSku && (
+                                                                                <Button
+                                                                                    size="sm"
+                                                                                    variant="ghost"
+                                                                                    className="h-7 text-xs text-moonstone hover:text-white px-2"
+                                                                                    onClick={() => router.push(`/inventory?search=${encodeURIComponent(item.variant?.product?.sku || variantSku)}`)}
+                                                                                >
+                                                                                    <ExternalLink className="w-3 h-3 mr-1" /> View Stock
+                                                                                </Button>
+                                                                            )}
+                                                                        </TableCell>
+                                                                    </TableRow>
+                                                                );
+                                                            })}
+                                                        </TableBody>
+                                                    </Table>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </CardContent>
                             </Card>
                         </div>
@@ -438,41 +851,149 @@ function PurchaseOrderDetailContent() {
 
             {/* Receive Goods Modal */}
             <Dialog open={showReceiveModal} onOpenChange={setShowReceiveModal}>
-                <DialogContent className="max-w-2xl">
+                <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Receive Goods - GRN</DialogTitle>
+                        <DialogTitle className="flex items-center gap-2">
+                            <PackageCheck className="w-5 h-5 text-emerald-400" />
+                            <span>Take Delivery & Match Inventory Intake</span>
+                        </DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4">
+                        <p className="text-xs text-muted-foreground">
+                            Specify received quantities below. Each item will be added to its matched Inventory SKU and recorded in stock movement audit logs.
+                        </p>
+
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>Item</TableHead>
-                                    <TableHead className="text-center">Pending</TableHead>
-                                    <TableHead className="text-center">Receive Qty</TableHead>
+                                    <TableHead>Line Item & Inventory Match</TableHead>
+                                    <TableHead className="text-center w-24">Pending</TableHead>
+                                    <TableHead className="text-center w-28">Receive Qty</TableHead>
+                                    <TableHead className="text-center w-36">Projected Stock</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {po.items?.map((item) => {
                                     const pending = item.quantity_ordered - item.quantity_received;
                                     if (pending <= 0) return null;
+
+                                    const currentVariantId = matchedVariants[item.id!] || item.variant_id;
+                                    const currentVariant = availableVariants.find(v => v.id === currentVariantId);
+                                    const hasMatch = Boolean(currentVariantId && currentVariant);
+                                    const receivingQty = receivingQuantities[item.id!] || 0;
+                                    const onHandStock = currentVariant?.stock_level ?? ((item.variant as any)?.stock_level || 0);
+
                                     return (
-                                        <TableRow key={item.id}>
-                                            <TableCell>{item.description}</TableCell>
-                                            <TableCell className="text-center font-mono">{pending}</TableCell>
-                                            <TableCell className="text-center">
+                                        <TableRow key={item.id} className="align-top">
+                                            <TableCell className="space-y-1.5 py-3">
+                                                <div className="font-medium text-sm text-white">{item.description}</div>
+                                                <div className="text-xs text-muted-foreground font-mono">
+                                                    Rate: {formatINR(item.unit_price)}/unit
+                                                </div>
+
+                                                {hasMatch ? (
+                                                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                                                        <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-xs font-mono">
+                                                            <Check className="w-3 h-3 mr-1" />
+                                                            {currentVariant?.sku}
+                                                        </Badge>
+                                                        <span className="text-[11px] text-moonstone">
+                                                            (On-hand: <strong className="text-white">{onHandStock}</strong>)
+                                                        </span>
+                                                        <Select
+                                                            value={currentVariantId}
+                                                            onValueChange={(val) => val && handleSelectVariant(item.id!, val)}
+                                                        >
+                                                            <SelectTrigger className="h-6 text-[10px] px-2 w-auto bg-transparent border-border/40 text-muted-foreground hover:text-white">
+                                                                <SelectValue placeholder="Change SKU" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {availableVariants.map(v => (
+                                                                    <SelectItem key={v.id} value={v.id}>
+                                                                        {v.sku} - {v.name} (Stock: {v.stock_level})
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </div>
+                                                ) : (
+                                                    <div className="space-y-2 pt-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <Badge className="bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[11px]">
+                                                                <AlertTriangle className="w-3 h-3 mr-1" />
+                                                                Unlinked (No Inventory SKU)
+                                                            </Badge>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <Select
+                                                                value=""
+                                                                onValueChange={(val) => val && handleSelectVariant(item.id!, val)}
+                                                            >
+                                                                <SelectTrigger className="h-7 text-xs bg-bg-navy/80 border-border/60 flex-1">
+                                                                    <SelectValue placeholder="Match to existing SKU..." />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    {availableVariants.map(v => (
+                                                                        <SelectItem key={v.id} value={v.id}>
+                                                                            {v.sku} - {v.name} (Stock: {v.stock_level})
+                                                                        </SelectItem>
+                                                                    ))}
+                                                                </SelectContent>
+                                                            </Select>
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={() => openRegisterModalForPOItem(item)}
+                                                                className="h-7 text-xs border-amber-500/40 text-amber-400 hover:bg-amber-500/20 shrink-0"
+                                                            >
+                                                                <Sparkles className="w-3 h-3 mr-1 text-amber-400" />
+                                                                Register with Specs
+                                                            </Button>
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                variant="outline"
+                                                                disabled={creatingSkuForItemId === item.id}
+                                                                onClick={() => handleAutoCreateSKU(item)}
+                                                                className="h-7 text-xs border-primary/40 text-primary hover:bg-primary/20 shrink-0"
+                                                            >
+                                                                {creatingSkuForItemId === item.id ? (
+                                                                    <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                                                                ) : (
+                                                                    <Sparkles className="w-3 h-3 mr-1 text-gold" />
+                                                                )}
+                                                                Auto-Create SKU
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </TableCell>
+                                            <TableCell className="text-center font-mono py-3 font-semibold text-yellow-400">
+                                                {pending}
+                                            </TableCell>
+                                            <TableCell className="text-center py-3">
                                                 <Input
                                                     type="number"
                                                     min="0"
                                                     max={pending}
-                                                    value={receivingQuantities[item.id!] || 0}
+                                                    value={receivingQuantities[item.id!] ?? pending}
                                                     onChange={(e) =>
                                                         setReceivingQuantities({
                                                             ...receivingQuantities,
-                                                            [item.id!]: Math.min(parseInt(e.target.value) || 0, pending),
+                                                            [item.id!]: Math.min(Math.max(0, parseInt(e.target.value) || 0), pending),
                                                         })
                                                     }
-                                                    className="w-20 mx-auto"
+                                                    className="w-20 mx-auto text-center font-mono"
                                                 />
+                                            </TableCell>
+                                            <TableCell className="text-center py-3 font-mono text-xs">
+                                                <div className="text-muted-foreground">
+                                                    {onHandStock} <span className="text-emerald-400">+{receivingQty}</span>
+                                                </div>
+                                                <div className="font-bold text-emerald-400 mt-0.5">
+                                                    = {onHandStock + receivingQty} units
+                                                </div>
                                             </TableCell>
                                         </TableRow>
                                     );
@@ -480,35 +1001,47 @@ function PurchaseOrderDetailContent() {
                             </TableBody>
                         </Table>
 
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                                <Label>Received By</Label>
+                        <div className="grid grid-cols-2 gap-4 pt-2">
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Received By</Label>
                                 <Input
                                     value={receivedBy}
                                     onChange={(e) => setReceivedBy(e.target.value)}
-                                    placeholder="Name of receiver"
+                                    placeholder="Name of receiver or staff"
+                                    className="h-9 text-xs"
                                 />
                             </div>
-                            <div className="space-y-2">
-                                <Label>Notes</Label>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Intake Notes / Inspection</Label>
                                 <Input
                                     value={grnNotes}
                                     onChange={(e) => setGrnNotes(e.target.value)}
-                                    placeholder="GRN notes"
+                                    placeholder="e.g. Inspected 100% fine, box intact"
+                                    className="h-9 text-xs"
                                 />
                             </div>
                         </div>
 
-                        <div className="flex justify-end gap-3">
-                            <Button variant="outline" onClick={() => setShowReceiveModal(false)}>
+                        <div className="flex justify-end gap-3 pt-3 border-t border-border/40">
+                            <Button variant="outline" onClick={() => setShowReceiveModal(false)} disabled={processing}>
                                 Cancel
                             </Button>
                             <Button
                                 onClick={handleReceiveGoods}
                                 disabled={processing}
-                                className=""
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white"
                             >
-                                {processing ? "Processing..." : "Confirm Receipt"}
+                                {processing ? (
+                                    <>
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                        Updating Stock...
+                                    </>
+                                ) : (
+                                    <>
+                                        <PackageCheck className="w-4 h-4 mr-2" />
+                                        Confirm Receipt & Update Inventory
+                                    </>
+                                )}
                             </Button>
                         </div>
                     </div>
@@ -532,6 +1065,108 @@ function PurchaseOrderDetailContent() {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+
+            {/* Quick Product Modal for registering uncataloged items with specs */}
+            <QuickProductModal
+                isOpen={showRegisterModal}
+                onClose={() => setShowRegisterModal(false)}
+                onSuccess={handleRegisterSuccess}
+                poItemId={registerTargetItem?.id}
+                initialData={
+                    registerTargetItem
+                        ? {
+                              name: registerTargetItem.description,
+                              cost_price: registerTargetItem.unit_price,
+                              hsn_code: registerTargetItem.hsn_code,
+                          }
+                        : undefined
+                }
+            />
+
+            {/* Discrepancy Approval Modal */}
+            <Dialog open={showApprovalModal} onOpenChange={setShowApprovalModal}>
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-amber-500">
+                            <ShieldAlert className="w-5 h-5 text-amber-500" />
+                            <span>Approve Blanket PO Discrepancy</span>
+                        </DialogTitle>
+                        <DialogDescription>
+                            A cost discrepancy has been detected between the inward goods and the budgeted allocation. Management approval with remarks is required.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4 py-2">
+                        <div className="p-3 rounded-lg bg-muted/30 border border-border space-y-1.5 text-xs font-mono">
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">PO Reference:</span>
+                                <span className="font-bold text-foreground">{po.po_number}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">Budgeted Allocation:</span>
+                                <span>{formatINR(po.budget_amount || po.subtotal)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">Actual Inward Cost:</span>
+                                <span>{formatINR(po.inward_goods_cost || 0)}</span>
+                            </div>
+                            <div className="flex justify-between font-bold border-t border-border pt-1">
+                                <span className="text-muted-foreground">Discrepancy:</span>
+                                <span className={(po.discrepancy_amount || 0) > 0 ? "text-red-400" : "text-amber-400"}>
+                                    {(po.discrepancy_amount || 0) > 0 ? "+" : ""}{formatINR(po.discrepancy_amount || 0)} ({(po.discrepancy_status || '').toUpperCase()})
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label className="text-xs font-semibold">Approver Name</Label>
+                            <Input
+                                placeholder="Store Manager / Admin"
+                                value={approverName}
+                                onChange={(e) => setApproverName(e.target.value)}
+                                className="h-8 text-xs"
+                            />
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label className="text-xs font-semibold">
+                                Approval Remarks * <span className="text-red-400 font-normal">(Mandatory reason for deviation)</span>
+                            </Label>
+                            <Textarea
+                                placeholder="Explain why the cost differed (e.g. Rate variance, extra weight received, MOQ adjustment)..."
+                                value={approvalRemarks}
+                                onChange={(e) => setApprovalRemarks(e.target.value)}
+                                rows={3}
+                                className="text-xs"
+                            />
+                        </div>
+                    </div>
+
+                    <DialogFooter className="gap-2">
+                        <Button variant="outline" size="sm" onClick={() => setShowApprovalModal(false)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            size="sm"
+                            className="bg-amber-600 hover:bg-amber-500 text-white"
+                            onClick={handleApproveDiscrepancy}
+                            disabled={approving || !approvalRemarks.trim()}
+                        >
+                            {approving ? (
+                                <>
+                                    <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                    Approving...
+                                </>
+                            ) : (
+                                <>
+                                    <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />
+                                    Authorize &amp; Approve
+                                </>
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

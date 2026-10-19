@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ShieldX } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -25,20 +25,19 @@ export function ProtectedRoute({
     const router = useRouter();
     const { user, isValid } = useAuth();
     const { hasPermission, loading, isAdmin, permissions } = usePermissions();
-    const [authorized, setAuthorized] = useState<boolean | null>(null);
+    // Derived during render from the permission state — same value the old effect
+    // wrote via setAuthorized, without the extra setState-in-effect render pass.
+    const authorized = loading
+        ? null
+        : isAdmin || hasPermission(resource, action);
 
     const hasAnyPermissions = isAdmin || Object.keys(permissions || {}).length > 0;
 
     useEffect(() => {
-        if (!loading) {
-            const canAccess = isAdmin || hasPermission(resource, action);
-            setAuthorized(canAccess);
-
-            if (!canAccess && redirectTo) {
-                router.replace(redirectTo);
-            }
+        if (!loading && !authorized && redirectTo) {
+            router.replace(redirectTo);
         }
-    }, [loading, hasPermission, resource, action, isAdmin, router, redirectTo]);
+    }, [loading, authorized, redirectTo, router]);
 
     if (loading || authorized === null) {
         return (

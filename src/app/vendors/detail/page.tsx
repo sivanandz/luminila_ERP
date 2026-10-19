@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
     ArrowLeft,
@@ -62,6 +62,20 @@ interface ProductVariant {
     };
 }
 
+// Raw PocketBase product_variants record with expanded product
+interface PBVariant {
+    id: string;
+    variant_name: string;
+    sku_suffix: string;
+    expand?: {
+        product?: {
+            id: string;
+            name: string;
+            sku: string;
+        };
+    };
+}
+
 function VendorDetailContent() {
     const searchParams = useSearchParams();
     const router = useRouter();
@@ -92,25 +106,25 @@ function VendorDetailContent() {
     });
     const [saving, setSaving] = useState(false);
 
-    const fetchVendor = async () => {
+    const fetchVendor = useCallback(async () => {
         if (!vendorId) return;
         setLoading(true);
         const data = await getVendor(vendorId);
         setVendor(data);
         setLoading(false);
-    };
+    }, [vendorId]);
 
-    const fetchProducts = async () => {
+    const fetchProducts = useCallback(async () => {
         try {
-            const variants = await pb.collection('product_variants').getFullList({
+            const variants = await pb.collection('product_variants').getFullList<PBVariant>({
                 sort: 'variant_name',
                 expand: 'product',
             });
 
             const mappedIds = vendor?.vendor_products?.map((vp) => vp.variant) || [];
             const available: ProductVariant[] = variants
-                .filter((v: any) => !mappedIds.includes(v.id))
-                .map((v: any) => ({
+                .filter((v) => !mappedIds.includes(v.id))
+                .map((v) => ({
                     id: v.id,
                     variant_name: v.variant_name,
                     sku_suffix: v.sku_suffix,
@@ -124,17 +138,17 @@ function VendorDetailContent() {
         } catch (e) {
             console.error('Failed to load products:', e);
         }
-    };
+    }, [vendor]);
 
     useEffect(() => {
         fetchVendor();
-    }, [vendorId]);
+    }, [fetchVendor]);
 
     useEffect(() => {
         if (showAddProduct && vendor) {
             fetchProducts();
         }
-    }, [showAddProduct, vendor]);
+    }, [showAddProduct, vendor, fetchProducts]);
 
     const handleAddProduct = async () => {
         if (!selectedVariant || !vendorId) {

@@ -32,7 +32,9 @@ import {
 
     Tag,
     Store,
+    Building2,
 } from "lucide-react";
+import { getPOSLocations, type InventoryLocation } from "@/lib/multi-location";
 import {
     Dialog,
     DialogContent,
@@ -44,6 +46,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import { usePOSShortcuts } from "@/hooks/use-pos-shortcuts";
 import { getCustomers, type Customer, getTierDiscountPercent } from "@/lib/customers";
 import {
@@ -275,6 +284,27 @@ export default function POSPage() {
 
     // Cash Tender State
     const [cashTendered, setCashTendered] = useState("");
+
+    // Multi-PoS Facility Counter State
+    const [posLocations, setPosLocations] = useState<InventoryLocation[]>([]);
+    const [selectedPosLocationId, setSelectedPosLocationId] = useState<string>("");
+
+    useEffect(() => {
+        getPOSLocations().then((locs) => {
+            setPosLocations(locs);
+            if (typeof window !== "undefined") {
+                const userEmail = pb.authStore.model?.email?.trim().toLowerCase() || "default";
+                const saved = localStorage.getItem(`luminila_active_pos_loc_${userEmail}`);
+                if (saved && locs.some((l) => l.id === saved)) {
+                    setSelectedPosLocationId(saved);
+                    return;
+                }
+            }
+            if (locs.length > 0) {
+                setSelectedPosLocationId(locs[0].id);
+            }
+        }).catch(() => {});
+    }, []);
 
     // WhatsApp CRM bridge (spec §3.3 / §8.3)
     const autoSendWhatsAppRef = useRef(false);
@@ -962,6 +992,7 @@ export default function POSPage() {
                 customerPhone: selectedCustomer?.phone || undefined,
                 shiftId: currentShift.id,
                 userId,
+                locationId: selectedPosLocationId,
                 pointsRedeemed: pointsToRedeem,
                 pointsEarned: pointsToEarn,
             });
@@ -1134,7 +1165,7 @@ export default function POSPage() {
             <Header title="Point of Sale" subtitle="Quick checkout for walk-in customers" />
 
             {/* Shift Status Bar - Always visible */}
-            <div className="mx-6 mt-2 mb-0 bg-surface-navy border border-surface-hover rounded-lg px-4 py-2 flex flex-wrap items-center justify-between gap-3">
+            <div className="mx-3 md:mx-6 mt-2 mb-0 bg-surface-navy border border-surface-hover rounded-lg px-3 md:px-4 py-2 flex flex-wrap items-center justify-between gap-2 md:gap-3">
                 {currentShift ? (
                     <div className="flex items-center gap-4 flex-wrap">
                         <div className="flex items-center gap-2">
@@ -1159,24 +1190,72 @@ export default function POSPage() {
                     </div>
                 )}
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 md:gap-3 flex-wrap">
+                    {/* Multi-PoS Facility Station Selector */}
+                    {posLocations.length > 0 && (
+                        <div className="flex items-center gap-1.5 bg-bg-navy px-2.5 py-1 rounded-md border border-surface-hover">
+                            <Building2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <span className="text-[11px] text-moonstone font-semibold uppercase tracking-wider hidden sm:inline">Station:</span>
+                            <Select
+                                value={selectedPosLocationId}
+                                onValueChange={(val) => {
+                                    if (!val) return;
+                                    setSelectedPosLocationId(val);
+                                    if (typeof window !== "undefined") {
+                                        const userEmail = pb.authStore.model?.email?.trim().toLowerCase() || "default";
+                                        localStorage.setItem(`luminila_active_pos_loc_${userEmail}`, val);
+                                    }
+                                    const locName = posLocations.find(l => l.id === val)?.name || val;
+                                    toast.info(`POS selling station locked to: ${locName}`);
+                                }}
+                            >
+                                <SelectTrigger className="h-7 bg-surface-navy text-xs text-foreground border border-surface-hover rounded px-2 py-0.5 focus:ring-1 focus:ring-primary font-medium cursor-pointer min-w-[130px] max-w-[240px]">
+                                    <SelectValue placeholder="Station">
+                                        {(() => {
+                                            const loc = posLocations.find(l => l.id === selectedPosLocationId);
+                                            return loc ? `[${loc.code}] ${loc.name}` : selectedPosLocationId;
+                                        })()}
+                                    </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent className="bg-popover border-border text-popover-foreground z-50">
+                                    {posLocations.map((loc) => (
+                                        <SelectItem key={loc.id} value={loc.id} className="text-xs cursor-pointer py-1.5">
+                                            [{loc.code}] {loc.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    )}
+
                     {/* Sales Channel Selector */}
                     <div className="flex items-center gap-2 bg-bg-navy px-2.5 py-1 rounded-md border border-surface-hover">
                         <Store className="w-3.5 h-3.5 text-primary shrink-0" />
                         <span className="text-[11px] text-moonstone font-semibold uppercase tracking-wider hidden sm:inline">Channel:</span>
-                        <select
+                        <Select
                             value={selectedChannel}
-                            onChange={(e) => handleChannelChange(e.target.value)}
-                            className="bg-surface-navy text-xs text-white border border-surface-hover rounded px-2 py-0.5 focus:outline-none focus:border-primary font-medium cursor-pointer"
+                            onValueChange={(val) => {
+                                if (val) handleChannelChange(val);
+                            }}
                         >
-                            {availableChannels.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                    {c.name} {c.discountPreset ? `(${c.discountPreset > 0 ? '+' : ''}${c.discountPreset}%)` : ''}
-                                </option>
-                            ))}
-                        </select>
+                            <SelectTrigger className="h-7 bg-surface-navy text-xs text-foreground border border-surface-hover rounded px-2 py-0.5 focus:ring-1 focus:ring-primary font-medium cursor-pointer min-w-[150px] max-w-[240px]">
+                                <SelectValue placeholder="Channel">
+                                    {(() => {
+                                        const c = availableChannels.find(chan => chan.id === selectedChannel);
+                                        return c ? `${c.name}${c.discountPreset ? ` (${c.discountPreset > 0 ? '+' : ''}${c.discountPreset}%)` : ''}` : selectedChannel;
+                                    })()}
+                                </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent className="bg-popover border-border text-popover-foreground z-50">
+                                {availableChannels.map((c) => (
+                                    <SelectItem key={c.id} value={c.id} className="text-xs cursor-pointer py-1.5">
+                                        {c.name} {c.discountPreset ? `(${c.discountPreset > 0 ? '+' : ''}${c.discountPreset}%)` : ''}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                         {selectedChannel !== 'pos' && (
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-medium">
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-medium shrink-0">
                                 Custom Rates
                             </span>
                         )}
@@ -1204,8 +1283,8 @@ export default function POSPage() {
                 </div>
             </div>
 
-            {/* High-Speed POS Hotkey Bar (BillWiz) */}
-            <div className="mx-6 mt-2 mb-1 px-3 py-1.5 bg-bg-navy/90 border border-surface-hover/80 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
+            {/* High-Speed POS Hotkey Bar (BillWiz) - Desktop Only */}
+            <div className="mx-3 md:mx-6 mt-2 mb-1 px-3 py-1.5 bg-bg-navy/90 border border-surface-hover/80 rounded-lg hidden md:flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                     <span className="text-moonstone font-semibold text-[11px] uppercase tracking-wider">Hotkeys:</span>
                     <button
@@ -1252,11 +1331,11 @@ export default function POSPage() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 h-full overflow-hidden">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 p-3 md:p-6 flex-1 min-h-0 overflow-y-auto lg:overflow-hidden">
                 {/* Left Panel - Product Search & Scanner */}
-                <div className="lg:col-span-2 flex flex-col gap-4 overflow-hidden">
+                <div className="lg:col-span-2 flex flex-col gap-4">
                     {/* Scanner Area */}
-                    <div className="bg-surface-navy rounded-xl border border-surface-hover flex-1 flex flex-col p-6 overflow-hidden">
+                    <div className="bg-surface-navy rounded-xl border border-surface-hover flex-1 flex flex-col p-4 md:p-6">
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-lg font-bold text-white">Scan or Search</h2>
                             <div className="flex items-center gap-2">
@@ -1429,7 +1508,7 @@ export default function POSPage() {
                 </div>
 
                 {/* Right Panel - Cart */}
-                <div className="bg-surface-navy rounded-xl border border-surface-hover flex flex-col p-6 overflow-hidden col-span-1">
+                <div className="bg-surface-navy rounded-xl border border-surface-hover flex flex-col p-4 md:p-6 col-span-1">
                     <div className="flex items-center justify-between mb-3">
                         <h2 className="text-lg font-bold text-white">Cart</h2>
                         {cart.length > 0 && (

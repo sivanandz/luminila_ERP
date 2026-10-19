@@ -132,7 +132,7 @@ export function getStCourierTrackingUrl(
     const cleanAwb = awbNumber.replace(/[^0-9]/g, '');
     switch (mode) {
         case 'bridge':
-            return `${bridgeBaseUrl}/api/tracking/st-courier?awb=${cleanAwb}`;
+            return `${bridgeBaseUrl}/tracking/st-courier?awb=${cleanAwb}`;
         case 'aggregator':
             return `https://trackcourier.io/track-and-trace/st-courier/${cleanAwb}`;
         case 'portal':

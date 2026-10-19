@@ -1,0 +1,74 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --surface: #ffffff;
+    --on-surface: #0a0a0a;
+
+    /* Emil Kowalski Custom Easing Curves (High-Performance Physics) */
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+    --ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+
+  body {
+    background-color: #ffffff;
+    color: #0a0a0a;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Tactile Press Responsiveness (Emil Kowalski rule: UI must confirm it heard the user) */
+  button:not(:disabled):active,
+  a[role="button"]:not([aria-disabled="true"]):active,
+  .pressable:active {
+    transform: scale(0.97) !important;
+    transition: transform 140ms var(--ease-out) !important;
+  }
+}
+
+/* Micro-interaction & Origin-Aware Classes */
+.ease-emil-out {
+  transition-timing-function: var(--ease-out);
+}
+.ease-emil-drawer {
+  transition-timing-function: var(--ease-drawer);
+}
+.ease-emil-in-out {
+  transition-timing-function: var(--ease-in-out);
+}
+
+/* Smooth GPU-accelerated hardware layer promotion */
+.gpu-layer {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+/* Origin-aware popover animation */
+.origin-aware-popover {
+  transform-origin: top center;
+  transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out);
+}
+
+/* Hide scrollbar for category pills on mobile */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Accessible reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

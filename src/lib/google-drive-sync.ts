@@ -11,7 +11,7 @@ export interface MutationLogEntry {
     collection: string;
     action: 'create' | 'update' | 'delete';
     recordId: string;
-    data?: Record<string, any>;
+    data?: Record<string, unknown>;
 }
 
 export interface DriveSyncState {
@@ -109,7 +109,7 @@ export class GoogleDriveSync {
         collection: string,
         action: 'create' | 'update' | 'delete',
         recordId: string,
-        data?: Record<string, any>
+        data?: Record<string, unknown>
     ): MutationLogEntry {
         const entry: MutationLogEntry = {
             id: `cl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -195,9 +195,9 @@ export class GoogleDriveSync {
 
             this.saveSyncState(state);
             return { uploaded: uploadedCount, downloaded: downloadedCount, success: true };
-        } catch (err: any) {
+        } catch (err) {
             state.isSyncing = false;
-            state.error = err?.message || 'Sync failed';
+            state.error = err instanceof Error ? err.message || 'Sync failed' : String(err);
             this.saveSyncState(state);
             return { uploaded: 0, downloaded: 0, success: false };
         }

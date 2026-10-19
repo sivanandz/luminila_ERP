@@ -69,6 +69,8 @@
 
 /* Dark Mode - High Contrast */
 .dark {
+  color-scheme: dark;
+
   /* Base - Deeper background */
   --background: oklch(0.12 0.005 285);
   --foreground: oklch(0.95 0 0);
@@ -224,8 +226,95 @@
   background-clip: content-box;
 }
 
-/* Firefox */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+/* Slim Custom Scrollbar for Popups & Modals */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* Hide scrollbar for Chrome, Safari, Opera */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+/* Hide scrollbar for IE, Edge and Firefox */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Native select and option styling for Dark Theme across Chromium/Firefox/WebKit */
+.dark select {
+  color-scheme: dark;
+  background-color: var(--card);
+  color: var(--foreground);
+}
+
+.dark select option,
+.dark option {
+  background-color: #1a202c !important;
+  color: #f7fafc !important;
+}
+
+/* ==============================================
+   APPLE-GRADE MARQUEE & TEXT OVERFLOW SYSTEM
+   ============================================== */
+
+@keyframes apple-marquee-pingpong {
+  0%, 15% {
+    transform: translateX(0px);
+  }
+  60%, 85% {
+    transform: translateX(var(--marquee-overflow, 0px));
+  }
+  100% {
+    transform: translateX(0px);
+  }
+}
+
+.marquee-container {
+  display: flex;
+  align-items: center;
+}
+
+/* Rest state for overflowing text: subtle Apple gradient fade on the trailing edge */
+.marquee-container[data-overflow="true"] {
+  mask-image: linear-gradient(to right, black calc(100% - 14px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 14px), transparent 100%);
+}
+
+/* Hover state: disable fade mask so user can read everything, and run pingpong marquee */
+.group:hover .marquee-container[data-overflow="true"],
+.marquee-container[data-overflow="true"]:hover {
+  mask-image: none !important;
+  -webkit-mask-image: none !important;
+}
+
+.marquee-content {
+  transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.group:hover .marquee-overflowing,
+.marquee-container:hover .marquee-overflowing {
+  animation: apple-marquee-pingpong var(--marquee-duration, 4s) cubic-bezier(0.35, 0, 0.25, 1) infinite;
+  animation-delay: 0.35s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group:hover .marquee-overflowing,
+  .marquee-container:hover .marquee-overflowing {
+    animation: none !important;
+  }
 }

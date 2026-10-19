@@ -7,12 +7,13 @@ import {
     Package,
     Plus,
     Search,
-    Filter,
+
     Truck,
     AlertCircle,
     CheckCircle,
     Clock,
     XCircle,
+    type LucideIcon,
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
@@ -39,7 +40,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { getPurchaseOrders, type PurchaseOrder, type POStatus } from "@/lib/purchase";
 import { formatINR } from "@/lib/gst";
 
-const statusConfig: Record<POStatus, { label: string; icon: any; color: string }> = {
+const statusConfig: Record<POStatus, { label: string; icon: LucideIcon; color: string }> = {
     draft: { label: "Draft", icon: Clock, color: "bg-gray-500/20 text-gray-400 border-gray-500/30" },
     sent: { label: "Sent", icon: Truck, color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
     partial: { label: "Partial", icon: AlertCircle, color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
@@ -56,9 +57,9 @@ export default function PurchaseOrdersPage() {
 
     const fetchOrders = async () => {
         setLoading(true);
-        const filters: any = {};
+        const filters: { status?: POStatus } = {};
         if (statusFilter !== "all") {
-            filters.status = statusFilter;
+            filters.status = statusFilter as POStatus;
         }
         const data = await getPurchaseOrders(filters);
         setOrders(data);
@@ -67,6 +68,7 @@ export default function PurchaseOrdersPage() {
 
     useEffect(() => {
         fetchOrders();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchOrders is recreated every render and sets state, so adding it would cause an infinite refetch loop; the effect intentionally refetches only when statusFilter changes
     }, [statusFilter]);
 
     const filteredOrders = orders.filter((o) => {
@@ -132,9 +134,9 @@ export default function PurchaseOrdersPage() {
                 }
             />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 {/* Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 md:gap-4 mb-6">
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <div className="flex items-center gap-3">

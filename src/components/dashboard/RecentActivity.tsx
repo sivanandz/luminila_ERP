@@ -6,8 +6,8 @@ import {
     Receipt,
     Package,
     FileText,
-    ArrowUpRight,
-    ArrowDownRight,
+
+
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatINR } from "@/lib/gst";

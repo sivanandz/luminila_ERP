@@ -93,7 +93,11 @@ export async function getVendor(id: string): Promise<VendorWithProducts | null> 
 
 export async function createVendor(vendor: Omit<Vendor, 'id' | 'created' | 'updated'>): Promise<Vendor> {
     try {
-        const record = await pb.collection('vendors').create(vendor);
+        const accountEmail = (pb.authStore.model as any)?.email || '';
+        const record = await pb.collection('vendors').create({
+            ...vendor,
+            account_email: accountEmail,
+        });
         return record as unknown as Vendor;
     } catch (error) {
         console.error('Error creating vendor:', error);
@@ -188,7 +192,7 @@ async function getVendorsForProductByVendor(vendorId: string): Promise<VendorPro
             expand: 'variant.product'
         });
         return records;
-    } catch (error) {
+    } catch {
         return [];
     }
 }
@@ -237,7 +241,7 @@ export async function getVendorStats(id: string): Promise<{
             totalPurchases,
             lastPurchase
         };
-    } catch (error) {
+    } catch {
         return {
             productCount: 0,
             totalPurchases: 0,

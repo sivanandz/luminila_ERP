@@ -3,6 +3,8 @@
  */
 
 import { pb, ensureAuth } from './pocketbase';
+import { ClientResponseError } from 'pocketbase';
+import type { Sale } from '../types/database';
 
 // Customer type from database
 export interface Customer {
@@ -83,9 +85,50 @@ export function phoneFromChatId(chatId: string): string | null {
 }
 
 /**
+ * Raw PocketBase `customers` record (DB column names, before mapping to Customer)
+ */
+export interface CustomerRecord {
+    id: string;
+    name: string;
+    phone?: string | null;
+    email?: string | null;
+    address?: string | null;
+    city?: string | null;
+    state?: string | null;
+    pincode?: string | null;
+    company_name?: string | null;
+    gstin?: string | null;
+    pan?: string | null;
+    customer_type?: 'retail' | 'wholesale' | 'vip' | null;
+    billing_address?: string | null;
+    shipping_address?: string | null;
+    state_code?: string | null;
+    loyalty_points?: number | null;
+    store_credit?: number | null;
+    total_spent?: number | null;
+    total_orders?: number | null;
+    preferred_contact?: 'phone' | 'email' | 'whatsapp' | null;
+    opt_in_marketing?: boolean | null;
+    notes?: string | null;
+    tags?: string[] | null;
+    source?: string | null;
+    ring_size?: string | null;
+    bangle_size?: string | null;
+    preferred_metal?: string | null;
+    anniversary?: string | null;
+    anniversary_date?: string | null;
+    date_of_birth?: string | null;
+    birthday_date?: string | null;
+    lead_status?: 'new_lead' | 'contacted' | 'quoted' | 'awaiting_payment' | 'won' | 'vip' | null;
+    assigned_staff?: string | null;
+    created: string;
+    updated: string;
+}
+
+/**
  * Map raw PocketBase record to Customer interface with dual-field resilience
  */
-export function mapCustomerRecord(result: any): Customer {
+export function mapCustomerRecord(result: CustomerRecord): Customer {
     return {
         id: result.id,
         name: result.name,
@@ -137,12 +180,12 @@ export async function findCustomerByPhone(phone: string): Promise<Customer | nul
 
     try {
         // Search with LIKE for flexibility
-        const result = await pb.collection('customers').getFirstListItem(
+        const result = await pb.collection('customers').getFirstListItem<CustomerRecord>(
             `phone~"${normalized}"`
         );
 
         return mapCustomerRecord(result);
-    } catch (error) {
+    } catch {
         return null;
     }
 }
@@ -180,7 +223,7 @@ export async function createCustomerFromChat(
     const safeName = cleanName || (formattedPhone ? `WhatsApp Lead (${formattedPhone})` : 'WhatsApp Lead');
 
     try {
-        const result = await pb.collection('customers').create({
+        const result = await pb.collection('customers').create<CustomerRecord>({
             name: safeName,
             phone: formattedPhone,
             source: 'whatsapp',
@@ -191,8 +234,11 @@ export async function createCustomerFromChat(
         });
 
         return mapCustomerRecord(result);
-    } catch (error: any) {
-        console.error('Failed to create customer:', error?.data || error?.message || error);
+    } catch (error) {
+        console.error(
+            'Failed to create customer:',
+            error instanceof ClientResponseError ? error.data : error instanceof Error ? error.message : String(error)
+        );
         return null;
     }
 }
@@ -202,12 +248,12 @@ export async function createCustomerFromChat(
  */
 export async function getCustomerOrders(customerId: string): Promise<CustomerOrder[]> {
     try {
-        const sales = await pb.collection('sales').getList(1, 10, {
+        const sales = await pb.collection('sales').getList<Sale>(1, 10, {
             filter: `customer="${customerId}"`,
             sort: '-created',
         });
 
-        return sales.items.map((order: any) => ({
+        return sales.items.map((order) => ({
             id: order.id,
             channel: order.channel,
             total: order.total,
@@ -215,7 +261,7 @@ export async function getCustomerOrders(customerId: string): Promise<CustomerOrd
             created_at: order.created,
             items_count: 0, // Would need separate query for items count
         }));
-    } catch (error) {
+    } catch {
         return [];
     }
 }
@@ -295,7 +341,7 @@ export async function updateCustomerCRMProfile(
     }
 ): Promise<Customer | null> {
     try {
-        const payload: Record<string, any> = { ...data };
+        const payload: Record<string, unknown> = { ...data };
         // Dual-write anniversary and birthday to both canonical and legacy column names
         if (data.anniversary_date !== undefined) {
             payload.anniversary = data.anniversary_date;
@@ -306,7 +352,7 @@ export async function updateCustomerCRMProfile(
             payload.birthday_date = data.birthday_date;
         }
 
-        const updated = await pb.collection('customers').update(customerId, payload);
+        const updated = await pb.collection('customers').update<CustomerRecord>(customerId, payload);
         return mapCustomerRecord(updated);
     } catch (err) {
         console.error('Failed to update customer CRM profile:', err);

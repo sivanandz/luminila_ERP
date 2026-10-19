@@ -6,6 +6,7 @@
 import { pb } from './pocketbase';
 import { enqueueTask } from './concurrency';
 import { normalizeDateBounds } from './utils';
+import { ClientResponseError } from 'pocketbase';
 
 // =============================================
 // Types
@@ -114,10 +115,10 @@ export async function openShift(
         }
 
         return record as unknown as CashRegisterShift;
-    } catch (error: any) {
+    } catch (error) {
         console.error('Error opening shift:', error);
         // Log detailed PocketBase error info
-        if (error?.response?.data) {
+        if (error instanceof ClientResponseError && error.response?.data) {
             console.error('PocketBase validation errors:', JSON.stringify(error.response.data, null, 2));
         }
         throw error;
@@ -137,7 +138,7 @@ export async function getCurrentShift(userId: string): Promise<CashRegisterShift
             }
         );
         return record;
-    } catch (error) {
+    } catch {
         // 404 is normal if no shift open
         return null;
     }
@@ -438,7 +439,7 @@ export async function getShiftSummary(shiftId: string): Promise<ShiftSummary | n
             expectedBalance
         };
 
-    } catch (err) {
+    } catch {
         return null;
     }
 }
@@ -460,7 +461,7 @@ export async function getTodayShift(userId: string): Promise<CashRegisterShift |
             }
         );
         return record;
-    } catch (error) {
+    } catch {
         return null; // Not found
     }
 }

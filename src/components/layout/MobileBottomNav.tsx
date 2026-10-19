@@ -34,12 +34,6 @@ export function MobileBottomNav({
     const isAuthOrSetup = pathname === "/login" || pathname === "/setup" || pathname?.startsWith("/login/") || pathname?.startsWith("/setup/");
     if (isAuthOrSetup) return null;
 
-    const navTabs = [
-        { href: "/", label: "Home", icon: LayoutDashboard },
-        { href: "/inventory", label: "Stock", icon: Package },
-        // Center FAB is POS
-        { href: "/invoices", label: "Invoices", icon: FileText },
-    ];
 
     return (
         <>

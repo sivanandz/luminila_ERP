@@ -10,7 +10,7 @@
  */
 
 import { pb } from './pocketbase';
-import { getStoreSettings } from './invoice';
+import { getStoreSettings, type Invoice, type InvoiceItem } from './invoice';
 import CryptoJS from 'crypto-js';
 
 // ============================================
@@ -89,6 +89,19 @@ export interface EwayBillResponse {
     alert?: string;
 }
 
+export interface EwayBillDetailItem {
+    productName: string;
+    productDesc: string;
+    hsnCode: string;
+    quantity: number;
+    qtyUnit: string;
+    taxableAmount: number;
+    cgstRate: number;
+    sgstRate: number;
+    igstRate: number;
+    cessRate: number;
+}
+
 export interface EwayBillDetails {
     ewbNo: string;
     ewbDate: string;
@@ -119,7 +132,7 @@ export interface EwayBillDetails {
     vehicleNo: string;
     validUpto: string;
     status: string;
-    itemList: any[];
+    itemList: EwayBillDetailItem[];
 }
 
 // Sub-supply type codes
@@ -191,10 +204,19 @@ let sessionEncryptionKey: string | null = null;
 // HELPER FUNCTIONS
 // ============================================
 
+// store_settings record holding the E-way Bill API credentials
+export interface EwayBillSettings {
+    eway_client_id?: string;
+    eway_client_secret?: string;
+    eway_username?: string;
+    eway_password?: string;
+    eway_is_production?: boolean;
+}
+
 async function getEwayBillConfig(): Promise<EwayBillConfig | null> {
     try {
         const settings = await getStoreSettings();
-        const ewaySettings = await pb.collection('store_settings').getFirstListItem('key="eway_bill"').catch(() => null);
+        const ewaySettings = await pb.collection('store_settings').getFirstListItem<EwayBillSettings>('key="eway_bill"').catch(() => null);
 
         if (!ewaySettings) {
             console.warn('E-way Bill settings not configured');
@@ -202,12 +224,12 @@ async function getEwayBillConfig(): Promise<EwayBillConfig | null> {
         }
 
         return {
-            clientId: (ewaySettings as any).eway_client_id || '',
-            clientSecret: (ewaySettings as any).eway_client_secret || '',
+            clientId: ewaySettings.eway_client_id || '',
+            clientSecret: ewaySettings.eway_client_secret || '',
             gstin: settings.store_gstin,
-            username: (ewaySettings as any).eway_username || '',
-            password: (ewaySettings as any).eway_password || '',
-            isProduction: (ewaySettings as any).eway_is_production || false,
+            username: ewaySettings.eway_username || '',
+            password: ewaySettings.eway_password || '',
+            isProduction: ewaySettings.eway_is_production || false,
         };
     } catch (error) {
         console.error('Error getting E-way Bill config:', error);
@@ -582,11 +604,11 @@ export async function cancelEwayBill(
 
 export async function generateEwayBillFromInvoice(invoiceId: string): Promise<EwayBillResponse> {
     // Fetch invoice with items
-    const invoice = await pb.collection('invoices').getOne(invoiceId, {
+    const invoice = await pb.collection('invoices').getOne<Invoice>(invoiceId, {
         expand: 'sale',
     });
 
-    const invoiceItems = await pb.collection('invoice_items').getFullList({
+    const invoiceItems = await pb.collection('invoice_items').getFullList<InvoiceItem>({
         filter: `invoice="${invoiceId}"`,
     });
 
@@ -597,29 +619,29 @@ export async function generateEwayBillFromInvoice(invoiceId: string): Promise<Ew
         supplyType: 'O', // Outward supply
         subSupplyType: SUB_SUPPLY_TYPES.SUPPLY,
         docType: 'INV',
-        docNo: (invoice as any).invoice_number,
-        docDate: formatDateForEway((invoice as any).invoice_date),
+        docNo: invoice.invoice_number!,
+        docDate: formatDateForEway(invoice.invoice_date),
         fromGstin: storeSettings.store_gstin,
         fromTrdName: storeSettings.store_name,
         fromAddr1: storeSettings.store_address,
         fromPlace: storeSettings.store_city,
         fromPincode: parseInt(storeSettings.store_pincode) || 0,
         fromStateCode: parseInt(storeSettings.store_state_code) || 29,
-        toGstin: (invoice as any).buyer_gstin || 'URP', // URP for unregistered
-        toTrdName: (invoice as any).buyer_name,
-        toAddr1: (invoice as any).buyer_address,
+        toGstin: invoice.buyer_gstin || 'URP', // URP for unregistered
+        toTrdName: invoice.buyer_name,
+        toAddr1: invoice.buyer_address,
         toPlace: '', // Would need buyer city
         toPincode: 0, // Would need buyer pincode
-        toStateCode: parseInt((invoice as any).buyer_state_code) || 29,
+        toStateCode: parseInt(invoice.buyer_state_code) || 29,
         transactionType: 1, // Regular
         transDistance: 0, // To be filled by user
-        totalValue: (invoice as any).taxable_value,
-        cgstValue: (invoice as any).cgst_amount,
-        sgstValue: (invoice as any).sgst_amount,
-        igstValue: (invoice as any).igst_amount,
-        cessValue: (invoice as any).cess_amount || 0,
-        totInvValue: (invoice as any).grand_total,
-        itemList: invoiceItems.map((item: any) => ({
+        totalValue: invoice.taxable_value,
+        cgstValue: invoice.cgst_amount,
+        sgstValue: invoice.sgst_amount,
+        igstValue: invoice.igst_amount,
+        cessValue: invoice.cess_amount || 0,
+        totInvValue: invoice.grand_total,
+        itemList: invoiceItems.map((item) => ({
             productName: item.description?.substring(0, 100) || 'Product',
             productDesc: item.description?.substring(0, 100) || '',
             hsnCode: item.hsn_code || '7113',
@@ -651,7 +673,7 @@ export async function generateEwayBillFromInvoice(invoiceId: string): Promise<Ew
 // CHECK IF E-WAY BILL REQUIRED
 // ============================================
 
-export function isEwayBillRequired(invoiceValue: number, transportMode?: string): boolean {
+export function isEwayBillRequired(invoiceValue: number, _transportMode?: string): boolean {
     // E-way Bill is required for goods worth > ₹50,000
     const threshold = 50000;
 

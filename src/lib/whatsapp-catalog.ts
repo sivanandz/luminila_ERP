@@ -5,8 +5,16 @@
 
 import { pb } from './pocketbase';
 import { createCatalogProduct, deleteCatalogProduct, getCatalogProducts } from './whatsapp';
+import { Product } from '../types/database';
+import { getChannelPrice } from './channel-pricing';
 
 const DEFAULT_SESSION_ID = 'luminila';
+
+/** `products` collection row as read during catalog sync, including the WhatsApp sync columns. */
+type CatalogProductRecord = Product & {
+    whatsapp_catalog_id?: string;
+    whatsapp_last_synced?: string;
+};
 
 export interface CatalogSyncResult {
     total: number;
@@ -32,16 +40,16 @@ export interface WhatsAppProductItem {
  */
 export async function getPublishableProducts(): Promise<WhatsAppProductItem[]> {
     try {
-        const products = await pb.collection('products').getFullList({
+        const products = await pb.collection('products').getFullList<CatalogProductRecord>({
             filter: 'is_active = true',
             sort: '-created',
         });
 
-        return products.map((p: any) => ({
+        return products.map((p) => ({
             id: p.id,
             sku: p.sku,
             name: p.name,
-            price: p.base_price || 0,
+            price: getChannelPrice(p, 'whatsapp'),
             description: p.description || `${p.category || 'Jewelry'} - SKU: ${p.sku}`,
             imageUrl: p.image_url,
             inStock: true,
@@ -86,9 +94,9 @@ export async function syncProductToWhatsApp(
         }
 
         return { success: false, error: 'WPPConnect catalog product creation failed' };
-    } catch (err: any) {
+    } catch (err) {
         console.error(`Error syncing product ${product.name} to WhatsApp:`, err);
-        return { success: false, error: err.message };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 }
 

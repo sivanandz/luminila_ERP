@@ -6,6 +6,13 @@ import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
 import { whatsappManager, checkNumberStatus } from "@/lib/whatsapp";
 import { createPaymentLink, isRazorpayConfigured } from "@/lib/razorpay";
+import {
+    calculateGatewayMarkup,
+    calculateUpiSurchargeDiscount,
+    isUpiDiscountEnabled,
+    setUpiDiscountEnabled,
+    DEFAULT_UPI_DISCOUNT_THRESHOLD,
+} from "@/lib/channel-pricing";
 import { formatPrice } from "@/lib/utils";
 
 // ============================================
@@ -34,6 +41,10 @@ export async function sendPOSReceiptViaWhatsApp(input: {
         return false;
     }
 
+    const isUpiUnder2k = (input.paymentMethod === 'upi' || input.paymentMethod === 'phonepe') &&
+        input.total < DEFAULT_UPI_DISCOUNT_THRESHOLD &&
+        isUpiDiscountEnabled();
+
     const lines = [
         '✨ *LUMINILA JEWELRY* ✨',
         '',
@@ -42,7 +53,9 @@ export async function sendPOSReceiptViaWhatsApp(input: {
         `🧾 Document: *${input.invoiceNumber || 'POS Sale'}*`,
         `📅 ${new Date().toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
         `💰 Total: *₹${input.total.toLocaleString('en-IN')}*`,
-        input.paymentMethod ? `💳 Paid via ${input.paymentMethod.toUpperCase()}` : '',
+        input.paymentMethod
+            ? `💳 Paid via ${input.paymentMethod.toUpperCase()}${isUpiUnder2k ? ' (0% Surcharge / UPI Discount)' : ''}`
+            : '',
         input.pointsEarned ? `\n⭐ You earned *${input.pointsEarned} points* with this purchase!` : '',
         '',
         '_Your official GST invoice is available at the counter. Visit us again soon!_',
@@ -78,9 +91,46 @@ export function POSWhatsAppWidget({
     const [customer, setCustomer] = useState<{ name: string; phone: string } | null>(null);
     const [waVerified, setWaVerified] = useState<boolean | null>(null);
     const [autoSend, setAutoSend] = useState(true);
+    const [includeGatewayMarkup, setIncludeGatewayMarkup] = useState(true);
+    const [upiDiscountEnabled, setUpiDiscountState] = useState<boolean>(() => isUpiDiscountEnabled());
     const [sendingLink, setSendingLink] = useState(false);
     const [sendingReceipt, setSendingReceipt] = useState(false);
     const sentRef = useRef(false);
+
+    // Sync external toggle events (e.g. from Settings or other modals)
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const custom = e as CustomEvent<{ enabled: boolean }>;
+            if (custom.detail) setUpiDiscountState(custom.detail.enabled);
+        };
+        window.addEventListener("luminila:upi-discount-toggled", handler);
+        return () => window.removeEventListener("luminila:upi-discount-toggled", handler);
+    }, []);
+
+    const handleToggleUpiDiscount = (checked: boolean) => {
+        setUpiDiscountState(checked);
+        setUpiDiscountEnabled(checked);
+    };
+
+    const markupInfo = calculateGatewayMarkup(total, 2.2);
+
+    // Evaluate UPI < 2,000 Surcharge Discount (0% MDR waiver)
+    const isUpiEligible = (!paymentMethod || paymentMethod === 'upi' || paymentMethod === 'phonepe') &&
+        total > 0 &&
+        total < DEFAULT_UPI_DISCOUNT_THRESHOLD;
+
+    const upiDiscountInfo = calculateUpiSurchargeDiscount(
+        total,
+        isUpiEligible,
+        upiDiscountEnabled,
+        DEFAULT_UPI_DISCOUNT_THRESHOLD,
+        2.2
+    );
+
+    const isDiscountApplied = includeGatewayMarkup && upiDiscountInfo.applicable;
+    const chargeAmount = isDiscountApplied
+        ? upiDiscountInfo.finalCustomerCharge
+        : (includeGatewayMarkup ? markupInfo.grossAmount : total);
 
     useEffect(() => {
         let cancelled = false;
@@ -122,12 +172,18 @@ export function POSWhatsAppWidget({
         setSendingLink(true);
         try {
             const orderId = `POS-${Date.now().toString(36).toUpperCase()}`;
+            const linkDesc = `Luminila POS checkout${invoiceNumber ? ` ${invoiceNumber}` : ''}${
+                isDiscountApplied
+                    ? ' (UPI < ₹2k 0% MDR Surcharge Waived)'
+                    : (includeGatewayMarkup ? ' (incl. 2.2% PG fee)' : '')
+            }`;
+
             const result = await createPaymentLink({
                 orderId,
-                amount: total,
+                amount: chargeAmount,
                 customerName: customer.name,
                 customerPhone: customer.phone,
-                description: `Luminila POS checkout${invoiceNumber ? ` ${invoiceNumber}` : ''}`,
+                description: linkDesc,
             });
 
             if (!result.success || !result.data) {
@@ -141,22 +197,34 @@ export function POSWhatsAppWidget({
                     provider: 'razorpay',
                     link_id: result.data.id,
                     short_url: result.data.short_url,
-                    amount: total,
+                    amount: chargeAmount,
                     currency: 'INR',
                     customer: customerId || '',
                     status: 'created',
-                    notes: { source: 'pos_checkout', order_ref: orderId },
+                    notes: {
+                        source: 'pos_checkout',
+                        order_ref: orderId,
+                        net_amount: String(total),
+                        gateway_fee: String(includeGatewayMarkup ? markupInfo.feeAmount : 0),
+                        markup_applied: String(includeGatewayMarkup),
+                        upi_surcharge_discount_applied: String(isDiscountApplied),
+                        discount_amount: String(isDiscountApplied ? upiDiscountInfo.discountAmount : 0),
+                    },
                 });
             } catch (err) {
                 console.warn('payment_links record failed:', err);
             }
+
+            const feeNote = isDiscountApplied
+                ? ` _(UPI < ₹2k Zero-MDR Surcharge Discount: -₹${markupInfo.feeAmount})_`
+                : (includeGatewayMarkup ? ' _(incl. 2.2% gateway fee)_' : '');
 
             const message = [
                 '✨ *LUMINILA JEWELRY* ✨',
                 '',
                 `Dear ${customer.name}, here is your secure payment link:`,
                 '',
-                `💰 Amount: *₹${total.toLocaleString('en-IN')}*`,
+                `💰 Amount: *₹${chargeAmount.toLocaleString('en-IN')}*${feeNote}`,
                 `🔗 ${result.data.short_url}`,
                 '',
                 'Tap to pay via UPI, PhonePe, GPay, Cards or NetBanking.',
@@ -234,10 +302,55 @@ export function POSWhatsAppWidget({
                     checked={autoSend}
                     onChange={(e) => setAutoSend(e.target.checked)}
                     className="accent-emerald-500"
-                    defaultChecked
                 />
                 <span className="text-xs text-moonstone">Send Tax Invoice &amp; Receipt via WhatsApp on checkout</span>
             </label>
+
+            <label className="flex items-center justify-between gap-2 mb-2 p-2 rounded-lg bg-bg-navy/80 border border-surface-hover cursor-pointer text-xs select-none">
+                <div className="flex items-center gap-2">
+                    <input
+                        type="checkbox"
+                        checked={includeGatewayMarkup}
+                        onChange={(e) => setIncludeGatewayMarkup(e.target.checked)}
+                        className="accent-emerald-500 rounded"
+                    />
+                    <span className="text-silver-light font-medium">Add 2.2% Razorpay Fee (MDR Markup)</span>
+                </div>
+                <span className="font-mono text-emerald-400 font-bold text-xs">
+                    {includeGatewayMarkup ? `${formatPrice(markupInfo.grossAmount)} (+${formatPrice(markupInfo.feeAmount)})` : formatPrice(total)}
+                </span>
+            </label>
+
+            {/* UPI < ₹2,000 Surcharge Discount Option (0% MDR Policy) */}
+            {isUpiEligible && includeGatewayMarkup && (
+                <div className="mb-2.5 p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-xs space-y-1.5 animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <input
+                                type="checkbox"
+                                checked={upiDiscountEnabled}
+                                onChange={(e) => handleToggleUpiDiscount(e.target.checked)}
+                                className="accent-emerald-500 rounded"
+                            />
+                            <span className="text-emerald-300 font-semibold flex items-center gap-1">
+                                ⚡ UPI &lt; ₹2k Surcharge Waiver Discount (0% MDR)
+                            </span>
+                        </label>
+                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                            {upiDiscountEnabled ? `-${formatPrice(markupInfo.feeAmount)} (Waived)` : "Disabled"}
+                        </span>
+                    </div>
+                    <div className="text-[10px] text-moonstone flex justify-between items-center pt-0.5 border-t border-emerald-500/20">
+                        <span>Net: <b className="text-silver-light">{formatPrice(total)}</b> + Fee: <b className="text-amber-400">+{formatPrice(markupInfo.feeAmount)}</b> {upiDiscountEnabled && <span className="text-emerald-400">- Disc: <b>-{formatPrice(markupInfo.feeAmount)}</b></span>}</span>
+                        <span className="font-bold text-emerald-400 font-mono">Charge: {formatPrice(chargeAmount)}</span>
+                    </div>
+                    <p className="text-[10px] text-emerald-400/80 leading-tight">
+                        {upiDiscountEnabled
+                            ? "✓ RBI/NPCI 0% MDR applied: Surcharge is 100% discounted for customer paying via UPI."
+                            : "⚠️ Feature disabled: Customer will pay the 2.2% gateway fee."}
+                    </p>
+                </div>
+            )}
 
             <button
                 onClick={handleSendPaymentLink}
@@ -245,7 +358,7 @@ export function POSWhatsAppWidget({
                 className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-400 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
             >
                 {sendingLink ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
-                Send {formatPrice(total)} Payment Link to Customer&apos;s Phone
+                Send {formatPrice(chargeAmount)} Payment Link to WhatsApp
             </button>
             {!isRazorpayConfigured() && (
                 <p className="text-[10px] text-amber-400/80 mt-1">

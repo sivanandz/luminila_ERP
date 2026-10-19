@@ -1,9 +1,17 @@
 "use client";
 
-import React, { useState } from "react";
-import { CreditCard, X, ExternalLink, Copy, Check, Send, Loader2, Sparkles } from "lucide-react";
-import { createPaymentLink, isRazorpayConfigured } from "@/lib/razorpay";
+import React, { useState, useMemo } from "react";
+import { CreditCard, X, ExternalLink, Copy, Check, Send, Loader2, Sparkles, ShieldCheck, Percent } from "lucide-react";
+import { createPaymentLink } from "@/lib/razorpay";
 import { pb } from "@/lib/pocketbase";
+import {
+    calculateGatewayMarkup,
+    calculateUpiSurchargeDiscount,
+    isUpiDiscountEnabled,
+    setUpiDiscountEnabled,
+    DEFAULT_RAZORPAY_FEE_PERCENT,
+    DEFAULT_UPI_DISCOUNT_THRESHOLD,
+} from "@/lib/channel-pricing";
 
 export interface RazorpayPaymentModalProps {
     isOpen: boolean;
@@ -27,6 +35,8 @@ export function RazorpayPaymentModal({
     onSendPaymentLinkToChat,
 }: RazorpayPaymentModalProps) {
     const [amount, setAmount] = useState<number>(defaultAmount);
+    const [includeMarkup, setIncludeMarkup] = useState<boolean>(true);
+    const [upiDiscountEnabled, setUpiDiscountState] = useState<boolean>(() => isUpiDiscountEnabled());
     const [name, setName] = useState(customerName);
     const [phone, setPhone] = useState(customerPhone);
     const [description, setDescription] = useState("Luminila Jewels Order Payment");
@@ -35,10 +45,48 @@ export function RazorpayPaymentModal({
     const [error, setError] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
 
+    // Sync external toggle events (e.g. from Settings or other modals)
+    React.useEffect(() => {
+        const handler = (e: Event) => {
+            const custom = e as CustomEvent<{ enabled: boolean }>;
+            if (custom.detail) setUpiDiscountState(custom.detail.enabled);
+        };
+        window.addEventListener("luminila:upi-discount-toggled", handler);
+        return () => window.removeEventListener("luminila:upi-discount-toggled", handler);
+    }, []);
+
+    const handleToggleUpiDiscount = (checked: boolean) => {
+        setUpiDiscountState(checked);
+        setUpiDiscountEnabled(checked);
+    };
+
+    // Calculate 2.2% gateway markup to preserve razor-thin imitation jewelry margins
+    const markupInfo = useMemo(() => {
+        return calculateGatewayMarkup(amount, DEFAULT_RAZORPAY_FEE_PERCENT);
+    }, [amount]);
+
+    // Calculate UPI < 2,000 Surcharge Discount (0% MDR waiver under RBI/NPCI rules)
+    const isUpiEligible = amount > 0 && amount < DEFAULT_UPI_DISCOUNT_THRESHOLD;
+    const upiDiscountInfo = useMemo(() => {
+        return calculateUpiSurchargeDiscount(
+            amount,
+            true,
+            upiDiscountEnabled,
+            DEFAULT_UPI_DISCOUNT_THRESHOLD,
+            DEFAULT_RAZORPAY_FEE_PERCENT
+        );
+    }, [amount, upiDiscountEnabled]);
+
+    const isDiscountApplied = includeMarkup && upiDiscountInfo.applicable;
+    const finalChargeAmount = isDiscountApplied
+        ? upiDiscountInfo.finalCustomerCharge
+        : (includeMarkup ? markupInfo.grossAmount : amount);
+
     // Sync defaults when modal opens
     React.useEffect(() => {
         if (isOpen) {
             setAmount(defaultAmount);
+            setIncludeMarkup(true);
             setName(customerName);
             setPhone(customerPhone);
             setGeneratedLink(null);
@@ -59,12 +107,23 @@ export function RazorpayPaymentModal({
 
         try {
             const orderRef = defaultOrderId || `WA-${Date.now().toString().slice(-6)}`;
+            const linkDesc = isDiscountApplied
+                ? `${description} (UPI < ₹2k: 0% MDR Surcharge Waived)`
+                : (includeMarkup ? `${description} (incl. 2.2% PG fee)` : description);
+
             const res = await createPaymentLink({
                 orderId: orderRef,
-                amount,
+                amount: finalChargeAmount,
                 customerName: name,
                 customerPhone: phone,
-                description,
+                description: linkDesc,
+                notes: {
+                    net_order_amount: String(amount),
+                    gateway_fee_amount: String(includeMarkup ? markupInfo.feeAmount : 0),
+                    markup_applied: String(includeMarkup),
+                    upi_surcharge_discount_applied: String(isDiscountApplied),
+                    discount_amount: String(isDiscountApplied ? upiDiscountInfo.discountAmount : 0),
+                },
             });
 
             if (res.success && res.data?.short_url) {
@@ -75,11 +134,11 @@ export function RazorpayPaymentModal({
 
                 // Ledger link in PocketBase (spec §12.1 payment_links) for reconciler
                 try {
-                    const payload: Record<string, any> = {
+                    const payload: Record<string, unknown> = {
                         provider: 'razorpay',
                         link_id: res.data.id,
                         short_url: res.data.short_url,
-                        amount,
+                        amount: finalChargeAmount,
                         currency: 'INR',
                         status: 'created',
                         notes: {
@@ -87,6 +146,11 @@ export function RazorpayPaymentModal({
                             customer_name: name,
                             customer_phone: phone,
                             order_ref: orderRef,
+                            net_target_amount: String(amount),
+                            gateway_fee: String(includeMarkup ? markupInfo.feeAmount : 0),
+                            markup_applied: String(includeMarkup),
+                            upi_surcharge_discount_applied: String(isDiscountApplied),
+                            discount_amount: String(isDiscountApplied ? upiDiscountInfo.discountAmount : 0),
                         },
                     };
                     if (customerId) payload.customer = customerId;
@@ -100,8 +164,8 @@ export function RazorpayPaymentModal({
             } else {
                 setError(res.error || "Failed to generate Razorpay link");
             }
-        } catch (err: any) {
-            setError(err.message || "Network error");
+        } catch (err) {
+            setError((err instanceof Error ? err.message : String(err)) || "Network error");
         } finally {
             setIsLoading(false);
         }
@@ -117,13 +181,13 @@ export function RazorpayPaymentModal({
 
     const handleSendToChat = () => {
         if (generatedLink) {
-            onSendPaymentLinkToChat(generatedLink.url, amount);
+            onSendPaymentLinkToChat(generatedLink.url, finalChargeAmount);
             onClose();
         }
     };
 
     return (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
             <div className="w-full max-w-md bg-card border border-border rounded-2xl shadow-2xl p-6 text-foreground space-y-5 animate-in zoom-in-95 duration-150">
                 {/* Header */}
                 <div className="flex items-center justify-between border-b border-border pb-3">
@@ -155,7 +219,7 @@ export function RazorpayPaymentModal({
                         {/* Amount */}
                         <div className="space-y-1.5">
                             <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                                Payable Amount (₹)
+                                Net Target Amount (₹)
                             </label>
                             <div className="relative">
                                 <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-base text-muted-foreground">
@@ -168,9 +232,94 @@ export function RazorpayPaymentModal({
                                     value={amount || ""}
                                     onChange={(e) => setAmount(Number(e.target.value))}
                                     placeholder="2,500"
-                                    className="w-full bg-muted/40 border border-border rounded-xl pl-8 pr-4 py-2.5 text-lg font-bold focus:outline-none focus:ring-2 focus:ring-primary"
+                                    className="w-full bg-muted/40 border border-border rounded-xl pl-8 pr-4 py-2.5 text-lg font-bold focus:outline-none focus:ring-2 focus:ring-primary font-mono"
                                 />
                             </div>
+                        </div>
+
+                        {/* 2.2% Razorpay Fee Markup Protection */}
+                        <div className="p-3 bg-muted/30 border border-border/80 rounded-xl space-y-2.5">
+                            <div className="flex items-center justify-between">
+                                <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold select-none">
+                                    <input
+                                        type="checkbox"
+                                        checked={includeMarkup}
+                                        onChange={(e) => setIncludeMarkup(e.target.checked)}
+                                        className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 accent-blue-600 cursor-pointer"
+                                    />
+                                    <span className="flex items-center gap-1.5">
+                                        <ShieldCheck size={14} className="text-emerald-500" />
+                                        Include 2.2% Gateway Markup (MDR Protection)
+                                    </span>
+                                </label>
+                                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500">
+                                    2.2% MDR
+                                </span>
+                            </div>
+
+                            {/* UPI < ₹2,000 Zero-MDR Surcharge Discount Option */}
+                            {isUpiEligible && includeMarkup && (
+                                <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 animate-in fade-in">
+                                    <div className="flex items-center justify-between">
+                                        <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold select-none text-emerald-400">
+                                            <input
+                                                type="checkbox"
+                                                checked={upiDiscountEnabled}
+                                                onChange={(e) => handleToggleUpiDiscount(e.target.checked)}
+                                                className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-500 cursor-pointer"
+                                            />
+                                            <span className="flex items-center gap-1.5">
+                                                <Sparkles size={13} className="text-emerald-400" />
+                                                UPI &lt; ₹2k Surcharge Discount (0% MDR)
+                                            </span>
+                                        </label>
+                                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                                            {upiDiscountEnabled ? `-${markupInfo.feeAmount} (Waived)` : "OFF"}
+                                        </span>
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground leading-tight">
+                                        {upiDiscountEnabled
+                                            ? `✓ Under RBI/NPCI guidelines, UPI < ₹2,000 carries 0% MDR. 100% surcharge discount applied for customer.`
+                                            : `⚠️ Discount disabled: Customer will be charged full markup gross of ₹${markupInfo.grossAmount.toLocaleString('en-IN')}.`}
+                                    </p>
+                                </div>
+                            )}
+
+                            {amount > 0 && (
+                                <div className={`grid ${isDiscountApplied ? 'grid-cols-4' : 'grid-cols-3'} gap-2 pt-2 border-t border-border/50 text-[11px]`}>
+                                    <div>
+                                        <span className="text-muted-foreground block text-[10px]">Net Payout:</span>
+                                        <span className="font-mono font-bold text-foreground">₹{amount.toLocaleString('en-IN')}</span>
+                                    </div>
+                                    <div>
+                                        <span className="text-muted-foreground block text-[10px]">Gateway Fee:</span>
+                                        <span className={`font-mono font-bold ${includeMarkup ? "text-amber-500" : "text-destructive"}`}>
+                                            {includeMarkup ? `+₹${markupInfo.feeAmount}` : `-₹${Math.round(amount * 0.022)}`}
+                                        </span>
+                                    </div>
+                                    {isDiscountApplied && (
+                                        <div>
+                                            <span className="text-muted-foreground block text-[10px]">UPI Discount:</span>
+                                            <span className="font-mono font-bold text-emerald-400">
+                                                -₹{markupInfo.feeAmount}
+                                            </span>
+                                        </div>
+                                    )}
+                                    <div className="text-right">
+                                        <span className="text-muted-foreground block text-[10px]">Customer Pays:</span>
+                                        <span className="font-mono font-bold text-blue-500 text-xs">
+                                            ₹{finalChargeAmount.toLocaleString('en-IN')}
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
+                            <p className="text-[10px] text-muted-foreground leading-tight">
+                                {isDiscountApplied
+                                    ? "✓ 0% MDR surcharge waiver active for UPI under ₹2,000. Customer pays net amount, zero margin loss."
+                                    : includeMarkup 
+                                    ? "✓ Customer pays the 2.2% gateway fee. You receive your full desired profit without margin leakage."
+                                    : "⚠️ 2.2% fee will be deducted from your payout. Your net realized receipt will be lower."}
+                            </p>
                         </div>
 
                         {/* Customer Info */}
@@ -192,7 +341,7 @@ export function RazorpayPaymentModal({
                                     value={phone}
                                     onChange={(e) => setPhone(e.target.value)}
                                     placeholder="9876543210"
-                                    className="w-full bg-muted/40 border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                                    className="w-full bg-muted/40 border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                                 />
                             </div>
                         </div>
@@ -223,7 +372,7 @@ export function RazorpayPaymentModal({
                             ) : (
                                 <>
                                     <CreditCard size={16} />
-                                    Generate Payment Link
+                                    Generate Payment Link ({finalChargeAmount > 0 ? `₹${finalChargeAmount.toLocaleString('en-IN')}` : '₹0'})
                                 </>
                             )}
                         </button>
@@ -236,9 +385,17 @@ export function RazorpayPaymentModal({
                                 <Sparkles size={20} />
                             </div>
                             <h4 className="font-bold text-sm text-foreground">Razorpay Payment Link Ready!</h4>
-                            <p className="text-xs text-muted-foreground">
-                                Amount: <span className="font-bold text-foreground">₹{amount.toLocaleString('en-IN')}</span>
-                            </p>
+                            <div className="flex items-center justify-center gap-4 text-xs">
+                                <div>
+                                    <span className="text-muted-foreground">Customer Pays: </span>
+                                    <span className="font-bold text-blue-500 font-mono">₹{finalChargeAmount.toLocaleString('en-IN')}</span>
+                                </div>
+                                {includeMarkup && (
+                                    <div className="text-emerald-500 font-medium">
+                                        (Net settlement: ₹{amount.toLocaleString('en-IN')})
+                                    </div>
+                                )}
+                            </div>
                             <div className="mt-2 p-2.5 bg-background rounded-lg border border-border/80 flex items-center justify-between text-xs font-mono break-all select-all">
                                 <span className="text-blue-500 truncate mr-2">{generatedLink.url}</span>
                                 <button

@@ -1,14 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Bell, Search, RefreshCw, Plus, Wifi, Cloud, ShieldCheck } from "lucide-react";
+import { Bell, Search, RefreshCw, Plus, Wifi, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
     DropdownMenu,
     DropdownMenuContent,
-    DropdownMenuItem,
+
     DropdownMenuLabel,
     DropdownMenuGroup,
     DropdownMenuSeparator,
@@ -26,7 +26,7 @@ interface HeaderProps {
 
 export function Header({ title, subtitle, action, children }: HeaderProps) {
     const [searchQuery, setSearchQuery] = useState("");
-    const [hasNotifications, setHasNotifications] = useState(false);
+    const [hasNotifications] = useState(false);
     const [isServerModalOpen, setIsServerModalOpen] = useState(false);
     const [serverStatus, setServerStatus] = useState<ServerHealthResult | null>(null);
     const router = useRouter();

@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { ClientResponseError } from 'pocketbase';
 import { toast } from 'sonner';
 import { getStoreSettings } from './invoice';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
@@ -79,6 +80,67 @@ export interface DeliveryChallan {
     created_at?: string;
     updated_at?: string;
     items?: ChallanItem[];
+}
+
+/**
+ * Raw delivery_challan_items record as stored in PocketBase
+ * (relation columns use singular names: challan, product, variant)
+ */
+interface DeliveryChallanItemRecord {
+    id: string;
+    challan?: string;
+    product?: string;
+    variant?: string;
+    sr_no: number;
+    description: string;
+    hsn_code: string;
+    quantity: number;
+    unit: string;
+    unit_price: number;
+    taxable_value: number;
+    gst_rate: number;
+    cgst_rate: number;
+    cgst_amount: number;
+    sgst_rate: number;
+    sgst_amount: number;
+    igst_rate: number;
+    igst_amount: number;
+    total: number;
+    remarks?: string;
+}
+
+/**
+ * Raw delivery_challans record as stored in PocketBase
+ * (the collection stores the challan date in delivery_date)
+ */
+interface DeliveryChallanRecord {
+    id: string;
+    challan_number?: string;
+    delivery_date: string;
+    challan_type?: ChallanType;
+    status?: ChallanStatus;
+    consignor_name?: string;
+    consignee_name?: string;
+    consignee_address?: string;
+    total_quantity?: number;
+    total_value?: number;
+    created?: string;
+    vehicle_number?: string;
+    driver_name?: string;
+    driver_phone?: string;
+    notes?: string;
+}
+
+/** Raw sales_order_items record as stored in PocketBase */
+interface SalesOrderItemRecord {
+    id: string;
+    product?: string;
+    variant?: string;
+    description?: string;
+    quantity: number;
+    unit_price: number;
+    tax_rate?: number;
+    total?: number;
 }
 
 // ============================================
@@ -216,7 +278,7 @@ export async function createChallan(
 export async function getChallan(id: string): Promise<DeliveryChallan | null> {
     try {
         const data = await pb.collection('delivery_challans').getOne(id);
-        const items = await pb.collection('delivery_challan_items').getFullList({
+        const items = await pb.collection('delivery_challan_items').getFullList<DeliveryChallanItemRecord>({
             filter: `challan="${id}"`,
             sort: 'sr_no',
         });
@@ -259,7 +321,7 @@ export async function getChallan(id: string): Promise<DeliveryChallan | null> {
             delivered_at: data.delivered_at,
             created_at: data.created,
             updated_at: data.updated,
-            items: items.map((item: any) => ({
+            items: items.map((item) => ({
                 id: item.id,
                 challan_id: item.challan,
                 product_id: item.product,
@@ -315,12 +377,12 @@ export async function getChallans(filters?: {
         }
         // Note: challan_type and consignee_name may not exist in this collection schema
 
-        const data = await pb.collection('delivery_challans').getFullList({
+        const data = await pb.collection('delivery_challans').getFullList<DeliveryChallanRecord>({
             filter: filterParts.length > 0 ? filterParts.join(' && ') : undefined,
             sort: '-created', // Use created instead of challan_date which doesn't exist
         });
 
-        return data.map((ch: any) => ({
+        return data.map((ch) => ({
             id: ch.id,
             challan_number: ch.challan_number,
             challan_date: ch.delivery_date, // Map delivery_date to challan_date
@@ -338,12 +400,12 @@ export async function getChallans(filters?: {
             driver_phone: ch.driver_phone,
             notes: ch.notes,
         })) as DeliveryChallan[];
-    } catch (error: any) {
+    } catch (error) {
         console.error('Error fetching challans:', error);
-        if (error?.response?.data) {
+        if (error instanceof ClientResponseError && error.response?.data) {
             console.error('PocketBase error details:', JSON.stringify(error.response.data, null, 2));
         }
-        if (error?.status === 400) {
+        if (error instanceof ClientResponseError && error.status === 400) {
             console.error('This may indicate the delivery_challans collection does not exist or has incorrect API rules');
         }
         return [];
@@ -360,7 +422,7 @@ export async function updateChallanStatus(
     additionalData?: { delivered_at?: string; notes?: string }
 ): Promise<boolean> {
     try {
-        const updateData: any = { status };
+        const updateData: { status: ChallanStatus; delivered_at?: string; notes?: string } = { status };
 
         if (status === 'delivered' && !additionalData?.delivered_at) {
             updateData.delivered_at = new Date().toISOString();
@@ -392,13 +454,13 @@ export async function generateChallanFromOrder(
 ): Promise<{ success: boolean; challanId?: string }> {
     try {
         const order = await pb.collection('sales_orders').getOne(orderId);
-        const orderItems = await pb.collection('sales_order_items').getFullList({
+        const orderItems = await pb.collection('sales_order_items').getFullList<SalesOrderItemRecord>({
             filter: `sales_order="${orderId}"`,
         });
 
         const settings = await getStoreSettings();
 
-        const items: Omit<ChallanItem, 'id' | 'challan_id'>[] = orderItems.map((item: any, index: number) => ({
+        const items: Omit<ChallanItem, 'id' | 'challan_id'>[] = orderItems.map((item, index) => ({
             sr_no: index + 1,
             product_id: item.product,
             variant_id: item.variant,
@@ -429,7 +491,11 @@ export async function generateChallanFromOrder(
             status: 'draft',
             consignor_name: settings.store_name,
             consignor_gstin: settings.store_gstin,
-            consignor_address: `${settings.store_address}, ${settings.store_city}, ${settings.store_state} - ${settings.store_pincode}`,
+            consignor_address: [
+                settings.store_address,
+                settings.store_city,
+                [settings.store_state, settings.store_pincode].filter(Boolean).join(" - ")
+            ].filter(Boolean).join(", "),
             consignor_state_code: settings.store_state_code,
             consignee_name: order.customer_name,
             consignee_address: order.shipping_address,

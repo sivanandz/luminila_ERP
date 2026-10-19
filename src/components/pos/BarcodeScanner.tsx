@@ -1,13 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
-import { Camera, CameraOff, RefreshCw } from "lucide-react";
+import { Html5Qrcode } from "html5-qrcode";
+import { Camera, CameraOff, RefreshCw, Zap, ZapOff, ZoomIn } from "lucide-react";
 
 interface BarcodeScannerProps {
     onScan: (code: string) => void;
     onError?: (error: string) => void;
     isActive?: boolean;
+}
+
+// Chromium exposes the non-standard camera torch flag outside the standard
+// MediaTrackConstraintSet DOM typings, so the constraints shape is narrowed
+// through this extension (same pattern as ProductPhotoTaggingModal).
+interface TorchConstraints extends MediaTrackConstraints {
+    advanced?: (MediaTrackConstraintSet & { torch: boolean })[];
 }
 
 export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScannerProps) {
@@ -18,6 +25,8 @@ export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScan
     const [lastScanned, setLastScanned] = useState<string | null>(null);
     const [cameras, setCameras] = useState<{ id: string; label: string }[]>([]);
     const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
+    const [zoom2x, setZoom2x] = useState(true);
+    const [torchOn, setTorchOn] = useState(false);
 
     // Debounce to prevent rapid-fire scans of the same code
     const handleScan = useCallback((decodedText: string) => {
@@ -30,7 +39,19 @@ export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScan
         }
     }, [lastScanned, onScan]);
 
-    // Get available cameras
+    // Keep latest callbacks in refs so their identity churn (lastScanned
+    // debounce, inline parent props) does not tear down the camera.
+    const handleScanRef = useRef(handleScan);
+    useEffect(() => {
+        handleScanRef.current = handleScan;
+    }, [handleScan]);
+
+    const onErrorRef = useRef(onError);
+    useEffect(() => {
+        onErrorRef.current = onError;
+    }, [onError]);
+
+    // Get available cameras (once; onError is read via ref)
     useEffect(() => {
         Html5Qrcode.getCameras()
             .then((devices) => {
@@ -45,29 +66,37 @@ export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScan
             .catch((err) => {
                 console.error("Error getting cameras:", err);
                 setHasPermission(false);
-                onError?.("Could not access camera. Please grant permission.");
+                onErrorRef.current?.("Could not access camera. Please grant permission.");
             });
-    }, [onError]);
+    }, []);
 
-    // Start/stop scanner based on isActive prop
+    // Start/stop scanner based on isActive prop. Depends only on the camera
+    // identity, never on callback props — scan callbacks are read via refs.
     useEffect(() => {
         if (!isActive || !selectedCamera || !containerRef.current) return;
 
         const scannerId = "barcode-scanner-view";
 
         // Create scanner instance
-        scannerRef.current = new Html5Qrcode(scannerId);
+        const scanner = new Html5Qrcode(scannerId);
+        scannerRef.current = scanner;
+
+        // start() resolved: stop() is now safe (it throws before that).
+        let started = false;
+        // Effect cleaned up while start() was pending: stop the camera as
+        // soon as start settles instead of leaking a live scanner.
+        let cancelled = false;
 
         const startScanner = async () => {
             try {
-                await scannerRef.current?.start(
+                await scanner.start(
                     selectedCamera,
                     {
                         fps: 10,
                         qrbox: { width: 250, height: 150 },
                         aspectRatio: 1.5,
                     },
-                    handleScan,
+                    (decodedText) => handleScanRef.current(decodedText),
                     (errorMessage) => {
                         // Ignore decode errors (normal when no barcode in view)
                         if (!errorMessage.includes("No barcode")) {
@@ -75,10 +104,16 @@ export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScan
                         }
                     }
                 );
+                started = true;
+                if (cancelled) {
+                    scanner.stop().catch(console.error);
+                    return;
+                }
                 setIsScanning(true);
             } catch (err) {
+                if (cancelled) return;
                 console.error("Failed to start scanner:", err);
-                onError?.("Failed to start camera scanner.");
+                onErrorRef.current?.("Failed to start camera scanner.");
                 setIsScanning(false);
             }
         };
@@ -86,11 +121,14 @@ export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScan
         startScanner();
 
         return () => {
-            if (scannerRef.current?.isScanning) {
-                scannerRef.current.stop().catch(console.error);
+            cancelled = true;
+            scannerRef.current = null;
+            if (started) {
+                scanner.stop().catch(console.error);
             }
+            // If start is still pending, the resolved handler above stops it.
         };
-    }, [isActive, selectedCamera, handleScan, onError]);
+    }, [isActive, selectedCamera]);
 
     // Switch camera
     const switchCamera = async () => {
@@ -163,38 +201,88 @@ export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScan
             </div>
 
             {/* Controls */}
-            <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between pointer-events-auto">
+            <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between pointer-events-auto gap-2">
                 {/* Status */}
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-navy/80 rounded-full text-sm">
-                    <div className={`w-2 h-2 rounded-full ${isScanning ? "bg-success animate-pulse" : "bg-error"}`} />
-                    <span className="text-white">{isScanning ? "Scanning..." : "Stopped"}</span>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-navy/80 rounded-full text-xs">
+                    <div className={`w-2 h-2 rounded-full ${isScanning ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`} />
+                    <span className="text-white font-medium">{isScanning ? "Scanning..." : "Stopped"}</span>
                 </div>
 
-                {/* Camera switch */}
-                {cameras.length > 1 && (
+                <div className="flex items-center gap-2">
+                    {/* 2x Center Sensor Crop Toggle */}
                     <button
-                        onClick={switchCamera}
-                        className="p-2 bg-navy/80 rounded-full hover:bg-navy transition-colors"
+                        type="button"
+                        onClick={() => setZoom2x(!zoom2x)}
+                        className={`px-2.5 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 transition-all ${
+                            zoom2x
+                                ? "bg-gold text-bg-navy shadow-md scale-105"
+                                : "bg-navy/80 text-white/80 hover:bg-navy"
+                        }`}
+                        title="2× Center Sensor Crop for Micro Dumbbell Tags"
                     >
-                        <RefreshCw size={20} className="text-white" />
+                        <ZoomIn size={14} />
+                        <span>2× Crop</span>
                     </button>
-                )}
+
+                    {/* Torch Toggle */}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const nextState = !torchOn;
+                            setTorchOn(nextState);
+                            try {
+                                // getRunningTrack is not on Html5Qrcode's public type but may exist at runtime; probe defensively.
+                                const track = (
+                                    scannerRef.current as Html5Qrcode & { getRunningTrack?: () => MediaStreamTrack | undefined }
+                                )?.getRunningTrack?.();
+                                if (track && typeof track.applyConstraints === "function") {
+                                    const constraints: TorchConstraints = { advanced: [{ torch: nextState }] };
+                                    track.applyConstraints(constraints);
+                                }
+                            } catch (e) {
+                                console.debug("Torch not supported on this device", e);
+                            }
+                        }}
+                        className={`p-2 rounded-full transition-colors ${
+                            torchOn ? "bg-amber-400 text-bg-navy" : "bg-navy/80 text-white hover:bg-navy"
+                        }`}
+                        title={torchOn ? "Turn off torch" : "Turn on anti-glare torch"}
+                    >
+                        {torchOn ? <Zap size={16} /> : <ZapOff size={16} />}
+                    </button>
+
+                    {/* Camera switch */}
+                    {cameras.length > 1 && (
+                        <button
+                            onClick={switchCamera}
+                            className="p-2 bg-navy/80 rounded-full hover:bg-navy transition-colors text-white"
+                            title="Switch camera"
+                        >
+                            <RefreshCw size={16} />
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Last scanned indicator */}
             {lastScanned && (
-                <div className="absolute top-4 left-4 right-4 bg-success/90 text-white px-4 py-2 rounded-lg text-center animate-fade-in">
+                <div className="absolute top-4 left-4 right-4 bg-emerald-600/90 text-white px-4 py-2 rounded-lg text-center animate-fade-in shadow-lg">
                     Scanned: <span className="font-mono font-bold">{lastScanned}</span>
                 </div>
             )}
 
-            {/* Style for scan line animation */}
+            {/* Style for scan line animation and 2x crop */}
             <style jsx>{`
-        @keyframes scanline {
-          0%, 100% { transform: translateY(0); opacity: 1; }
-          50% { transform: translateY(120px); opacity: 0.5; }
-        }
-      `}</style>
+                @keyframes scanline {
+                    0%, 100% { transform: translateY(0); opacity: 1; }
+                    50% { transform: translateY(120px); opacity: 0.5; }
+                }
+                :global(#barcode-scanner-view video) {
+                    transition: transform 0.3s ease-out;
+                    transform: ${zoom2x ? "scale(1.85)" : "scale(1)"} !important;
+                    transform-origin: center center !important;
+                }
+            `}</style>
         </div>
     );
 }

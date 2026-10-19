@@ -52,7 +52,7 @@ async function runTests() {
     // -----------------------------------------------------------------
     console.log('\n--- TEST 2: 1-Click Tracking URL Generation ---');
     const bridgeUrl = getStCourierTrackingUrl(REAL_AWB, 'bridge', 'https://erp.luminila.com');
-    assert(bridgeUrl === `https://erp.luminila.com/api/tracking/st-courier?awb=${REAL_AWB}`, 'Bridge tracking URL formatted correctly');
+    assert(bridgeUrl === `https://erp.luminila.com/tracking/st-courier?awb=${REAL_AWB}`, 'Bridge tracking URL formatted correctly');
 
     const aggUrl = getStCourierTrackingUrl(REAL_AWB, 'aggregator');
     assert(aggUrl === `https://trackcourier.io/track-and-trace/st-courier/${REAL_AWB}`, 'Aggregator URL formatted correctly');

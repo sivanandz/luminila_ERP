@@ -14,14 +14,14 @@ import { Badge } from "@/components/ui/badge";
 import { GoogleDriveSync, DriveSyncState } from "@/lib/google-drive-sync";
 import {
     Cloud,
-    CloudCheck,
-    CloudUpload,
+
+
     RefreshCw,
     CheckCircle2,
-    HardDrive,
-    Info,
+
+
     Shield,
-    Sparkles
+
 } from "lucide-react";
 import { format } from "date-fns";
 
@@ -37,12 +37,14 @@ export function GoogleDriveSyncModal({ isOpen, onClose }: GoogleDriveSyncModalPr
 
     useEffect(() => {
         if (isOpen) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- getSyncState() reads localStorage, an external store that mutates while this modal stays mounted and closed, so refreshing it on open cannot be derived during render
             setState(GoogleDriveSync.getSyncState());
             setSyncSuccessMsg(null);
         }
 
-        const handleSyncUpdate = (e: any) => {
-            setState(e.detail || GoogleDriveSync.getSyncState());
+        const handleSyncUpdate = (e: Event) => {
+            const detail = (e as CustomEvent<DriveSyncState>).detail;
+            setState(detail || GoogleDriveSync.getSyncState());
         };
 
         window.addEventListener("gdrive-sync:changed", handleSyncUpdate);
