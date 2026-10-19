@@ -79,6 +79,27 @@ export function queueProductCatalogSync(productId: string, action: 'create' | 'u
 }
 
 /**
+ * Dispatch instant Meta Catalog Batch API sync to Meta Commerce Manager
+ */
+export async function syncMetaCatalogBatch(
+    productIds?: string[], 
+    action: 'CREATE' | 'UPDATE' | 'DELETE' = 'UPDATE',
+    all = false
+): Promise<{ success: boolean; message?: string; total_processed?: number; configured?: boolean }> {
+    try {
+        const res = await fetch('/api/catalog/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ productIds, action, all }),
+        });
+        const data = await res.json();
+        return data;
+    } catch (err) {
+        return { success: false, message: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+/**
  * Synchronize a specific product to WhatsApp Business Catalog immediately
  */
 export async function executeProductCatalogSync(
@@ -87,13 +108,23 @@ export async function executeProductCatalogSync(
     showNotification = true
 ): Promise<{ success: boolean; error?: string }> {
     try {
+        // A. Trigger Meta Commerce Catalog Batch API (Direct Cloud Sync)
+        const batchAction = action === 'delete' ? 'DELETE' : 'UPDATE';
+        syncMetaCatalogBatch([productId], batchAction).then((metaRes) => {
+            if (metaRes.success && metaRes.total_processed) {
+                console.log(`[MetaBatchSync] Successfully updated ${metaRes.total_processed} item(s) in Meta Catalog`);
+            }
+        }).catch((err) => {
+            console.warn('[MetaBatchSync] Background batch error:', err);
+        });
+
         const sessionId = whatsappManager.getSessionIdSafe() || 'luminila';
 
-        // 1. Check if WhatsApp server is reachable
+        // 1. Check if WhatsApp server is reachable for local sidecar sync
         const status = await checkWhatsAppStatus();
         if (!status.ok) {
-            console.log('[wa-catalog-sync] WhatsApp sidecar unreachable, skipping sync for:', productId);
-            return { success: false, error: 'WhatsApp sidecar unreachable' };
+            console.log('[wa-catalog-sync] WhatsApp sidecar unreachable, skipping sidecar sync for:', productId);
+            return { success: true, error: 'Sidecar offline; Cloud Meta Batch API dispatched' };
         }
 
         // 2. Fetch the target product

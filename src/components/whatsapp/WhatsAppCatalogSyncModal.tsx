@@ -17,7 +17,7 @@ import {
     batchSyncCatalog,
     WhatsAppProductItem,
 } from "@/lib/whatsapp-catalog";
-import { isAutoSyncEnabled, setAutoSyncEnabled } from "@/lib/whatsapp-event-sync";
+import { isAutoSyncEnabled, setAutoSyncEnabled, syncMetaCatalogBatch } from "@/lib/whatsapp-event-sync";
 
 export interface WhatsAppCatalogSyncModalProps {
     isOpen: boolean;
@@ -125,6 +125,26 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
         }
     };
 
+    const handleMetaBatchSync = async () => {
+        setSyncing(true);
+        setStatusMessage("Dispatching Meta Catalog items_batch sync to Meta Commerce Manager...");
+        try {
+            const res = await syncMetaCatalogBatch(undefined, 'UPDATE', true);
+            if (res.success) {
+                setStatusMessage(`Meta Batch API sync complete! Processed ${res.total_processed ?? 'all'} items.`);
+                await loadProducts();
+            } else if (res.configured === false) {
+                setStatusMessage(res.message || "Meta token not configured. Falling back to active scheduled feed.");
+            } else {
+                setStatusMessage(`Meta Batch error: ${res.message || 'Check META_GRAPH_ACCESS_TOKEN'}`);
+            }
+        } catch (err) {
+            setStatusMessage(`Batch failed: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+            setSyncing(false);
+        }
+    };
+
     const syncedCount = products.filter((p) => !!p.whatsappProductId).length;
 
     return (
@@ -209,6 +229,15 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
                     </div>
 
                     <div className="flex items-center gap-2">
+                        <button
+                            onClick={handleMetaBatchSync}
+                            disabled={syncing}
+                            className="bg-sky-600 hover:bg-sky-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all disabled:opacity-40 shadow-sm"
+                            title="Directly push all products to Meta Commerce Cloud Catalog via Graph API"
+                        >
+                            {syncing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
+                            Meta Batch Push
+                        </button>
                         <button
                             onClick={handleSyncSelected}
                             disabled={selectedIds.size === 0 || syncing}
