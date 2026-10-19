@@ -17,3 +17,6 @@
 - [tenancy-storage] All browser localStorage and sessionStorage keys for store data must be strictly suffixed with the authenticated user's email/ID to prevent cross-account pollution.
 - [zero-mock] Production code must never include hardcoded business entities, fallback facilities, or fake revenue figures; missing or empty database states must always render empty states.
 - [database-first] All tenant CMS and order buffers must be stored in PocketBase with account_email rules, never in static disk JSON files.
+- [tenant-dual-layer] Never rely solely on PocketBase API rules for isolation. Admin/superuser logins bypass DB rules. All queries across POS, Inventory, and APIs must explicitly append `account_email = "${userEmail}"` and perform an in-memory ownership check.
+- [relational-active-guard] `product_variants` queries must always filter `product.is_active = true` and verify parent active state in mapping to prevent ghost/soft-deleted items from surfacing in POS.
+- [audit-integrity] Never state that leakages are plugged without inspecting all call sites of `pb.collection()` across every page in `src/app/`.

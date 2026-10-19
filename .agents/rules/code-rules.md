@@ -112,3 +112,21 @@ description: Apply when writing, building, refactoring, or fixing code — proje
 
 5. **No Silent Catch Degradation**:
    - Do NOT use catch-blocks (`catch { return DEFAULT_DATA }`) that mask missing database tables or failed API queries with pre-fabricated seed data. Fail explicitly or return an empty dataset.
+
+6. **Dual-Layer Isolation (DB Rule + Application Query Clause + In-Memory Guard)**:
+   - Database collection rules (e.g. `account_email = @request.auth.email`) are **NECESSARY BUT NEVER SUFFICIENT**.
+   - In BaaS platforms (PocketBase, Supabase, Firebase), admin and superuser sessions **bypass all API collection rules**.
+   - Therefore, EVERY query executed by the frontend or backend MUST explicitly include the tenant filter:
+     `account_email = "${sanitizeFilter(currentUserEmail)}"`
+   - Furthermore, mapping logic MUST defensively enforce an in-memory guard:
+     `if (currentUserEmail && record.account_email && record.account_email !== currentUserEmail) continue;`
+
+7. **Relational Soft-Delete Invariant**:
+   - Child records (e.g. `product_variants`, `order_items`) MUST never be queried without verifying parent active status.
+   - Query filters on variants must include `product.is_active = true`.
+   - In-memory mapping must check `if (!parent || parent.is_active === false) continue;`.
+
+8. **Zero False Assurances & Full Entry-Point Audits**:
+   - NEVER declare tenant isolation "complete" or "100% verified" based merely on unit scripts or table schema rules.
+   - You MUST audit all UI entry points (POS Quick Add, Barcode Scanner, Typeahead, Autocomplete, Dropdowns, Reports, Exports).
+   - If a page constructs a direct query against a collection, verify both the query string and the in-memory handler before making any claims.
