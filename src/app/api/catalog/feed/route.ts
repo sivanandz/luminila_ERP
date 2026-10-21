@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pb } from '@/lib/pocketbase';
+import { pb, ensureServerAuth, sanitizeFilter } from '@/lib/pocketbase';
+import { getStorefrontBinding } from '@/lib/storefront';
+import { resolvePublicCatalogOrigin } from '@/lib/meta-catalog-batch';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,35 +20,61 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
     try {
         const { searchParams } = new URL(req.url);
-        const accountEmail = searchParams.get('account_email') || '';
-        const phone = searchParams.get('phone') || '917092122334';
+        let accountEmail = (
+            searchParams.get('account_email') ||
+            process.env.META_FEED_ACCOUNT_EMAIL ||
+            ''
+        ).trim().toLowerCase();
+        const phone = (searchParams.get('phone') || process.env.META_BUSINESS_PHONE || '917092122334').trim();
 
-        // Ensure superuser authentication to bypass tenant isolation for public feed generation
-        if (!pb.authStore.isValid) {
-            try {
-                await pb.collection('_superusers').authWithPassword('admin@luminila.local', 'Luminila2026!');
-            } catch {
-                try {
-                    await pb.collection('_superusers').authWithPassword('ananya@heritagejewels.com', 'Ananya2026!');
-                } catch { /* proceed with current auth */ }
+        // Authenticate via server environment credentials (no hardcoded passwords)
+        await ensureServerAuth();
+
+        // If no explicit account_email is passed in query or env, resolve the primary active catalog tenant
+        // so a single feed never mixes products across multiple tenants.
+        if (!accountEmail) {
+            const latestActive = await pb.collection('products').getFirstListItem('is_active = true && account_email != ""', {
+                sort: '-updated'
+            }).catch(() => null);
+            if (latestActive?.account_email) {
+                accountEmail = String(latestActive.account_email).trim().toLowerCase();
             }
         }
 
-        // 1. Fetch active products
-        const productFilter = accountEmail 
-            ? `is_active = true && account_email = "${accountEmail}"` 
+        const safeEmail = sanitizeFilter(accountEmail);
+
+        // 1. Fetch active products with Dual-Layer Tenant Isolation
+        const productFilter = accountEmail
+            ? `is_active = true && account_email = "${safeEmail}"`
             : `is_active = true`;
-        const products = await pb.collection('products').getFullList({
+        const rawProducts = await pb.collection('products').getFullList({
             filter: productFilter,
             sort: '-created'
         });
 
-        // 2. Fetch variants
-        const variantFilter = accountEmail 
-            ? `account_email = "${accountEmail}"` 
-            : '';
-        const variants = await pb.collection('product_variants').getFullList({
-            ...(variantFilter ? { filter: variantFilter } : {})
+        const products = rawProducts.filter((p) => {
+            if (!p || p.is_active === false) return false;
+            if (accountEmail && p.account_email && String(p.account_email).trim().toLowerCase() !== accountEmail) {
+                return false;
+            }
+            return true;
+        });
+
+        // 2. Fetch variants with relational active guard + tenant scope
+        const variantFilter = accountEmail
+            ? `product.is_active = true && account_email = "${safeEmail}"`
+            : `product.is_active = true`;
+        const rawVariants = await pb.collection('product_variants').getFullList({
+            filter: variantFilter
+        });
+
+        const activeProductIds = new Set(products.map(p => p.id));
+        const variants = rawVariants.filter((v) => {
+            if (!activeProductIds.has(v.product)) return false;
+            if (accountEmail && v.account_email && String(v.account_email).trim().toLowerCase() !== accountEmail) {
+                return false;
+            }
+            return true;
         });
 
         // Group variants by parent product
@@ -76,19 +104,15 @@ export async function GET(req: NextRequest) {
         ];
 
         const rows: string[][] = [];
-
-        const forwardedHost = req.headers.get('x-forwarded-host');
-        const forwardedProto = req.headers.get('x-forwarded-proto') || 'https';
-        const origin = forwardedHost 
-            ? `${forwardedProto}://${forwardedHost}` 
-            : req.nextUrl.origin;
+        const origin = resolvePublicCatalogOrigin(req);
+        const binding = await getStorefrontBinding(accountEmail || undefined);
+        const brand = (binding.brandName || 'Niththigal Jewellery').replace(/"/g, '""');
 
         for (const p of products) {
             const pVariants = variantsByProduct.get(p.id) || [];
             const cleanDescription = (p.description || p.name || '')
                 .replace(/[\r\n]+/g, ' ')
                 .replace(/"/g, '""');
-            const brand = 'Niththigal Jewellery';
             const basePrice = Number(p.base_price) || 0;
             const imageLink = (p.image_url && p.image_url.startsWith('http'))
                 ? p.image_url

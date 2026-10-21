@@ -8,6 +8,10 @@
  * Spec: https://developers.facebook.com/documentation/ads-commerce/catalog/guides/manage-catalog-items/catalog-batch-api
  */
 
+import fs from 'fs';
+import path from 'path';
+import type { NextRequest } from 'next/server';
+
 export interface MetaBatchItemData {
     id: string; // Retailer SKU
     title: string;
@@ -21,6 +25,44 @@ export interface MetaBatchItemData {
     item_group_id?: string;
     color?: string;
     material?: string;
+}
+
+/**
+ * Resolves a publicly reachable base URL for Meta Catalog image & product links.
+ * Prevents local browser triggers (http://127.0.0.1:3000) from poisoning Meta's catalog image_link.
+ */
+export function resolvePublicCatalogOrigin(req: NextRequest): string {
+    const envBase = (process.env.PUBLIC_BASE_URL || process.env.NEXT_PUBLIC_SITE_URL || '').trim().replace(/\/+$/, '');
+    if (envBase && envBase.startsWith('http') && !envBase.includes('localhost') && !envBase.includes('127.0.0.1')) {
+        return envBase;
+    }
+
+    const forwardedHost = req.headers.get('x-forwarded-host')?.trim();
+    const forwardedProto = req.headers.get('x-forwarded-proto')?.trim() || 'https';
+    if (forwardedHost && !forwardedHost.includes('localhost') && !forwardedHost.includes('127.0.0.1')) {
+        return `${forwardedProto}://${forwardedHost}`.replace(/\/+$/, '');
+    }
+
+    const reqOrigin = req.nextUrl.origin.replace(/\/+$/, '');
+    if (!reqOrigin.includes('localhost') && !reqOrigin.includes('127.0.0.1')) {
+        return reqOrigin;
+    }
+
+    // Fallback to active Cloudflare Tunnel URL persisted by scripts/tunnel.js
+    try {
+        const tunnelFile = path.resolve(process.cwd(), 'scratch', 'tunnel-urls.json');
+        if (fs.existsSync(tunnelFile)) {
+            const parsed = JSON.parse(fs.readFileSync(tunnelFile, 'utf-8'));
+            const tunnelAppUrl = parsed?.services?.app;
+            if (typeof tunnelAppUrl === 'string' && tunnelAppUrl.startsWith('https://')) {
+                return tunnelAppUrl.replace(/\/+$/, '');
+            }
+        }
+    } catch {
+        // Ignore disk read errors and fallback to request origin
+    }
+
+    return envBase || reqOrigin;
 }
 
 export interface MetaBatchRequest {
@@ -69,7 +111,8 @@ export function buildMetaBatchRequests(
     }>,
     origin: string,
     phone: string = '917092122334',
-    action: 'CREATE' | 'UPDATE' | 'DELETE' = 'UPDATE'
+    action: 'CREATE' | 'UPDATE' | 'DELETE' = 'UPDATE',
+    brandName: string = 'Niththigal Jewellery'
 ): MetaBatchRequest[] {
     const variantsByProduct = new Map<string, typeof variants>();
     for (const v of variants) {
@@ -84,7 +127,7 @@ export function buildMetaBatchRequests(
     for (const p of products) {
         const pVariants = variantsByProduct.get(p.id) || [];
         const basePrice = Number(p.base_price) || 0;
-        const brand = 'Niththigal Jewellery';
+        const brand = brandName || 'Niththigal Jewellery';
         const cleanDesc = (p.description || p.name || 'Fine Jewelry').replace(/[\r\n]+/g, ' ').slice(0, 5000);
         const imageLink = (p.image_url && p.image_url.startsWith('http'))
             ? p.image_url

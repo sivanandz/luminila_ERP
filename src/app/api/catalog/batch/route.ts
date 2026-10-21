@@ -1,54 +1,111 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pb } from '@/lib/pocketbase';
-import { buildMetaBatchRequests, sendMetaCatalogBatch } from '@/lib/meta-catalog-batch';
+import PocketBase from 'pocketbase';
+import { pb, ensureServerAuth, getPocketBaseUrl, sanitizeFilter } from '@/lib/pocketbase';
+import { getStorefrontBinding } from '@/lib/storefront';
+import { buildMetaBatchRequests, resolvePublicCatalogOrigin, sendMetaCatalogBatch } from '@/lib/meta-catalog-batch';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * Meta Catalog Batch API Endpoint
- * 
+ *
  * Allows instant, programmatic synchronization of single or multiple products
  * directly to Meta Commerce Manager & WhatsApp Catalog.
- * 
+ *
  * POST /api/catalog/batch
+ * Headers: Authorization: Bearer <pocketbase_jwt>
  * Body:
  * {
  *   "productIds": ["prod_123"], // or "all": true
- *   "action": "UPDATE" // "CREATE" | "UPDATE" | "DELETE"
+ *   "action": "UPDATE", // "CREATE" | "UPDATE" | "DELETE"
+ *   "account_email": "merchant@domain.com"
  * }
  */
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json().catch(() => ({}));
-        const { productIds = [], all = false, action = 'UPDATE' } = body;
+        const { productIds = [], all = false, action = 'UPDATE', account_email: requestedEmail = '' } = body;
 
-        const catalogId = process.env.META_CATALOG_ID || '1548180657057026';
+        // 1. Authenticate caller via PocketBase JWT or internal server sync key
+        const authHeader = req.headers.get('authorization') || '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
+        const syncSecret = req.headers.get('x-catalog-sync-key') || '';
         const accessToken = process.env.META_GRAPH_ACCESS_TOKEN || '';
-        const apiVersion = process.env.META_GRAPH_VERSION || 'v21.0';
-        const phone = process.env.META_BUSINESS_PHONE || '917092122334';
 
-        // 1. Authenticate with PocketBase as superuser for complete catalog access
-        if (!pb.authStore.isValid) {
+        let isAuthorized = false;
+        let isSuperuserCaller = false;
+        let verifiedEmail = '';
+
+        if (syncSecret && accessToken && syncSecret === accessToken) {
+            isAuthorized = true;
+            isSuperuserCaller = true;
+        } else if (token) {
+            const authPb = new PocketBase(getPocketBaseUrl());
             try {
-                await pb.collection('_superusers').authWithPassword('admin@luminila.local', 'Luminila2026!');
+                authPb.authStore.save(token, null);
+                const refreshed = await authPb.collection('users').authRefresh();
+                isAuthorized = authPb.authStore.isValid;
+                verifiedEmail = (refreshed?.record?.email || authPb.authStore.record?.email || '').trim().toLowerCase();
             } catch {
                 try {
-                    await pb.collection('_superusers').authWithPassword('ananya@heritagejewels.com', 'Ananya2026!');
-                } catch { /* proceed */ }
+                    authPb.authStore.save(token, null);
+                    const refreshed = await authPb.collection('_superusers').authRefresh();
+                    isAuthorized = authPb.authStore.isValid;
+                    isSuperuserCaller = true;
+                    verifiedEmail = (refreshed?.record?.email || authPb.authStore.record?.email || '').trim().toLowerCase();
+                } catch {
+                    isAuthorized = false;
+                }
             }
         }
 
-        // 2. Fetch products
+        if (!isAuthorized) {
+            return NextResponse.json(
+                { success: false, error: 'Unauthorized: Valid operator session token is required to trigger Meta Catalog sync.' },
+                { status: 401 }
+            );
+        }
+
+        const catalogId = process.env.META_CATALOG_ID || '1548180657057026';
+        const apiVersion = process.env.META_GRAPH_VERSION || 'v21.0';
+        const phone = process.env.META_BUSINESS_PHONE || '917092122334';
+
+        // Resolve strict tenant scope: regular users are locked to their own email
+        const tenantEmail = (
+            isSuperuserCaller
+                ? (requestedEmail || process.env.META_FEED_ACCOUNT_EMAIL || verifiedEmail)
+                : (verifiedEmail || requestedEmail)
+        ).trim().toLowerCase();
+
+        if (!tenantEmail || tenantEmail === 'default') {
+            return NextResponse.json(
+                { success: false, error: 'Bad Request: Unable to resolve tenant account_email for catalog isolation.' },
+                { status: 400 }
+            );
+        }
+
+        const safeTenantEmail = sanitizeFilter(tenantEmail);
+
+        // 2. Authenticate server PocketBase client via env credentials
+        await ensureServerAuth();
+
+        // 3. Fetch products with Dual-Layer Tenant Isolation (DB Clause + In-Memory Guard)
         let products: any[] = [];
         if (all) {
             products = await pb.collection('products').getFullList({
-                filter: 'is_active = true',
+                filter: `is_active = true && account_email = "${safeTenantEmail}"`,
                 sort: '-created'
             });
         } else if (Array.isArray(productIds) && productIds.length > 0) {
-            const filterExpr = productIds.map(id => `id = "${id}"`).join(' || ');
+            const idClauses = productIds
+                .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+                .map(id => `id = "${sanitizeFilter(id.trim())}"`)
+                .join(' || ');
+            if (!idClauses) {
+                return NextResponse.json({ error: 'Invalid productIds array' }, { status: 400 });
+            }
             products = await pb.collection('products').getFullList({
-                filter: filterExpr
+                filter: `(${idClauses}) && account_email = "${safeTenantEmail}"`
             });
         } else {
             return NextResponse.json({
@@ -56,49 +113,64 @@ export async function POST(req: NextRequest) {
             }, { status: 400 });
         }
 
+        // In-memory tenant isolation guard
+        products = products.filter(
+            (p) => !p.account_email || String(p.account_email).trim().toLowerCase() === tenantEmail
+        );
+
         if (products.length === 0) {
             return NextResponse.json({
                 success: true,
-                message: 'No matching products to sync',
+                message: 'No matching products to sync for this tenant',
                 total_processed: 0
             });
         }
 
-        // 3. Fetch variants for these products
-        const productPids = products.map(p => `product = "${p.id}"`).join(' || ');
-        const variants = await pb.collection('product_variants').getFullList({
-            filter: productPids
+        // 4. Fetch variants with relational active guard + tenant filter
+        const productPids = products.map(p => `product = "${sanitizeFilter(p.id)}"`).join(' || ');
+        const rawVariants = await pb.collection('product_variants').getFullList({
+            filter: `(${productPids}) && product.is_active = true && account_email = "${safeTenantEmail}"`
         });
 
-        // 4. Resolve public origin
-        const forwardedHost = req.headers.get('x-forwarded-host');
-        const forwardedProto = req.headers.get('x-forwarded-proto') || 'https';
-        const origin = forwardedHost 
-            ? `${forwardedProto}://${forwardedHost}` 
-            : req.nextUrl.origin;
+        const activeProductIds = new Set(products.filter(p => p.is_active !== false).map(p => p.id));
+        const variants = rawVariants.filter((v) => {
+            if (v.account_email && String(v.account_email).trim().toLowerCase() !== tenantEmail) return false;
+            if (action !== 'DELETE' && !activeProductIds.has(v.product)) return false;
+            return true;
+        });
 
-        // 5. Build batch requests
+        // 5. Resolve public origin (env -> proxy headers -> Cloudflare tunnel -> request origin)
+        const origin = resolvePublicCatalogOrigin(req);
+
+        // 6. Resolve tenant brand name
+        const binding = await getStorefrontBinding(tenantEmail);
+        const brandName = binding.brandName || 'Niththigal Jewellery';
+
+        // 7. Build batch requests
         const batchRequests = buildMetaBatchRequests(
             products as any[],
             variants as any[],
             origin,
             phone,
-            action
+            action,
+            brandName
         );
 
-        // 6. Check if Access Token is configured
+        // 8. Check if Access Token is configured
         if (!accessToken) {
             return NextResponse.json({
                 success: false,
                 configured: false,
                 message: 'Meta Graph Access Token not configured yet. The scheduled data feed is actively syncing, but instant Batch API requires META_GRAPH_ACCESS_TOKEN in .env.local',
                 catalog_id: catalogId,
+                tenant_email: tenantEmail,
+                origin_used: origin,
                 total_items_prepared: batchRequests.length,
                 preview_requests: batchRequests.slice(0, 3)
             }, { status: 200 });
         }
 
-        // 7. Dispatch to Meta Graph API
+        // 9. Dispatch to Meta Graph API
         const metaRes = await sendMetaCatalogBatch(
             catalogId,
             accessToken,
@@ -109,6 +181,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
             success: metaRes.success,
             catalog_id: catalogId,
+            tenant_email: tenantEmail,
+            origin_used: origin,
             total_processed: metaRes.total_processed,
             handles: metaRes.handles,
             errors: metaRes.errors,

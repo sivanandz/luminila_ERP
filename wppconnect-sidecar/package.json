@@ -8,26 +8,28 @@
         "start": "node server.js",
         "dev": "node server.js",
         "build": "node build.js",
-        "build:win": "pkg . --targets node18-win-x64 --output dist/wppconnect-server.exe",
-        "build:mac": "pkg . --targets node18-macos-x64 --output dist/wppconnect-server-macos",
-        "build:linux": "pkg . --targets node18-linux-x64 --output dist/wppconnect-server-linux"
+        "build:win": "pkg . --targets node22-win-x64 --output dist/wppconnect-server.exe",
+        "build:mac": "pkg . --targets node22-macos-x64 --output dist/wppconnect-server-macos",
+        "build:linux": "pkg . --targets node22-linux-x64 --output dist/wppconnect-server-linux"
     },
     "pkg": {
         "assets": [
-            "node_modules/@pablohpsilva/wppconnect/**/*",
-            "config.js"
+            "node_modules/@wppconnect-team/wppconnect/dist/**/*.js",
+            "node_modules/@wppconnect/wa-js/dist/wppconnect-wa.js",
+            "node_modules/@wppconnect/wa-version/dist/**/*",
+            "node_modules/sharp/build/Release/**/*",
+            "node_modules/sharp/vendor/**/*"
         ],
         "outputPath": "dist"
     },
     "dependencies": {
-        "@wppconnect-team/wppconnect": "^2.3.4",
+        "@wppconnect-team/wppconnect": "^2.3.5",
         "cors": "^2.8.5",
-        "express": "^4.18.2",
-        "qrcode": "^1.5.3",
-        "socket.io": "^4.7.2",
-        "uuid": "^9.0.0"
+        "express": "^4.22.3",
+        "qrcode": "^1.5.4",
+        "socket.io": "^4.8.4"
     },
     "devDependencies": {
-        "pkg": "^5.8.1"
+        "@yao-pkg/pkg": "^6.23.0"
     }
 }

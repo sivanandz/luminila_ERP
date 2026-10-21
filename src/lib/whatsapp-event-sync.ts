@@ -13,7 +13,7 @@
  * - Hides products from WhatsApp catalog when out-of-stock (0 inventory)
  */
 
-import { pb } from './pocketbase';
+import { pb, ensureAuth, getCurrentTenantEmail } from './pocketbase';
 import { Product, ProductVariant } from '../types/database';
 import { getChannelPrice } from './channel-pricing';
 import {
@@ -87,10 +87,18 @@ export async function syncMetaCatalogBatch(
     all = false
 ): Promise<{ success: boolean; message?: string; total_processed?: number; configured?: boolean }> {
     try {
+        ensureAuth();
+        const token = pb.authStore.token || '';
+        const accountEmail = getCurrentTenantEmail();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const res = await fetch('/api/catalog/batch', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ productIds, action, all }),
+            headers,
+            body: JSON.stringify({ productIds, action, all, account_email: accountEmail }),
         });
         const data = await res.json();
         return data;

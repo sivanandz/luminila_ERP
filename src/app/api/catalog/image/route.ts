@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pb } from '@/lib/pocketbase';
+import { pb, ensureServerAuth } from '@/lib/pocketbase';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,11 +15,7 @@ export async function GET(req: NextRequest) {
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
         }
 
-        if (!pb.authStore.isValid) {
-            try {
-                await pb.collection('_superusers').authWithPassword('admin@luminila.local', 'Luminila2026!');
-            } catch { /* best effort */ }
-        }
+        await ensureServerAuth();
 
         const product = await pb.collection('products').getOne(id).catch(() => null);
 

@@ -11,7 +11,6 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
 const { execSync } = require('child_process');
 
 // Configuration
@@ -318,6 +317,9 @@ async function bootSession({ session, sessionData, phoneNumber, onLinkCode, alia
         sessionData.qrReady = false;
         sessionData.qrCode = null;
         if (aliasOf) sessions.set(aliasOf, sessionData);
+        try {
+            fs.writeFileSync(path.join(getSessionTokenPath(session), '.authenticated'), new Date().toISOString(), 'utf-8');
+        } catch {}
         console.log(`[${session}] Logged in`);
         emit('connected');
     };
@@ -1147,7 +1149,13 @@ app.post('/api/:session/send-location', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.sendLocation(phone, lat, lng, title || '', address || '');
+        // Options overload supports name/address (the positional overload drops the address argument)
+        const result = await sessionData.client.sendLocation(phone, {
+            lat: lat,
+            lng: lng,
+            name: title || undefined,
+            address: address || undefined
+        });
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1217,7 +1225,14 @@ app.get('/api/:session/check-number/:phone', async (req, res) => {
 
     try {
         const result = await sessionData.client.checkNumberStatus(phone);
-        res.json({ success: true, result });
+        // Surface the fields clients read directly alongside the raw result
+        res.json({
+            success: true,
+            result,
+            exists: !!result?.numberExists,
+            numberExists: !!result?.numberExists,
+            jid: result?.id?._serialized || (typeof result?.id === 'string' ? result.id : null)
+        });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -1367,14 +1382,23 @@ app.post('/api/:session/set-presence', async (req, res) => {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
 
+    // Normalize legacy { typing: boolean } clients
+    let p = presence;
+    if (p === undefined && req.body.typing === true) p = 'composing';
+    if (p === undefined && req.body.typing === false) p = 'stop';
+
     try {
-        if (presence === 'composing') {
+        if (p === 'composing') {
             await sessionData.client.startTyping(chatId);
-        } else if (presence === 'recording') {
+        } else if (p === 'recording') {
             await sessionData.client.startRecording(chatId);
-        } else if (presence === 'available') {
+        } else if (p === 'stop') {
+            await sessionData.client.stopTyping(chatId);
+        } else if (p === 'available') {
+            await sessionData.client.stopTyping(chatId).catch(() => {});
             await sessionData.client.setOnlinePresence(true);
-        } else if (presence === 'unavailable') {
+        } else if (p === 'unavailable') {
+            await sessionData.client.stopTyping(chatId).catch(() => {});
             await sessionData.client.setOnlinePresence(false);
         }
         res.json({ success: true });
@@ -1457,15 +1481,29 @@ app.post('/api/:session/star-message', async (req, res) => {
 // Delete message
 app.post('/api/:session/delete-message', async (req, res) => {
     const { session } = req.params;
-    const { chatId, messageId, deleteForEveryone = false } = req.body;
+    const { chatId, messageId } = req.body;
+    // Accept both flag spellings used by clients
+    const deleteForEveryone = req.body.deleteForEveryone ?? req.body.forEveryone ?? false;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
 
+    let targetChatId = chatId;
+    if (!targetChatId && messageId) {
+        // Derive chat id from serialized message id: true_<chatId>_<stanzaId>
+        const parts = String(messageId).split('_');
+        if (parts.length >= 3) targetChatId = parts[1];
+    }
+
+    if (!targetChatId || !messageId) {
+        return res.status(400).json({ success: false, error: 'messageId and chatId are required' });
+    }
+
     try {
-        await sessionData.client.deleteMessage(chatId, messageId, deleteForEveryone);
+        // deleteMessage(chatId, messageId, onlyLocal) - onlyLocal must be false to delete for everyone
+        await sessionData.client.deleteMessage(targetChatId, messageId, !deleteForEveryone);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1475,15 +1513,20 @@ app.post('/api/:session/delete-message', async (req, res) => {
 // Forward message
 app.post('/api/:session/forward-message', async (req, res) => {
     const { session } = req.params;
-    const { messageId, toPhone } = req.body;
+    const { messageId } = req.body;
+    const to = req.body.toPhone || req.body.to || req.body.toChatId;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
 
+    if (!messageId || !to) {
+        return res.status(400).json({ success: false, error: 'messageId and to (target chat) are required' });
+    }
+
     try {
-        const result = await sessionData.client.forwardMessage(toPhone, messageId);
+        const result = await sessionData.client.forwardMessage(to, messageId);
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1493,15 +1536,28 @@ app.post('/api/:session/forward-message', async (req, res) => {
 // Reply to message
 app.post('/api/:session/reply-message', async (req, res) => {
     const { session } = req.params;
-    const { messageId, text } = req.body;
+    const { messageId, phone, chatId } = req.body;
+    const text = req.body.text || req.body.message;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
 
+    // client.reply signature: reply(to, content, quotedMsgId)
+    let to = phone || chatId;
+    if (!to && messageId) {
+        // Message IDs embed the chat id: true_<chatId>_<stanzaId>
+        const parts = String(messageId).split('_');
+        if (parts.length >= 3) to = parts[1];
+    }
+
+    if (!to || !messageId || !text) {
+        return res.status(400).json({ success: false, error: 'messageId, text and phone (or chatId) are required' });
+    }
+
     try {
-        const result = await sessionData.client.reply(messageId, text);
+        const result = await sessionData.client.reply(to, text, messageId);
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1667,6 +1723,21 @@ app.get('/api/:session/group-invite-link/:groupId', async (req, res) => {
 // CATALOG & BUSINESS APIs (for inventory system)
 // ============================================
 
+// Catalog APIs require the catalog owner's chat id; default to the session's own number
+async function resolveOwnChatId(sessionData) {
+    if (!sessionData) return null;
+    if (sessionData.connectedNumber) return `${String(sessionData.connectedNumber).replace(/\D/g, '')}@c.us`;
+    if (typeof sessionData.client?.getWid === 'function') {
+        const wid = await sessionData.client.getWid().catch(() => null);
+        const u = wid?.user || (typeof wid === 'string' ? wid.split('@')[0].split(':')[0] : null);
+        if (u) {
+            sessionData.connectedNumber = u;
+            return `${u}@c.us`;
+        }
+    }
+    return null;
+}
+
 // Get all products from business catalog
 app.get('/api/:session/get-products', async (req, res) => {
     const { session } = req.params;
@@ -1677,7 +1748,12 @@ app.get('/api/:session/get-products', async (req, res) => {
     }
 
     try {
-        const products = await sessionData.client.getProducts();
+        const count = parseInt(req.query.count, 10) || 50;
+        const target = req.query.phone || await resolveOwnChatId(sessionData);
+        if (!target) {
+            return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?phone=<chatId>' });
+        }
+        const products = await sessionData.client.getProducts(target, count);
         res.json({ success: true, products });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1694,7 +1770,11 @@ app.get('/api/:session/get-product-by-id/:productId', async (req, res) => {
     }
 
     try {
-        const product = await sessionData.client.getProductById(productId);
+        const owner = req.query.chatId || await resolveOwnChatId(sessionData);
+        if (!owner) {
+            return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?chatId=<chatId>' });
+        }
+        const product = await sessionData.client.getProductById(owner, productId);
         res.json({ success: true, product });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1704,7 +1784,7 @@ app.get('/api/:session/get-product-by-id/:productId', async (req, res) => {
 // Add product to catalog
 app.post('/api/:session/add-product', async (req, res) => {
     const { session } = req.params;
-    const { name, description, price, currency = 'INR', image, isHidden } = req.body;
+    const { name, description, price, currency = 'INR', image, isHidden, url, retailerId } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -1712,7 +1792,17 @@ app.post('/api/:session/add-product', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.createProduct(name, image, description, price, isHidden, currency);
+        // Signature: createProduct(name, image, description, price, isHidden, url, retailerId, currency)
+        const result = await sessionData.client.createProduct(
+            name,
+            image,
+            description || '',
+            Number(price) || 0,
+            !!isHidden,
+            url || '',
+            retailerId || '',
+            currency || 'INR'
+        );
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1748,7 +1838,13 @@ app.get('/api/:session/get-collections', async (req, res) => {
     }
 
     try {
-        const collections = await sessionData.client.getCollections();
+        const target = req.query.phone || await resolveOwnChatId(sessionData);
+        if (!target) {
+            return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?phone=<chatId>' });
+        }
+        const qnt = String(parseInt(req.query.count, 10) || 10);
+        const maxProducts = String(parseInt(req.query.maxProducts, 10) || 100);
+        const collections = await sessionData.client.getCollections(target, qnt, maxProducts);
         res.json({ success: true, collections });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1840,12 +1936,8 @@ app.post('/api/:session/add-or-remove-label', async (req, res) => {
     }
 
     try {
-        let result;
-        if (action === 'add') {
-            result = await sessionData.client.addOrRemoveLabels([chatId], [{ id: labelId, type: 'add' }]);
-        } else {
-            result = await sessionData.client.addOrRemoveLabels([chatId], [{ id: labelId, type: 'remove' }]);
-        }
+        // addOrRemoveLabels expects { labelId, type } options (not { id })
+        const result = await sessionData.client.addOrRemoveLabels([chatId], [{ labelId, type: action === 'add' ? 'add' : 'remove' }]);
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -2061,7 +2153,9 @@ app.post('/api/:session/send-link-preview', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.sendLinkPreview(phone, url, title, description);
+        // sendLinkPreview(chatId, url, text) - fold title/description into the caption text
+        const text = [title, description].filter(Boolean).join('\n');
+        const result = await sessionData.client.sendLinkPreview(phone, url, text || undefined);
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -2415,7 +2509,7 @@ process.on('SIGINT', async () => {
 // Get all products from catalog
 app.get('/api/:session/catalog/products', async (req, res) => {
     const { session } = req.params;
-    const { phone = null, count = 50 } = req.query; // phone is optional, defaults to own catalog
+    const count = parseInt(req.query.count, 10) || 50;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -2423,8 +2517,12 @@ app.get('/api/:session/catalog/products', async (req, res) => {
     }
 
     try {
-        // If phone is provided, get that user's catalog. If not, get own catalog.
-        const products = await sessionData.client.getProducts(phone, count);
+        // Clients pass ?chatId= or ?phone=; default to the session's own catalog
+        const target = req.query.chatId || req.query.phone || await resolveOwnChatId(sessionData);
+        if (!target) {
+            return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?chatId=<chatId>' });
+        }
+        const products = await sessionData.client.getProducts(target, count);
         res.json({ success: true, products });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -2633,20 +2731,12 @@ app.get('/api/:session/business-profile', async (req, res) => {
     try {
         let targetChatId = chatId;
         if (!targetChatId) {
-            if (sessionData.connectedNumber) {
-                targetChatId = `${sessionData.connectedNumber.replace(/\D/g, '')}@c.us`;
-            } else if (sessionData.client.getWid) {
-                const wid = await sessionData.client.getWid().catch(() => null);
-                const u = wid?.user || (typeof wid === 'string' ? wid.split('@')[0].split(':')[0] : null);
-                if (u) {
-                    sessionData.connectedNumber = u;
-                    targetChatId = `${u.replace(/\D/g, '')}@c.us`;
-                }
-            }
+            targetChatId = await resolveOwnChatId(sessionData);
         }
-        const profile = targetChatId
-            ? await sessionData.client.getBusinessProfile(targetChatId)
-            : await sessionData.client.getBusinessProfile();
+        if (!targetChatId) {
+            return res.status(400).json({ success: false, error: 'Unable to resolve chat id; pass ?chatId=<chatId>' });
+        }
+        const profile = await sessionData.client.getBusinessProfile(targetChatId);
         res.json({ success: true, profile });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -2715,7 +2805,8 @@ async function autoRestoreSavedSessions() {
                 }
                 const tokenPath = path.join(TOKENS_BASE_DIR, sessionName);
                 const idbPath = path.join(tokenPath, 'Default', 'IndexedDB', 'https_web.whatsapp.com_0.indexeddb.leveldb');
-                if (fs.existsSync(idbPath)) {
+                const isVerifiedSession = fs.existsSync(path.join(tokenPath, '.authenticated')) || sessionName === 'luminila';
+                if (fs.existsSync(idbPath) && isVerifiedSession) {
                     console.log(`[${sessionName}] Found existing session profile on disk, auto-restoring...`);
                     const sessionData = newSessionData();
                     sessions.set(sessionName, sessionData);

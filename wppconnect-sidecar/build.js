@@ -7,20 +7,20 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-// Target triples for each platform
+// Target triples for each platform (node22: oldest LTS line with prebuilt @yao-pkg/pkg-fetch binaries)
 const TARGETS = {
     'win32': {
-        pkg: 'node18-win-x64',
+        pkg: 'node22-win-x64',
         triple: 'x86_64-pc-windows-msvc',
         ext: '.exe'
     },
     'darwin': {
-        pkg: 'node18-macos-x64',
+        pkg: 'node22-macos-x64',
         triple: 'x86_64-apple-darwin',
         ext: ''
     },
     'linux': {
-        pkg: 'node18-linux-x64',
+        pkg: 'node22-linux-x64',
         triple: 'x86_64-unknown-linux-gnu',
         ext: ''
     }
