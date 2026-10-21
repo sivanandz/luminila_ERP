@@ -75,8 +75,39 @@ if (typeof window !== "undefined") {
 
 /**
  * Ensure PocketBase client is authenticated in server-side API routes (Node.js)
+ * Automatically routes to the active or preferred tenant's isolated PocketBase instance if provisioned.
  */
-export async function ensureServerAuth(): Promise<boolean> {
+export async function ensureServerAuth(preferredTenantEmail?: string): Promise<boolean> {
+    if (typeof window === "undefined") {
+        try {
+            const nodeRequire = eval("require") as NodeRequire;
+            const fs = nodeRequire("fs") as typeof import("fs");
+            const path = nodeRequire("path") as typeof import("path");
+            const registryPath = path.join(process.cwd(), "pocketbase", "pb_tenants", "registry.json");
+            if (fs.existsSync(registryPath)) {
+                const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
+                const targetEmail = (preferredTenantEmail || registry.activeTenantEmail || "").trim().toLowerCase();
+                const tenantRec = targetEmail ? registry.tenants?.[targetEmail] : undefined;
+                if (tenantRec?.port) {
+                    const targetUrl = `http://127.0.0.1:${tenantRec.port}`;
+                    if (pb.baseUrl !== targetUrl) {
+                        pb.baseUrl = targetUrl;
+                        pb.authStore.clear();
+                    }
+                    if (pb.authStore.isValid && (pb.authStore as any).isSuperuser) {
+                        return true;
+                    }
+                    if (tenantRec.email && tenantRec.adminPassword) {
+                        await pb.collection("_superusers").authWithPassword(tenantRec.email, tenantRec.adminPassword);
+                        return true;
+                    }
+                }
+            }
+        } catch {
+            // Fall through to standard environment variable superuser auth
+        }
+    }
+
     if (pb.authStore.isValid && (pb.authStore as any).isSuperuser) return true;
     const adminEmail = process.env.POCKETBASE_SUPERUSER_EMAIL || process.env.PB_ADMIN_EMAIL;
     const adminPassword = process.env.POCKETBASE_SUPERUSER_PASSWORD || process.env.PB_ADMIN_PASSWORD;
@@ -122,15 +153,123 @@ export function setPocketBaseUrl(url: string): string {
 }
 
 /**
+ * Adapt a localhost PocketBase URL (http://127.0.0.1:<port>) to the current LAN host when accessed over LAN
+ */
+function adaptPocketBaseHostForClient(pbUrl: string): string {
+    if (typeof window === "undefined") return pbUrl;
+    const host = window.location.hostname;
+    const isTunnelHost = host.includes("trycloudflare.com") || host.includes("cloudflare");
+    if (host && host !== "localhost" && host !== "127.0.0.1" && host !== "tauri.localhost" && !isTunnelHost) {
+        return pbUrl.replace("127.0.0.1", host).replace("localhost", host);
+    }
+    return pbUrl;
+}
+
+/**
+ * Provision a dedicated, physically isolated PocketBase instance for an account during `/setup`
+ */
+export async function provisionTenantPocketBase(
+    email: string,
+    password: string,
+    storeName?: string
+): Promise<{
+    success: boolean;
+    pbUrl: string;
+    port?: number;
+    tenantSlug?: string;
+    isolated?: boolean;
+    error?: string;
+}> {
+    try {
+        const res = await fetch("/api/system/tenant-db", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                mode: "provision",
+                email: email.trim().toLowerCase(),
+                password,
+                storeName,
+            }),
+        });
+        const data = await res.json();
+        if (data.success && data.pbUrl) {
+            const clientUrl = adaptPocketBaseHostForClient(data.pbUrl);
+            setPocketBaseUrl(clientUrl);
+            return { ...data, pbUrl: clientUrl };
+        }
+        return {
+            success: false,
+            pbUrl: getPocketBaseUrl(),
+            error: data.error || "Failed to provision isolated tenant database",
+        };
+    } catch (err) {
+        return {
+            success: false,
+            pbUrl: getPocketBaseUrl(),
+            error: err instanceof Error ? err.message : String(err),
+        };
+    }
+}
+
+/**
+ * Resolve and wake up the dedicated PocketBase instance for an account during `/login` or session restore
+ */
+export async function resolveTenantPocketBase(email?: string): Promise<string> {
+    try {
+        const cleanEmail = (email || pb.authStore.model?.email || "").trim().toLowerCase();
+        const endpoint = cleanEmail
+            ? `/api/system/tenant-db?email=${encodeURIComponent(cleanEmail)}`
+            : "/api/system/tenant-db";
+        const res = await fetch(endpoint);
+        if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.pbUrl) {
+                const clientUrl = adaptPocketBaseHostForClient(data.pbUrl);
+                setPocketBaseUrl(clientUrl);
+                return clientUrl;
+            }
+        }
+    } catch {
+        // Fallback to standard discovery if Next.js API is unreachable
+    }
+    return getPocketBaseUrl();
+}
+
+/**
  * Auto-discover active PocketBase server on localhost if default port (8090)
- * is blocked or occupied by a foreign application (e.g. Wondershare).
+ * is blocked or occupied by a foreign application, or wake up the tenant's isolated DB.
  */
 export async function autoDiscoverPocketBase(): Promise<string> {
+    if (typeof window !== "undefined") {
+        ensureAuth();
+        const authedEmail = pb.authStore.model?.email;
+        if (authedEmail) {
+            try {
+                const resolved = await resolveTenantPocketBase(authedEmail);
+                const health = await pb.health.check();
+                if (health.code === 200) return resolved;
+            } catch {
+                // Continue to fallback probing
+            }
+        }
+    }
+
     const current = getPocketBaseUrl();
     try {
         const res = await pb.health.check();
         if (res.code === 200) return current;
     } catch {
+        // First ask the tenant-db API to resolve/wake the active instance
+        if (typeof window !== "undefined") {
+            try {
+                const resolved = await resolveTenantPocketBase();
+                const health = await pb.health.check();
+                if (health.code === 200) return resolved;
+            } catch {
+                // Fallback to port probing
+            }
+        }
+
         // Current URL failed, probe alternative ports on localhost
         if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
             const candidatePorts = [8091, 8090, 8092];

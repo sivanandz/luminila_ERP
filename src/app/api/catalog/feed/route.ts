@@ -27,8 +27,8 @@ export async function GET(req: NextRequest) {
         ).trim().toLowerCase();
         const phone = (searchParams.get('phone') || process.env.META_BUSINESS_PHONE || '917092122334').trim();
 
-        // Authenticate via server environment credentials (no hardcoded passwords)
-        await ensureServerAuth();
+        // Authenticate via tenant registry or server environment credentials
+        await ensureServerAuth(accountEmail || undefined);
 
         // If no explicit account_email is passed in query or env, resolve the primary active catalog tenant
         // so a single feed never mixes products across multiple tenants.

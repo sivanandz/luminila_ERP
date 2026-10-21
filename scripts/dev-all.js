@@ -164,6 +164,39 @@ async function main() {
     process.env.PB_PORT = String(pbPort);
     process.env.NEXT_PUBLIC_POCKETBASE_URL = `http://127.0.0.1:${pbPort}`;
 
+    // 1b. Auto-restore any isolated tenant PocketBase instances from pb_tenants/registry.json
+    try {
+        const registryPath = path.join(PB_DIR, 'pb_tenants', 'registry.json');
+        if (fs.existsSync(registryPath) && fs.existsSync(PB_EXE)) {
+            const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+            const tenants = registry && registry.tenants ? Object.values(registry.tenants) : [];
+            for (const tenant of tenants) {
+                if (!tenant || tenant.tenantSlug === 'primary' || !tenant.port || !tenant.dataDir) continue;
+                const running = await isPocketBaseHealthy(tenant.port);
+                if (!running && fs.existsSync(tenant.dataDir)) {
+                    console.log(`${GREEN}[PB:${tenant.tenantSlug}]${RESET} Starting isolated tenant DB on port ${tenant.port}...`);
+                    const tProc = spawn(
+                        PB_EXE,
+                        [
+                            'serve',
+                            `--http=0.0.0.0:${tenant.port}`,
+                            `--dir=${tenant.dataDir}`,
+                            `--migrationsDir=${path.join(PB_DIR, 'pb_migrations')}`,
+                        ],
+                        {
+                            cwd: PB_DIR,
+                            stdio: ['ignore', 'pipe', 'pipe'],
+                        }
+                    );
+                    children.push(tProc);
+                    pipeOutput(tProc, `[PB:${tenant.port}]`, GREEN);
+                }
+            }
+        }
+    } catch (tErr) {
+        console.warn(`${YELLOW}[PB] Notice restoring tenant DBs: ${tErr.message}${RESET}`);
+    }
+
     // Ensure .env.local preserves existing environment keys while updating NEXT_PUBLIC_POCKETBASE_URL
     try {
         const envPath = path.join(ROOT_DIR, '.env.local');

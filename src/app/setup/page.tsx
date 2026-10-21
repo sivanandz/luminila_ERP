@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { pb, getPocketBaseUrl, autoDiscoverPocketBase } from "@/lib/pocketbase";
+import { pb, getPocketBaseUrl, autoDiscoverPocketBase, provisionTenantPocketBase } from "@/lib/pocketbase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -199,7 +199,18 @@ export default function SetupWizardPage() {
         setLoading(true);
 
         try {
-            // 1. Authenticate as Superuser using form credentials
+            // 0. Provision dedicated isolated PocketBase instance + superuser for this account
+            const provisionRes = await provisionTenantPocketBase(
+                formData.adminEmail,
+                formData.adminPassword,
+                formData.storeName
+            );
+            if (!provisionRes.success) {
+                throw new Error(provisionRes.error || "Failed to provision isolated PocketBase database");
+            }
+            setPbUrl(provisionRes.pbUrl);
+
+            // 1. Authenticate as Superuser using form credentials against the isolated instance
             let superuserRecord: { id: string; email?: string } | null = null;
             let authenticatedWithBootstrap = false;
 
@@ -216,7 +227,7 @@ export default function SetupWizardPage() {
                     superuserRecord = bootstrapAuth.record;
                     authenticatedWithBootstrap = true;
                 } catch {
-                    throw new Error("Unable to authenticate with PocketBase. Ensure PocketBase is running on " + pbUrl);
+                    throw new Error("Unable to authenticate with PocketBase. Ensure PocketBase is running on " + provisionRes.pbUrl);
                 }
             }
 

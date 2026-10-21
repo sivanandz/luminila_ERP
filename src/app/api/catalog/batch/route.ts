@@ -40,7 +40,8 @@ export async function POST(req: NextRequest) {
             isAuthorized = true;
             isSuperuserCaller = true;
         } else if (token) {
-            const authPb = new PocketBase(getPocketBaseUrl());
+            await ensureServerAuth(requestedEmail || undefined);
+            const authPb = new PocketBase(pb.baseUrl || getPocketBaseUrl());
             try {
                 authPb.authStore.save(token, null);
                 const refreshed = await authPb.collection('users').authRefresh();
@@ -86,8 +87,8 @@ export async function POST(req: NextRequest) {
 
         const safeTenantEmail = sanitizeFilter(tenantEmail);
 
-        // 2. Authenticate server PocketBase client via env credentials
-        await ensureServerAuth();
+        // 2. Authenticate server PocketBase client via tenant registry or env credentials
+        await ensureServerAuth(tenantEmail);
 
         // 3. Fetch products with Dual-Layer Tenant Isolation (DB Clause + In-Memory Guard)
         let products: any[] = [];

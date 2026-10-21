@@ -61,6 +61,7 @@ next-env.d.ts
 # PocketBase data files (runtime data is untouched, zero demo data shipped)
 pocketbase/pb_data/*
 !pocketbase/pb_data/.gitkeep
+pocketbase/pb_tenants/
 
 # Runtime JSON data
 src/data/*.json
