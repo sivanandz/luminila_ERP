@@ -5,7 +5,7 @@ import {
     X,
     RefreshCw,
     CheckCircle,
-
+    ShieldCheck,
     Package,
     Search,
     Loader2,
@@ -17,7 +17,13 @@ import {
     batchSyncCatalog,
     WhatsAppProductItem,
 } from "@/lib/whatsapp-catalog";
-import { isAutoSyncEnabled, setAutoSyncEnabled, syncMetaCatalogBatch } from "@/lib/whatsapp-event-sync";
+import {
+    isAutoSyncEnabled,
+    setAutoSyncEnabled,
+    getStealthSyncStatus,
+    triggerStealthCatalogReconcile,
+    StealthSyncTelemetry,
+} from "@/lib/whatsapp-event-sync";
 
 export interface WhatsAppCatalogSyncModalProps {
     isOpen: boolean;
@@ -34,12 +40,26 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
     const [filterSynced, setFilterSynced] = useState<"all" | "synced" | "unsynced">("all");
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [autoSync, setAutoSync] = useState<boolean>(true);
+    const [telemetry, setTelemetry] = useState<StealthSyncTelemetry>(() => getStealthSyncStatus());
 
     useEffect(() => {
         if (isOpen) {
             setAutoSync(isAutoSyncEnabled());
+            setTelemetry(getStealthSyncStatus());
             loadProducts();
         }
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const onStatus = (e: Event) => {
+            const custom = e as CustomEvent<StealthSyncTelemetry>;
+            if (custom.detail) {
+                setTelemetry(custom.detail);
+            }
+        };
+        window.addEventListener("whatsapp:stealth-sync-status", onStatus);
+        return () => window.removeEventListener("whatsapp:stealth-sync-status", onStatus);
     }, [isOpen]);
 
     const loadProducts = async () => {
@@ -93,11 +113,11 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
         setStatusMessage(null);
 
         try {
-            const res = await batchSyncCatalog(toSync, "luminila", (cur, total) => {
+            const res = await batchSyncCatalog(toSync, undefined, (cur, total) => {
                 setProgress({ current: cur, total });
             });
 
-            setStatusMessage(`Sync complete: ${res.synced} published, ${res.failed} failed.`);
+            setStatusMessage(`Sync complete: ${res.synced} published/updated, ${res.failed} failed.`);
             await loadProducts();
             setSelectedIds(new Set());
         } catch (err) {
@@ -111,9 +131,9 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
     const handleSyncSingle = async (p: WhatsAppProductItem) => {
         setSyncing(true);
         try {
-            const res = await syncProductToWhatsApp(p, "luminila");
+            const res = await syncProductToWhatsApp(p);
             if (res.success) {
-                setStatusMessage(`Successfully synced "${p.name}" to WhatsApp Catalog!`);
+                setStatusMessage(`Successfully synced "${p.name}" to WhatsApp Catalog via sidecar!`);
                 await loadProducts();
             } else {
                 setStatusMessage(`Failed to sync: ${res.error}`);
@@ -125,21 +145,22 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
         }
     };
 
-    const handleMetaBatchSync = async () => {
+    const handleStealthReconcile = async () => {
         setSyncing(true);
-        setStatusMessage("Dispatching Meta Catalog items_batch sync to Meta Commerce Manager...");
+        setStatusMessage("Scanning live WhatsApp Business App catalog for missing or drifted items...");
         try {
-            const res = await syncMetaCatalogBatch(undefined, 'UPDATE', true);
-            if (res.success) {
-                setStatusMessage(`Meta Batch API sync complete! Processed ${res.total_processed ?? 'all'} items.`);
-                await loadProducts();
-            } else if (res.configured === false) {
-                setStatusMessage(res.message || "Meta token not configured. Falling back to active scheduled feed.");
+            const res = await triggerStealthCatalogReconcile();
+            setTelemetry(getStealthSyncStatus());
+            if (res.queued > 0) {
+                setStatusMessage(
+                    `Queued ${res.queued} drifted/new item(s) into Stealth Sync Queue (human-paced 9–22s intervals).`
+                );
             } else {
-                setStatusMessage(`Meta Batch error: ${res.message || 'Check META_GRAPH_ACCESS_TOKEN'}`);
+                setStatusMessage("All inventory items are already in sync with your WhatsApp Business App catalog!");
             }
+            await loadProducts();
         } catch (err) {
-            setStatusMessage(`Batch failed: ${err instanceof Error ? err.message : String(err)}`);
+            setStatusMessage(`Reconcile error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setSyncing(false);
         }
@@ -159,7 +180,7 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
                         <div>
                             <h3 className="font-bold text-lg">WhatsApp Business Catalog Sync</h3>
                             <p className="text-xs text-muted-foreground">
-                                Publish jewelry catalog to native WhatsApp so customers can order directly
+                                Publish jewelry catalog to native WhatsApp Business App via human-paced sidecar automation
                             </p>
                         </div>
                     </div>
@@ -172,8 +193,8 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
                 </div>
 
                 {/* Event-Driven Auto-Sync Bar */}
-                <div className="px-5 py-2.5 bg-emerald-500/5 border-b border-border flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
+                <div className="px-5 py-2.5 bg-emerald-500/5 border-b border-border flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 flex-wrap">
                         <span className="flex h-2 w-2 relative">
                             {autoSync && (
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -181,11 +202,13 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
                             <span className={`relative inline-flex rounded-full h-2 w-2 ${autoSync ? 'bg-emerald-500' : 'bg-muted-foreground'}`}></span>
                         </span>
                         <span className="font-semibold flex items-center gap-1.5">
-                            <Zap size={13} className={autoSync ? "text-emerald-500" : "text-muted-foreground"} />
-                            Event-Driven Auto-Sync:
+                            <ShieldCheck size={13} className={autoSync ? "text-emerald-500" : "text-muted-foreground"} />
+                            Stealth Sidecar Auto-Sync:
                         </span>
                         <span className="text-muted-foreground hidden sm:inline">
-                            {autoSync ? "Active — auto-syncs catalog on inventory edits & POS checkouts with WhatsApp channel price" : "Paused — manual sync only"}
+                            {autoSync
+                                ? `Active (${telemetry.workerState.toUpperCase()}) • Queue: ${telemetry.queueSize} • 10m Quota: ${telemetry.mutationsLast10Min}/10`
+                                : "Paused — manual sync only"}
                         </span>
                     </div>
                     <button
@@ -230,13 +253,13 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
 
                     <div className="flex items-center gap-2">
                         <button
-                            onClick={handleMetaBatchSync}
+                            onClick={handleStealthReconcile}
                             disabled={syncing}
                             className="bg-sky-600 hover:bg-sky-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all disabled:opacity-40 shadow-sm"
-                            title="Directly push all products to Meta Commerce Cloud Catalog via Graph API"
+                            title="Scan live WhatsApp Business App catalog via sidecar and queue drifted/missing items with human-paced delays"
                         >
                             {syncing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
-                            Meta Batch Push
+                            Stealth Reconcile All
                         </button>
                         <button
                             onClick={handleSyncSelected}

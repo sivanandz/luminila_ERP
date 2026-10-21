@@ -31,9 +31,10 @@ import {
     ArrowUpRight
 } from "lucide-react";
 import { toast } from "sonner";
-import { pb } from "@/lib/pocketbase";
+import { pb, getCurrentTenantEmail, sanitizeFilter } from "@/lib/pocketbase";
 import { Product, ProductVariant } from "@/types/database";
 import { getChannelPrice } from "@/lib/channel-pricing";
+import { resolveProductCatalogImage } from "@/lib/whatsapp-catalog";
 import {
     getCatalogProducts,
     createCatalogProduct,
@@ -125,20 +126,36 @@ export function WhatsAppCatalogEditorModal({
     const loadCatalogAndInventory = async () => {
         setLoading(true);
         try {
-            // 1. Fetch live catalog from WPPConnect
-            const [waProducts, pbProducts, pbVariants] = await Promise.all([
+            const tenantEmail = getCurrentTenantEmail();
+            const tenantFilter = tenantEmail
+                ? `account_email = "${sanitizeFilter(tenantEmail)}"`
+                : undefined;
+
+            // 1. Fetch live catalog from WPPConnect + tenant-scoped inventory
+            const [waProducts, rawPbProducts, rawPbVariants] = await Promise.all([
                 getCatalogProducts(sessionId).catch((err) => {
                     console.error("Failed to fetch WhatsApp catalog products:", err);
                     return [] as CatalogProduct[];
                 }),
-                pb.collection("products").getFullList<Product & { whatsapp_catalog_id?: string; whatsapp_last_synced?: string }>({
+                pb.collection("products").getFullList<Product & { whatsapp_catalog_id?: string; whatsapp_last_synced?: string; account_email?: string; image_data?: string }>({
+                    filter: tenantFilter,
                     sort: "-created",
                 }).catch((err) => {
                     console.error("Failed to fetch PocketBase products:", err);
                     return [];
                 }),
-                pb.collection("product_variants").getFullList<ProductVariant>().catch(() => []),
+                pb.collection("product_variants").getFullList<ProductVariant & { account_email?: string }>({
+                    filter: tenantFilter,
+                }).catch(() => []),
             ]);
+
+            // Layer 2 in-memory tenant ownership guard
+            const pbProducts = tenantEmail
+                ? rawPbProducts.filter((p) => !p.account_email || p.account_email.toLowerCase() === tenantEmail.toLowerCase())
+                : rawPbProducts;
+            const pbVariants = tenantEmail
+                ? rawPbVariants.filter((v) => !v.account_email || v.account_email.toLowerCase() === tenantEmail.toLowerCase())
+                : rawPbVariants;
 
             // Build stock map for quick stock lookup per product
             const stocks: Record<string, number> = {};
@@ -363,8 +380,9 @@ export function WhatsAppCatalogEditorModal({
                 } catch {
                     failCount++;
                 }
-                // 250ms throttle to prevent rate-limiting
-                await new Promise((r) => setTimeout(r, 250));
+                // Human-paced randomized delay (2.8s - 5.8s) to prevent WhatsApp bot detection
+                const jitterDelay = Math.round(2800 + ((Math.random() + Math.random()) / 2) * 3000);
+                await new Promise((r) => setTimeout(r, jitterDelay));
             }
 
             toast.success(`Sync complete! ${updatedCount} prices aligned with inventory.${failCount > 0 ? ` (${failCount} failed)` : ""}`);
@@ -440,9 +458,10 @@ export function WhatsAppCatalogEditorModal({
     };
 
     // Publish an inventory product to WhatsApp Catalog
-    const handlePublishInventoryItem = async (pbProduct: Product) => {
+    const handlePublishInventoryItem = async (pbProduct: Product & { image_data?: string }) => {
         try {
             const targetPrice = getChannelPrice(pbProduct, "whatsapp");
+            const resolvedImage = resolveProductCatalogImage(pbProduct);
             toast.loading(`Publishing ${pbProduct.name} to WhatsApp Catalog...`, { id: "pub-item" });
 
             const res = await createCatalogProduct(sessionId, {
@@ -451,12 +470,13 @@ export function WhatsAppCatalogEditorModal({
                 price: targetPrice,
                 currency: "INR",
                 retailerId: pbProduct.sku,
+                image: resolvedImage,
                 url: `https://luminila.com/product/${pbProduct.sku}`,
                 isHidden: !pbProduct.is_active,
             });
 
             if (!res.success || !res.productId) {
-                throw new Error("WhatsApp catalog creation did not return a valid product ID");
+                throw new Error(res.error || "WhatsApp catalog creation did not return a valid product ID");
             }
 
             // Save new catalog ID to PocketBase

@@ -808,10 +808,14 @@ export interface CatalogProduct {
     name: string;
     description?: string;
     price?: number;
+    priceAmount1000?: number;
     currency?: string;
     imageUrl?: string;
     url?: string;
     isHidden?: boolean;
+    retailerId?: string;
+    availability?: string;
+    reviewStatus?: string;
 }
 
 /**
@@ -847,15 +851,16 @@ export async function createCatalogProduct(
         currency?: string;
         image?: string;
         imageBase64?: string;
+        imageUrl?: string;
         url?: string;
         retailerId?: string;
         isHidden?: boolean;
     }
-): Promise<{ success: boolean; productId?: string }> {
+): Promise<{ success: boolean; productId?: string; error?: string }> {
     try {
         const payload = {
             ...product,
-            image: product.image || product.imageBase64 || "",
+            image: product.image || product.imageBase64 || product.imageUrl || "",
         };
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products`, {
             method: "POST",
@@ -863,9 +868,17 @@ export async function createCatalogProduct(
             body: JSON.stringify(payload)
         });
         const data = await response.json();
-        return { success: data.success, productId: data.result?.id || data.productId };
-    } catch {
-        return { success: false };
+        const rawId = data.productId || data.result?.id;
+        const resolvedId = typeof rawId === "object" && rawId !== null
+            ? (rawId._serialized || rawId.id || String(rawId))
+            : (rawId ? String(rawId) : undefined);
+        return {
+            success: !!data.success,
+            productId: resolvedId,
+            error: data.error,
+        };
+    } catch (err) {
+        return { success: false, error: (err as Error)?.message || "Failed to create catalog product" };
     }
 }
 
@@ -882,10 +895,14 @@ export async function editCatalogProduct(
         currency?: string;
         isHidden?: boolean;
         url?: string;
+        retailerId?: string;
+        image?: string;
+        imageBase64?: string;
+        imageUrl?: string;
     }
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
     try {
-        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${productId}`, {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${encodeURIComponent(productId)}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ options })
@@ -905,11 +922,11 @@ export async function deleteCatalogProduct(
     productId: string
 ): Promise<boolean> {
     try {
-        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${productId}`, {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${encodeURIComponent(productId)}`, {
             method: "DELETE"
         });
         const data = await response.json();
-        return data.success;
+        return !!data.success;
     } catch {
         return false;
     }

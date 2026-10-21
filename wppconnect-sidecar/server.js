@@ -2505,11 +2505,177 @@ process.on('SIGINT', async () => {
 });
 
 // --- Catalog / Product Management ---
+const zlib = require('zlib');
+
+let cachedFallbackPngDataUri = null;
+function generateFallbackProductPngDataUri() {
+    if (cachedFallbackPngDataUri) return cachedFallbackPngDataUri;
+    const width = 240;
+    const height = 240;
+    const rawData = Buffer.alloc((width * 3 + 1) * height);
+    for (let y = 0; y < height; y++) {
+        const rowStart = y * (width * 3 + 1);
+        rawData[rowStart] = 0;
+        for (let x = 0; x < width; x++) {
+            const px = rowStart + 1 + x * 3;
+            const isBorder = x < 8 || x >= width - 8 || y < 8 || y >= height - 8;
+            const isInnerFrame = (x >= 20 && x < width - 20 && (y === 20 || y === height - 21)) ||
+                                 (y >= 20 && y < height - 20 && (x === 20 || x === width - 21));
+            if (isBorder || isInnerFrame) {
+                rawData[px] = 212;
+                rawData[px + 1] = 175;
+                rawData[px + 2] = 55;
+            } else {
+                rawData[px] = 12;
+                rawData[px + 1] = 24;
+                rawData[px + 2] = 41;
+            }
+        }
+    }
+
+    const crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) {
+            c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        crcTable[n] = c >>> 0;
+    }
+    function crc32(buf) {
+        let c = 0xffffffff;
+        for (let i = 0; i < buf.length; i++) {
+            c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+        }
+        return (c ^ 0xffffffff) >>> 0;
+    }
+    function makeChunk(type, data) {
+        const len = Buffer.alloc(4);
+        len.writeUInt32BE(data.length, 0);
+        const typeBuf = Buffer.from(type, 'ascii');
+        const crcInput = Buffer.concat([typeBuf, data]);
+        const crcBuf = Buffer.alloc(4);
+        crcBuf.writeUInt32BE(crc32(crcInput), 0);
+        return Buffer.concat([len, typeBuf, data, crcBuf]);
+    }
+
+    const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 2;
+    const idat = zlib.deflateSync(rawData);
+    const pngBuffer = Buffer.concat([
+        signature,
+        makeChunk('IHDR', ihdr),
+        makeChunk('IDAT', idat),
+        makeChunk('IEND', Buffer.alloc(0)),
+    ]);
+    cachedFallbackPngDataUri = `data:image/png;base64,${pngBuffer.toString('base64')}`;
+    return cachedFallbackPngDataUri;
+}
+
+async function resolveCatalogImageBase64(imageInput) {
+    if (typeof imageInput === 'string' && imageInput.trim().length > 0) {
+        const trimmed = imageInput.trim();
+        if (trimmed.startsWith('data:image/') && trimmed.includes(';base64,')) {
+            return trimmed;
+        }
+        if (trimmed.startsWith('/9j/')) {
+            return `data:image/jpeg;base64,${trimmed}`;
+        }
+        if (trimmed.startsWith('iVBOR')) {
+            return `data:image/png;base64,${trimmed}`;
+        }
+        if (trimmed.startsWith('UklGR')) {
+            return `data:image/webp;base64,${trimmed}`;
+        }
+        if (/^[A-Za-z0-9+/=]{100,}$/.test(trimmed)) {
+            return `data:image/jpeg;base64,${trimmed}`;
+        }
+        if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+            try {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 10000);
+                const resp = await fetch(trimmed, { signal: controller.signal });
+                clearTimeout(timer);
+                if (resp.ok) {
+                    const contentType = (resp.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+                    const arrayBuf = await resp.arrayBuffer();
+                    const buf = Buffer.from(arrayBuf);
+                    if (buf.length > 64) {
+                        return `data:${contentType.startsWith('image/') ? contentType : 'image/jpeg'};base64,${buf.toString('base64')}`;
+                    }
+                }
+            } catch (err) {
+                console.warn('[Catalog] Failed to fetch remote image URL, using fallback:', err.message);
+            }
+        }
+    }
+    return generateFallbackProductPngDataUri();
+}
+
+function normalizeCatalogProduct(p) {
+    if (!p || typeof p !== 'object') return p;
+    const rawId = typeof p.id === 'object' && p.id !== null
+        ? (p.id._serialized || p.id.id || String(p.id))
+        : String(p.id || '');
+
+    let priceAmount1000 = 0;
+    let normalizedPrice = 0;
+    if (p.priceAmount1000 !== undefined && p.priceAmount1000 !== null) {
+        priceAmount1000 = Number(p.priceAmount1000) || 0;
+        normalizedPrice = priceAmount1000 / 1000;
+    } else if (p.price !== undefined && p.price !== null) {
+        const rawNum = Number(p.price) || 0;
+        if (p.retailer_id !== undefined || p.is_hidden !== undefined || p.image_cdn_urls !== undefined || (rawNum >= 10000 && rawNum % 1000 === 0)) {
+            priceAmount1000 = rawNum;
+            normalizedPrice = rawNum / 1000;
+        } else {
+            normalizedPrice = rawNum;
+            priceAmount1000 = Math.round(rawNum * 1000);
+        }
+    }
+
+    const cdnUrls = Array.isArray(p.image_cdn_urls) ? p.image_cdn_urls : [];
+    const fullCdn = cdnUrls.find((u) => u && u.key === 'FULL')?.value || cdnUrls[0]?.value || '';
+    const imageUrl = p.imageUrl || p.imageCdnUrl || fullCdn || p.image || '';
+    const reviewStatus = p.reviewStatus || p.review_status ||
+        (Array.isArray(p.capability_to_review_status) && p.capability_to_review_status[0]?.value) ||
+        'APPROVED';
+
+    return {
+        ...p,
+        id: rawId,
+        name: p.name || '',
+        description: p.description || '',
+        price: normalizedPrice,
+        priceAmount1000,
+        currency: p.currency || 'INR',
+        isHidden: Boolean(p.isHidden ?? p.is_hidden ?? false),
+        url: p.url || '',
+        retailerId: p.retailerId ?? p.retailer_id ?? '',
+        availability: p.availability || 'in stock',
+        reviewStatus,
+        imageUrl,
+    };
+}
+
+async function warmCatalogStore(sessionData) {
+    try {
+        const target = await resolveOwnChatId(sessionData);
+        if (target && sessionData?.client?.getProducts) {
+            await sessionData.client.getProducts(target, 100);
+        }
+    } catch (e) {
+        console.warn('[Catalog] warmCatalogStore warning:', e.message);
+    }
+}
 
 // Get all products from catalog
 app.get('/api/:session/catalog/products', async (req, res) => {
     const { session } = req.params;
-    const count = parseInt(req.query.count, 10) || 50;
+    const count = parseInt(req.query.count, 10) || 100;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -2517,13 +2683,13 @@ app.get('/api/:session/catalog/products', async (req, res) => {
     }
 
     try {
-        // Clients pass ?chatId= or ?phone=; default to the session's own catalog
         const target = req.query.chatId || req.query.phone || await resolveOwnChatId(sessionData);
         if (!target) {
             return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?chatId=<chatId>' });
         }
-        const products = await sessionData.client.getProducts(target, count);
-        res.json({ success: true, products });
+        const rawProducts = await sessionData.client.getProducts(target, count);
+        const list = Array.isArray(rawProducts) ? rawProducts.map(normalizeCatalogProduct) : [];
+        res.json({ success: true, products: list });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2539,8 +2705,12 @@ app.get('/api/:session/catalog/products/:productId', async (req, res) => {
     }
 
     try {
-        const product = await sessionData.client.getProductById(productId);
-        res.json({ success: true, product });
+        const target = req.query.chatId || req.query.phone || await resolveOwnChatId(sessionData);
+        if (!target) {
+            return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?chatId=<chatId>' });
+        }
+        const product = await sessionData.client.getProductById(target, productId);
+        res.json({ success: true, product: normalizeCatalogProduct(product) });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2549,26 +2719,42 @@ app.get('/api/:session/catalog/products/:productId', async (req, res) => {
 // Create product
 app.post('/api/:session/catalog/products', async (req, res) => {
     const { session } = req.params;
-    const { name, image, price, currency, isHidden, url, retailerId, description } = req.body;
+    const { name, image, imageBase64, imageUrl, price, currency, isHidden, url, retailerId, description } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
 
+    if (!name || !String(name).trim()) {
+        return res.status(400).json({ success: false, error: 'Product name is required' });
+    }
+
     try {
-        // CatalogLayer signature: createProduct(name, image, description, price, isHidden, url, retailerId, currency)
-        const result = await sessionData.client.createProduct(
-            name,
-            image, // base64
+        const resolvedBase64 = await resolveCatalogImageBase64(image || imageBase64 || imageUrl);
+        const numericPrice = Number(price) || 0;
+        const waJsScaledPrice = numericPrice > 0 ? numericPrice / 10 : 0;
+
+        const rawResult = await sessionData.client.createProduct(
+            String(name).trim(),
+            resolvedBase64,
             description || '',
-            price,
-            isHidden || false,
+            waJsScaledPrice,
+            Boolean(isHidden),
             url || '',
             retailerId || '',
             currency || 'INR'
         );
-        res.json({ success: true, result });
+        const normalized = normalizeCatalogProduct(rawResult);
+        if (numericPrice > 0 && normalized && typeof normalized === 'object') {
+            normalized.price = numericPrice;
+            normalized.priceAmount1000 = Math.round(numericPrice * 1000);
+        }
+        res.json({
+            success: true,
+            productId: normalized?.id || rawResult?.id || undefined,
+            result: normalized,
+        });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2577,7 +2763,7 @@ app.post('/api/:session/catalog/products', async (req, res) => {
 // Edit product
 app.put('/api/:session/catalog/products/:productId', async (req, res) => {
     const { session, productId } = req.params;
-    const { options } = req.body; // Object with fields to update
+    const rawOptions = req.body.options && typeof req.body.options === 'object' ? req.body.options : req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -2585,8 +2771,42 @@ app.put('/api/:session/catalog/products/:productId', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.editProduct(productId, options);
-        res.json({ success: true, result });
+        const editOptions = { ...rawOptions };
+        const imagePayload = editOptions.image || editOptions.imageBase64 || editOptions.imageUrl;
+        delete editOptions.image;
+        delete editOptions.imageBase64;
+        delete editOptions.imageUrl;
+
+        if (editOptions.price !== undefined && editOptions.price !== null) {
+            const numericPrice = Number(editOptions.price);
+            if (!Number.isNaN(numericPrice)) {
+                editOptions.priceAmount1000 = Math.round(numericPrice * 1000);
+                editOptions.currency = editOptions.currency || 'INR';
+            }
+        }
+
+        let result;
+        try {
+            result = await sessionData.client.editProduct(productId, editOptions);
+        } catch (firstErr) {
+            await warmCatalogStore(sessionData);
+            result = await sessionData.client.editProduct(productId, editOptions);
+        }
+
+        if (imagePayload && typeof sessionData.client.changeProductImage === 'function') {
+            try {
+                const resolvedBase64 = await resolveCatalogImageBase64(imagePayload);
+                result = await sessionData.client.changeProductImage(productId, resolvedBase64);
+            } catch (imgErr) {
+                console.warn('[Catalog] Optional image update warning:', imgErr.message);
+            }
+        }
+
+        if (editOptions.isHidden !== undefined && typeof sessionData.client.setProductVisibility === 'function') {
+            await sessionData.client.setProductVisibility(productId, !editOptions.isHidden).catch(() => {});
+        }
+
+        res.json({ success: true, result: normalizeCatalogProduct(result) });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2602,7 +2822,15 @@ app.delete('/api/:session/catalog/products/:productId', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.delProducts([productId]);
+        let result = await sessionData.client.delProducts([productId]);
+        if (result && result.status === 500) {
+            await warmCatalogStore(sessionData);
+            result = await sessionData.client.delProducts([productId]);
+        }
+        const ok = !result || result.status !== 500;
+        if (!ok) {
+            return res.status(500).json({ success: false, error: 'WhatsApp rejected catalog deletion', result });
+        }
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
