@@ -31,7 +31,8 @@ export async function POST(req: Request) {
         const waNumber = `91${phone10}`;
 
         // 1. Fetch bound admin and branding from storefront content
-        const { boundAdminEmail, brandName } = await getStorefrontBinding();
+        const reqEmail = typeof body.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : undefined;
+        const { boundAdminEmail, brandName } = await getStorefrontBinding(reqEmail);
 
         // 2. Generate secure 6-digit OTP
         const otpResult = generateAndSaveOtp(phone10);

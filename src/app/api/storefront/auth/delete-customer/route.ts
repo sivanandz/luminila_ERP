@@ -38,7 +38,7 @@ async function handleDelete(req: Request) {
         }
 
         // 2. Resolve bound admin email for tenant isolation
-        const { boundAdminEmail } = await getStorefrontBinding();
+        const { boundAdminEmail } = await getStorefrontBinding(customerAuth.tenant);
 
         // Verify token tenant matches storefront tenant
         if (customerAuth.tenant !== boundAdminEmail) {
@@ -57,7 +57,7 @@ async function handleDelete(req: Request) {
             );
         }
 
-        await ensureServerAuth();
+        await ensureServerAuth(boundAdminEmail);
 
         // 4. Verify record exists and belongs to this tenant and customer
         const existing = await pb.collection("customers").getOne(targetId).catch(() => null);

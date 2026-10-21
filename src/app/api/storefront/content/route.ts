@@ -1,9 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import PocketBase from "pocketbase";
-import { pb as sharedPb, ensureServerAuth } from "@/lib/pocketbase";
+import { pb as sharedPb, ensureServerAuth, getPocketBaseUrl } from "@/lib/pocketbase";
 
 const PB_KEY = "storefront_content";
-const PB_URL = process.env.NEXT_PUBLIC_POCKETBASE_URL || "http://127.0.0.1:8091";
 
 const DEFAULT_CONTENT = {
     announcement: {
@@ -250,7 +249,10 @@ export async function OPTIONS() {
 
 export async function GET(req: NextRequest) {
     try {
-        const pb = new PocketBase(PB_URL);
+        const queryEmail = req.nextUrl.searchParams.get("account_email") || req.headers.get("x-account-email") || "";
+        await ensureServerAuth(queryEmail || undefined);
+
+        const pb = new PocketBase(sharedPb.baseUrl || getPocketBaseUrl());
         const authHeader = req.headers.get("authorization") || "";
         const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
         
@@ -262,26 +264,25 @@ export async function GET(req: NextRequest) {
                 pb.authStore.save(token, null);
                 await pb.collection("users").authRefresh();
                 isAuthorized = pb.authStore.isValid;
-                staffEmail = pb.authStore.model?.email || "";
+                staffEmail = pb.authStore.record?.email || pb.authStore.model?.email || "";
             } catch {
                 try {
                     pb.authStore.save(token, null);
                     await pb.collection("_superusers").authRefresh();
                     isAuthorized = pb.authStore.isValid;
-                    staffEmail = pb.authStore.model?.email || "";
+                    staffEmail = pb.authStore.record?.email || pb.authStore.model?.email || "";
                 } catch {
                     isAuthorized = false;
                 }
             }
         }
 
-        const queryEmail = req.nextUrl.searchParams.get("account_email") || req.headers.get("x-account-email") || "";
         const targetEmail = staffEmail || queryEmail;
 
         let record = null;
         const readPb = isAuthorized ? pb : sharedPb;
-        if (!isAuthorized) {
-            await ensureServerAuth();
+        if (!isAuthorized && targetEmail) {
+            await ensureServerAuth(targetEmail);
         }
 
         if (targetEmail) {
@@ -330,7 +331,17 @@ export async function POST(req: Request) {
             );
         }
 
-        const pb = new PocketBase(PB_URL);
+        const body = await req.json();
+        const hintEmail = (
+            body?.adminBinding?.boundAdminEmail ||
+            body?.account_email ||
+            req.headers.get("x-account-email") ||
+            ""
+        ).trim().toLowerCase();
+
+        await ensureServerAuth(hintEmail || undefined);
+
+        const pb = new PocketBase(sharedPb.baseUrl || getPocketBaseUrl());
         let staffEmail = "";
         let isAuthorized = false;
 
@@ -338,13 +349,13 @@ export async function POST(req: Request) {
             pb.authStore.save(token, null);
             await pb.collection("users").authRefresh();
             isAuthorized = pb.authStore.isValid;
-            staffEmail = pb.authStore.model?.email || "";
+            staffEmail = pb.authStore.record?.email || pb.authStore.model?.email || "";
         } catch {
             try {
                 pb.authStore.save(token, null);
                 await pb.collection("_superusers").authRefresh();
                 isAuthorized = pb.authStore.isValid;
-                staffEmail = pb.authStore.model?.email || "";
+                staffEmail = pb.authStore.record?.email || pb.authStore.model?.email || "";
             } catch {
                 isAuthorized = false;
             }
@@ -356,8 +367,6 @@ export async function POST(req: Request) {
                 { status: 401, headers: CORS_HEADERS }
             );
         }
-
-        const body = await req.json();
 
         // Load existing tenant content from PocketBase
         let existingRecord = null;

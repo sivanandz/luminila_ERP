@@ -17,7 +17,7 @@ const DEFAULT_BINDING: StorefrontBinding = {
  */
 export async function getStorefrontBinding(preferredEmail?: string): Promise<StorefrontBinding> {
     try {
-        await ensureServerAuth();
+        await ensureServerAuth(preferredEmail);
         let query = 'key="storefront_content"';
         if (preferredEmail && preferredEmail.trim()) {
             query += ' && account_email="' + preferredEmail.trim().toLowerCase() + '"';

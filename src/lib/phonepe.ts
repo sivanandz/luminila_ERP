@@ -190,7 +190,7 @@ export async function initiatePayment(request: PaymentRequest): Promise<PaymentR
                     'Content-Type': 'application/json',
                     ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
                 },
-                body: JSON.stringify({ action: 'phonepe_initiate', payload: request }),
+                body: JSON.stringify({ action: 'phonepe_initiate', payload: request, accountEmail: pb.authStore.record?.email || undefined }),
             });
             return await res.json();
         } catch (err: any) {
@@ -293,7 +293,7 @@ export async function checkPaymentStatus(
                     'Content-Type': 'application/json',
                     ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
                 },
-                body: JSON.stringify({ action: 'phonepe_status', payload: { transactionId: merchantTransactionId } }),
+                body: JSON.stringify({ action: 'phonepe_status', payload: { transactionId: merchantTransactionId }, accountEmail: pb.authStore.record?.email || undefined }),
             });
             return await res.json();
         } catch (err: any) {

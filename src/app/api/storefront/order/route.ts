@@ -88,7 +88,7 @@ export async function POST(req: Request) {
 
         // 2. Attempt Database Sync via PocketBase
         try {
-            await ensureServerAuth();
+            await ensureServerAuth(boundAdminEmail);
 
             // Find or create customer
             const cleanPhone = body.customerPhone.replace(/\D/g, "");

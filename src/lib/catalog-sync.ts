@@ -1,12 +1,18 @@
-import { pb } from '@/lib/pocketbase';
+import { pb, sanitizeFilter, getCurrentTenantEmail } from '@/lib/pocketbase';
 import { Product } from '@/types/database';
 import { getWhatsAppUrl, whatsappManager } from '@/lib/whatsapp';
+import { resolveProductCatalogImage } from '@/lib/whatsapp-catalog';
 import { getChannelPrice } from '@/lib/channel-pricing';
 
 const SIDECAR_URL = {
     toString() { return `${getWhatsAppUrl()}/api/${whatsappManager.getSessionIdSafe() || 'luminila'}`; },
     valueOf() { return `${getWhatsAppUrl()}/api/${whatsappManager.getSessionIdSafe() || 'luminila'}`; }
 } as unknown as string;
+
+function humanPaceDelay(): Promise<void> {
+    const ms = Math.round(1400 + Math.random() * 1800);
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 interface WhatsAppProduct {
     id: string;
@@ -39,9 +45,10 @@ interface CatalogSyncError {
 }
 
 export async function syncCatalog() {
-    console.log('Starting catalog sync...');
+    console.log('Starting tenant-isolated catalog sync...');
 
-    // 1. Create Sync Log
+    // 1. Create Sync Log scoped to current tenant
+    const tenantEmail = getCurrentTenantEmail();
     let logData;
     try {
         logData = await pb.collection('catalog_sync_logs').create({
@@ -50,6 +57,7 @@ export async function syncCatalog() {
             products_updated: 0,
             products_deleted: 0,
             errors: [],
+            account_email: tenantEmail,
         });
     } catch (logError) {
         console.error('Failed to create sync log:', logError);
@@ -63,8 +71,15 @@ export async function syncCatalog() {
     const errors: CatalogSyncError[] = [];
 
     try {
-        // 2. Fetch PocketBase Products
-        const dbProducts = await pb.collection('products').getFullList();
+        // 2. Fetch PocketBase Products strictly scoped to current tenant
+        const rawProducts = await pb.collection('products').getFullList({
+            filter: tenantEmail && tenantEmail !== 'default'
+                ? `account_email = "${sanitizeFilter(tenantEmail)}"`
+                : undefined,
+        });
+        const dbProducts = rawProducts.filter(
+            (p) => !p.account_email || p.account_email === tenantEmail
+        );
 
         // 3. Fetch WhatsApp Catalog
         let waProducts: WhatsAppProduct[] = [];
@@ -73,8 +88,8 @@ export async function syncCatalog() {
             if (!res.ok) throw new Error('Sidecar unreachable');
             const json = await res.json();
             if (json.success) {
-                const rawProducts = json.products || [];
-                waProducts = rawProducts.map((p: SidecarCatalogProduct) => ({
+                const rawWaProducts = json.products || [];
+                waProducts = rawWaProducts.map((p: SidecarCatalogProduct) => ({
                     id: p.id,
                     name: p.name,
                     description: p.description,
@@ -97,7 +112,7 @@ export async function syncCatalog() {
             if (p.retailerId) waMap.set(p.retailerId, p);
         });
 
-        // 5. Iterate DB Products
+        // 5. Iterate DB Products with human-like pacing
         for (const p of dbProducts) {
             try {
                 if (!p.sku) continue;
@@ -107,16 +122,19 @@ export async function syncCatalog() {
 
                 if (p.is_active) {
                     if (!waP) {
+                        await humanPaceDelay();
                         await createProductInWhatsApp(p as unknown as Product);
                         added++;
                     } else {
                         if (waP.price !== targetPrice || waP.name !== p.name) {
+                            await humanPaceDelay();
                             await updateProductInWhatsApp(waP.id, p as unknown as Product);
                             updated++;
                         }
                     }
                 } else {
                     if (waP) {
+                        await humanPaceDelay();
                         await deleteProductInWhatsApp(waP.id);
                         deleted++;
                     }
@@ -154,24 +172,21 @@ export async function syncCatalog() {
 
 // Helpers
 async function createProductInWhatsApp(p: Product) {
-    let imageBase64 = '';
-    if (p.image_url) {
-        try {
-            imageBase64 = await urlToBase64(p.image_url);
-        } catch (e) {
-            console.warn(`Failed to convert image for ${p.sku}`, e);
-        }
-    }
+    const resolvedImage = resolveProductCatalogImage({
+        id: p.id,
+        image_data: (p as unknown as Record<string, unknown>).image_data as string | undefined,
+        image_url: p.image_url,
+    });
 
     const payload = {
         name: p.name,
-        description: p.description || '',
+        description: p.description || p.name || '',
         price: getChannelPrice(p, 'whatsapp'),
         currency: 'INR',
         isHidden: false,
         url: p.image_url || '',
         retailerId: p.sku,
-        image: imageBase64
+        image: resolvedImage
     };
 
     const res = await fetch(`${SIDECAR_URL}/catalog/products`, {
@@ -188,7 +203,7 @@ async function updateProductInWhatsApp(waId: string, p: Product) {
         options: {
             name: p.name,
             price: getChannelPrice(p, 'whatsapp'),
-            description: p.description || '',
+            description: p.description || p.name || '',
             isHidden: false
         }
     };
@@ -207,11 +222,4 @@ async function deleteProductInWhatsApp(waId: string) {
         method: 'DELETE'
     });
     if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);
-}
-
-async function urlToBase64(url: string): Promise<string> {
-    const response = await fetch(url);
-    const blob = await response.blob();
-    const buffer = Buffer.from(await blob.arrayBuffer());
-    return `data:${blob.type};base64,${buffer.toString('base64')}`;
 }

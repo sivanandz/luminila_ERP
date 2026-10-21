@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import PocketBase from "pocketbase";
-import { ensureServerAuth, getPocketBaseUrl } from "@/lib/pocketbase";
+import { pb, ensureServerAuth, getPocketBaseUrl } from "@/lib/pocketbase";
 import {
     createPaymentLink as serverCreateRazorpayLink,
     fetchPaymentLinkStatus as serverFetchRazorpayStatus,
@@ -24,17 +24,27 @@ export async function POST(req: Request) {
             );
         }
 
-        const authPb = new PocketBase(getPocketBaseUrl());
+        const body = await req.json();
+        const { action, payload, accountEmail } = body;
+        const hintEmail = typeof accountEmail === "string" ? accountEmail.trim().toLowerCase() : undefined;
+
+        // Ensure server PocketBase points to the operator's isolated tenant DB before verifying the JWT
+        await ensureServerAuth(hintEmail);
+
+        const authPb = new PocketBase(pb.baseUrl || getPocketBaseUrl());
         let isAuthorized = false;
+        let verifiedEmail = hintEmail;
         try {
             authPb.authStore.save(token, null);
             await authPb.collection("users").authRefresh();
             isAuthorized = authPb.authStore.isValid;
+            verifiedEmail = (authPb.authStore.record?.email || hintEmail || "").trim().toLowerCase() || undefined;
         } catch {
             try {
                 authPb.authStore.save(token, null);
                 await authPb.collection("_superusers").authRefresh();
                 isAuthorized = authPb.authStore.isValid;
+                verifiedEmail = (authPb.authStore.record?.email || hintEmail || "").trim().toLowerCase() || undefined;
             } catch {
                 isAuthorized = false;
             }
@@ -47,11 +57,8 @@ export async function POST(req: Request) {
             );
         }
 
-        const body = await req.json();
-        const { action, payload } = body;
-
-        // Verify server authentication
-        await ensureServerAuth();
+        // Verify server authentication on the verified tenant's isolated DB
+        await ensureServerAuth(verifiedEmail);
 
         if (action === "razorpay_create_link") {
             const result = await serverCreateRazorpayLink(payload);

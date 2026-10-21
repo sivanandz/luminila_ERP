@@ -47,10 +47,11 @@ export async function POST(req: Request) {
         }
 
         // 2. Fetch bound admin email for tenant isolation
-        const { boundAdminEmail } = await getStorefrontBinding();
+        const reqEmail = typeof body.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : undefined;
+        const { boundAdminEmail } = await getStorefrontBinding(reqEmail);
 
-        // 3. Ensure PocketBase server-side authentication
-        await ensureServerAuth();
+        // 3. Ensure PocketBase server-side authentication on the tenant's isolated DB
+        await ensureServerAuth(boundAdminEmail);
 
         // 4. Look up or auto-provision customer in PocketBase
         let customerRecord: any = null;

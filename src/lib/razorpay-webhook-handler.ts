@@ -1,4 +1,4 @@
-import { pb } from '@/lib/pocketbase';
+import { pb, ensureServerAuth } from '@/lib/pocketbase';
 import { getRazorpayConfig, verifyWebhookSignature } from '@/lib/razorpay';
 import { sendPaidOrderInvoice, sendLoyaltyMilestoneAlert } from '@/lib/whatsapp-notifications';
 import { earnPoints, calculatePointsToEarn } from '@/lib/loyalty';
@@ -46,9 +46,15 @@ export async function processRazorpayWebhookEvent(
             paymentLink?.notes?.order_id ||
             paymentLink?.reference_id ||
             payment?.notes?.order_id;
+        const tenantEmail =
+            paymentLink?.notes?.account_email ||
+            payment?.notes?.account_email ||
+            undefined;
 
         if (orderId) {
             try {
+                await ensureServerAuth(tenantEmail);
+
                 // WPA-11 idempotency guard: Razorpay can replay webhooks. If the
                 // order is already settled, skip loyalty re-award and duplicate
                 // customer notifications instead of processing again.

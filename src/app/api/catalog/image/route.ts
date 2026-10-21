@@ -10,12 +10,13 @@ export async function GET(req: NextRequest) {
     try {
         const { searchParams } = new URL(req.url);
         const id = searchParams.get('id');
+        const accountEmail = (searchParams.get('account_email') || '').trim().toLowerCase();
 
         if (!id) {
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
         }
 
-        await ensureServerAuth();
+        await ensureServerAuth(accountEmail || undefined);
 
         const product = await pb.collection('products').getOne(id).catch(() => null);
 

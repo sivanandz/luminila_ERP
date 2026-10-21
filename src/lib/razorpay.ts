@@ -249,7 +249,11 @@ export async function createPaymentLink(
                     'Content-Type': 'application/json',
                     ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
                 },
-                body: JSON.stringify({ action: 'razorpay_create_link', payload: params }),
+                body: JSON.stringify({
+                    action: 'razorpay_create_link',
+                    payload: params,
+                    accountEmail: pb.authStore.record?.email || undefined,
+                }),
             });
             return await res.json();
         } catch (err: any) {
@@ -387,7 +391,11 @@ export async function fetchPaymentLinkStatus(
                     'Content-Type': 'application/json',
                     ...(pb.authStore.token ? { 'Authorization': `Bearer ${pb.authStore.token}` } : {}),
                 },
-                body: JSON.stringify({ action: 'razorpay_fetch_status', payload: { paymentLinkId } }),
+                body: JSON.stringify({
+                    action: 'razorpay_fetch_status',
+                    payload: { paymentLinkId },
+                    accountEmail: pb.authStore.record?.email || undefined,
+                }),
             });
             return await res.json();
         } catch (err: any) {

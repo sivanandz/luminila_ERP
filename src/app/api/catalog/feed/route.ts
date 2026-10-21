@@ -116,7 +116,7 @@ export async function GET(req: NextRequest) {
             const basePrice = Number(p.base_price) || 0;
             const imageLink = (p.image_url && p.image_url.startsWith('http'))
                 ? p.image_url
-                : `${origin}/api/catalog/image?id=${p.id}`;
+                : `${origin}/api/catalog/image?id=${p.id}${accountEmail ? `&account_email=${encodeURIComponent(accountEmail)}` : ''}`;
 
             if (pVariants.length === 0) {
                 // Standalone product

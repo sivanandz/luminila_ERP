@@ -56,7 +56,7 @@ import { EwayBillSettings } from "@/components/settings/EwayBillSettings";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { getStoreSettings, saveStoreSettings, getDefaultStoreSettings, type StoreSettings } from "@/lib/settings";
-import { pb } from "@/lib/pocketbase";
+import { pb, getPocketBaseUrl } from "@/lib/pocketbase";
 import { getDetailedSessionStatus, getBusinessProfile, type DetailedSessionStatus, type BusinessProfile } from "@/lib/whatsapp";
 
 interface SettingSection {
@@ -994,7 +994,7 @@ export default function SettingsPage() {
                                                     type="text"
                                                     placeholder="http://127.0.0.1:8090"
                                                     readOnly
-                                                    value={process.env.NEXT_PUBLIC_POCKETBASE_URL || "http://127.0.0.1:8090"}
+                                                    value={getPocketBaseUrl()}
                                                 />
                                             </div>
                                             <div className="space-y-2">
@@ -1004,7 +1004,7 @@ export default function SettingsPage() {
                                                 <Button
                                                     variant="outline"
                                                     size="sm"
-                                                    onClick={() => window.open((process.env.NEXT_PUBLIC_POCKETBASE_URL || "http://127.0.0.1:8090") + "/_/", "_blank")}
+                                                    onClick={() => window.open(getPocketBaseUrl() + "/_/", "_blank")}
                                                 >
                                                     <ExternalLink size={14} className="mr-1" />
                                                     Open Admin UI
@@ -1286,7 +1286,7 @@ export default function SettingsPage() {
                                         </div>
                                         <div className="p-3 bg-surface-navy/60 rounded-lg text-xs text-moonstone border border-surface-hover flex items-center justify-between">
                                             <span>Format: JSON Full Dump (PocketBase compatible)</span>
-                                            <span className="text-emerald-400 font-semibold">● PocketBase Live on Port 8091</span>
+                                            <span className="text-emerald-400 font-semibold">● Isolated Tenant PocketBase Live ({getPocketBaseUrl().replace(/^https?:\/\//, "")})</span>
                                         </div>
                                     </div>
                                 </div>

@@ -5,7 +5,7 @@
  */
 
 import PocketBase, { type RecordModel } from 'pocketbase';
-import { pb, getPocketBaseUrl, ensureAuth, getCurrentTenantEmail, getTenantStorageKey } from './pocketbase';
+import { pb, getPocketBaseUrl, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, resolveTenantPocketBase } from './pocketbase';
 
 export interface WhatsAppBinding {
     isBound: boolean;
@@ -197,7 +197,8 @@ export async function verifyAdminApproval(
         return { success: false, error: 'Email and password are required.' };
     }
 
-    const tempPb = new PocketBase(getPocketBaseUrl());
+    const tenantUrl = await resolveTenantPocketBase(email.trim());
+    const tempPb = new PocketBase(tenantUrl || getPocketBaseUrl());
     tempPb.autoCancellation(false);
 
     let authRecord: RecordModel | null = null;

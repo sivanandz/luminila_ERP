@@ -116,6 +116,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const logout = () => {
         pb.authStore.clear();
+        if (typeof window !== "undefined") {
+            localStorage.removeItem("PB_CUSTOM_URL");
+        }
     };
 
 
