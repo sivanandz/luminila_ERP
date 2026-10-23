@@ -2100,6 +2100,35 @@ directory is empty but handle-locked (exFAT has no ACLs to repair), so it cannot
 be removed from this session. This affects verification only, not the committed
 files.
 
+### 11.64 Committed HEAD verified independently, and the host split proven over HTTP (2026-10-24)
+
+The shared working tree could not be gated: the parallel agent's uncommitted refactor keeps `tsc` red and crashes repo-wide ESLint on a handle-locked empty directory. So the **committed deliverable** was verified on its own: a detached `git worktree` at `a7b045d` on NTFS, with a real copied `node_modules` (a cross-volume junction broke webpack resolution).
+
+| Gate (committed HEAD `a7b045d`) | Result |
+|---|---|
+| `next typegen` | success |
+| `tsc --noEmit --incremental false` | **exit 0** |
+| `npx eslint src` | **0 errors, 338 warnings** |
+| `npm test` | all suites pass |
+| `npx next build --webpack` | **success**; route list includes `ƒ Proxy (Middleware)` |
+| standalone boot | ready in ~76 ms |
+
+**Host split, exercised over real HTTP against the built server:**
+
+| Request (Host header) | Status |
+|---|---|
+| `shop.example.com/inventory`, `/settings`, `/` | **404**, body exactly "Not Found" (guard, not Next's HTML 404) |
+| `shop.example.com/checkout/whatsapp`, `/tracking/st-courier` | 200 |
+| `shop.example.com/api/tracking/st-courier` | 400 (handler ran; not blocked) |
+| `erp.tail1234.ts.net/inventory`, `/login`, `/api/system/tenant-db` | 200 |
+| `random.example.net/inventory` / `/checkout/whatsapp` | 404 / 200 (public-safe default) |
+| admin host response headers | `X-Frame-Options: DENY`, `x-robots-tag: noindex, nofollow`, `nosniff` |
+| guard-disabled mode (desktop/dev) | `/inventory` and `/api/system/tenant-db` → 200 on every host |
+
+This closes the two doubts from §11.62–11.63: the proxy runs in a real production build with the expected Node runtime semantics, and the ERP is genuinely unreachable from the public hostname without disturbing the desktop path.
+
+**Objective status:** every code cluster is complete and, for the committed tree, all gates pass. The only open register item remains **S-06**, which is a deployment data step: it needs a checkout where tenants exist plus its own `TENANT_REGISTRY_KEY` (§11.60). The working tree still carries the parallel agent's uncommitted refactor; that state is theirs to commit.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

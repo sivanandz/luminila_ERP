@@ -1255,6 +1255,8 @@ const ORPHANS = [
 ];
 
 const VERIFY = [
+  ["Committed HEAD build","npx next build --webpack (detached worktree at HEAD)","pass","Compiled and prerendered every route including the proxy bundle; standalone server booted on NTFS."],
+  ["Host split, end to end","curl with Host headers against the built server","pass","shop: 404 on /inventory, /settings, /; 200 on /checkout/whatsapp and /tracking/st-courier. admin: 200 with DENY and noindex. guard disabled: 200 everywhere."],
   ["Proxy guard tests","npx tsx src/scripts/test-proxy.ts","pass","8 assertions: executes the proxy with synthetic requests, proves ERP 404s on the public host, admin headers, unknown-host default and disabled mode."],
   ["Host guard tests","npx tsx src/scripts/test-host-guard.ts","pass","7 assertions: host normalization, admin/storefront/unknown classification, exact ERP blocking, static assets."],
   ["PocketBase URL tests","npx tsx src/scripts/test-pocketbase-url.ts","pass","6 assertions: env override, stored override, HTTPS /pb fallback, Tauri/Android/LAN behaviour."],
