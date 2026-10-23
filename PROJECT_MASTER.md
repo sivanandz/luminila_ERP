@@ -103,9 +103,9 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 247 |
-| Lines of TypeScript/TSX | ~87,900 |
-| Route pages (`src/app/**/page.tsx`) | 43 |
+| TypeScript/TSX files | 249 |
+| Lines of TypeScript/TSX | ~88,300 |
+| Route pages (`src/app/**/page.tsx`) | 44 |
 | Service modules (`src/lib/*.ts`) | 85 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
@@ -128,12 +128,13 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 66 assertions across 8 suites, exit 0 |
+| Test command | `npm test` | 72 assertions across 9 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
 | Cheque lifecycle tests | `npx tsx src/scripts/test-cheque-register.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Export invoice tests | `npx tsx src/scripts/test-cross-border.ts` | **6 passed, 0 failed** (2026-10-23) |
+| Backup tests | `npx tsx src/scripts/test-backup.ts` | **6 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -482,7 +483,7 @@ Status vocabulary, applied strictly:
 | PWA install | Live | Manifest plus apple meta |
 | Offline mutation queue | Scaffold | `offline-queue.ts` has a `flush()` replay but zero importers and no online/offline listener, so nothing is ever queued |
 | Google Drive sync | Scaffold (mock) | `google-drive-sync.ts:169-182` is a 1.2 s timeout that clears the changelog; `connect()` only flips a localStorage flag |
-| Backup and restore | Partial | `backup.ts` covers 31 collections but has no UI importer; `/settings` exports only a 6-collection snapshot with no restore path |
+| Backup and restore | Live | `/backup` downloads a 31-collection backup, previews a file before restoring, requires typed confirmation, and offers a daily browser snapshot (section 11.13) |
 | Activity log / audit trail | Live | Before/after JSON snapshots |
 | Automated test suite | **Absent as infrastructure** | Hand-rolled scripts under `src/scripts`; no runner in `package.json` |
 | CI pipeline | Absent | No workflow files |
@@ -873,7 +874,6 @@ This is the most misleading category in the repository: substantial code exists,
 | `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
 | `omnichannel-buffer-engine.ts` | Channel buffers and cart reservations | No importer; in-memory state would not survive reload anyway |
 | `sync-engine.ts` + `sync/shopify.ts` + `sync/woocommerce.ts` | E-commerce sync orchestration | Zero importers; seven TODOs; Settings shows "Coming Soon" |
-| `backup.ts` | 31-collection backup, restore, scheduling | Zero importers; Settings has a 6-collection export and no restore |
 | `offline-queue.ts` | Queued mutation replay | Zero importers; no connectivity listener |
 | `hooks.ts`, `alerts.ts` | Client data hooks, low-stock alerts | Zero importers; dashboard and inventory recompute inline |
 | `whatsapp-commander.ts` | Admin commands in chat | Zero importers, and its writes are schema-invalid |
@@ -1212,14 +1212,32 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Still open in this cluster:** imitation taxonomy, and the six phantom collections (D-36).
 
+### 11.13 Slice 13: backup and restore (2026-10-23)
+
+**Partial closure of D-39:** the backup half. `hooks.ts` and `alerts.ts` remain unused, so D-39 stays open with that note.
+
+| Change | Files | Why |
+|---|---|---|
+| Backup screen | `src/app/backup/page.tsx` (new) | Download the 31-collection backup, toggle a daily browser snapshot, and restore the last snapshot |
+| File restore with preview | same | Parses and validates a file, shows version, age and per-table counts, then requires a tick and the typed word RESTORE |
+| Preview helpers | `src/lib/backup.ts` | `summariseBackup` and `isBackupOlderThan` are pure and tested; `BackupData` is exported for them |
+| Navigation | `Sidebar.tsx`, `MobileDrawer.tsx` | Backup & Restore is an admin-only system page |
+
+**Safety notes, stated plainly:** restore is an upsert by id, not a wipe: rows absent from the file are left in place, so a partial backup does not delete anything. The page says so before the confirmation. The automatic snapshot lives in browser local storage, which is small and per browser; the copy on the page recommends the downloaded file for real recovery. Nothing here touches `pocketbase/pb_data`.
+
+**Verified:** `npm run typecheck` clean; `npm test` 12 + 9 + 16 + 3 + 4 + 7 + 9 + 6 + 6 assertions; targeted ESLint clean. A restore was not executed against the live database, by design.
+
+**Still open in this cluster:** offline queue activation, Drive sync (real or removed), and the unused hooks and alerts.
+
 ## Appendix A: Route inventory
 
-43 route pages, all client components.
+44 route pages, all client components.
 
 | Route | Purpose | Size |
 |---|---|---|
 | `/` | Executive dashboard | 5 KB |
 | `/activity` | Audit timeline | 12 KB |
+| `/backup` | Backup, restore and snapshots | 13 KB |
 | `/banking` | Accounts and balances | 14 KB |
 | `/banking/transactions` | Transaction ledger | 17 KB |
 | `/challan` | Delivery challans | 12 KB |
@@ -1304,7 +1322,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 7 modules, including whole sync and backup domains.
+**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 6 modules, including the whole sync domain.
 
 ## Appendix D: Glossary
 

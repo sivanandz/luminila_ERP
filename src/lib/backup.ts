@@ -15,7 +15,7 @@ import type {
 } from "../types/database";
 import type { Customer } from "./customers";
 
-interface BackupData {
+export interface BackupData {
     version: string;
     createdAt: string;
     tables: {
@@ -417,4 +417,33 @@ export async function restoreFromAutoBackup(): Promise<boolean> {
     } catch {
         return false;
     }
+}
+
+export interface BackupSummary {
+    version: string;
+    createdAt: string;
+    totalRows: number;
+    tables: Array<{ name: string; rows: number }>;
+}
+
+/** Counts rows per table so the UI can show what a file actually contains. */
+export function summariseBackup(data: BackupData): BackupSummary {
+    const tables = Object.entries(data.tables)
+        .filter(([, rows]) => Array.isArray(rows))
+        .map(([name, rows]) => ({ name, rows: (rows as unknown[]).length }))
+        .sort((a, b) => b.rows - a.rows || a.name.localeCompare(b.name));
+
+    return {
+        version: data.version,
+        createdAt: data.createdAt,
+        totalRows: tables.reduce((sum, table) => sum + table.rows, 0),
+        tables,
+    };
+}
+
+/** A backup older than `days` is worth flagging before a restore. */
+export function isBackupOlderThan(createdAt: string, days: number, now: Date = new Date()): boolean {
+    const created = new Date(createdAt);
+    if (Number.isNaN(created.getTime())) return true;
+    return now.getTime() - created.getTime() > days * 24 * 60 * 60 * 1000;
 }
