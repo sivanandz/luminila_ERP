@@ -4,7 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { allocateLandedCosts, summariseLanded } from '../lib/valuation';
+import { allocateLandedCosts, summariseLanded, weightedAverageCost } from '../lib/valuation';
 
 let passed = 0;
 let failed = 0;
@@ -95,6 +95,30 @@ test('the summary reconciles goods value plus overhead', () => {
     assert.equal(summary.goodsValue, 500);
     assert.equal(Math.round(summary.allocatedOverhead * 100), 5000);
     assert.equal(Math.round(summary.landedValue * 100), 55000);
+});
+
+test('weighted average lets quantity, not the newest receipt, decide value', () => {
+    assert.equal(weightedAverageCost([
+        { quantity: 10, landedUnitCost: 110 },
+        { quantity: 10, landedUnitCost: 130 },
+    ]), 120);
+
+    assert.equal(weightedAverageCost([
+        { quantity: 1, landedUnitCost: 100 },
+        { quantity: 9, landedUnitCost: 200 },
+    ]), 190);
+});
+
+test('no receipts or zero quantities yield zero, not a division error', () => {
+    assert.equal(weightedAverageCost([]), 0);
+    assert.equal(weightedAverageCost([{ quantity: 0, landedUnitCost: 500 }]), 0);
+});
+
+test('negative quantities are ignored', () => {
+    assert.equal(weightedAverageCost([
+        { quantity: -5, landedUnitCost: 999 },
+        { quantity: 2, landedUnitCost: 50 },
+    ]), 50);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

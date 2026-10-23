@@ -119,3 +119,28 @@ export function summariseLanded(lines: LandedLine[]): LandedSummary {
         return summary;
     }, { totalUnits: 0, goodsValue: 0, landedValue: 0, allocatedOverhead: 0 });
 }
+
+export interface CostReceipt {
+    quantity: number;
+    landedUnitCost: number;
+}
+
+/**
+ * Weighted average landed cost across receipts, the standard basis for
+ * inventory valuation. Returns zero when nothing was received, so callers can
+ * tell "no history" from "free stock".
+ */
+export function weightedAverageCost(receipts: CostReceipt[]): number {
+    let units = 0;
+    let value = 0;
+
+    for (const receipt of receipts) {
+        const quantity = Math.max(0, Number(receipt.quantity) || 0);
+        const cost = Math.max(0, Number(receipt.landedUnitCost) || 0);
+        units += quantity;
+        value += quantity * cost;
+    }
+
+    if (units <= 0) return 0;
+    return Math.round((value / units) * 100) / 100;
+}

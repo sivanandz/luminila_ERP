@@ -4,7 +4,7 @@
  */
 
 import { pb } from './pocketbase';
-import { allocateLandedCosts } from './valuation';
+import { allocateLandedCosts, weightedAverageCost } from './valuation';
 import { format } from 'date-fns';
 import { normalizeDateRange, escapeHtml } from './utils';
 import type { Customer } from './customers';
@@ -321,15 +321,17 @@ interface LandedPurchaseItem {
 }
 
 /**
- * Latest received landed unit cost per variant.
+ * Weighted-average landed unit cost per variant.
  *
- * Overhead is shipping minus discount from the purchase order, spread over the
- * received quantities by value. Later receipts overwrite earlier ones, so the
- * newest landed cost wins; a variant with no received purchase keeps its bare
+ * Overhead is shipping minus discount from each purchase order, spread over its
+ * received lines by value. Receipts are then averaged by quantity, which is the
+ * standard valuation basis and does not let the newest invoice alone decide the
+ * value of all older stock. A variant with no received purchase keeps its bare
  * purchase price and is reported as such.
  */
 async function buildLandedCostMap(): Promise<Map<string, number>> {
     const landed = new Map<string, number>();
+    const receiptsByVariant = new Map<string, Array<{ quantity: number; landedUnitCost: number }>>();
 
     try {
         const orders = await pb.collection('purchase_orders').getFullList<LandedPurchaseOrder>({
@@ -367,8 +369,15 @@ async function buildLandedCostMap(): Promise<Map<string, number>> {
 
             const overhead = Number(order.shipping_cost || 0) - Number(order.discount_amount || 0);
             for (const line of allocateLandedCosts(lines, overhead)) {
-                landed.set(line.key, line.landedUnitCost);
+                const receipts = receiptsByVariant.get(line.key) || [];
+                receipts.push({ quantity: line.quantity, landedUnitCost: line.landedUnitCost });
+                receiptsByVariant.set(line.key, receipts);
             }
+        }
+
+        for (const [variantId, receipts] of receiptsByVariant) {
+            const average = weightedAverageCost(receipts);
+            if (average > 0) landed.set(variantId, average);
         }
     } catch (error) {
         console.warn('Landed cost valuation unavailable, falling back to purchase price:', error);

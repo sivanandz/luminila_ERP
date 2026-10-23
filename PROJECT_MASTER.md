@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 130 assertions across 18 suites, exit 0 |
+| Test command | `npm test` | 133 assertions across 18 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -460,7 +460,7 @@ Status vocabulary, applied strictly:
 |---|---|---|
 | Executive KPI dashboard | Live | Today's sales, shift status, low stock |
 | Sales, stock, and GST report pages | Live | `/reports`, `/reports/sales`, `/reports/stock`, `/reports/gst` |
-| Inventory valuation | Live | Stock report values each variant at the latest received landed cost (unit price plus freight minus discount), falling back to the purchase price and labelling the basis (section 11.16) |
+| Inventory valuation | Live | Stock report values each variant at the weighted average of its received landed costs (unit price plus freight minus discount), falling back to the purchase price and labelling the basis (sections 11.16, 11.28) |
 | Channel attribution (POS vs WhatsApp vs storefront) | Partial | Channel field exists; storefront writes its own channel |
 | Scheduled report delivery | Absent | |
 
@@ -1478,6 +1478,18 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **What is still true:** until someone runs `--apply` with a key, the registry stays plaintext. The code now supports both forms, so the migration is a data step rather than a deploy step.
 
 **Verified:** `npm run typecheck` clean; `npm test` 130 assertions across 18 suites; dry run and `--verify` both exit cleanly on the missing registry.
+
+### 11.28 Slice 28: weighted-average valuation (2026-10-23)
+
+| Change | Files | Why |
+|---|---|---|
+| `weightedAverageCost` | `src/lib/valuation.ts` | Averages landed cost by received quantity, so one expensive or cheap receipt cannot revalue all older stock |
+| Report uses it | `src/lib/reports.ts` | Per variant, accumulates every received line's landed cost and stores the weighted average; zero history still falls back to the purchase price |
+| Tests | `src/scripts/test-valuation.ts` | Quantity weighting beats a plain average, empty and zero-quantity inputs return zero, negative quantities are ignored |
+
+**Verified:** `npm run typecheck` clean; `npm test` 133 assertions across 18 suites; targeted ESLint 0 errors.
+
+**Still open in this cluster:** channel enum and campaign attribution, both waiting on the migration bundle.
 
 ## Appendix A: Route inventory
 
