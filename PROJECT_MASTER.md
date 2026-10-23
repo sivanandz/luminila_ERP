@@ -1981,6 +1981,30 @@ All eight objective clusters were re-checked against the code, not against slice
 
 **Shared workspace:** a second agent's build-unblock work was verified but left uncommitted and untouched by this round (§11.58).
 
+### 11.60 S-06 re-key authorised and executed on this checkout (2026-10-24)
+
+The user authorised the re-key. It was executed, and the honest result is that there was nothing to migrate.
+
+| Step | Result |
+|---|---|
+| Key generation | 64-hex AES-256 key generated with `crypto.randomBytes(32)` |
+| Key storage | Written to `.env.local` (verified ignored: `git check-ignore` reports `.gitignore:56:**.env.local`) plus an offline copy outside the repository. The key is deliberately **not** recorded in this document or any committed file |
+| Dry run | `npx tsx scripts/rekey-tenant-registry.ts` → exit 0, "No registry … nothing to re-key yet." |
+| Verify | `--verify` → exit 0, same message |
+| Apply | `--apply` → exit 0, same message; `pocketbase/pb_tenants/registry.json` still does not exist and no file or database was modified |
+
+**Why it could not complete:** this checkout has never provisioned a tenant. There is no `pb_tenants/` directory and no registry, so there are no plaintext passwords to encrypt. S-06 remains open as a **deployment data step**, not a code gap; the tooling is now exercised and armed.
+
+**Procedure for a deployment that has tenants:**
+
+1. Put a `TENANT_REGISTRY_KEY` (64 hex) in that deployment's environment. Generate a fresh key there rather than reusing this checkout's, and keep an offline copy — losing it means stored tenant superuser passwords must be reset.
+2. Run `npx tsx scripts/rekey-tenant-registry.ts` (dry run) and confirm the tenant list is what you expect.
+3. Run `--apply`; the script writes a timestamped `registry.json.bak-*` before replacing the file atomically.
+4. Restart PocketBase and the app.
+5. Run `--verify`; it exits non-zero if any plaintext password remains.
+
+**Caveat:** the key created here lives only in this checkout's git-ignored env file and the offline copy; a different deployment must not assume it has the same one.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
