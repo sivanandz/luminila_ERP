@@ -226,6 +226,82 @@ export async function updateStock(variantId: string, quantityChange: number): Pr
     }
 }
 
+export interface CatalogSearchProduct {
+    id: string;
+    name: string;
+    sku: string;
+    base_price: number;
+    hsn_code?: string;
+    variants: Array<{
+        id: string;
+        sku_suffix?: string;
+        size?: string;
+        color?: string;
+        price_adjustment: number;
+    }>;
+}
+
+/**
+ * Catalog search for document builders (challan, invoices, orders). Lives here
+ * so pages do not interpolate their own PocketBase filters; the search term is
+ * sanitized once, and variants are fetched in batches of thirty parent ids.
+ */
+export async function searchProductsForDocuments(query: string): Promise<CatalogSearchProduct[]> {
+    const term = sanitizeFilter((query || '').trim());
+    if (term.length < 2) return [];
+
+    const products = await pb.collection('products').getFullList<Product>({
+        filter: `name~"${term}" || sku~"${term}"`,
+        batch: 200,
+    });
+    if (products.length === 0) return [];
+
+    const variants: ProductVariant[] = [];
+    for (let i = 0; i < products.length; i += 30) {
+        const filter = products.slice(i, i + 30).map((p) => `product="${p.id}"`).join(' || ');
+        variants.push(
+            ...(await pb.collection('product_variants').getFullList<ProductVariant>({ filter, batch: 500 }))
+        );
+    }
+
+    return products.map((product) => ({
+        id: product.id,
+        name: product.name,
+        sku: product.sku,
+        base_price: product.base_price,
+        hsn_code: product.hsn_code,
+        variants: variants
+            .filter((variant) => variant.product === product.id)
+            .map((variant) => ({
+                id: variant.id,
+                sku_suffix: variant.sku_suffix,
+                size: variant.size,
+                color: variant.color,
+                price_adjustment: variant.price_adjustment || 0,
+            })),
+    }));
+}
+
+/** Resolve a scanned or typed barcode (product sku or barcode) to its product and first variant. */
+export async function resolveBarcodeProduct(
+    code: string
+): Promise<{ product: Product; variant: ProductVariant | null } | null> {
+    const term = sanitizeFilter((code || '').trim());
+    if (!term) return null;
+
+    try {
+        const product = await pb
+            .collection('products')
+            .getFirstListItem<Product>(`sku="${term}" || barcode="${term}"`);
+        const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+            filter: `product="${product.id}"`,
+        });
+        return { product, variant: variants.items[0] || null };
+    } catch {
+        return null;
+    }
+}
+
 export async function getTypeAheadProducts(query: string): Promise<ProductWithVariant[]> {
     if (!query || query.length < 2) return [];
 

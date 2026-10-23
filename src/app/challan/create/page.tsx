@@ -26,8 +26,12 @@ import {
 } from "@/lib/challan";
 import { getStoreSettings, type StoreSettings } from "@/lib/invoice";
 import { searchCustomers, type Customer } from "@/lib/customers";
-import { type Product, type ProductVariant } from "@/lib/products";
-import { pb } from "@/lib/pocketbase";
+import {
+    resolveBarcodeProduct,
+    searchProductsForDocuments,
+    type Product,
+    type ProductVariant,
+} from "@/lib/products";
 import { toast } from "sonner";
 
 // Product search dropdown result: Product/ProductVariant records narrowed
@@ -109,41 +113,20 @@ export default function CreateChallanPage() {
         const timeout = setTimeout(async () => {
             if (productSearch.length > 1) {
                 try {
-                    const products = await pb.collection('products').getFullList<Product>({
-                        filter: `name~"${productSearch}" || sku~"${productSearch}"`,
-                    });
-                    const productIds = products.map((p) => p.id);
-                    let variants: ProductVariant[] = [];
-                    if (productIds.length > 0) {
-                        try {
-                            const variantFilter = productIds.map(id => `product="${id}"`).join(' || ');
-                            variants = await pb.collection('product_variants').getFullList<ProductVariant>({ filter: variantFilter });
-                        } catch {
-                            variants = [];
-                        }
-                    }
-                    const data = products.map((p) => {
-                        const prodVariants = variants.filter((v) => v.product === p.id);
-                        return {
-                            id: p.id,
-                            name: p.name,
-                            base_price: p.base_price,
-                            hsn_code: p.hsn_code,
-                            variants: prodVariants.length > 0 ? prodVariants.map((v) => ({
-                                id: v.id,
-                                sku_suffix: v.sku_suffix,
-                                size: v.size,
-                                color: v.color,
-                                price_adjustment: v.price_adjustment || 0,
-                            })) : [{
-                                id: '',
-                                sku_suffix: '',
-                                size: '',
-                                color: '',
-                                price_adjustment: 0,
-                            }],
-                        };
-                    });
+                    const products = await searchProductsForDocuments(productSearch);
+                    const data = products.map((p) => ({
+                        id: p.id,
+                        name: p.name,
+                        base_price: p.base_price,
+                        hsn_code: p.hsn_code,
+                        variants: p.variants.length > 0 ? p.variants : [{
+                            id: '',
+                            sku_suffix: '',
+                            size: '',
+                            color: '',
+                            price_adjustment: 0,
+                        }],
+                    }));
                     setProductResults(data);
                 } catch (err) {
                     console.error('Error fetching products for challan:', err);
@@ -227,12 +210,9 @@ export default function CreateChallanPage() {
     useEffect(() => {
         const unregister = MobileScanner.registerContext("challan_entry", async (result) => {
             try {
-                const prod = await pb.collection("products").getFirstListItem(`sku="${result.barcode}" || barcode="${result.barcode}"`);
-                if (prod) {
-                    const variants = await pb.collection("product_variants").getList(1, 1, {
-                        filter: `product="${prod.id}"`,
-                    });
-                    const v = variants.items[0];
+                const resolved = await resolveBarcodeProduct(result.barcode);
+                if (resolved) {
+                    const { product: prod, variant: v } = resolved;
                     handleScannedItem({
                         barcode: result.barcode,
                         product: {

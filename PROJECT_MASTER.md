@@ -1751,6 +1751,20 @@ The 16-item audit is a subset of the 55-item register with its own numbering. St
 
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; layout lint clean. A production build still stops at the volume's `readlink` limitation before CSS asset emission, so the theme was not visually verified in a packaged artifact.
 
+### 11.46 Slice 44: first page moved behind the service layer (2026-10-23)
+
+**D-23 progress:** `src/app/challan/create/page.tsx` no longer imports PocketBase or builds its own filters; its direct `pb.collection` count is **zero** (was four).
+
+| Change | Files |
+|---|---|
+| New `searchProductsForDocuments(query)` — sanitized term, batched variant lookup, shared by document builders | `src/lib/products.ts` |
+| New `resolveBarcodeProduct(code)` — product by sku or barcode plus first variant | same |
+| Challan builder uses both; search input is now sanitized in the service instead of interpolated in the page | `src/app/challan/create/page.tsx` |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors (unused type imports remain warnings).
+
+**D-23 stays open** by design: the audit counts 135 direct calls outside `src/lib` across 26 files, with `setup` (17) and `inventory` (13) as the named next targets. The pattern is established; each remaining page is a mechanical pass.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
