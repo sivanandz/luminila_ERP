@@ -1,3 +1,4 @@
+import { isValidGstin as isValidGstinChecksum } from './gstin';
 /**
  * GST Utilities for Indian Tax Compliance
  * Jewelry: 3% GST (1.5% CGST + 1.5% SGST for intra-state)
@@ -232,6 +233,12 @@ export function validateGSTIN(gstin: string): { valid: boolean; message: string 
     const stateCode = gstin.substring(0, 2);
     if (!Object.values(STATE_CODES).includes(stateCode)) {
         return { valid: false, message: 'Invalid state code in GSTIN' };
+    }
+
+    // The fifteenth character is a mod-36 check digit; a plausible-looking GSTIN
+    // with a wrong digit must not reach an invoice.
+    if (!isValidGstinChecksum(gstin)) {
+        return { valid: false, message: 'GSTIN check digit does not match' };
     }
 
     return { valid: true, message: '' };

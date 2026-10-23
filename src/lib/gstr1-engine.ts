@@ -1,3 +1,4 @@
+import { isValidGstin as isValidGstinChecksum } from './gstin';
 /**
  * Official Statutory GSTR-1 Return Exports Engine
  * Reverse-engineered from Vyapar BizLogic (GSTR1ReportObject.js, GSTR1HsnReportObject.js, GSTRUnits.js)
@@ -192,9 +193,8 @@ export interface Gstr1CompileOptions {
  * Validates 15-digit Indian GSTIN format
  */
 export function isValidGstin(gstin?: string): boolean {
-    if (!gstin) return false;
-    const sanitized = gstin.trim().toUpperCase();
-    return /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(sanitized);
+    // Shape plus the official check digit; see src/lib/gstin.ts.
+    return isValidGstinChecksum(gstin);
 }
 
 /**

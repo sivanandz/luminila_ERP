@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>25 open · 30 fixed</span>
+            <span class="chip accent"><span class="dot"></span>24 open · 31 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1068,9 +1068,9 @@ const DEFECTS = [
     where:"src/lib/orders.ts:156,250,256",
     impact:"A GST-registered store can issue a 0 percent invoice, and every line is stamped 7117 so the HSN summary disagrees with the invoice.",
     fix:"Default to the store rate and derive HSN from the product." },
-  { id:"D-16", sev:"P2", area:"tax", title:"GSTIN is validated by shape only, never by checksum",
-    where:"src/lib/gst.ts:226-237 · src/lib/eway-bill.ts:689-694",
-    impact:"Any 15-character string of the right shape prints on invoices and e-way bills, then fails at filing.",
+  { id:"D-16", sev:"P2", status:"fixed", area:"tax", title:"GSTIN is validated by shape only, never by checksum",
+    where:"src/lib/gstin.ts (new) · gst.ts · eway-bill.ts · gstr1-engine.ts · reports.ts",
+    impact:"Any 15-character string of the right shape used to print on invoices and e-way bills, then fail at filing. The GSTN mod-36 check digit is now required everywhere.",
     fix:"Implement the mod-36 check digit once and reuse it." },
   { id:"D-17", sev:"P2", area:"money", title:"Loyalty balances lose updates and the redemption cap is unenforced",
     where:"src/lib/loyalty.ts:313-387",
@@ -1265,7 +1265,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","133 assertions across eighteen suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","140 assertions across nineteen suites; non-zero exit on failure."],
+  ["GSTIN tests","npx tsx src/scripts/test-gstin.ts","pass","7 assertions: valid specimens, wrong check digits, normalisation, malformed input."],
   ["Registry secret tests","npx tsx src/scripts/test-tenant-secrets.ts","pass","8 assertions: round-trip, fresh IV, wrong key, tamper, passthrough, key parse."],
   ["Tenant runtime tests","npx tsx src/scripts/test-tenant-runtime.ts","pass","5 assertions: registry resolution, active tenant, env fallback, no registry, casing."],
   ["Webhook dedupe tests","npx tsx src/scripts/test-webhook-dedupe.ts","pass","6 assertions: event keys, duplicate detection, cap, exact paise match."],

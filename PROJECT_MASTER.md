@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 133 assertions across 18 suites, exit 0 |
+| Test command | `npm test` | 140 assertions across 19 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -144,6 +144,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Webhook dedupe tests | `npx tsx src/scripts/test-webhook-dedupe.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Tenant runtime tests | `npx tsx src/scripts/test-tenant-runtime.ts` | **5 passed, 0 failed** (2026-10-23) |
 | Registry secret tests | `npx tsx src/scripts/test-tenant-secrets.ts` | **8 passed, 0 failed** (2026-10-23) |
+| GSTIN tests | `npx tsx src/scripts/test-gstin.ts` | **7 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -650,7 +651,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-16, D-20, D-22, D-24, D-25, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1490,6 +1491,22 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **Verified:** `npm run typecheck` clean; `npm test` 133 assertions across 18 suites; targeted ESLint 0 errors.
 
 **Still open in this cluster:** channel enum and campaign attribution, both waiting on the migration bundle.
+
+### 11.29 Slice 29: GSTIN check digit (2026-10-23)
+
+**Closed:** D-16.
+
+| Change | Files | Why |
+|---|---|---|
+| Checksum module | `src/lib/gstin.ts` (new) | Implements the GSTN mod-36 check digit: alternate factors, quotient plus remainder per character |
+| One validator everywhere | `gstr1-engine.ts`, `gst.ts`, `eway-bill.ts`, `reports.ts` | Shape-only checks are replaced by shape plus check digit, so a mistyped GSTIN cannot reach an invoice, an export file or a B2B classification |
+| Empty GSTIN handling | `eway-bill.ts` | An empty value is no longer treated as valid; `URP` still passes as the unregistered marker |
+| Fixtures corrected | `test-gstr1-engine.ts` | Two fixture GSTINs and the supplier GSTIN had invalid check digits; they were replaced with checksum-valid specimens |
+| Tests | `src/scripts/test-gstin.ts` (new) | Three published valid GSTINs, wrong check digits, lowercase and padding, malformed input, state code |
+
+**Verified:** `npm run typecheck` clean; `npm test` 140 assertions across 19 suites; the legacy 58-assertion GSTR-1 suite passes with corrected fixtures; targeted ESLint 0 errors.
+
+**Still open in this cluster:** D-12 (GRN race), D-13 (landed-cost notes blob), D-14 (product GST rate), D-15 (order invoice rate/HSN), D-21 (discount gaps), D-27 and D-28.
 
 ## Appendix A: Route inventory
 

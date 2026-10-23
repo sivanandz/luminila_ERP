@@ -36,14 +36,15 @@ console.log('============================================================\n');
 // -------------------------------------------------------------------------
 console.log('Suite 1: GSTIN & State Code Validation');
 {
-    assert(isValidGstin('29AABCU9603R1ZM') === true, 'Accepts valid 15-digit GSTIN (Karnataka 29)');
-    assert(isValidGstin('33AAAAA0000A1Z5') === true, 'Accepts valid 15-digit GSTIN (Tamil Nadu 33)');
-    assert(isValidGstin('29AABCU9603R1Z') === false, 'Rejects 14-digit GSTIN');
-    assert(isValidGstin('29AABCU9603R1ZMM') === false, 'Rejects 16-digit GSTIN');
+    assert(isValidGstin('29AAGCB7383J1Z4') === true, 'Accepts valid 15-digit GSTIN (Karnataka 29)');
+    assert(isValidGstin('27AAPFU0939F1ZV') === true, 'Accepts valid 15-digit GSTIN (Maharashtra 27)');
+    assert(isValidGstin('29AAGCB7383J1Z') === false, 'Rejects 14-digit GSTIN');
+    assert(isValidGstin('29AAGCB7383J1Z44') === false, 'Rejects 16-digit GSTIN');
+    assert(isValidGstin('29AAGCB7383J1Z5') === false, 'Rejects a wrong check digit');
     assert(isValidGstin('URP') === false, 'Rejects "URP" (Unregistered Person)');
     assert(isValidGstin('') === false, 'Rejects empty string');
 
-    assert(extractStateCode('29AABCU9603R1ZM') === '29', 'Extracts state code "29" from GSTIN');
+    assert(extractStateCode('29AAGCB7383J1Z4') === '29', 'Extracts state code "29" from GSTIN');
     assert(extractStateCode('33') === '33', 'Extracts "33" from state code string');
     assert(normalizeUqc('grams') === 'GMS', 'Normalizes "grams" to "GMS"');
     assert(normalizeUqc('carats') === 'CTS', 'Normalizes "carats" to "CTS"');
@@ -72,7 +73,7 @@ console.log('\nSuite 3: Multi-Transaction GSTR-1 Compilation');
             invoice_date: '2026-10-02',
             invoice_type: 'regular',
             buyer_name: 'Mayur Jewellers B2B',
-            buyer_gstin: '29AABCU9603R1ZM',
+            buyer_gstin: '29AAGCB7383J1Z4',
             place_of_supply: '29',
             grand_total: 103000,
             taxable_value: 100000,
@@ -194,7 +195,7 @@ console.log('\nSuite 3: Multi-Transaction GSTR-1 Compilation');
             invoice_date: '2026-10-11',
             invoice_type: 'credit_note',
             buyer_name: 'Mayur Jewellers B2B',
-            buyer_gstin: '29AABCU9603R1ZM',
+            buyer_gstin: '29AAGCB7383J1Z4',
             place_of_supply: '29',
             original_invoice_number: 'INV-2026-001',
             original_invoice_date: '2026-10-02',
@@ -217,7 +218,7 @@ console.log('\nSuite 3: Multi-Transaction GSTR-1 Compilation');
     ];
 
     const payload = compileGstr1Payload(invoices, {
-        supplierGstin: '29AABCS1429B1ZB',
+        supplierGstin: '29AABCS1429B1ZQ',
         financialPeriod: '102026',
         supplierStateCode: '29',
         b2cLargeThreshold: 250000,
@@ -226,13 +227,13 @@ console.log('\nSuite 3: Multi-Transaction GSTR-1 Compilation');
     });
 
     // Check Header
-    assert(payload.gstin === '29AABCS1429B1ZB', 'Supplier GSTIN matches');
+    assert(payload.gstin === '29AABCS1429B1ZQ', 'Supplier GSTIN matches');
     assert(payload.fp === '102026', 'Financial period is 102026');
     assert(payload.version === 'GST3.0.4', 'Offline schema version is GST3.0.4');
 
     // Check Table 4: B2B
     assert(payload.b2b.length === 1, 'Table 4 has 1 B2B recipient (Mayur Jewellers)', `Got ${payload.b2b.length}`);
-    assert(payload.b2b[0].ctin === '29AABCU9603R1ZM', 'B2B CTIN is Mayur Jewellers');
+    assert(payload.b2b[0].ctin === '29AAGCB7383J1Z4', 'B2B CTIN is Mayur Jewellers');
     assert(payload.b2b[0].inv.length === 1, 'B2B recipient has 1 invoice');
     assert(payload.b2b[0].inv[0].inum === 'INV-2026-001', 'B2B invoice number is INV-2026-001');
     assert(payload.b2b[0].inv[0].itms[0].num === 1, 'Item sequential number is 1');
@@ -295,7 +296,7 @@ console.log('\nSuite 3: Multi-Transaction GSTR-1 Compilation');
     const jsonStr = exportGstr1JsonString(payload);
     assert(typeof jsonStr === 'string' && jsonStr.length > 500, 'JSON string exported successfully');
     const parsed = JSON.parse(jsonStr);
-    assert(parsed.gstin === '29AABCS1429B1ZB', 'JSON string is valid and round-trip parseable');
+    assert(parsed.gstin === '29AABCS1429B1ZQ', 'JSON string is valid and round-trip parseable');
 }
 
 console.log('\n============================================================');

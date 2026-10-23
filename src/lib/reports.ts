@@ -1,3 +1,4 @@
+import { isValidGstin as isValidGstinChecksum } from './gstin';
 /**
  * Reports Service Layer
  * Sales, GST (GSTR-1), Stock, and other report queries using PocketBase
@@ -277,7 +278,7 @@ export async function getGSTR1Report(
                 reverseCharge: inv.is_reverse_charge ? 'Y' : 'N',
             };
 
-            if (inv.buyer_gstin && inv.buyer_gstin.length === 15) {
+            if (inv.buyer_gstin && isValidGstinChecksum(inv.buyer_gstin)) {
                 b2b.push(row);
             } else {
                 row.invoiceType = 'B2C Large';

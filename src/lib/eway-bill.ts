@@ -1,3 +1,4 @@
+import { isValidGstin as isValidGstinChecksum } from './gstin';
 /**
  * E-way Bill Service Layer
  * Integration with NIC E-way Bill GST Portal API (Version 1.03)
@@ -687,9 +688,7 @@ export function isEwayBillRequired(invoiceValue: number, _transportMode?: string
 // ============================================
 
 export function isValidGstin(gstin: string): boolean {
-    if (!gstin || gstin === 'URP') return true; // URP = Unregistered Person
-
-    // GSTIN format: 2 digits state code + 10 char PAN + 1 entity code + 1 check digit + Z
-    const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
-    return gstinRegex.test(gstin.toUpperCase());
+    if (gstin === 'URP') return true; // URP = Unregistered Person
+    // Shape plus the official check digit; an empty value is not a GSTIN.
+    return isValidGstinChecksum(gstin);
 }
