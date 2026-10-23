@@ -1644,6 +1644,33 @@ Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 asse
 
 **Note:** no production path currently calls `recordDiscountUsage` — discounts are validated but their usage is not recorded outside tests. That is recorded here rather than papered over; wiring it belongs with the POS checkout that already computes the discount.
 
+### 11.40 Slice 39: closing verification (2026-10-23)
+
+Every gate re-run after slice 38, from the repository as committed:
+
+| Gate | Command | Result |
+|---|---|---|
+| Types | `npm run typecheck` | exit 0 |
+| Tests | `npm test` | **144 assertions across 20 suites**, 0 failed |
+| Lint | `npx eslint src` | **0 errors**, 323 warnings |
+| Rust | `cargo check` in `src-tauri` | finished clean, including the server-backed config |
+| Explorer | extracted script + `node --check` | exit 0 |
+
+**Register: 44 fixed, 11 open, 1 P1 (S-06).**
+
+Remaining, for the next session:
+
+| Item | What it needs |
+|---|---|
+| S-06 | Approval plus a `TENANT_REGISTRY_KEY` to run `scripts/rekey-tenant-registry.ts --apply` |
+| D-13, D-14, D-36, D-37 | Apply `docs/migrations-draft/` and restart PocketBase |
+| D-12 | Serialize the GRN receipt path in `purchase.ts` |
+| D-19 | Cross-process document numbering |
+| D-23 | Move page-level `pb.collection` calls behind services, starting with setup and inventory |
+| D-32 | One theme strategy and token replacement for the 145 hex literals |
+
+**What is proven and what is not:** the code-level conflict behind D-08 is gone and the server-backed config compiles; an installer was **not** produced, because this volume refuses the symlinks the build requires. No migration was applied and neither `pb_data` nor the tenant registry was modified.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

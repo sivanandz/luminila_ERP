@@ -1257,7 +1257,7 @@ const ORPHANS = [
 const VERIFY = [
   ["Type check","npx tsc --noEmit --incremental false","pass","Exit 0, clean at f0e96b4. No defect in this page is a type error."],
   ["Type check, default","npx tsc --noEmit","blocked","TS5033 EPERM writing tsconfig.tsbuildinfo on the exFAT volume."],
-  ["Lint","npx eslint src","pass","324 problems, 0 errors, 324 warnings."],
+  ["Lint","npx eslint src","pass","323 problems, 0 errors, 323 warnings."],
   ["Routes counted","40 page files, 13 route handlers","pass","Matches appendix A and B in the master document."],
   ["Production build","npm run build","blocked","Stopped at .next/trace-build by file permissions. The export conflict is configuration-level and independent."],
   ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
@@ -1282,7 +1282,7 @@ const VERIFY = [
   ["Karigar costing tests","npx tsx src/scripts/test-manufacturing.ts","pass","7 assertions: raw cost, charges, scrap credit, tolerance pass and fail, numbering."],
   ["QC routing tests","npx tsx src/scripts/test-returns-qc.ts","pass","4 assertions: grade to action mapping, and deductions only on remorse."],
   ["GSTR-1 period tests","npx tsx src/scripts/test-gstr1-period.ts","pass","3 assertions: MMYYYY period and the 1 April financial-year boundary."],
-  ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build excluded until D-08 is settled."]
+  ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build now uses webpack with the server-backed config."]
 ];
 
 /* =====================================================================
