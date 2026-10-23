@@ -6,7 +6,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { tenantAccessAllowed, roleGrantsCapability } from '../lib/api-auth';
+import { tenantAccessAllowed, roleGrantsCapability, constantTimeEqual } from '../lib/api-auth';
 import { normalizeBindingEmail, resolveOrderTenant } from '../lib/storefront';
 
 let passed = 0;
@@ -109,6 +109,13 @@ test('a role with no permissions or no role record is denied', () => {
 test('a malformed permission entry is denied rather than trusted', () => {
     const broken = { name: 'Staff', permissions: { products: 'update' as unknown as string[] } };
     assert.equal(roleGrantsCapability(broken, 'products', 'update'), false);
+});
+
+test('shared secrets compare without leaking length', () => {
+    assert.equal(constantTimeEqual('sync-key-123', 'sync-key-123'), true);
+    assert.equal(constantTimeEqual('sync-key-123', 'sync-key-124'), false);
+    assert.equal(constantTimeEqual('short', 'a-much-longer-value'), false);
+    assert.equal(constantTimeEqual('', ''), true);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

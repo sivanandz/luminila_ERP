@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateOperator, hasCapability } from '@/lib/api-auth';
+import { authenticateOperator, constantTimeEqual, hasCapability } from '@/lib/api-auth';
 import PocketBase from 'pocketbase';
 import { pb, ensureServerAuth, getPocketBaseUrl, sanitizeFilter } from '@/lib/pocketbase';
 import { getStorefrontBinding } from '@/lib/storefront';
@@ -32,12 +32,15 @@ export async function POST(req: NextRequest) {
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
         const syncSecret = req.headers.get('x-catalog-sync-key') || '';
         const accessToken = process.env.META_GRAPH_ACCESS_TOKEN || '';
+        // The sync key is its own secret. A Meta Graph token must never double
+        // as a bearer-equivalent key for this endpoint.
+        const syncKey = process.env.CATALOG_SYNC_KEY || '';
 
         let isAuthorized = false;
         let isSuperuserCaller = false;
         let verifiedEmail = '';
 
-        if (syncSecret && accessToken && syncSecret === accessToken) {
+        if (syncSecret && syncKey && constantTimeEqual(syncSecret, syncKey)) {
             isAuthorized = true;
             isSuperuserCaller = true;
         } else if (token) {
@@ -80,9 +83,21 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        const catalogId = process.env.META_CATALOG_ID || '1548180657057026';
+        const catalogId = (process.env.META_CATALOG_ID || '').trim();
         const apiVersion = process.env.META_GRAPH_VERSION || 'v21.0';
-        const phone = process.env.META_BUSINESS_PHONE || '917092122334';
+        const phone = (process.env.META_BUSINESS_PHONE || '').trim();
+
+        if (!catalogId || !phone) {
+            // No shipped defaults: a hardcoded catalog would publish one shop's
+            // products into another shop's Meta account.
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: 'Meta catalog is not configured. Set META_CATALOG_ID and META_BUSINESS_PHONE for this installation.',
+                },
+                { status: 503 }
+            );
+        }
 
         // Resolve strict tenant scope: regular users are locked to their own email
         const tenantEmail = (

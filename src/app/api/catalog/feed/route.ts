@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pb, ensureServerAuth, sanitizeFilter } from '@/lib/pocketbase';
 import { getStorefrontBinding, normalizeBindingEmail } from '@/lib/storefront';
 import { resolvePublicCatalogOrigin } from '@/lib/meta-catalog-batch';
-import { authenticateOperator, tenantAccessAllowed, extractBearer } from '@/lib/api-auth';
+import { authenticateOperator, constantTimeEqual, tenantAccessAllowed, extractBearer } from '@/lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,11 +27,12 @@ export async function GET(req: NextRequest) {
         const phone = (searchParams.get('phone') || process.env.META_BUSINESS_PHONE || '').trim();
 
         // The feed is tenant data. Accept either the catalog sync key (server to
-        // server: Meta or a scheduler) or a valid operator session. An
-        // unauthenticated caller used to receive an arbitrary tenant's catalog.
-        const syncKey = process.env.CATALOG_SYNC_KEY || process.env.META_GRAPH_ACCESS_TOKEN || '';
+        // server: Meta or a scheduler) or a valid operator session. A Meta Graph
+        // token is not accepted here; it has its own scope and must not act as a
+        // shared bearer key.
+        const syncKey = process.env.CATALOG_SYNC_KEY || '';
         const providedKey = req.headers.get('x-catalog-sync-key') || extractBearer(req);
-        const keyValid = Boolean(syncKey) && providedKey === syncKey;
+        const keyValid = Boolean(syncKey) && Boolean(providedKey) && constantTimeEqual(providedKey, syncKey);
 
         if (!keyValid) {
             const session = await authenticateOperator(req, accountEmail || undefined);

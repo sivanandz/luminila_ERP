@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 93 assertions across 12 suites, exit 0 |
+| Test command | `npm test` | 100 assertions across 13 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -138,6 +138,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Offline queue tests | `npx tsx src/scripts/test-offline-queue.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Landed-cost tests | `npx tsx src/scripts/test-valuation.ts` | **7 passed, 0 failed** (2026-10-23) |
 | Imitation taxonomy tests | `npx tsx src/scripts/test-imitation.ts` | **8 passed, 0 failed** (2026-10-23) |
+| Rate limiter tests | `npx tsx src/scripts/test-rate-limit.ts` | **6 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -617,7 +618,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14 (section 11). S-05 and S-06 are partially mitigated. S-08, S-10, S-11, S-15 and S-16 remain open.
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14, S-15, S-16 (section 11). S-05 and S-06 are partially mitigated. S-08, S-10 and S-11 remain open.
 
 Two honest qualifications:
 
@@ -644,7 +645,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1321,6 +1322,25 @@ The bundle covers the three domains that currently store JSON in `store_settings
 **Deliberately excluded:** the six phantom collections, because their engines are still unwired and empty tables would recreate the original defect; tenant registry encryption, which is a re-key plan rather than a schema addition; and a weighted-average cost history, which is a follow-up.
 
 **To proceed I need an explicit yes.** The README lists the steps: back up through `/backup`, check for duplicate invoice orders, copy the files into `pocketbase/pb_migrations`, restart, and verify four screens.
+
+### 11.19 Slice 19: public surface hardening (2026-10-23)
+
+**Closed:** S-15, S-16.
+
+| Change | Files | Why |
+|---|---|---|
+| Fixed-window limiter | `src/lib/rate-limit.ts` (new) | 30 tracking lookups per minute per client address; the route now answers 429 with `Retry-After` |
+| Courier proxy limited | `src/app/api/tracking/st-courier/route.ts` | The unauthenticated scraping proxy can no longer be used as an open fetcher |
+| Catalog identity required | `src/app/api/catalog/batch/route.ts` | Hardcoded catalog id and phone removed; the route returns 503 until `META_CATALOG_ID` and `META_BUSINESS_PHONE` are set, so one shop's catalog cannot publish into another's account |
+| Sync key separated from the Graph token | `catalog/batch/route.ts`, `catalog/feed/route.ts` | Only `CATALOG_SYNC_KEY` authorises sync, compared with `constantTimeEqual`; a Meta token no longer doubles as a shared bearer key |
+| Constant-time comparison | `src/lib/api-auth.ts` | Shared-secret comparison no longer leaks length or content through timing |
+| Tests | `test-rate-limit.ts` (new), `test-tenant-auth.ts` | Window behaviour, independence, pruning, client key extraction; secret comparison |
+
+**Configuration is now required for catalog sync:** `CATALOG_SYNC_KEY`, `META_CATALOG_ID` and `META_BUSINESS_PHONE`. An installation without them gets a clear 503 instead of silent use of the previous hardcoded values.
+
+**Verified:** `npm run typecheck` clean; `npm test` 100 assertions across 13 suites; targeted ESLint 0 errors.
+
+**Still open in this cluster:** S-08 (sidecar token shipped to the client), S-10 (webhook secret unset), S-11 (ephemeral customer-session secret), plus the S-05 and S-06 items that need your approval.
 
 ## Appendix A: Route inventory
 

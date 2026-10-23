@@ -1,11 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchStCourierLiveTracking, isValidStCourierAwb } from "@/lib/logistics-engine";
+import { FixedWindowRateLimiter, clientKeyFromHeaders } from "@/lib/rate-limit";
+
+// Public, unauthenticated scraping proxy: cap it per client address.
+const trackingLimiter = new FixedWindowRateLimiter({ max: 30, windowMs: 60_000 });
 
 export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const rawAwb = searchParams.get("awb") || "";
     const format = searchParams.get("format");
     const isJson = format === "json" || request.headers.get("accept")?.includes("application/json");
+
+    const limit = trackingLimiter.check(clientKeyFromHeaders(request.headers));
+    if (!limit.allowed) {
+        const retryAfter = Math.ceil(limit.retryAfterMs / 1000).toString();
+        if (isJson) {
+            return NextResponse.json(
+                { success: false, error: "Too many tracking requests. Try again shortly." },
+                { status: 429, headers: { "Retry-After": retryAfter } }
+            );
+        }
+        return new NextResponse("Too many tracking requests. Try again shortly.", {
+            status: 429,
+            headers: { "Content-Type": "text/plain; charset=utf-8", "Retry-After": retryAfter },
+        });
+    }
 
     const cleanAwb = rawAwb.replace(/[^0-9]/g, "");
 

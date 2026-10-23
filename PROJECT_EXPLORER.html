@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>32 open · 23 fixed</span>
+            <span class="chip accent"><span class="dot"></span>30 open · 25 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1197,11 +1197,11 @@ const DEFECTS = [
     where:"src/app/api/catalog/image/route.ts:19-21 · inventory/template/route.ts:4-8",
     impact:"A server superuser getOne returns metadata across tenants, and the template route serves whichever tenant the global client is authenticated as.",
     fix:"Filter every read by tenant explicitly." },
-  { id:"S-15", sev:"P3", area:"security", title:"An unauthenticated proxy scrapes a courier site",
+  { id:"S-15", sev:"P3", status:"fixed", area:"security", title:"An unauthenticated proxy scrapes a courier site",
     where:"src/app/api/tracking/st-courier/route.ts:44,162-168",
     impact:"Anyone can use the deployment as a free scraping proxy, with a 60 second public cache and no rate limit.",
     fix:"Add a rate limit and a signed or scoped caller." },
-  { id:"S-16", sev:"P3", area:"security", title:"Meta catalog identity is hardcoded and the sync key equals the Graph token",
+  { id:"S-16", sev:"P3", status:"fixed", area:"security", title:"Meta catalog identity is hardcoded and the sync key equals the Graph token",
     where:"src/app/api/catalog/batch/route.ts:39,70-72",
     impact:"A Meta Graph token doubles as a bearer-equivalent API key, and the catalog id is fixed to one business.",
     fix:"Use a separate scoped key and configuration values." }
@@ -1266,7 +1266,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","93 assertions across twelve suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","100 assertions across thirteen suites; non-zero exit on failure."],
+  ["Rate limiter tests","npx tsx src/scripts/test-rate-limit.ts","pass","6 assertions: window, refusal, reset, key independence, pruning, client key."],
   ["Imitation tests","npx tsx src/scripts/test-imitation.ts","pass","8 assertions: label order, tag codes, durability, tiers, rounding."],
   ["Landed-cost tests","npx tsx src/scripts/test-valuation.ts","pass","7 assertions: proportional split, rounding, free goods, summary reconciliation."],
   ["Offline queue tests","npx tsx src/scripts/test-offline-queue.ts","pass","6 assertions: enqueue, remove, clear, corrupt store."],
