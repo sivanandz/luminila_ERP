@@ -10,6 +10,7 @@ import { spawn, execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
+import { readRegistrySecret } from './tenant-secrets';
 
 export interface TenantDbRecord {
     email: string;
@@ -432,7 +433,7 @@ export async function getServerTenantPocketBaseConfig(preferredEmail?: string): 
         // No hardcoded fallback: a missing credential must fail loudly instead of
         // silently authenticating every tenant with a password that ships in code.
         const tenantPassword =
-            rec.adminPassword ||
+            (rec.adminPassword ? readRegistrySecret(rec.adminPassword) : '') ||
             process.env.POCKETBASE_SUPERUSER_PASSWORD ||
             process.env.PB_ADMIN_PASSWORD;
         if (!tenantPassword) {

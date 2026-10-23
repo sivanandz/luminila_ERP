@@ -1,4 +1,5 @@
 import PocketBase from 'pocketbase';
+import { readRegistrySecret } from './tenant-secrets';
 
 // Determine default URL
 const DEFAULT_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8091';
@@ -95,11 +96,13 @@ export async function createTenantClient(preferredTenantEmail?: string): Promise
     client.autoCancellation(false);
 
     if (runtime.adminEmail && runtime.adminPassword) {
+        // Values may be plaintext (legacy registry) or enc:v1: ciphertext.
+        const password = readRegistrySecret(runtime.adminPassword);
         try {
-            await client.collection("_superusers").authWithPassword(runtime.adminEmail, runtime.adminPassword);
+            await client.collection("_superusers").authWithPassword(runtime.adminEmail, password);
             return client;
         } catch {
-            await client.collection("users").authWithPassword(runtime.adminEmail, runtime.adminPassword).catch(() => {});
+            await client.collection("users").authWithPassword(runtime.adminEmail, password).catch(() => {});
         }
     }
 
@@ -173,7 +176,7 @@ export async function ensureServerAuth(preferredTenantEmail?: string): Promise<b
                         return true;
                     }
                     if (tenantRec.email && tenantRec.adminPassword) {
-                        await pb.collection("_superusers").authWithPassword(tenantRec.email, tenantRec.adminPassword);
+                        await pb.collection("_superusers").authWithPassword(tenantRec.email, readRegistrySecret(tenantRec.adminPassword));
                         return true;
                     }
                 }

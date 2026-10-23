@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 122 assertions across 17 suites, exit 0 |
+| Test command | `npm test` | 130 assertions across 18 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -143,6 +143,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Sidecar token tests | `npx tsx src/scripts/test-whatsapp-secret.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Webhook dedupe tests | `npx tsx src/scripts/test-webhook-dedupe.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Tenant runtime tests | `npx tsx src/scripts/test-tenant-runtime.ts` | **5 passed, 0 failed** (2026-10-23) |
+| Registry secret tests | `npx tsx src/scripts/test-tenant-secrets.ts` | **8 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -622,7 +623,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). S-06 remains partial: the registry still holds tenant passwords in plaintext, which needs a re-key plan and your approval.
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). **S-06 partially mitigated:** the encrypted format, read path and re-key script are implemented and tested, but the registry migration itself is deliberately unapplied and needs your approval (plan in `docs/registry-rekey-plan.md`).
 
 Two honest qualifications:
 
@@ -1461,6 +1462,22 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **Verified:** `npm run typecheck` clean; `npm test` 122 assertions across 17 suites; full `npx eslint src` 0 errors.
 
 **Still open in this cluster:** S-06 only, which needs a re-key of `pb_tenants/registry.json` and your approval.
+
+### 11.27 Slice 27: registry re-key prepared (2026-10-23)
+
+**No registry was modified.** `pocketbase/pb_tenants/registry.json` does not exist on this machine (no tenants provisioned), and the migration script was run in dry-run only.
+
+| Change | Files | Why |
+|---|---|---|
+| Encrypted secret format | `src/lib/tenant-secrets.ts` (new) | AES-256-GCM, `enc:v1:` prefix, plaintext passthrough so the migration can be incremental |
+| Read path | `pocketbase.ts`, `tenant-db-manager.ts` | Registry passwords are decrypted where they are consumed; an encrypted value without `TENANT_REGISTRY_KEY` fails loudly instead of falling back |
+| Migration tool | `scripts/rekey-tenant-registry.ts` (new) | Dry-run by default, `--verify` for CI, `--apply` writes a timestamped backup then replaces the file atomically |
+| Plan | `docs/registry-rekey-plan.md` (new) | Key custody, steps, rollback, risks |
+| Tests | `src/scripts/test-tenant-secrets.ts` (new) | Round-trip, fresh IV, wrong key, tamper detection, plaintext passthrough, key parsing, environment read |
+
+**What is still true:** until someone runs `--apply` with a key, the registry stays plaintext. The code now supports both forms, so the migration is a data step rather than a deploy step.
+
+**Verified:** `npm run typecheck` clean; `npm test` 130 assertions across 18 suites; dry run and `--verify` both exit cleanly on the missing registry.
 
 ## Appendix A: Route inventory
 
