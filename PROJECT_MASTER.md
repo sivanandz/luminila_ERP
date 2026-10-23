@@ -103,10 +103,10 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 229 |
-| Lines of TypeScript/TSX | ~84,400 |
+| TypeScript/TSX files | 238 |
+| Lines of TypeScript/TSX | ~86,100 |
 | Route pages (`src/app/**/page.tsx`) | 40 |
-| Service modules (`src/lib/*.ts`) | 79 |
+| Service modules (`src/lib/*.ts`) | 83 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
 | Files starting with `"use client"` | 115 |
@@ -128,7 +128,8 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 33 assertions across 3 suites, exit 0 |
+| Test command | `npm test` | 40 assertions across 4 suites, exit 0 |
+| GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -381,7 +382,7 @@ Status vocabulary, applied strictly:
 | Amount in words | Live | Indian numbering; handles negatives |
 | Reverse charge flag | Live | Field and print output |
 | E-way bill JSON | Partial | Payload builder exists; defaults to Karnataka state code 29 when unset (D-13) |
-| GSTR-1 engine | Scaffold (unused) | `gstr1-engine.ts` implements the GSTN v3.0.4 schema with CDNR, CDNUR, HSN and DOCS, but has zero importers; `/reports/gst` uses the simplified builder in `reports.ts`, so credit-note and HSN tables never reach filing (D-09) |
+| GSTR-1 engine | Live | `/reports/gst` builds the official GSTN v3.0.4 file (B2B, B2CL, B2CS, CDNR, CDNUR, HSN, DOCS) from invoices and credit notes (section 11.8) |
 | GSTIN validation | **Partial** | Regex only, no checksum (D-11) |
 | Credit notes against invoices | Partial | Created and restocked; cumulative over-return unchecked (D-08) |
 | Invoice PDF | Live | Print stylesheet based |
@@ -867,7 +868,6 @@ This is the most misleading category in the repository: substantial code exists,
 |---|---|---|
 | `manufacturing-engine.ts` | Karigar BOM cost, metal loss, tolerance | No route, no importer |
 | `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
-| `gstr1-engine.ts` | Full GSTN v3.0.4 GSTR-1 including CDNR/CDNUR/HSN | `/reports/gst` uses the simpler `reports.ts` builder instead |
 | `returns-qc-engine.ts` | QC grading and routing | `/returns` does not call it |
 | `cross-border-engine.ts` | LUT export invoice with static FX | No route |
 | `cheque-engine.ts` | PDC lifecycle and maturity math | No route, no collection |
@@ -1129,6 +1129,20 @@ Chronological record of work done after the audit. Each entry lists what changed
 **Not verified, and stated as such:** no installer was produced, because `beforeBuildCommand` still runs the failing static export (D-08), so process start, restart and shutdown were not exercised on this machine. Only `pocketbase.exe` is checked in; Linux and macOS builds need their own binary at `src-tauri/resources/pocketbase`.
 
 **Still open in this cluster:** D-08, the export-versus-routes decision.
+
+### 11.8 Slice 8: official GSTR-1 (2026-10-23)
+
+**Feature closed:** the GSTR-1 engine, previously scaffold with zero importers.
+
+| Change | Files | Why |
+|---|---|---|
+| Period builder | `src/lib/gstr1-report.ts` (new) | Loads invoices, invoice items, credit notes and their items, maps them to the compiler's source shape, and computes turnover context |
+| Official file behind the report | `src/app/reports/gst/page.tsx` | "GSTN JSON" builds and downloads `GSTR1_<MMYYYY>.json`, refuses to run without a valid store GSTIN, and shows validation errors |
+| Period helpers tested | `src/scripts/test-gstr1-period.ts` (new) | MMYYYY formatting and the 1 April financial-year boundary |
+
+**Verified:** `npm run typecheck` clean; `npm test` 12 + 9 + 16 + 3 assertions; targeted ESLint 0 errors. The payload is validated by the engine's own GSTN validator; it has not been uploaded to a live portal.
+
+**Still open in this cluster:** returns QC routing, manufacturing/karigar, cheque/PDC, cross-border and imitation taxonomy wiring.
 
 ## Appendix A: Route inventory
 

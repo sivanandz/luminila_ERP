@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/table";
 
 import { getGSTR1Report, generateGSTR1JSON, exportToJSON, exportToCSV, type GSTR1Row } from "@/lib/reports";
+import { buildGstr1OfficialPayload } from "@/lib/gstr1-report";
 import { formatINR } from "@/lib/gst";
 
 // GSTR-1 period totals as returned by getGSTR1Report; fields absent until the report loads
@@ -52,6 +53,7 @@ export default function GSTReportPage() {
     const [summary, setSummary] = useState<GSTR1Summary>({});
     const [gstin, setGstin] = useState("");
     const [activeGstTab, setActiveGstTab] = useState<"b2b" | "b2c">("b2b");
+    const [officialBusy, setOfficialBusy] = useState(false);
 
     // Default to current month
     const [startDate, setStartDate] = useState(
@@ -100,6 +102,36 @@ export default function GSTReportPage() {
         }
     };
 
+    // Official GSTN v3.0.4 file: invoices, credit notes (CDNR/CDNUR) and the
+    // HSN summary, compiled by src/lib/gstr1-engine.ts. The plain Export JSON
+    // button above only covers B2B/B2CL/B2CS.
+    const handleExportOfficial = async () => {
+        try {
+            setOfficialBusy(true);
+            const result = await buildGstr1OfficialPayload(startDate, endDate);
+
+            if (!result.validation.valid) {
+                alert(
+                    `GSTN validation failed:\n\n${result.validation.errors.slice(0, 8).join("\n")}`
+                );
+                return;
+            }
+
+            const blob = new Blob([result.json], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `GSTR1_${result.meta.financialPeriod}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error(error);
+            alert(error instanceof Error ? error.message : "Failed to build the GSTN file");
+        } finally {
+            setOfficialBusy(false);
+        }
+    };
+
     return (
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="GST Report (GSTR-1)" subtitle="B2B and B2C invoices for filing" />
@@ -138,6 +170,15 @@ export default function GSTReportPage() {
                         <Button onClick={handleExportJSON} className="bg-green-600 hover:bg-green-700">
                             <FileText className="w-4 h-4 mr-2" />
                             Export JSON
+                        </Button>
+                        <Button
+                            onClick={handleExportOfficial}
+                            disabled={officialBusy}
+                            className="bg-blue-600 hover:bg-blue-700"
+                            title="Official GSTN GSTR-1 JSON including credit notes and HSN summary"
+                        >
+                            <Download className="w-4 h-4 mr-2" />
+                            {officialBusy ? "Building..." : "GSTN JSON"}
                         </Button>
                     </div>
                 </div>
