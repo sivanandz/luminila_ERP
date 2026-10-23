@@ -80,7 +80,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 
 | Shape | What runs | Status |
 |---|---|---|
-| **Desktop (Tauri v2)** | Webview hosting the statically exported Next.js app; Rust supervisor restarts the WhatsApp sidecar; PocketBase is **not** started by the shell (see 5.3) | Partially wired |
+| **Desktop (Tauri v2)** | Webview hosting the statically exported Next.js app; Rust supervisor starts and restarts the WhatsApp sidecar and PocketBase (see 5.2) | Database wired; artifact still blocked by D-08 |
 | **Browser / PWA** | Next.js dev or `next start` server on a LAN machine; PocketBase beside it; installable via manifest | Working in development |
 | **Android** | Tauri mobile build, or PWA in Chrome. Camera scanning and system print spooler paths exist | PWA usable; native APK build blocked on this workstation (5.3) |
 | **Remote showroom device** | Cloudflare Quick Tunnel exposes PocketBase and the sidecar; device points at the tunnel URL via `PB_CUSTOM_URL` | Working, with security caveats in 6.4 |
@@ -148,7 +148,7 @@ The seven lint errors are not cosmetic. Four of them are the React hooks violati
 | WhatsApp CRM | Feature-rich, unevenly hardened | Large surface, strong UX, weak authorization boundaries |
 | Storefront and API routes | Improving | Order intake needs a verified WhatsApp session; feed and image endpoints are tenant-scoped (section 11.4). Remaining public endpoints are listed in 6.3. |
 | Multi-tenancy | Improving | Physical isolation is real; the control plane now requires a session for existing tenants. Shared client and plaintext registry remain (section 11). |
-| Build and release | **Blocked** | Static export vs 13 API routes; Tauri bundle omits PocketBase |
+| Build and release | Partially blocked | Export conflict remains (D-08); the bundle now ships and supervises PocketBase (D-09) |
 | Frontend architecture | Uneven | 135 direct database calls in UI, three pages over 100 KB |
 | Test coverage | Baseline | `npm test` runs three suites and CI re-runs them; no component or end-to-end layer yet |
 
@@ -471,7 +471,7 @@ Status vocabulary, applied strictly:
 | Feature | Status | Notes |
 |---|---|---|
 | Desktop shell with sidecar supervision | Live | Rust restarts sidecar after 3 failed health checks |
-| Desktop shell with database | **Absent** | Tauri does not start or bundle PocketBase (D-26) |
+| Desktop shell with database | Live | PocketBase and its migrations are bundled; Rust starts it on 8090/8091/8092, supervises it, and stops it on exit (section 11.7) |
 | Static export production build | **Broken** | 13 API routes cannot exist under `output: "export"` (D-25) |
 | Android APK build | Blocked on this workstation | exFAT volume cannot host the required symlinks (5.3) |
 | PWA install | Live | Manifest plus apple meta |
@@ -513,9 +513,16 @@ The current code is a hybrid that satisfies neither.
 
 ### 5.2 What the desktop installer actually contains
 
-`src-tauri/tauri.conf.json` declares exactly one external binary, `binaries/wppconnect-server`. There is no `resources` entry, no PocketBase binary, and no startup code for PocketBase in `src-tauri/src/lib.rs` (the Rust supervisor starts only the sidecar and polls `http://127.0.0.1:21465/health`).
+The bundle declares two payloads: the WhatsApp sidecar (`binaries/wppconnect-server`) and, since 2026-10-23, PocketBase plus its migrations as resources (`tauri.conf.json` `bundle.resources`).
 
-Therefore a packaged desktop build, if it could be produced, would launch a webview whose only local service is WhatsApp. The database would have to be started by the user from a separate terminal. The product's central claim, an embedded local database, is not delivered by the packaging configuration.
+At startup `src-tauri/src/lib.rs` now:
+
+1. Reuses a healthy PocketBase if one is already listening on 8090, 8091 or 8092 (the dev launcher starts one).
+2. Otherwise spawns `pocketbase serve` on the first free port from that list, with `--dir` under the OS app-data directory (`<app data>/pb_data`) and `--migrationsDir` pointing at the bundled migrations, bound to loopback.
+3. Waits for `/api/health`, then records the port in managed state and emits `pocketbase-status`.
+4. Restarts it after three failed health checks, and kills the child on `RunEvent::Exit`.
+
+Those ports are the same three the webview probes, so the existing client resolution works without a build-time URL. The caveats are honest ones: only `pocketbase.exe` is checked in, so Linux and macOS installers need that binary dropped into `src-tauri/resources/pocketbase` before building; and the packaged app still cannot be produced until D-08 is resolved, because `beforeBuildCommand` runs a static export that fails on the API routes. The database problem is fixed; the artifact problem is not.
 
 ### 5.3 Environment blockers observed on this workstation
 
@@ -615,7 +622,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1105,6 +1112,23 @@ Chronological record of work done after the audit. Each entry lists what changed
 - S-05: data routes still share the module PocketBase client.
 - S-06: plaintext tenant registry needs an approved migration.
 - Payment links and POS remain open to any authenticated operator by design, because a cashier must be able to take payment.
+
+### 11.7 Slice 7: desktop database (2026-10-23)
+
+**Closed:** D-09.
+
+| Change | Files | Why |
+|---|---|---|
+| PocketBase and migrations ship with the app | `src-tauri/tauri.conf.json` | `bundle.resources` carries `pocketbase.exe` and `pb_migrations`, so an installed build has an engine |
+| Rust owns the database process | `src-tauri/src/lib.rs` | Reuses a healthy instance on 8090/8091/8092, otherwise spawns one bound to loopback with `--dir` in app data and bundled migrations, waits for `/api/health`, and records the port |
+| Supervision and shutdown | `src-tauri/src/lib.rs` | Three failed health checks restart the process; `RunEvent::Exit` kills the child so it never outlives the app |
+| Diagnostics command | `src-tauri/src/lib.rs` | `get_pocketbase_status` reports managed, port and health for the UI and support |
+
+**Verified:** `cargo check` finished clean in 1m 00s; `tauri-build` compiled the crate with the new resource config, which validates the JSON. TypeScript is untouched.
+
+**Not verified, and stated as such:** no installer was produced, because `beforeBuildCommand` still runs the failing static export (D-08), so process start, restart and shutdown were not exercised on this machine. Only `pocketbase.exe` is checked in; Linux and macOS builds need their own binary at `src-tauri/resources/pocketbase`.
+
+**Still open in this cluster:** D-08, the export-versus-routes decision.
 
 ## Appendix A: Route inventory
 

@@ -32,6 +32,10 @@
     "externalBin": [
       "binaries/wppconnect-server"
     ],
+    "resources": {
+      "../pocketbase/pocketbase.exe": "pocketbase/pocketbase.exe",
+      "../pocketbase/pb_migrations": "pocketbase/pb_migrations"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

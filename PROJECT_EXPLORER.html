@@ -470,7 +470,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
     <a href="#data"><span class="n">03</span>Data model<span class="rail-count">55</span></a>
     <a href="#features"><span class="n">04</span>Features<span class="rail-count" id="railFeatures">0</span></a>
     <a href="#defects"><span class="n">05</span>Defects<span class="rail-count" id="railDefects">0</span></a>
-    <a href="#build"><span class="n">06</span>Build reality<span class="rail-count">4</span></a>
+    <a href="#build"><span class="n">06</span>Build reality<span class="rail-count">3</span></a>
     <a href="#missing"><span class="n">07</span>Missing<span class="rail-count">15</span></a>
     <a href="#verify"><span class="n">08</span>Verification<span class="rail-count">6</span></a>
     <div class="rail-foot">
@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>33 open · 22 fixed</span>
+            <span class="chip accent"><span class="dot"></span>32 open · 23 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -499,7 +499,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
             <div class="vital"><div class="vital-num" data-count="84411">84,411</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">modules with no importer</div></div>
-            <div class="vital"><div class="vital-num" data-count="4">4</div><div class="vital-label">P1 defects open</div></div>
+            <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
       </div>
@@ -633,7 +633,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <span class="sec-index">06</span>
         <div>
           <h2 class="sec-title">Build reality</h2>
-          <p class="sec-lede">The release command cannot produce the artifact the desktop shell expects. This is a configuration contradiction, not a flaky machine: static export cannot contain server routes, and the installer does not contain the database.</p>
+          <p class="sec-lede">The release command cannot produce the artifact the desktop shell expects. This is a configuration contradiction, not a flaky machine: static export cannot contain server routes. The installer now does contain the database (D-09); what remains is the export decision.</p>
         </div>
       </div>
       <div class="opt-grid" id="buildOpts"></div>
@@ -642,7 +642,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <div class="panel-body tight" id="blockers"></div>
       </div>
       <div class="note" style="margin-top:14px">
-        <strong>What this means for planning.</strong> Any estimate that assumes the app ships today is wrong twice: the build fails, and if forced, the packaged app would have no database and no API routes. Resolution is an architecture decision, not a bug fix.
+        <strong>What this means for planning.</strong> Any estimate that assumes the app ships today is wrong: the build fails on the export conflict, and if forced, the packaged app would lose every API route. The database half is now done; the artifact half is an architecture decision, not a bug fix.
       </div>
     </section>
 
@@ -744,10 +744,10 @@ const NODES = [
   { id:"rust", x:288, y:150, w:196, h:60, kind:"process",
     title:"Rust supervisor", sub:"Tauri v2 · sidecar health",
     role:"PROCESS CONTROL",
-    detail:"Starts the sidecar on launch and polls its health every five seconds. After three consecutive failures it clears the running flag and respawns. It starts nothing else.",
+    detail:"Starts the sidecar on launch, polls its health every five seconds, and now also bundles, starts, supervises and stops PocketBase on 8090/8091/8092.",
     files:"src-tauri/src/lib.rs",
-    ports:"emits sidecar-status events",
-    risk:"PocketBase is not started or bundled here at all." },
+    ports:"emits sidecar-status and pocketbase-status events",
+    risk:"PocketBase is loopback-bound; only a Windows binary is checked in." },
   { id:"api", x:288, y:246, w:196, h:66, kind:"untrusted",
     title:"Next API routes", sub:"13 handlers · dev only",
     role:"CONTROL PLANE",
@@ -967,7 +967,7 @@ const FEATURES = [
   ["Admin bot commands","whatsapp","scaffold","Zero importers and schema-invalid writes (D-38)"],
   ["WhatsApp Flows","whatsapp","absent","Roadmap"],
   ["Desktop shell","platform","live","Supervises and restarts the sidecar"],
-  ["Desktop database","platform","absent","PocketBase is not bundled or started (D-09)"],
+  ["Desktop database","platform","live","Bundled and supervised by Rust on the app data directory; stopped on exit"],
   ["Static production build","platform","absent","13 routes cannot exist under export (D-08)"],
   ["Native Android APK","platform","partial","Blocked by exFAT symlinks on this machine"],
   ["PWA install","platform","live","Manifest and apple meta"],
@@ -1013,7 +1013,7 @@ const DEFECTS = [
     where:"next.config.ts:9 · 13 files under src/app/api · tauri.conf.json:7,10",
     impact:"Static export cannot contain dynamic route handlers. npm run tauri:build fails, and a forced export would lose provisioning, checkout, payments, and catalog sync.",
     fix:"Choose server-backed or endpoint-free (see section 06) and delete the losing path." },
-  { id:"D-09", sev:"P1", area:"build", title:"The desktop package contains no database engine",
+  { id:"D-09", sev:"P1", status:"fixed", area:"build", title:"The desktop package contains no database engine",
     where:"src-tauri/tauri.conf.json:32-34 · src-tauri/src/lib.rs:24-58",
     impact:"The installer declares only the WhatsApp sidecar. A packaged app opens a UI with no database, and fails silently.",
     fix:"Bundle PocketBase, start it from Rust on a free port, pass the URL to the webview, and stop it on exit." },
@@ -1218,8 +1218,6 @@ const BUILD_OPTIONS = [
 
 const BLOCKERS = [
   ["P1","Static export versus route handlers","next.config.ts:9 enables output export in production. Three handlers declare force-dynamic. The export step cannot emit them, so the build stops.","D-08"],
-  ["P1","No database in the installer","Only the WhatsApp sidecar is declared as an external binary. The Rust supervisor never starts PocketBase.","D-09"],
-  ["P1","Silent data loss on anonymous routes","Six API handlers require no credential. Tenant provisioning can reset a superuser password.","S-01"],
   ["P2","exFAT volume blocks native Android","Tauri and Gradle need symlinks for libapp_lib.so. exFAT cannot store them, so the APK build aborts on this machine.","D-33"],
   ["P2","No webpack fallback for release builds","The dev script passes --webpack to avoid the Turbopack symlink panic. next build passes no flag.","D-08"]
 ];
