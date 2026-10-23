@@ -670,23 +670,62 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
     // Insert GRN items and update stock
     const createdItems: GRNItem[] = [];
     const validItems = grn.items.filter(i => i.quantity_received > 0);
+    const reservedPoItems = new Set<string>();
 
-    // Validate and guard against over-receipt on linked PO items
+    // Validate and reserve against over-receipt on linked PO items.
+    //
+    // The old guard read `quantity_received`, compared it, and wrote later, so two
+    // concurrent GRNs could both pass. The reservation increments first and rolls
+    // back only if the server-side total exceeds the ordered quantity; PocketBase
+    // serializes the update, so the second receipt sees the first one's value.
     for (const item of validItems) {
-        if (item.po_item_id) {
-            try {
-                const poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
-                const ordered = poItem.quantity_ordered ?? poItem.quantity ?? 0;
-                const alreadyReceived = poItem.quantity_received || 0;
-                const remaining = Math.max(0, ordered - alreadyReceived);
-                if (ordered > 0 && item.quantity_received > remaining) {
-                    console.warn(`[GRN Guard] PO item ${item.po_item_id} ordered: ${ordered}, previously received: ${alreadyReceived}. Requested receipt ${item.quantity_received} exceeds remaining ${remaining}. Capping to remaining.`);
-                    item.quantity_received = remaining;
-                }
-            } catch (err) {
-                console.warn('Could not verify PO item bounds:', item.po_item_id, err);
-            }
+        if (!item.po_item_id) continue;
+
+        let poItem: Record<string, any>;
+        try {
+            poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
+        } catch (err) {
+            // Swallowing this used to let the receipt through unverified.
+            throw new Error(
+                `Could not verify purchase order item ${item.po_item_id} before receiving: ${err instanceof Error ? err.message : String(err)}`
+            );
         }
+
+        const ordered = Number(poItem.quantity_ordered ?? poItem.quantity ?? 0);
+        const requested = Number(item.quantity_received);
+
+        if (!(ordered > 0)) {
+            reservedPoItems.add(item.po_item_id);
+            continue;
+        }
+
+        const reserved = await pb.collection('purchase_order_items').update(item.po_item_id, {
+            'quantity_received+': requested,
+        });
+        const receivedAfter = Number(reserved.quantity_received || 0);
+        const receivedBefore = receivedAfter - requested;
+
+        if (receivedAfter > ordered) {
+            // Put the reservation back before deciding what is allowed.
+            await pb.collection('purchase_order_items').update(item.po_item_id, {
+                'quantity_received+': -requested,
+            }).catch(() => {});
+
+            const remaining = Math.max(0, ordered - receivedBefore);
+            if (remaining <= 0) {
+                throw new Error(`Purchase order item ${item.po_item_id} is already fully received`);
+            }
+
+            console.warn(
+                `[GRN Guard] PO item ${item.po_item_id} ordered ${ordered}, already received ${receivedBefore}; capping ${requested} to ${remaining}.`
+            );
+            await pb.collection('purchase_order_items').update(item.po_item_id, {
+                'quantity_received+': remaining,
+            });
+            item.quantity_received = remaining;
+        }
+
+        reservedPoItems.add(item.po_item_id);
     }
 
     for (const item of validItems.filter(i => i.quantity_received > 0)) {
@@ -722,17 +761,16 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
             }
         }
 
-        // Update PO item received quantity and sync variant if matched during delivery
-        if (item.po_item_id) {
+        // The received quantity was already reserved atomically above; only the
+        // variant link still needs backfilling when the delivery names one.
+        if (item.po_item_id && reservedPoItems.has(item.po_item_id)) {
             try {
                 const poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
-                const updates: Record<string, any> = {
-                    quantity_received: (poItem.quantity_received || 0) + item.quantity_received,
-                };
                 if (item.variant_id && !poItem.variant) {
-                    updates.variant = item.variant_id;
+                    await pb.collection('purchase_order_items').update(item.po_item_id, {
+                        variant: item.variant_id,
+                    });
                 }
-                await pb.collection('purchase_order_items').update(item.po_item_id, updates);
             } catch (err) {
                 console.error('Error updating PO item:', item.po_item_id, err);
             }

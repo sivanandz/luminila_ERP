@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>8 open · 47 fixed</span>
+            <span class="chip accent"><span class="dot"></span>7 open · 48 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1052,7 +1052,7 @@ const DEFECTS = [
     where:"src/lib/invoice.ts:522-527,531-580",
     impact:"An item failure leaves an empty invoice and burns a document number, so the sequence skips.",
     fix:"Create items first, or delete the header and release the number on failure." },
-  { id:"D-12", sev:"P2", area:"stock", title:"GRN over-receipt guard is racy and its failures are swallowed",
+  { id:"D-12", sev:"P2", status:"fixed", area:"stock", title:"GRN over-receipt guard is racy and its failures are swallowed",
     where:"src/lib/purchase.ts:678-685,720-738",
     impact:"Two concurrent GRNs both pass the cap. A failed stock or PO write only logs, so received quantity and physical stock diverge permanently.",
     fix:"Serialize per PO item and fail the GRN on any write error." },
