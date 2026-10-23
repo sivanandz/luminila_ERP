@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import "./globals.css";
 import { Sidebar, MobileBottomNav } from "@/components/layout";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthGate } from "@/components/auth/AuthGate";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { WhatsAppEventSyncProvider } from "@/components/whatsapp/WhatsAppEventSyncProvider";
 import { WhatsAppDrawer } from "@/components/whatsapp/WhatsAppDrawer";
@@ -47,16 +48,18 @@ export default function RootLayout({
         className={`${inter.variable} ${jetbrainsMono.variable} antialiased flex h-screen w-full overflow-hidden bg-background`}
       >
         <AuthProvider>
-          <WhatsAppEventSyncProvider />
-          <Sidebar />
-          <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-16 md:pb-0">
-            <ErrorBoundary>
-              {children}
-            </ErrorBoundary>
-          </main>
-          <MobileBottomNav />
-          <WhatsAppDrawer />
-          <Toaster position="top-right" richColors closeButton />
+          <AuthGate>
+            <WhatsAppEventSyncProvider />
+            <Sidebar />
+            <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-16 md:pb-0">
+              <ErrorBoundary>
+                {children}
+              </ErrorBoundary>
+            </main>
+            <MobileBottomNav />
+            <WhatsAppDrawer />
+            <Toaster position="top-right" richColors closeButton />
+          </AuthGate>
         </AuthProvider>
       </body>
     </html>

@@ -227,7 +227,10 @@ export async function ensureTenantPocketBaseRunning(port: number, dataDir: strin
         PB_EXE_PATH,
         [
             'serve',
-            `--http=0.0.0.0:${port}`,
+            // Tenant databases are loopback-only by default. LAN or tunnel access
+            // is an explicit opt-in so a provisioned tenant is never exposed by
+            // accident on a shared showroom network.
+            `--http=${process.env.PB_TENANT_BIND || '127.0.0.1'}:${port}`,
             `--dir=${dataDir}`,
             `--migrationsDir=${PB_MIGRATIONS_DIR}`,
         ],
@@ -341,7 +344,10 @@ export async function provisionTenantDatabase(params: {
 /**
  * Resolve and ensure the PocketBase instance for a given account email is running (used on `/login`)
  */
-export async function resolveTenantDatabase(email?: string): Promise<{
+export async function resolveTenantDatabase(
+    email?: string,
+    options?: { activate?: boolean }
+): Promise<{
     success: boolean;
     found: boolean;
     pbUrl: string;
@@ -351,6 +357,9 @@ export async function resolveTenantDatabase(email?: string): Promise<{
 }> {
     const cleanEmail = (email || '').trim().toLowerCase();
     const registry = readTenantRegistry();
+    // Callers that are only looking up a URL (login, API routes) must not change
+    // the process-global active tenant. That switch is opt-in.
+    const shouldActivate = options?.activate !== false;
 
     if (cleanEmail && !LEGACY_PRIMARY_EMAILS.has(cleanEmail)) {
         let record = registry.tenants[cleanEmail];
@@ -373,8 +382,10 @@ export async function resolveTenantDatabase(email?: string): Promise<{
 
         if (record && record.tenantSlug !== 'primary') {
             await ensureTenantPocketBaseRunning(record.port, record.dataDir);
-            registry.activeTenantEmail = cleanEmail;
-            writeTenantRegistry(registry);
+            if (shouldActivate) {
+                registry.activeTenantEmail = cleanEmail;
+                writeTenantRegistry(registry);
+            }
             return {
                 success: true,
                 found: true,
@@ -388,7 +399,7 @@ export async function resolveTenantDatabase(email?: string): Promise<{
 
     // Default / primary instance fallback
     const primaryPort = await resolvePrimaryPocketBasePort();
-    if (cleanEmail) {
+    if (cleanEmail && shouldActivate) {
         registry.activeTenantEmail = cleanEmail;
         writeTenantRegistry(registry);
     }
@@ -418,27 +429,35 @@ export async function getServerTenantPocketBaseConfig(preferredEmail?: string): 
         if (rec.tenantSlug !== 'primary') {
             await ensureTenantPocketBaseRunning(rec.port, rec.dataDir);
         }
+        // No hardcoded fallback: a missing credential must fail loudly instead of
+        // silently authenticating every tenant with a password that ships in code.
+        const tenantPassword =
+            rec.adminPassword ||
+            process.env.POCKETBASE_SUPERUSER_PASSWORD ||
+            process.env.PB_ADMIN_PASSWORD;
+        if (!tenantPassword) {
+            throw new Error(`No superuser credentials configured for tenant ${targetEmail}`);
+        }
         return {
             pbUrl: `http://127.0.0.1:${rec.port}`,
             adminEmail: rec.email,
-            adminPassword:
-                rec.adminPassword ||
-                process.env.POCKETBASE_SUPERUSER_PASSWORD ||
-                process.env.PB_ADMIN_PASSWORD ||
-                'LuminilaInit2026!',
+            adminPassword: tenantPassword,
         };
     }
 
     const primaryPort = await resolvePrimaryPocketBasePort();
+    const primaryPassword =
+        process.env.POCKETBASE_SUPERUSER_PASSWORD ||
+        process.env.PB_ADMIN_PASSWORD;
+    if (!primaryPassword) {
+        throw new Error('No PocketBase superuser credentials configured (set POCKETBASE_SUPERUSER_PASSWORD)');
+    }
     return {
         pbUrl: `http://127.0.0.1:${primaryPort}`,
         adminEmail:
             process.env.POCKETBASE_SUPERUSER_EMAIL ||
             process.env.PB_ADMIN_EMAIL ||
             'admin@luminila.local',
-        adminPassword:
-            process.env.POCKETBASE_SUPERUSER_PASSWORD ||
-            process.env.PB_ADMIN_PASSWORD ||
-            'LuminilaInit2026!',
+        adminPassword: primaryPassword,
     };
 }

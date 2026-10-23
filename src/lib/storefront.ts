@@ -1,4 +1,4 @@
-import { pb, ensureServerAuth } from "@/lib/pocketbase";
+import { pb, ensureServerAuth, sanitizeFilter } from "@/lib/pocketbase";
 
 export interface StorefrontBinding {
     boundAdminEmail: string;
@@ -12,34 +12,49 @@ const DEFAULT_BINDING: StorefrontBinding = {
     customDomain: "storefront",
 };
 
+const EMAIL_PATTERN = /^[^\s"'\\@<>]+@[^\s"'\\@<>]+$/;
+
+/**
+ * Storefront callers are unauthenticated, so the email they send selects a
+ * tenant only if it is a plain address. Anything else is dropped instead of
+ * being interpolated into a PocketBase filter.
+ */
+export function normalizeBindingEmail(raw?: string | null): string {
+    const clean = (raw || "").trim().toLowerCase();
+    return EMAIL_PATTERN.test(clean) ? clean : "";
+}
+
 /**
  * Resolves active storefront binding (admin email & brand name) from PocketBase store_settings
  */
 export async function getStorefrontBinding(preferredEmail?: string): Promise<StorefrontBinding> {
+    const cleanEmail = normalizeBindingEmail(preferredEmail);
     try {
-        await ensureServerAuth(preferredEmail);
+        await ensureServerAuth(cleanEmail || undefined);
         let query = 'key="storefront_content"';
-        if (preferredEmail && preferredEmail.trim()) {
-            query += ' && account_email="' + preferredEmail.trim().toLowerCase() + '"';
+        if (cleanEmail) {
+            query += ` && account_email="${sanitizeFilter(cleanEmail)}"`;
         }
 
-        let record = await pb.collection("store_settings").getFirstListItem(query).catch(() => null);
+        const record = await pb.collection("store_settings").getFirstListItem(query).catch(() => null);
 
         if (record && record.value) {
             const cms = typeof record.value === "string" ? JSON.parse(record.value) : record.value;
-            const boundAdminEmail = cms.adminBinding?.boundAdminEmail || record.account_email || preferredEmail || DEFAULT_BINDING.boundAdminEmail;
+            const boundAdminEmail = cms.adminBinding?.boundAdminEmail || record.account_email || cleanEmail || DEFAULT_BINDING.boundAdminEmail;
             const brandName = cms.branding?.wordmark?.text || cms.hero?.brandName || DEFAULT_BINDING.brandName;
             const customDomain = cms.adminBinding?.customDomain || DEFAULT_BINDING.customDomain;
             return { boundAdminEmail, brandName, customDomain };
         }
 
-        // If preferredEmail was provided but no custom storefront_content was saved yet,
-        // strictly honor preferredEmail and lookup store_name for this tenant
-        if (preferredEmail && preferredEmail.trim()) {
-            const cleanEmail = preferredEmail.trim().toLowerCase();
+        // If an email was provided but no custom storefront_content exists yet,
+        // strictly honor it and look up the tenant's store name.
+        if (cleanEmail) {
             let brandName = DEFAULT_BINDING.brandName;
             try {
-                const nameRecord = await pb.collection("store_settings").getFirstListItem(`key="store_name" && account_email="${cleanEmail}"`).catch(() => null);
+                const nameRecord = await pb
+                    .collection("store_settings")
+                    .getFirstListItem(`key="store_name" && account_email="${sanitizeFilter(cleanEmail)}"`)
+                    .catch(() => null);
                 if (nameRecord?.value) brandName = String(nameRecord.value);
             } catch {}
             return {

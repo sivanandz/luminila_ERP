@@ -127,6 +127,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Lint errors | same | 4 × `react-hooks/rules-of-hooks` in `src/app/whatsapp/page.tsx`; `prefer-const` in `excel-import.ts`, `purchase.ts`, `storefront.ts` |
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
+| Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **8 passed, 0 failed** (2026-10-23) |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
 
@@ -144,7 +145,7 @@ The seven lint errors are not cosmetic. Four of them are the React hooks violati
 | Banking and expenses | Mostly solid | Double-entry with pre-checks; still process-local locking |
 | WhatsApp CRM | Feature-rich, unevenly hardened | Large surface, strong UX, weak authorization boundaries |
 | Storefront and API routes | **Unsafe as deployed** | Unauthenticated tenant and stock mutations (section 6) |
-| Multi-tenancy | Partially solid | Physical isolation is real; the control plane around it is not authenticated |
+| Multi-tenancy | Improving | Physical isolation is real; the control plane now requires a session for existing tenants. Shared client and plaintext registry remain (section 11). |
 | Build and release | **Blocked** | Static export vs 13 API routes; Tauri bundle omits PocketBase |
 | Frontend architecture | Uneven | 135 direct database calls in UI, three pages over 100 KB |
 | Test coverage | Weak | Hand-rolled scripts under `src/scripts`, no test runner in `package.json` |
@@ -585,6 +586,8 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
+> **Status, 2026-10-23.** S-01, S-02 and S-04 are closed (section 11.3). S-05 and S-06 are partially mitigated: the control plane no longer mutates the global tenant and the hardcoded fallback password is gone, but the shared client and the plaintext registry remain. S-03, S-07 and S-08 through S-16 are open.
+
 Two honest qualifications:
 
 - Most of these routes **do not exist in the shipped static export** (5.1). The deployed risk depends on whether the operator runs a Node server. That does not make them acceptable: the dev server, the documented `npm run dev` flow, and any tunnel-exposed deployment all serve them.
@@ -610,7 +613,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11, D-20, D-25. D-14 is partially closed and blocked on a `products.gst_rate` column. Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11, D-20, D-25, S-01, S-02, S-04. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1015,6 +1018,30 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 - Exchange invoices assume the 3 percent jewelry rate, the same limitation as D-14.
 - Bank and UPI refunds are recorded on the credit note but do not create a bank transaction; that belongs with banking reconciliation.
+
+### 11.3 Slice 3: tenancy and auth (2026-10-23)
+
+**Closed:** S-01, S-02, S-04. **Partial:** S-05, S-06, D-22.
+
+| Change | Files | Why |
+|---|---|---|
+| Per-request operator authentication | `src/lib/api-auth.ts` (new), `src/scripts/test-tenant-auth.ts` (new) | The token is verified against the tenant's own database with a fresh client; the hint only selects which database to check |
+| Provisioning an existing tenant requires a session | `src/app/api/system/tenant-db/route.ts` | Anonymous callers can still create a brand-new tenant because setup runs before login, but cannot reset an existing tenant's superuser password |
+| Tenant lookup no longer switches the active tenant | `src/lib/tenant-db-manager.ts`, `route.ts` | Activation is opt-in; an unauthenticated lookup returns only the URL needed to connect |
+| Tenant databases bind loopback | `src/lib/tenant-db-manager.ts` | `0.0.0.0` exposure is now an explicit `PB_TENANT_BIND` opt-in |
+| Hardcoded superuser fallback removed | `src/lib/tenant-db-manager.ts` | Missing credentials fail loudly instead of authenticating with a password that shipped in code |
+| Storefront binding validates the email | `src/lib/storefront.ts` | An injection string can no longer select another tenant; malformed values fall back to the default binding |
+| Client route guard | `src/components/auth/AuthGate.tsx` (new), `src/app/layout.tsx` | Unauthenticated visitors are redirected to `/login`; `/login` and `/setup` stay public |
+
+**Verified:** `npx tsc --noEmit --incremental false` clean; `npx tsx src/scripts/test-tenant-auth.ts` 8 passed, 0 failed; targeted ESLint clean.
+
+**Still open in this cluster:**
+
+- S-05: data routes still use the shared module client. The per-request factory exists, but only the control plane uses it.
+- S-06: `registry.json` still stores plaintext superuser passwords. Rewriting it needs an approved migration of existing tenants, so it was left alone.
+- S-07: `hasCapability` exists in `api-auth.ts` but no route enforces a capability yet.
+- D-22: the redirect landed; navigation still renders every item to every role.
+- S-03 (unauthenticated storefront order intake) stays queued with the channel-surfaces slice.
 
 ## Appendix A: Route inventory
 

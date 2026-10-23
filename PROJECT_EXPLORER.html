@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>45 open · 10 fixed</span>
+            <span class="chip accent"><span class="dot"></span>42 open · 13 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -499,7 +499,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
             <div class="vital"><div class="vital-num" data-count="84411">84,411</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">modules with no importer</div></div>
-            <div class="vital"><div class="vital-num" data-count="9">9</div><div class="vital-label">P1 defects open</div></div>
+            <div class="vital"><div class="vital-num" data-count="6">6</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
       </div>
@@ -754,14 +754,14 @@ const NODES = [
     detail:"Tenant provisioning, storefront checkout and OTP, payment links, catalog feed, tracking. Six handlers require no credential. None survive the static export.",
     files:"src/app/api/**/route.ts",
     ports:"same origin as the dev server",
-    risk:"An anonymous POST can reset any tenant's superuser password." },
+    risk:"Existing tenants require a session; new tenants can still be created for setup." },
   { id:"registry", x:288, y:342, w:196, h:60, kind:"untrusted",
     title:"Tenant registry", sub:"registry.json · plaintext",
     role:"TENANCY STATE",
     detail:"Maps account email to port, data directory, and superuser password. Also stores one process-global activeTenantEmail that later requests inherit.",
     files:"pocketbase/pb_tenants/registry.json",
     ports:"read and written by tenant-db-manager",
-    risk:"Plaintext passwords, plus a hardcoded fallback password." },
+    risk:"Plaintext passwords remain; the hardcoded fallback is gone." },
   { id:"ext", x:540, y:36, w:180, h:66, kind:"external",
     title:"External services", sub:"Razorpay · Meta · Drive",
     role:"INTEGRATIONS",
@@ -876,7 +876,7 @@ const FEATURES = [
   ["Email and password login","onboarding","live","Tenant resolved by email before auth"],
   ["Session restore","onboarding","live","Auth store hydrated from localStorage"],
   ["Five seeded roles","onboarding","partial","Checks run in the UI only, never in API routes (S-07)"],
-  ["Per-tenant database","onboarding","live","Physical SQLite file and process per account"],
+  ["Per-tenant database","onboarding","live","Physical SQLite file and process per account, loopback bound, provisioning gated for existing tenants"],
   ["Account switching","onboarding","partial","activeTenantEmail is a process global (S-05)"],
   ["PIN or QR cashier switch","onboarding","absent","Roadmap only"],
   ["Product and variant CRUD","catalog","live","Size, color, material matrix with per-variant stock"],
@@ -1017,11 +1017,11 @@ const DEFECTS = [
     where:"src-tauri/tauri.conf.json:32-34 · src-tauri/src/lib.rs:24-58",
     impact:"The installer declares only the WhatsApp sidecar. A packaged app opens a UI with no database, and fails silently.",
     fix:"Bundle PocketBase, start it from Rust on a free port, pass the URL to the webview, and stop it on exit." },
-  { id:"S-01", sev:"P1", area:"security", title:"Unauthenticated tenant provisioning resets any merchant's superuser password",
+  { id:"S-01", sev:"P1", status:"fixed", area:"security", title:"Unauthenticated tenant provisioning resets any merchant's superuser password",
     where:"src/app/api/system/tenant-db/route.ts:36-64 · src/lib/tenant-db-manager.ts:310",
     impact:"An anonymous POST runs a superuser upsert against any tenant data directory, then logs in to that database as superuser.",
     fix:"Require an operator JWT and never accept a password change from an unauthenticated request." },
-  { id:"S-02", sev:"P1", area:"security", title:"Unauthenticated global tenant switch and tenant enumeration",
+  { id:"S-02", sev:"P1", status:"fixed", area:"security", title:"Unauthenticated global tenant switch and tenant enumeration",
     where:"src/app/api/system/tenant-db/route.ts:14-20 · tenant-db-manager.ts:376-393",
     impact:"A GET flips the process-global active tenant and returns whether an email exists plus its port. Every later server request inherits that tenant.",
     fix:"Remove the write from the GET path and authenticate the lookup." },
@@ -1029,7 +1029,7 @@ const DEFECTS = [
     where:"src/app/api/storefront/order/route.ts:86-87,220-288",
     impact:"The body chooses the tenant. For cash on delivery the route writes an order and decrements product and variant stock with no payment and no credential.",
     fix:"Authenticate the caller, bind the tenant to the session, and never decrement stock before payment." },
-  { id:"S-04", sev:"P1", area:"tenancy", title:"Filter injection selects which tenant a storefront request binds to",
+  { id:"S-04", sev:"P1", status:"fixed", area:"tenancy", title:"Filter injection selects which tenant a storefront request binds to",
     where:"src/lib/storefront.ts:22-26",
     impact:"A crafted accountEmail breaks out of the filter and returns another tenant's binding, which then becomes the write target for unauthenticated flows.",
     fix:"Apply sanitizeFilter and validate the email against an exact match." },
@@ -1271,7 +1271,8 @@ const VERIFY = [
   ["Production build","npm run build","blocked","Stopped at .next/trace-build by file permissions. The export conflict is configuration-level and independent."],
   ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
-  ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."]
+  ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
+  ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","8 assertions: self-tenant access, superuser bypass, injection rejection, email normalization."]
 ];
 
 /* =====================================================================
