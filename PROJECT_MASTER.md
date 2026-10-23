@@ -1558,6 +1558,25 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 
 **Still open in this cluster:** D-34 (sync stubs), D-17, D-21, D-32, and the schema-bound and decision-bound items.
 
+### 11.34 Handover state (2026-10-23)
+
+**Register:** 40 fixed, 15 open, 2 P1. Branch `feat/finish-partial-features`.
+
+Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 assertions across 20 suites; `npx eslint src` 0 errors; `cargo check` clean in `src-tauri`; explorer script parses.
+
+**Remaining P1s, and the exact next action for each:**
+
+| Item | Action |
+|---|---|
+| **D-08** | Choose server-backed (recommended) or endpoint-free. Server-backed: remove `output: "export"` from `next.config.ts`, have Rust supervise `next start` the way it supervises PocketBase, and drop the static-export assumptions from §5. Endpoint-free: move the 13 route handlers into the sidecar instead. |
+| **S-06** | Generate a 64-hex `TENANT_REGISTRY_KEY`, put it in the environment, then `npx tsx scripts/rekey-tenant-registry.ts --apply` followed by `--verify`. Plan: `docs/registry-rekey-plan.md`. |
+
+**Remaining schema-bound work:** apply `docs/migrations-draft/` per its README (backup, duplicate-order check, copy into `pocketbase/pb_migrations`, restart, verify four screens). That closes D-13, D-14, D-36, D-37 and the channel/campaign reporting items.
+
+**Remaining code-only work, with locations:** D-17 (`loyalty.ts` redemption cap and lost updates), D-21 (`discounts.ts` BOGO, sanitization, usage race, return reversal), D-12 (`purchase.ts` GRN race), D-19 (`sequence-generator.ts` cross-process allocation), D-23 (pages calling `pb.collection` directly), D-32 (`globals.css` tokens and 145 hex literals), D-34 (sync stubs: implement or remove).
+
+**What this session deliberately did not do:** apply any migration, modify `pocketbase/pb_data` or `pb_tenants/registry.json`, or run a restore against live data. Every such change has a prepared, reviewable artefact instead.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
