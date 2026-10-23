@@ -40,6 +40,13 @@ export interface ChannelStockOptions extends ChannelStockAccount {
     channel: ChannelStockChannel;
     referenceId: string;
     notes?: string;
+    /**
+     * What to do when the atomic decrement crosses zero.
+     * - "reject" (default): throw InsufficientStockError and roll the order back.
+     * - "clamp": settle what is available, keep the ledger truthful and report
+     *   the shortfall. Used by the paid webhook: a captured payment must fulfil.
+     */
+    oversell?: 'reject' | 'clamp';
 }
 
 export interface StockTarget {
@@ -273,20 +280,22 @@ export async function applyChannelStock(
     db: StockDb,
     lines: ChannelStockLine[],
     options: ChannelStockOptions
-): Promise<{ targets: StockTarget[]; movementIds: string[] }> {
+): Promise<{ targets: StockTarget[]; movementIds: string[]; shortages: StockShortage[] }> {
     const targets = await resolveStockTargets(db, lines, options);
-    const applied: StockTarget[] = [];
+    const applied: { target: StockTarget; quantity: number }[] = [];
     const movementIds: string[] = [];
+    const shortages: StockShortage[] = [];
+    const oversell = options.oversell ?? 'reject';
 
     const rollback = async (): Promise<void> => {
         for (const movementId of movementIds) {
             if (movementId) await db.collection('stock_movements').delete(movementId).catch(() => {});
         }
-        for (const target of [...applied].reverse()) {
-            const collection = target.kind === 'variant' ? 'product_variants' : 'products';
+        for (const entry of [...applied].reverse()) {
+            const collection = entry.target.kind === 'variant' ? 'product_variants' : 'products';
             await db
                 .collection(collection)
-                .update(target.id, { 'stock_level+': target.quantity })
+                .update(entry.target.id, { 'stock_level+': entry.quantity })
                 .catch(() => {});
         }
     };
@@ -294,10 +303,13 @@ export async function applyChannelStock(
     try {
         for (const target of targets) {
             const collection = target.kind === 'variant' ? 'product_variants' : 'products';
+            let quantity = target.quantity;
+
             try {
-                await db.collection(collection).update(target.id, { 'stock_level-': target.quantity });
+                await db.collection(collection).update(target.id, { 'stock_level-': quantity });
             } catch (error) {
-                if (isMinStockConstraint(error)) {
+                if (!isMinStockConstraint(error)) throw error;
+                if (oversell !== 'clamp' || target.kind !== 'variant') {
                     throw new InsufficientStockError(
                         target.productId,
                         target.quantity,
@@ -305,28 +317,45 @@ export async function applyChannelStock(
                         target.name
                     );
                 }
-                throw error;
+                // Settle at the stock that actually exists and keep the ledger
+                // truthful, exactly like the POS oversell reconciliation.
+                const latest = await db
+                    .collection(collection)
+                    .getOne<{ stock_level?: number }>(target.id)
+                    .catch(() => null);
+                const available = Math.max(0, Math.floor(Number(latest?.stock_level ?? 0)));
+                shortages.push({
+                    productId: target.productId,
+                    variantId: target.id,
+                    name: target.name,
+                    requested: target.quantity,
+                    available,
+                });
+                if (available === 0) continue;
+                await db.collection(collection).update(target.id, { stock_level: 0 });
+                quantity = available;
             }
-            applied.push(target);
+
+            applied.push({ target, quantity });
 
             if (target.kind === 'variant') {
                 try {
                     const movement = await db.collection('stock_movements').create({
                         variant: target.id,
                         movement_type: 'sale',
-                        quantity: -target.quantity,
+                        quantity: -quantity,
                         reference_id: options.referenceId,
                         source: options.channel,
-                        notes: options.notes || `${options.channel} order ${options.referenceId}`,
+                        notes:
+                            quantity < target.quantity
+                                ? `${options.notes || `${options.channel} order ${options.referenceId}`} [OVERSELL: requested ${target.quantity}, only ${quantity} in stock]`
+                                : options.notes || `${options.channel} order ${options.referenceId}`,
                     });
                     movementIds.push(String((movement as { id?: string }).id || ''));
                 } catch (error) {
                     // The ledger is required for reconciliation: restore this line
                     // and let the outer handler compensate the others.
-                    await db
-                        .collection('product_variants')
-                        .update(target.id, { 'stock_level+': target.quantity })
-                        .catch(() => {});
+                    await db.collection(collection).update(target.id, { 'stock_level+': quantity }).catch(() => {});
                     applied.pop();
                     throw error;
                 }
@@ -337,7 +366,7 @@ export async function applyChannelStock(
         throw error;
     }
 
-    return { targets, movementIds };
+    return { targets, movementIds, shortages };
 }
 
 /**

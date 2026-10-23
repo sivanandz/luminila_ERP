@@ -253,6 +253,48 @@ async function main() {
         assert.equal(db.variants.get('var000000000001')?.stock_level, 5);
     });
 
+    await test('clamp settles a paid order at the available stock', async () => {
+        const db = new FakeDb().addProduct('prod00000000001', 0).addVariant('var000000000001', 'prod00000000001', 2);
+        const result = await applyChannelStock(
+            db,
+            [{ productId: 'prod00000000001', variantId: 'var000000000001', quantity: 5 }],
+            { accountEmail: TENANT, channel: 'storefront', referenceId: 'ord123456789016', oversell: 'clamp' }
+        );
+        assert.equal(db.variants.get('var000000000001')?.stock_level, 0);
+        assert.equal(db.movements.length, 1);
+        assert.equal(db.movements[0].quantity, -2);
+        assert.equal(result.shortages.length, 1);
+        assert.deepEqual(result.shortages[0], {
+            productId: 'prod00000000001',
+            variantId: 'var000000000001',
+            name: 'Product prod00000000001',
+            requested: 5,
+            available: 2,
+        });
+    });
+
+    await test('clamp records the shortfall when nothing is left', async () => {
+        const db = new FakeDb().addProduct('prod00000000001', 0).addVariant('var000000000001', 'prod00000000001', 0);
+        const result = await applyChannelStock(
+            db,
+            [{ productId: 'prod00000000001', variantId: 'var000000000001', quantity: 1 }],
+            { accountEmail: TENANT, channel: 'storefront', referenceId: 'ord123456789017', oversell: 'clamp' }
+        );
+        assert.equal(db.variants.get('var000000000001')?.stock_level, 0);
+        assert.equal(db.movements.length, 0);
+        assert.equal(result.shortages.length, 1);
+        assert.equal(result.shortages[0].available, 0);
+    });
+
+    await test('reject mode never silently clamps', async () => {
+        const db = new FakeDb().addProduct('prod00000000001', 0).addVariant('var000000000001', 'prod00000000001', 2);
+        await assert.rejects(
+            () => applyChannelStock(db, [{ productId: 'prod00000000001', variantId: 'var000000000001', quantity: 5 }], { accountEmail: TENANT, channel: 'whatsapp', referenceId: 'ord123456789018' }),
+            (error: unknown) => error instanceof InsufficientStockError
+        );
+        assert.equal(db.variants.get('var000000000001')?.stock_level, 2);
+    });
+
     console.log(`\n${passed} passed, ${failed} failed`);
     if (failed > 0) process.exit(1);
 }

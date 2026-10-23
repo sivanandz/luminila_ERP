@@ -1,6 +1,7 @@
 import { pb, ensureServerAuth } from '@/lib/pocketbase';
 import { getRazorpayConfig, verifyWebhookSignature } from '@/lib/razorpay';
 import { sendPaidOrderInvoice, sendLoyaltyMilestoneAlert } from '@/lib/whatsapp-notifications';
+import { applyChannelStock, toStockDb } from '@/lib/channel-stock';
 import { earnPoints, calculatePointsToEarn } from '@/lib/loyalty';
 import {
     amountMatchesRupees,
@@ -117,46 +118,40 @@ export async function processRazorpayWebhookEvent(
                     status: 'confirmed',
                 });
 
-                // Deduct inventory for confirmed paid order
+                // Unified channel stock: online orders settle here (they are not
+                // deducted at intake). Clamp mode keeps a captured payment
+                // fulfillable when stock shrank between checkout and payment.
                 try {
-                    const items = await pb.collection('sales_order_items').getFullList({ filter: `order = "${orderId}"` });
-                    for (const item of items) {
-                        if (item.product) {
-                            const qty = Number(item.quantity) || 1;
-                            await pb.collection('stock_movements').create({
-                                product: item.product,
-                                movement_type: 'sale',
-                                quantity: -qty,
-                                reference_id: orderId,
-                                source: 'website',
-                                notes: `Online paid checkout order ${orderId}`,
-                                account_email: (updatedOrder as any).account_email || 'admin@store.local',
-                            }).catch(() => {});
-
-                            // Atomically decrement variant stock level
-                            try {
-                                const variants = await pb.collection("product_variants").getFullList({
-                                    filter: `product = "${item.product}"`,
-                                }).catch(() => []);
-                                if (variants.length > 0) {
-                                    await pb.collection("product_variants").update(variants[0].id, {
-                                        "stock_level-": qty,
-                                    }).catch(async () => {
-                                        await pb.collection("product_variants").update(variants[0].id, { stock_level: 0 }).catch(() => {});
-                                    });
-                                }
-                                await pb.collection("products").update(item.product, {
-                                    "stock_level-": qty,
-                                }).catch(async () => {
-                                    await pb.collection("products").update(item.product, { stock_level: 0 }).catch(() => {});
-                                });
-                            } catch (stockDecErr) {
-                                console.warn(`[webhook] Variant stock decrement warning for ${item.product}:`, stockDecErr);
-                            }
+                    const items = await pb.collection('sales_order_items').getFullList<{
+                        product?: string;
+                        variant?: string;
+                        quantity?: number;
+                    }>({ filter: `order = "${orderId}"` });
+                    const lines = items
+                        .filter((item) => item.product)
+                        .map((item) => ({
+                            productId: item.product as string,
+                            variantId: item.variant || undefined,
+                            quantity: Number(item.quantity) || 1,
+                        }));
+                    if (lines.length > 0) {
+                        const applied = await applyChannelStock(toStockDb(pb), lines, {
+                            accountEmail:
+                                (updatedOrder as { account_email?: string }).account_email || tenantEmail || '',
+                            channel: 'storefront',
+                            referenceId: orderId,
+                            notes: `Online paid checkout order ${orderId}`,
+                            oversell: 'clamp',
+                        });
+                        if (applied.shortages.length > 0) {
+                            console.warn(`[webhook] Stock shortfall on ${orderId}:`, applied.shortages);
                         }
                     }
                 } catch (stockErr) {
-                    console.warn(`[webhook] Stock movement recording failed for ${orderId}:`, stockErr);
+                    // Legacy multi-variant orders captured before variant refs were
+                    // stored cannot be attributed to a unit; log rather than fail
+                    // an already-captured payment.
+                    console.warn(`[webhook] Stock deduction warning for ${orderId}:`, stockErr);
                 }
 
                 // Trigger WhatsApp confirmation & invoice
