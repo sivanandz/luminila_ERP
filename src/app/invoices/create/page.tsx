@@ -54,7 +54,7 @@ import {
     GST_RATES,
     HSN_CODES,
 } from "@/lib/gst";
-import { pb } from "@/lib/pocketbase";
+import { getSellableVariants, resolveBarcodeProduct } from "@/lib/products";
 
 interface ProductVariant {
     id: string;
@@ -141,27 +141,15 @@ export default function CreateInvoicePage() {
 
             // Load products for search
             try {
-                const variants = await pb.collection('product_variants').getFullList<ProductVariantRecord>({
-                    filter: 'stock_level>0',
-                    sort: 'variant_name',
-                    expand: 'product',
-                });
-                const productList: ProductVariant[] = variants.map((v) => ({
+                setProducts((await getSellableVariants()).map((v) => ({
                     id: v.id,
-                    variant_name: v.variant_name,
-                    sku_suffix: v.sku_suffix,
+                    variant_name: v.variant_name || '',
+                    sku_suffix: v.sku_suffix || '',
                     material: v.material,
-                    stock_level: v.stock_level,
-                    price_adjustment: v.price_adjustment || 0,
-                    product: v.expand?.product ? {
-                        id: v.expand.product.id,
-                        name: v.expand.product.name,
-                        sku: v.expand.product.sku,
-                        base_price: v.expand.product.base_price,
-                        category: v.expand.product.category,
-                    } : { id: '', name: '', sku: '', base_price: 0 },
-                }));
-                setProducts(productList);
+                    stock_level: v.stock_level || 0,
+                    price_adjustment: v.price_adjustment,
+                    product: v.product,
+                })));
             } catch (e) {
                 console.error('Failed to load products:', e);
             }
@@ -305,12 +293,9 @@ export default function CreateInvoicePage() {
     useEffect(() => {
         const unregister = MobileScanner.registerContext("invoice_entry", async (result) => {
             try {
-                const prod = await pb.collection("products").getFirstListItem(`sku="${result.barcode}" || barcode="${result.barcode}"`);
-                if (prod) {
-                    const variants = await pb.collection("product_variants").getList(1, 1, {
-                        filter: `product="${prod.id}"`,
-                    });
-                    const v = variants.items[0];
+                const resolved = await resolveBarcodeProduct(result.barcode);
+                if (resolved) {
+                    const { product: prod, variant: v } = resolved;
                     handleScannedItem({
                         barcode: result.barcode,
                         product: {

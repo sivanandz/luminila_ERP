@@ -1836,6 +1836,19 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **D-23 stays open:** five pages migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`); the remaining ~20 files still call PocketBase directly, largest of which are the WhatsApp catalog editor (9) and WhatsApp page (8).
 
+### 11.51 Slice 49: invoice builder and customer profile behind services (2026-10-23)
+
+**D-23 progress:** two more pages hold **zero** direct PocketBase calls.
+
+| Page | Before | After |
+|---|---|---|
+| `invoices/create/page.tsx` | 3 calls (in-stock variants with expanded product, barcode lookup ×2) | `getSellableVariants()` in `products.ts` and the existing `resolveBarcodeProduct`; search term now sanitized in the service |
+| `customers/detail/page.tsx` | 3 calls (sales list, sales-orders list, jewelry profile patch) | `getCustomerOrderHistory(customerId, phone)` and `updateCustomerJewelryProfile()` in `customers.ts`; the phone filter is sanitized |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors; `grep` confirms no `pb.collection` remains in either page.
+
+**D-23 stays open:** seven pages migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`, `invoices/create`, `customers/detail`); the largest remaining are the WhatsApp catalog editor (9) and WhatsApp page (8), then components/modals.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

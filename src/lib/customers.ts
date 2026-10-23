@@ -391,3 +391,63 @@ export async function getCustomerStats(): Promise<{
         };
     }
 }
+
+export interface CustomerOrderHistoryRow {
+    id: string;
+    order_number: string;
+    total: number;
+    status: string;
+    channel: string;
+    date: string;
+}
+
+/** Combined POS sales and sales-order history for a customer profile. */
+export async function getCustomerOrderHistory(
+    customerId: string,
+    phone?: string
+): Promise<CustomerOrderHistoryRow[]> {
+    const scope = `customer="${customerId}"${phone ? ` || customer_phone="${sanitizeFilter(phone)}"` : ''}`;
+    const [salesRes, ordersRes] = await Promise.all([
+        pb.collection('sales').getList(1, 25, { filter: scope, sort: '-created' }).catch(() => ({ items: [] })),
+        pb.collection('sales_orders').getList(1, 25, { filter: scope, sort: '-created' }).catch(() => ({ items: [] })),
+    ]);
+
+    return [
+        ...salesRes.items.map((sale: any) => ({
+            id: sale.id,
+            order_number: sale.channel_order_id || `SALE-${sale.id.slice(0, 6).toUpperCase()}`,
+            total: Number(sale.total) || 0,
+            status: sale.status || 'confirmed',
+            channel: sale.channel || 'pos',
+            date: sale.created,
+        })),
+        ...ordersRes.items.map((order: any) => ({
+            id: order.id,
+            order_number: order.order_number || `ORD-${order.id.slice(0, 6).toUpperCase()}`,
+            total: Number(order.total) || 0,
+            status: order.status || 'draft',
+            channel: order.order_type || 'sales_order',
+            date: order.order_date || order.created,
+        })),
+    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
+/** Jewelry-specific profile fields that are not part of the core Customer shape. */
+export async function updateCustomerJewelryProfile(
+    customerId: string,
+    profile: {
+        ring_size?: string;
+        bangle_size?: string;
+        preferred_metal?: string;
+        birthday_date?: string;
+        anniversary_date?: string;
+    }
+): Promise<void> {
+    await pb.collection('customers').update(customerId, {
+        ring_size: profile.ring_size || null,
+        bangle_size: profile.bangle_size || null,
+        preferred_metal: profile.preferred_metal || null,
+        birthday_date: profile.birthday_date || null,
+        anniversary_date: profile.anniversary_date || null,
+    });
+}

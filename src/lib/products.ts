@@ -379,3 +379,63 @@ export async function recordManualIntakeMovement(input: {
         notes: input.notes,
     });
 }
+
+/** Sellable variant option for document builders (invoices, orders). */
+export interface SellableVariant {
+    id: string;
+    variant_name?: string;
+    sku_suffix?: string;
+    material?: string;
+    stock_level?: number;
+    price_adjustment: number;
+    product: {
+        id: string;
+        name: string;
+        sku: string;
+        base_price: number;
+        category?: string;
+    };
+}
+
+/** In-stock variants with their product expanded, for invoice/order builders. */
+export async function getSellableVariants(): Promise<SellableVariant[]> {
+    const variants = await pb.collection('product_variants').getFullList<{
+        id: string;
+        variant_name?: string;
+        sku_suffix?: string;
+        material?: string;
+        stock_level?: number;
+        price_adjustment?: number;
+        expand?: {
+            product?: {
+                id: string;
+                name: string;
+                sku: string;
+                base_price: number;
+                category?: string;
+            };
+        };
+    }>({
+        filter: 'stock_level>0',
+        sort: 'variant_name',
+        expand: 'product',
+    });
+
+    return variants.map((variant) => ({
+        id: variant.id,
+        variant_name: variant.variant_name,
+        sku_suffix: variant.sku_suffix,
+        material: variant.material,
+        stock_level: variant.stock_level,
+        price_adjustment: variant.price_adjustment || 0,
+        product: variant.expand?.product
+            ? {
+                id: variant.expand.product.id,
+                name: variant.expand.product.name,
+                sku: variant.expand.product.sku,
+                base_price: variant.expand.product.base_price,
+                category: variant.expand.product.category,
+            }
+            : { id: '', name: '', sku: '', base_price: 0 },
+    }));
+}

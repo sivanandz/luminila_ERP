@@ -51,7 +51,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { pb } from "@/lib/pocketbase";
+
 
 import {
     getCustomer,
@@ -59,6 +59,8 @@ import {
     deleteCustomer,
     type Customer,
     type CustomerType,
+    getCustomerOrderHistory,
+    updateCustomerJewelryProfile,
 } from "@/lib/customers";
 import { formatINR } from "@/lib/gst";
 
@@ -136,37 +138,7 @@ function CustomerDetailContent() {
             // Fetch live order history from sales and sales_orders
             setLoadingOrders(true);
             try {
-                const [salesRes, ordersRes] = await Promise.all([
-                    pb.collection("sales").getList(1, 25, {
-                        filter: `customer="${id}" || customer_phone="${data.phone}"`,
-                        sort: "-created",
-                    }).catch(() => ({ items: [] })),
-                    pb.collection("sales_orders").getList(1, 25, {
-                        filter: `customer="${id}" || customer_phone="${data.phone}"`,
-                        sort: "-created",
-                    }).catch(() => ({ items: [] })),
-                ]);
-
-                const historyItems: CustomerOrderHistoryItem[] = [
-                    ...salesRes.items.map((s: any) => ({
-                        id: s.id,
-                        order_number: s.channel_order_id || `SALE-${s.id.slice(0, 6).toUpperCase()}`,
-                        total: Number(s.total) || 0,
-                        status: s.status || "confirmed",
-                        channel: s.channel || "pos",
-                        date: s.created,
-                    })),
-                    ...ordersRes.items.map((o: any) => ({
-                        id: o.id,
-                        order_number: o.order_number || `ORD-${o.id.slice(0, 6).toUpperCase()}`,
-                        total: Number(o.total) || 0,
-                        status: o.status || "draft",
-                        channel: o.order_type || "sales_order",
-                        date: o.order_date || o.created,
-                    })),
-                ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-                setOrders(historyItems);
+                setOrders(await getCustomerOrderHistory(id, data.phone));
             } catch (err) {
                 console.warn("Could not load customer purchase records:", err);
             } finally {
@@ -194,14 +166,14 @@ function CustomerDetailContent() {
                 anniversary: editForm.anniversary || undefined,
             });
 
-            // Also patch jewelry CRM fields into record
+            // Also patch jewelry CRM fields into the record
             try {
-                await pb.collection("customers").update(id, {
-                    ring_size: editForm.ring_size || null,
-                    bangle_size: editForm.bangle_size || null,
-                    preferred_metal: editForm.preferred_metal || null,
-                    birthday_date: editForm.date_of_birth || null,
-                    anniversary_date: editForm.anniversary || null,
+                await updateCustomerJewelryProfile(id, {
+                    ring_size: editForm.ring_size,
+                    bangle_size: editForm.bangle_size,
+                    preferred_metal: editForm.preferred_metal,
+                    birthday_date: editForm.date_of_birth,
+                    anniversary_date: editForm.anniversary,
                 });
             } catch {
                 // ignore
