@@ -1807,6 +1807,22 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **D-23 stays open:** two pages migrated (`challan/create`, `setup`), `inventory` (13) and the remaining ~24 files still call PocketBase directly.
 
+### 11.49 Slice 47: inventory listing behind services (2026-10-23)
+
+**D-23 progress:** `src/app/inventory/page.tsx` has **zero** direct PocketBase calls (was 13: variant aggregation, open PO lines, five realtime subscriptions and a stock-movement insert).
+
+| Change | Files |
+|---|---|
+| `getVariantStockSummary()` — one pass over variants returning per-product stock, material and variant→product map | `src/lib/products.ts` |
+| `recordManualIntakeMovement()` — tenant-stamped restock movement | same |
+| `getOpenPurchaseOrderItems()` — pending-quantity source | `src/lib/purchase.ts` |
+| `subscribeInventoryChanges()` — five subscriptions with one cleanup function | `src/lib/inventory-feed.ts` (new) |
+| Page now composes those calls instead of driving PocketBase | `src/app/inventory/page.tsx` |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
+
+**D-23 stays open:** three pages migrated (`challan/create`, `setup`, `inventory`); the remaining ~22 files still call PocketBase directly.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

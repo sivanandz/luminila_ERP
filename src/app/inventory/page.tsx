@@ -47,7 +47,9 @@ import { ProductPurchaseHistoryModal } from "@/components/inventory/ProductPurch
 import { QuickReceivePOModal } from "@/components/inventory/QuickReceivePOModal";
 import { BulkInventoryImportModal } from "@/components/inventory/BulkInventoryImportModal";
 import { getDiscrepancyStats } from "@/lib/discrepancies";
-import { getOpenPurchaseOrders, reconcilePOWithInwardBatch } from "@/lib/purchase";
+import { getOpenPurchaseOrders, getOpenPurchaseOrderItems, reconcilePOWithInwardBatch } from "@/lib/purchase";
+import { getVariantStockSummary, recordManualIntakeMovement } from "@/lib/products";
+import { subscribeInventoryChanges } from "@/lib/inventory-feed";
 import { ChannelPricingInput } from "@/components/pricing/ChannelPricingInput";
 import { getChannelPrice } from "@/lib/channel-pricing";
 import { MobileScanner } from "@/lib/mobile-scanner";
@@ -435,32 +437,19 @@ function InventoryContent() {
             // Or better: store total stock on Product record as a cached field.
             // For now, let's fetch all variants and map them. It's safe for < 200 products.
 
-            const allVariants = await pb.collection('product_variants').getFullList<ProductVariant>();
-            const variantMap = new Map<string, number>(); // productId -> sum stock
-            const variantMaterialMap = new Map<string, string>(); // productId -> material
-
-            allVariants.forEach((v) => {
-                const pid = v.product;
-                const currentStock = variantMap.get(pid) || 0;
-                variantMap.set(pid, currentStock + (v.stock_level || 0));
-
-                if (v.material && !variantMaterialMap.has(pid)) {
-                    variantMaterialMap.set(pid, v.material);
-                }
-            });
+            const {
+                stockByProduct: variantMap,
+                materialByProduct: variantMaterialMap,
+                productByVariant: variantToProduct,
+            } = await getVariantStockSummary();
 
             // Calculate pending stock from active Purchase Orders
             const productPendingMap = new Map<string, number>();
             try {
-                const openPoItems = await pb.collection('purchase_order_items').getFullList({
-                    filter: 'quantity_ordered > quantity_received',
-                    expand: 'variant',
-                });
-                const variantToProduct = new Map<string, string>();
-                allVariants.forEach(v => variantToProduct.set(v.id, v.product));
+                const openPoItems = await getOpenPurchaseOrderItems();
 
-                openPoItems.forEach((poi: any) => {
-                    const variantId = poi.variant;
+                openPoItems.forEach((poi) => {
+                    const variantId = poi.variant || '';
                     const prodId = variantToProduct.get(variantId);
                     if (prodId) {
                         const ordered = poi.quantity_ordered ?? poi.quantity ?? 0;
@@ -510,28 +499,13 @@ function InventoryContent() {
         getAttributes().then(setAttributes);
 
         // Realtime subscription with graceful error catch (handles transient SSE 404 client id)
-        pb.collection('products').subscribe('*', fetchProducts).catch(() => {});
-        pb.collection('product_variants').subscribe('*', fetchProducts).catch(() => {});
-        pb.collection('goods_received_notes').subscribe('*', () => {
-            fetchProducts();
-            loadOpenPOCount();
-        }).catch(() => {});
-        pb.collection('purchase_orders').subscribe('*', () => {
-            fetchProducts();
-            loadOpenPOCount();
-        }).catch(() => {});
-        pb.collection('stock_discrepancies').subscribe('*', () => {
-            fetchProducts();
-            loadDiscrepancyCount();
-        }).catch(() => {});
+        const unsubscribe = subscribeInventoryChanges({
+            onChange: fetchProducts,
+            onProcurementChange: loadOpenPOCount,
+            onDiscrepancyChange: loadDiscrepancyCount,
+        });
 
-        return () => {
-            pb.collection('products').unsubscribe('*').catch(() => {});
-            pb.collection('product_variants').unsubscribe('*').catch(() => {});
-            pb.collection('goods_received_notes').unsubscribe('*').catch(() => {});
-            pb.collection('purchase_orders').unsubscribe('*').catch(() => {});
-            pb.collection('stock_discrepancies').unsubscribe('*').catch(() => {});
-        };
+        return unsubscribe;
     }, []);
 
     // Handle add/edit
@@ -617,14 +591,10 @@ function InventoryContent() {
             // If tagged to a Purchase Order, log stock movement and reconcile
             if (poRef && targetVariantId) {
                 const addedStock = parseInt(newProduct.stock) || 0;
-                const userEmail = (pb.authStore.model as any)?.email || '';
-                await pb.collection('stock_movements').create({
-                    account_email: userEmail,
-                    variant: targetVariantId,
-                    movement_type: 'restock',
+                await recordManualIntakeMovement({
+                    variantId: targetVariantId,
                     quantity: addedStock,
-                    reference_id: poRef,
-                    source: 'manual_intake',
+                    referenceId: poRef,
                     notes: `Inward intake tagged to PO: ${poRef}. Unit cost: ₹${costPrice}`,
                 }).catch(err => console.warn('Could not log stock movement:', err));
 

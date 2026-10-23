@@ -1429,3 +1429,16 @@ export function calculatePOTotals(items: PurchaseOrderItem[], shipping: number =
 
     return { subtotal, gstAmount, total };
 }
+
+/** Open purchase-order lines, used to show pending stock on inventory screens. */
+export async function getOpenPurchaseOrderItems(): Promise<Array<{
+    variant?: string;
+    quantity_ordered?: number;
+    quantity?: number;
+    quantity_received?: number;
+}>> {
+    return pb.collection('purchase_order_items').getFullList({
+        filter: 'quantity_ordered > quantity_received',
+        expand: 'variant',
+    });
+}
