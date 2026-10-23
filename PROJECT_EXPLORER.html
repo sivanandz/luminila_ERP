@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>35 open · 20 fixed</span>
+            <span class="chip accent"><span class="dot"></span>33 open · 22 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -875,7 +875,7 @@ const FEATURES = [
   ["Setup wizard","onboarding","live","Provisions a tenant database and seeds the schema"],
   ["Email and password login","onboarding","live","Tenant resolved by email before auth"],
   ["Session restore","onboarding","live","Auth store hydrated from localStorage"],
-  ["Five seeded roles","onboarding","partial","Checks run in the UI only, never in API routes (S-07)"],
+  ["Five seeded roles","onboarding","live","Capabilities enforced server-side on catalog and CMS; admin pages hidden from other roles"],
   ["Per-tenant database","onboarding","live","Physical SQLite file and process per account, loopback bound, provisioning gated for existing tenants"],
   ["Account switching","onboarding","partial","activeTenantEmail is a process global (S-05)"],
   ["PIN or QR cashier switch","onboarding","absent","Roadmap only"],
@@ -1090,7 +1090,7 @@ const DEFECTS = [
     where:"src/lib/discounts.ts:12,156,266,315-323,362",
     impact:"BOGO yields zero discount, codes are not sanitized, usage limits race, and returns never reverse usage.",
     fix:"Implement BOGO or remove it, sanitize, serialize usage, and reverse on return." },
-  { id:"D-22", sev:"P2", area:"ui", title:"Authentication is decorative on the client",
+  { id:"D-22", sev:"P2", status:"fixed", area:"ui", title:"Authentication is decorative on the client",
     where:"src/components/auth/ProtectedRoute.tsx · src/app/layout.tsx",
     impact:"Nothing redirects an unauthenticated visitor. Navigation renders every item to every role. Two pages use the guard, and it shows a card instead of redirecting.",
     fix:"Guard the shell, redirect to login, and filter navigation by capability." },
@@ -1106,7 +1106,7 @@ const DEFECTS = [
     where:"campaign-attribution.ts · multi-location.ts · catalog-sync.ts · backup.ts",
     impact:"Campaign attribution, locations, transfers, sync logs, shipments, and part of backup silently produce nothing. Multi-location degrades to localStorage.",
     fix:"Create the collections in a migration or delete the features and their entry points." },
-  { id:"S-07", sev:"P2", area:"security", title:"RBAC is enforced in the UI only",
+  { id:"S-07", sev:"P2", status:"fixed", area:"security", title:"RBAC is enforced in the UI only",
     where:"src/lib/rbac.ts:241-300 · one importer",
     impact:"Any valid staff token can create payment links, push to Meta, and write storefront content. A cashier with zero capabilities passes every route check.",
     fix:"Check capabilities server-side in every route that mutates money or catalog." },
@@ -1272,7 +1272,7 @@ const VERIFY = [
   ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
-  ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","12 assertions: self-tenant access, superuser bypass, injection rejection, order tenant binding."],
+  ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
   ["Test command","npm test","pass","33 assertions across three suites; non-zero exit on failure."],
   ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build excluded until D-08 is settled."]
 ];

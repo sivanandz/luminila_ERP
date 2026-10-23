@@ -6,7 +6,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { tenantAccessAllowed } from '../lib/api-auth';
+import { tenantAccessAllowed, roleGrantsCapability } from '../lib/api-auth';
 import { normalizeBindingEmail, resolveOrderTenant } from '../lib/storefront';
 
 let passed = 0;
@@ -86,6 +86,29 @@ test('an order cannot name a different tenant', () => {
 test('a session without a valid tenant cannot order', () => {
     assert.equal(resolveOrderTenant('').ok, false);
     assert.equal(resolveOrderTenant('garbage').ok, false);
+});
+
+test('Admin and Super Admin roles pass every capability', () => {
+    assert.equal(roleGrantsCapability({ name: 'Admin' }, 'products', 'update'), true);
+    assert.equal(roleGrantsCapability({ name: 'Super Admin' }, 'anything', 'delete'), true);
+});
+
+test('other roles need the explicit resource and action', () => {
+    const manager = { name: 'Manager', permissions: { products: ['read', 'update'] } };
+    assert.equal(roleGrantsCapability(manager, 'products', 'update'), true);
+    assert.equal(roleGrantsCapability(manager, 'products', 'delete'), false);
+    assert.equal(roleGrantsCapability(manager, 'settings', 'update'), false);
+});
+
+test('a role with no permissions or no role record is denied', () => {
+    assert.equal(roleGrantsCapability({ name: 'Cashier' }, 'products', 'update'), false);
+    assert.equal(roleGrantsCapability(undefined, 'products', 'update'), false);
+    assert.equal(roleGrantsCapability(null, 'settings', 'update'), false);
+});
+
+test('a malformed permission entry is denied rather than trusted', () => {
+    const broken = { name: 'Staff', permissions: { products: 'update' as unknown as string[] } };
+    assert.equal(roleGrantsCapability(broken, 'products', 'update'), false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

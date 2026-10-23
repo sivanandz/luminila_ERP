@@ -48,6 +48,8 @@ interface NavItem {
     icon: React.ReactNode;
     label: string;
     children?: NavItem[];
+    /** Hidden from roles that are not administrators. */
+    adminOnly?: boolean;
 }
 
 const navGroups: NavItem[] = [
@@ -116,8 +118,8 @@ const navGroups: NavItem[] = [
 ];
 
 const systemItems: NavItem[] = [
-    { href: "/users", icon: <UserCog size={20} />, label: "User Management" },
-    { href: "/settings", icon: <Settings size={20} />, label: "Settings" },
+    { href: "/users", icon: <UserCog size={20} />, label: "User Management", adminOnly: true },
+    { href: "/settings", icon: <Settings size={20} />, label: "Settings", adminOnly: true },
     { href: "/support", icon: <Headphones size={20} />, label: "Support" },
 ];
 
@@ -190,7 +192,7 @@ function CollapsibleGroup({
 export function Sidebar() {
     const pathname = usePathname();
     const router = useRouter();
-    const { user, isValid, logout } = useAuth();
+    const { user, isValid, isAdmin, logout } = useAuth();
 
     // Lifted state with initialization function to auto-open active group
     const [openGroups, setOpenGroups] = useState<string[]>(() => {
@@ -300,7 +302,9 @@ export function Sidebar() {
                 <div className="py-2">
                     <h4 className="mb-2 px-4 text-xs font-semibold tracking-wider text-muted-foreground/70 uppercase">System</h4>
                     <div className="space-y-1">
-                        {systemItems.map((item) => (
+                        {systemItems
+                    .filter((item) => !item.adminOnly || isAdmin)
+                    .map((item) => (
                             <NavLink key={item.href} item={item} pathname={pathname} />
                         ))}
                     </div>

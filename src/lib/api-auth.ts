@@ -103,6 +103,26 @@ export async function authenticateOperator(req: Request, hintEmail?: string): Pr
     };
 }
 
+export interface RoleLike {
+    name?: string;
+    permissions?: Record<string, string[]>;
+}
+
+/**
+ * Pure role rule: Admin and Super Admin pass by name, every other role must
+ * carry `<resource>: [<action>]` in its permissions map.
+ */
+export function roleGrantsCapability(
+    role: RoleLike | undefined | null,
+    resource: string,
+    action: string
+): boolean {
+    if (!role) return false;
+    if (role.name === 'Admin' || role.name === 'Super Admin') return true;
+    const granted = role.permissions?.[resource];
+    return Array.isArray(granted) && granted.includes(action);
+}
+
 /**
  * Capability check against the roles assigned to the authenticated user.
  * Superusers pass; a role named Admin passes; otherwise the role's permissions
@@ -123,15 +143,7 @@ export async function hasCapability(
             expand: 'role',
         });
 
-        return roles.some((entry) => {
-            const role = entry.expand?.role as
-                | { name?: string; permissions?: Record<string, string[]> }
-                | undefined;
-            if (!role) return false;
-            if (role.name === 'Admin' || role.name === 'Super Admin') return true;
-            const granted = role.permissions?.[resource];
-            return Array.isArray(granted) && granted.includes(action);
-        });
+        return roles.some((entry) => roleGrantsCapability(entry.expand?.role as RoleLike | undefined, resource, action));
     } catch {
         return false;
     }

@@ -1,6 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import PocketBase from "pocketbase";
 import { pb as sharedPb, ensureServerAuth, getPocketBaseUrl } from "@/lib/pocketbase";
+import { hasCapability } from "@/lib/api-auth";
 
 const PB_KEY = "storefront_content";
 
@@ -365,6 +366,23 @@ export async function POST(req: Request) {
             return NextResponse.json(
                 { success: false, error: "Unauthorized: Invalid or expired staff authentication token." },
                 { status: 401, headers: CORS_HEADERS }
+            );
+        }
+
+        // Writing storefront content is a settings change, not a read: require
+        // the capability instead of accepting any valid staff token.
+        const staffSession = {
+            ok: true,
+            status: 200,
+            email: staffEmail,
+            userId: pb.authStore.record?.id,
+            isSuperuser: Boolean(pb.authStore.isSuperuser),
+            client: pb,
+        };
+        if (!(await hasCapability(staffSession, "settings", "update"))) {
+            return NextResponse.json(
+                { success: false, error: "Your role cannot change storefront content." },
+                { status: 403, headers: CORS_HEADERS }
             );
         }
 

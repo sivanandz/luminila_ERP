@@ -127,7 +127,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Lint errors | same | none |
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
-| Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **12 passed, 0 failed** (2026-10-23) |
+| Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
 | Test command | `npm test` | 33 assertions across 3 suites, exit 0 |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
@@ -327,7 +327,7 @@ Status vocabulary, applied strictly:
 | First-run setup wizard | Live | `/setup` provisions a tenant database, seeds collections, creates the admin user |
 | Email/password login against tenant database | Live | `/login` routes through `AuthContext`; tenant resolved by email before auth |
 | Session persistence and restore | Live | Auth store hydration in `pocketbase.ts`; `PB_CUSTOM_URL` survives reloads |
-| Five seeded roles | Partial | Roles exist; capability checks run only in the UI, never in API routes (S-07) |
+| Five seeded roles | Live | Capabilities are enforced server-side on catalog push and storefront CMS writes, and navigation hides admin pages from other roles |
 | Per-tenant physical database | Live, with caveats | Provisioning works; control plane is unauthenticated (S-01, S-02) |
 | Account switching | Partial | `activeTenantEmail` is process-global; concurrent users can cross tenants (S-05) |
 | PIN / QR quick cashier switch | Absent | Roadmap only |
@@ -588,7 +588,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-09, S-12, S-13, S-14 (section 11). S-05 and S-06 are partially mitigated. S-07, S-08, S-10, S-11, S-15 and S-16 remain open.
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14 (section 11). S-05 and S-06 are partially mitigated. S-08, S-10, S-11, S-15 and S-16 remain open.
 
 Two honest qualifications:
 
@@ -615,7 +615,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-10, D-11, D-20, D-24, D-25, S-01, S-02, S-03, S-04, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1086,6 +1086,25 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 - No component or end-to-end layer: the suites cover pure policy and math, not the POS, drawer, or WhatsApp screens.
 - The backup, offline queue and Drive sync items in this cluster are untouched; only the test and CI half landed.
+
+### 11.6 Slice 6: capabilities and navigation (2026-10-23)
+
+**Closed:** S-07, D-22.
+
+| Change | Files | Why |
+|---|---|---|
+| Pure capability rule | `src/lib/api-auth.ts`, `src/scripts/test-tenant-auth.ts` | `roleGrantsCapability` is testable without a database; Admin and Super Admin pass by name, every other role needs `<resource>: [<action>]` |
+| Catalog push requires `products:update` | `src/app/api/catalog/batch/route.ts` | A cashier token can no longer rewrite the Meta catalog; the server sync key still bypasses |
+| Storefront CMS write requires `settings:update` | `src/app/api/storefront/content/route.ts` | Publishing storefront content is a settings change, not a read |
+| Admin pages hidden from other roles | `src/components/layout/Sidebar.tsx`, `MobileDrawer.tsx` | User Management and Settings disappear for non-admins on desktop and in the drawer |
+
+**Verified:** `npm run typecheck` clean; `npm test` 12 + 9 + 16 assertions, exit 0; targeted ESLint reports no errors.
+
+**Still open in this cluster:**
+
+- S-05: data routes still share the module PocketBase client.
+- S-06: plaintext tenant registry needs an approved migration.
+- Payment links and POS remain open to any authenticated operator by design, because a cashier must be able to take payment.
 
 ## Appendix A: Route inventory
 

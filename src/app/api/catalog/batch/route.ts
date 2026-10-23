@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateOperator, hasCapability } from '@/lib/api-auth';
 import PocketBase from 'pocketbase';
 import { pb, ensureServerAuth, getPocketBaseUrl, sanitizeFilter } from '@/lib/pocketbase';
 import { getStorefrontBinding } from '@/lib/storefront';
@@ -65,6 +66,18 @@ export async function POST(req: NextRequest) {
                 { success: false, error: 'Unauthorized: Valid operator session token is required to trigger Meta Catalog sync.' },
                 { status: 401 }
             );
+        }
+
+        // A valid token is not enough to push the catalog: a cashier should not
+        // be able to rewrite Meta's data. The server sync key is exempt above.
+        if (!isSuperuserCaller) {
+            const session = await authenticateOperator(req, requestedEmail || verifiedEmail || undefined);
+            if (!session.ok || !(await hasCapability(session, 'products', 'update'))) {
+                return NextResponse.json(
+                    { success: false, error: 'Your role cannot push the product catalog.' },
+                    { status: 403 }
+                );
+            }
         }
 
         const catalogId = process.env.META_CATALOG_ID || '1548180657057026';

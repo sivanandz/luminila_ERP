@@ -41,6 +41,9 @@ interface MobileDrawerProps {
     onOpenDriveSync?: () => void;
 }
 
+/** Pages that only administrators should see in the drawer. */
+const ADMIN_ONLY_HREFS = new Set(["/users", "/settings"]);
+
 const navSections = [
     {
         title: "Sales & POS",
@@ -90,7 +93,7 @@ export function MobileDrawer({
 }: MobileDrawerProps) {
     const pathname = usePathname();
     const router = useRouter();
-    const { user, isValid, logout } = useAuth();
+    const { user, isValid, isAdmin, logout } = useAuth();
 
     if (!isOpen) return null;
 
@@ -163,7 +166,9 @@ export function MobileDrawer({
                                 {section.title}
                             </p>
                             <div className="space-y-0.5">
-                                {section.items.map((item) => {
+                                {section.items
+                                    .filter((item) => isAdmin || !ADMIN_ONLY_HREFS.has(item.href))
+                                    .map((item) => {
                                     const Icon = item.icon;
                                     const isActive = pathname === item.href;
                                     return (
