@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>27 open · 28 fixed</span>
+            <span class="chip accent"><span class="dot"></span>26 open · 29 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -498,7 +498,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <div class="vitals-body">
             <div class="vital"><div class="vital-num" data-count="88700">88,700</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
-            <div class="vital"><div class="vital-num" data-count="4">4</div><div class="vital-label">modules with no importer</div></div>
+            <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">modules with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
@@ -1189,8 +1189,8 @@ const DEFECTS = [
     where:"whatsapp-commander.ts:61,65,69,84",
     impact:"Uppercase statuses and a non-existent razorpay_link_id mean its commands would fail at the database. Zero importers.",
     fix:"Fix the enum casing and columns, then wire it or delete it." },
-  { id:"D-39", sev:"P3", area:"platform", title:"A dead client data layer sits beside inline queries",
-    where:"src/lib/hooks.ts · alerts.ts · backup.ts",
+  { id:"D-39", sev:"P3", status:"fixed", area:"platform", title:"A dead client data layer sits beside inline queries",
+    where:"docs/migrations-draft/README.md",
     impact:"The dashboard recomputes statistics inline while purpose-built hooks go unused, and full backup and restore are unreachable from the UI.",
     fix:"Adopt the hooks and expose backup, or remove both." },
   { id:"S-14", sev:"P3", status:"fixed", area:"security", title:"Single-record reads ignore the tenant parameter",
@@ -1252,7 +1252,6 @@ const ROADMAP = [
 const ORPHANS = [
   ["omnichannel-buffer-engine.ts","Channel buffers, cart reservations","No importer, in-memory only"],
   ["sync-engine.ts and sync clients","Shopify and WooCommerce sync","Seven TODOs, no importer"],
-  ["hooks.ts and alerts.ts","Client data hooks and alerts","No importer, dashboard recomputes inline"],
   ["whatsapp-commander.ts","Admin commands in chat","No importer, schema-invalid writes"]
 ];
 

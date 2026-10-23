@@ -103,8 +103,8 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 253 |
-| Lines of TypeScript/TSX | ~88,700 |
+| TypeScript/TSX files | 257 |
+| Lines of TypeScript/TSX | ~88,500 |
 | Route pages (`src/app/**/page.tsx`) | 45 |
 | Service modules (`src/lib/*.ts`) | 85 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
@@ -648,7 +648,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, D-39, S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -893,7 +893,6 @@ This is the most misleading category in the repository: substantial code exists,
 |---|---|---|
 | `omnichannel-buffer-engine.ts` | Channel buffers and cart reservations | No importer; in-memory state would not survive reload anyway |
 | `sync-engine.ts` + `sync/shopify.ts` + `sync/woocommerce.ts` | E-commerce sync orchestration | Zero importers; seven TODOs; Settings shows "Coming Soon" |
-| `hooks.ts`, `alerts.ts` | Client data hooks, low-stock alerts | Zero importers; dashboard and inventory recompute inline |
 | `whatsapp-commander.ts` | Admin commands in chat | Zero importers, and its writes are schema-invalid |
 
 The practical consequence: the product's advertised surface is smaller than its code, and any estimate based on module count is wrong. Section 4 labels these **Scaffold** for exactly this reason.
@@ -1397,6 +1396,24 @@ The bundle covers the three domains that currently store JSON in `store_settings
 
 **Still open in this cluster:** S-05 (shared client) and S-06 (plaintext registry), both waiting on your approval; everything else in the security register is closed.
 
+### 11.23 Slice 23: dead client layer removed (2026-10-23)
+
+**Closed:** D-39.
+
+D-39 had two halves. The first — unreachable backup and restore — closed in §11.13. The second was a dead data layer: `hooks.ts` (20 KB of `useProducts`, `useSales`, `useDashboardStats`, `useLowStockAlerts`) and `alerts.ts` (burned into a duplicate hook) had zero importers while the dashboard, inventory and product screens each recompute the same queries inline.
+
+**Decision: removed, not adopted.** Adopting them would have meant re-verifying every recomputed screen against a second implementation for no user-visible gain; deleting them removes the duplication instead of blessing it.
+
+| Change | Files |
+|---|---|
+| Deleted unused hooks | `src/lib/hooks.ts` |
+| Deleted duplicate alerts module | `src/lib/alerts.ts` |
+| Updated the module inventory and orphan count | this document |
+
+**Verified:** `npm run typecheck` clean; `npm test` 117 assertions across 16 suites; `npx eslint src` 0 errors. No behaviour changed, because nothing imported them.
+
+**What remains unwired:** three modules (`omnichannel-buffer-engine.ts`, `sync-engine.ts`, `whatsapp-commander.ts`), all deliberate — their features need schema or external credentials.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
@@ -1489,9 +1506,9 @@ The bundle covers the three domains that currently store JSON in `store_settings
 
 **Mobile**: `mobile-scanner.ts`, `mobile-printer.ts`, `sound-effects.ts`
 
-**Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
+**Reporting**: `analytics.ts`, `reports.ts`, `sync-engine.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 4 modules, including the whole sync domain.
+**Modules with zero importers outside their own test scripts**: `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `whatsapp-commander.ts`. These are the gap between "code exists" and "the product does it": 3 modules, all in sync, omnichannel buffering and chat commands.
 
 ## Appendix D: Glossary
 
