@@ -12,7 +12,9 @@ import {
 } from "@/lib/whatsapp";
 import type { WPPMessage } from "@/lib/whatsapp";
 import { toast } from "sonner";
-import { pb } from "@/lib/pocketbase";
+import { listActiveChatProducts, listChatProducts, findProductByImageHash, createChatProduct } from "@/lib/chat-inventory";
+import { createSaleFromChat } from "@/lib/chat-sales";
+import { getCurrentTenantEmail } from "@/lib/pocketbase";
 import { findMatchingProducts, generateImageHash } from "@/lib/image-matcher";
 import {
     MessageCircle,
@@ -935,8 +937,8 @@ export default function WhatsAppPage() {
     useEffect(() => {
         const fetchProducts = async () => {
             try {
-                const data = await pb.collection('products').getList<ProductRecord>(1, 100);
-                setProducts(data.items.map((p) => ({
+                const data = await listChatProducts(100);
+                setProducts(data.map((p) => ({
                     id: p.id,
                     name: p.name,
                     sku: p.sku,
@@ -1237,39 +1239,14 @@ export default function WhatsAppPage() {
             const customerName = chats.find(c => c.id === selectedChat)?.name || "WhatsApp Customer";
             const customerPhone = phoneFromChatId(selectedChat);
 
-            // 1. Create Sale
-            const saleData = await pb.collection('sales').create<Sale>({
-                customer_name: customerName,
-                customer_phone: customerPhone,
-                customer: customer?.id || '',
-                status: 'pending',
+            // 1-2. Create the sale and its lines through the channel-sale service.
+            const sale = await createSaleFromChat({
+                customerName,
+                customerPhone: customerPhone || '',
+                customerId: customer?.id || undefined,
+                cart: cart.map((item) => ({ id: item.id, base_price: item.base_price, quantity: item.quantity })),
                 total: cartTotal,
-                subtotal: cartTotal,
-                discount: 0,
-                channel: 'whatsapp',
-                payment_method: 'upi',
             });
-
-            const sale = saleData;
-
-            // 2. Create Sale Items
-            if (sale) {
-                for (const item of cart) {
-                    const variants = await pb.collection('product_variants').getList(1, 1, { filter: `product="${item.id}"` });
-                    const variantId = variants.items[0]?.id || '';
-
-                    await pb.collection('sale_items').create({
-                        sale: sale.id,
-                        product: item.id,
-                        variant: variantId,
-                        quantity: item.quantity || 1,
-                        unit_price: item.base_price,
-                        total: item.base_price * (item.quantity || 1),
-                        total_price: item.base_price * (item.quantity || 1),
-                        discount: 0,
-                    });
-                }
-            }
 
             // 3. Notify via WhatsApp
             const confirmMsg = `✅ *Order #${sale?.id.slice(0, 8).toUpperCase()} Created*\nTotal: ₹${cartTotal.toLocaleString('en-IN')}\n\nThank you for your order! We are generating your payment link now.`;
@@ -2028,12 +2005,9 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 try {
                     const imgHash = await generateImageHash(imageUrl);
                     // Check if this image hash already exists in DB
-                    const existingProducts = await pb.collection('products').getList<ProductRecord>(1, 1, {
-                        filter: `image_hash="${imgHash}"`
-                    });
+                    const existing = await findProductByImageHash(imgHash);
 
-                    if (existingProducts.items.length > 0) {
-                        const existing = existingProducts.items[0];
+                    if (existing) {
                         const confirmNew = confirm(
                             `⚠️ Similar product already exists!\n\n` +
                             `Existing: ${existing.name} (${existing.sku})\n\n` +
@@ -2082,31 +2056,19 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 } catch { /* ignore */ }
             }
 
-            // Insert product
-            const productData = await pb.collection('products').create<ProductRecord>({
-                sku: addProductForm.sku.trim(),
-                name: addProductForm.name.trim(),
-                description: addProductForm.description.trim() || null,
-                category: addProductForm.category.trim() || null,
-                base_price: addProductForm.base_price || 0,
-                cost_price: addProductForm.cost_price || null,
-                image_url: imageUrl || null,
-                image_hash: imageHash || null,
-                parent_sku: isVariant && selectedParentProduct ? selectedParentProduct.sku : null,
-                is_active: true
+            // Insert product (and its default variant when stock is set)
+            const productData = await createChatProduct({
+                sku: addProductForm.sku,
+                name: addProductForm.name,
+                description: addProductForm.description,
+                category: addProductForm.category,
+                basePrice: addProductForm.base_price,
+                costPrice: addProductForm.cost_price,
+                imageUrl,
+                imageHash,
+                parentSku: isVariant && selectedParentProduct ? selectedParentProduct.sku : undefined,
+                initialStock: addProductForm.initial_stock,
             });
-
-            // If initial stock provided, create a variant with that stock
-            if (addProductForm.initial_stock > 0 && productData) {
-                await pb.collection('product_variants').create({
-                    product: productData.id,
-                    sku_suffix: 'DEFAULT',
-                    variant_name: 'Default',
-                    price_adjustment: 0,
-                    stock_level: addProductForm.initial_stock,
-                    low_stock_threshold: 5
-                });
-            }
 
             // Reset form and close modal
             setAddProductForm({
@@ -2120,10 +2082,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
             setTimeout(() => setAddedToast(null), 3000);
 
             // Refresh products list
-            const productsList = await pb.collection('products').getFullList<ProductRecord>({
-                filter: 'is_active=true',
-                sort: 'name'
-            });
+            const productsList = await listActiveChatProducts();
             setProducts(productsList.map((p) => ({ id: p.id, sku: p.sku, name: p.name, base_price: p.base_price, image_url: p.image_url || null, stock: 0 })));
 
         } catch (err) {

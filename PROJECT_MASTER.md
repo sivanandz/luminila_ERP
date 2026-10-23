@@ -1866,6 +1866,19 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **D-23 stays open:** eight surfaces migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`, `invoices/create`, `customers/detail`, WhatsApp catalog editor). The WhatsApp chat page (8 calls, including sale creation from a chat) and the remaining modals are next.
 
+### 11.53 Slice 51: WhatsApp chat page behind two services (2026-10-23)
+
+**D-23 progress:** `src/app/whatsapp/page.tsx` has **zero** direct PocketBase calls (was 8), split by responsibility rather than one generic passthrough.
+
+| Service | Functions | Covers |
+|---|---|---|
+| `src/lib/chat-inventory.ts` (new) | `listChatProducts`, `listActiveChatProducts`, `findProductByImageHash`, `createChatProduct` | Product picker, the image-hash duplicate guard (hash sanitized), product + default-variant creation, post-create refresh |
+| `src/lib/chat-sales.ts` (new) | `createSaleFromChat` | Sale plus sale_items creation, including the per-line variant lookup and quantity maths, with an empty-cart guard |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors; `grep` confirms no `pb.collection` remains in the page.
+
+**D-23 stays open:** nine surfaces migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`, `invoices/create`, `customers/detail`, WhatsApp catalog editor, WhatsApp chat page). Remaining: `DiscrepancyModal` (5), `EwayBillSettings` (4), `BarcodeScanDispatchModal` (3), POS page (3), and settings sub-components.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
