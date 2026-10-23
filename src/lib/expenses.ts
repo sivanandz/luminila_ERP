@@ -3,7 +3,7 @@
  * Handles business expenses, categories, and statistics using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 import { toast } from 'sonner';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
@@ -111,11 +111,14 @@ export async function getExpenses(filters?: {
             filterParts.push(`category="${filters.categoryId}"`);
         }
         if (filters?.search) {
-            const isAmount = !isNaN(Number(filters.search));
+            // Search text reaches a PocketBase filter, so it must be stripped of
+            // quotes and operators before interpolation.
+            const safeSearch = sanitizeFilter(filters.search);
+            const isAmount = /^\d+(\.\d+)?$/.test(safeSearch.trim());
             if (isAmount) {
-                filterParts.push(`amount=${Number(filters.search)}`);
-            } else {
-                filterParts.push(`(payee~"${filters.search}" || description~"${filters.search}")`);
+                filterParts.push(`amount=${Number(safeSearch)}`);
+            } else if (safeSearch.trim()) {
+                filterParts.push(`(payee~"${safeSearch}" || description~"${safeSearch}")`);
             }
         }
 

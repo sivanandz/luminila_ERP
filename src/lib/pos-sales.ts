@@ -79,7 +79,26 @@ export interface POSSaleResult {
 // MAIN FUNCTION: Create POS Sale
 // ============================================
 
+/**
+ * Pure guard for cart quantities: a negative line would shrink the bill while
+ * increasing stock. Returns an error message, or null when the cart is sound.
+ */
+export function validateSaleQuantities(
+    items: Array<{ name?: string; productId?: string; quantity: number }>
+): string | null {
+    for (const item of items) {
+        const quantity = Number(item.quantity);
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+            return `Invalid quantity for ${item.name || item.productId || 'an item'}: ${item.quantity}`;
+        }
+    }
+    return null;
+}
+
 export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
+    const quantityError = validateSaleQuantities(data.items);
+    if (quantityError) throw new Error(quantityError);
+
     const transactionId = `TXN-${Date.now().toString(36).toUpperCase()}`;
 
     let createdSaleId: string | null = null;

@@ -615,6 +615,25 @@ export async function generateEwayBillFromInvoice(invoiceId: string): Promise<Ew
 
     const storeSettings = await getStoreSettings();
 
+    // State codes decide the place of supply. Guessing one (the old fallback was
+    // Karnataka) files the document from the wrong state, so refuse instead.
+    const fromStateCode =
+        parseInt(storeSettings.store_state_code, 10) ||
+        parseInt((storeSettings.store_gstin || '').slice(0, 2), 10) ||
+        0;
+    const buyerGstinState =
+        invoice.buyer_gstin && invoice.buyer_gstin !== 'URP'
+            ? parseInt(invoice.buyer_gstin.slice(0, 2), 10) || 0
+            : 0;
+    const toStateCode = parseInt(invoice.buyer_state_code, 10) || buyerGstinState || 0;
+
+    if (!fromStateCode) {
+        throw new Error('Set the store state code or GSTIN before generating an e-way bill.');
+    }
+    if (!toStateCode) {
+        throw new Error('Set the buyer state code or GSTIN before generating an e-way bill.');
+    }
+
     // Build E-way Bill request from invoice data
     const request: EwayBillRequest = {
         supplyType: 'O', // Outward supply
@@ -627,13 +646,13 @@ export async function generateEwayBillFromInvoice(invoiceId: string): Promise<Ew
         fromAddr1: storeSettings.store_address,
         fromPlace: storeSettings.store_city,
         fromPincode: parseInt(storeSettings.store_pincode) || 0,
-        fromStateCode: parseInt(storeSettings.store_state_code) || 29,
+        fromStateCode,
         toGstin: invoice.buyer_gstin || 'URP', // URP for unregistered
         toTrdName: invoice.buyer_name,
         toAddr1: invoice.buyer_address,
         toPlace: '', // Would need buyer city
         toPincode: 0, // Would need buyer pincode
-        toStateCode: parseInt(invoice.buyer_state_code) || 29,
+        toStateCode,
         transactionType: 1, // Regular
         transDistance: 0, // To be filled by user
         totalValue: invoice.taxable_value,

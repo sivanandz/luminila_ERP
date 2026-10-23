@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 140 assertions across 19 suites, exit 0 |
+| Test command | `npm test` | 144 assertions across 20 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -145,6 +145,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tenant runtime tests | `npx tsx src/scripts/test-tenant-runtime.ts` | **5 passed, 0 failed** (2026-10-23) |
 | Registry secret tests | `npx tsx src/scripts/test-tenant-secrets.ts` | **8 passed, 0 failed** (2026-10-23) |
 | GSTIN tests | `npx tsx src/scripts/test-gstin.ts` | **7 passed, 0 failed** (2026-10-23) |
+| POS quantity tests | `npx tsx src/scripts/test-pos-quantity.ts` | **4 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -651,7 +652,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-16, D-20, D-22, D-24, D-25, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-16, D-18, D-20, D-22, D-24, D-25, D-26, D-27, D-28, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1507,6 +1508,21 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **Verified:** `npm run typecheck` clean; `npm test` 140 assertions across 19 suites; the legacy 58-assertion GSTR-1 suite passes with corrected fixtures; targeted ESLint 0 errors.
 
 **Still open in this cluster:** D-12 (GRN race), D-13 (landed-cost notes blob), D-14 (product GST rate), D-15 (order invoice rate/HSN), D-21 (discount gaps), D-27 and D-28.
+
+### 11.30 Slice 30: four correctness fixes (2026-10-23)
+
+**Closed:** D-18, D-26, D-27, D-28.
+
+| Defect | Fix | Files |
+|---|---|---|
+| D-18 negative quantities | `validateSaleQuantities` refuses non-positive or non-finite cart lines before any write, so a negative line cannot inflate stock while shrinking the bill | `pos-sales.ts` |
+| D-26 expense filter injection | Search text is sanitized before interpolation and amount detection is a strict numeric pattern rather than `Number()` coercion | `expenses.ts` |
+| D-27 paid-amount fallback | `markInvoicePaid` uses nullish coalescing and clamps the settled amount to the invoice total, so a zero-value or fully discounted invoice settles at zero instead of the billed total | `invoice.ts` |
+| D-28 e-way state default | State codes resolve from the setting, then the GSTIN; generation throws with a clear message when either side is unknown instead of filing from Karnataka | `eway-bill.ts` |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; full ESLint 0 errors.
+
+**Still open in this cluster:** D-12, D-13, D-14, D-15, D-17, D-19, D-21, D-23, D-30 to D-33, plus D-08 and S-06.
 
 ## Appendix A: Route inventory
 

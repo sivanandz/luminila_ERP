@@ -1045,10 +1045,13 @@ export async function markInvoicePaid(id: string, paidAmount?: number): Promise<
     if (!invoice) throw new Error('Invoice not found');
 
     const total = invoice.grand_total || invoice.total || 0;
+    // Nullish, not truthy: a zero-value invoice or a 100% discount is still a
+    // real total. Clamp so a caller cannot record more paid than billed.
+    const settled = Math.min(Math.max(0, paidAmount ?? total), total);
     await pb.collection('invoices').update(id, {
         status: 'paid',
         is_paid: true,
-        paid_amount: paidAmount ?? total,
+        paid_amount: settled,
     });
 }
 

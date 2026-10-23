@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>24 open · 31 fixed</span>
+            <span class="chip accent"><span class="dot"></span>20 open · 35 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1076,7 +1076,7 @@ const DEFECTS = [
     where:"src/lib/loyalty.ts:313-387",
     impact:"Absolute balance writes outside the queue lose points under concurrency, and a customer can pay a whole bill in points.",
     fix:"Use atomic increments inside the queue and enforce the percentage at redemption." },
-  { id:"D-18", sev:"P2", area:"stock", title:"Negative quantities invert stock movements",
+  { id:"D-18", sev:"P2", status:"fixed", area:"stock", title:"Negative quantities invert stock movements",
     where:"src/lib/pos-sales.ts:113-152 · schema quantity fields",
     impact:"A negative cart line increases stock while shrinking the bill, which is a direct inventory loss primitive.",
     fix:"Validate quantity is positive and finite at every write." },
@@ -1141,15 +1141,15 @@ const DEFECTS = [
     where:"src/lib/register.ts:107-114",
     impact:"The create fails and the error is swallowed, so opening float has no audit trail.",
     fix:"Add opening_float to the enum and stop swallowing the error." },
-  { id:"D-26", sev:"P3", area:"security", title:"Expense search reintroduces filter injection",
+  { id:"D-26", sev:"P3", status:"fixed", area:"security", title:"Expense search reintroduces filter injection",
     where:"src/lib/expenses.ts:113-119",
     impact:"Raw input is interpolated into a PocketBase filter in the one module not yet sanitized.",
     fix:"Import and apply sanitizeFilter." },
-  { id:"D-27", sev:"P3", area:"money", title:"Paid amount fallback misfires on zero-value invoices",
+  { id:"D-27", sev:"P3", status:"fixed", area:"money", title:"Paid amount fallback misfires on zero-value invoices",
     where:"src/lib/invoice.ts:1188",
     impact:"A legitimate 100 percent discount is treated as a missing total and stamped as paid revenue.",
     fix:"Use nullish coalescing and clamp to the grand total." },
-  { id:"D-28", sev:"P3", area:"tax", title:"E-way bills silently default to Karnataka when the state code is empty",
+  { id:"D-28", sev:"P3", status:"fixed", area:"tax", title:"E-way bills silently default to Karnataka when the state code is empty",
     where:"src/lib/eway-bill.ts:629,635,638",
     impact:"A store with no state code files from the wrong state, and totalValue can disagree with the invoice.",
     fix:"Block generation until state codes and GSTIN are set." },
@@ -1265,7 +1265,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","140 assertions across nineteen suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","144 assertions across twenty suites; non-zero exit on failure."],
+  ["POS quantity tests","npx tsx src/scripts/test-pos-quantity.ts","pass","4 assertions: positive, negative, zero, non-finite, empty cart."],
   ["GSTIN tests","npx tsx src/scripts/test-gstin.ts","pass","7 assertions: valid specimens, wrong check digits, normalisation, malformed input."],
   ["Registry secret tests","npx tsx src/scripts/test-tenant-secrets.ts","pass","8 assertions: round-trip, fresh IV, wrong key, tamper, passthrough, key parse."],
   ["Tenant runtime tests","npx tsx src/scripts/test-tenant-runtime.ts","pass","5 assertions: registry resolution, active tenant, env fallback, no registry, casing."],
