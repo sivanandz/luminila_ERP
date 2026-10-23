@@ -27,6 +27,40 @@ struct PocketBaseProcess {
     port: AtomicU16,
 }
 
+/// Per-launch bearer token for the WhatsApp sidecar.
+///
+/// Generated at runtime and handed to the sidecar through its environment and to
+/// the webview by script injection, so no token is ever compiled into the app
+/// bundle. RandomState is seeded from OS entropy, which is enough for a token
+/// that only ever crosses loopback.
+#[cfg(desktop)]
+fn generate_sidecar_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let mut token = String::with_capacity(64);
+    for _ in 0..4 {
+        let state = RandomState::new();
+        let mut hasher = state.build_hasher();
+        hasher.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0),
+        );
+        token.push_str(&format!("{:016x}", hasher.finish()));
+    }
+    token
+}
+
+#[cfg(desktop)]
+static SIDECAR_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+#[cfg(desktop)]
+fn sidecar_token() -> &'static str {
+    SIDECAR_TOKEN.get_or_init(generate_sidecar_token).as_str()
+}
+
 /// Check if WPPConnect sidecar is healthy
 #[cfg(desktop)]
 async fn check_sidecar_health() -> bool {
@@ -44,7 +78,8 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
     let sidecar = app
         .shell()
         .sidecar("wppconnect-server")
-        .map_err(|e| format!("Failed to create sidecar command: {}", e))?;
+        .map_err(|e| format!("Failed to create sidecar command: {}", e))?
+        .env("WPPCONNECT_SECRET", sidecar_token());
 
     let (mut rx, child) = sidecar
         .spawn()
@@ -390,6 +425,15 @@ pub fn run() {
                 match start_sidecar(&app_handle) {
                     Ok(_) => log::info!("WPPConnect sidecar started"),
                     Err(e) => log::warn!("Failed to start sidecar: {} (will retry)", e),
+                }
+
+                // Hand the per-launch token to the webview. It is not part of
+                // the bundle, so extracting the app image does not reveal it.
+                if let Some(window) = app.get_webview_window("main") {
+                    let script = format!("window.__WPPCONNECT_SECRET__ = {:?};", sidecar_token());
+                    if let Err(e) = window.eval(&script) {
+                        log::warn!("Could not inject the sidecar token into the webview: {}", e);
+                    }
                 }
 
                 // Start health monitoring loop

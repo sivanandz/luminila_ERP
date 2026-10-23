@@ -15,7 +15,20 @@ const { execSync } = require('child_process');
 
 // Configuration
 const PORT = process.env.WPPCONNECT_PORT || 21465;
-const SECRET_KEY = process.env.WPPCONNECT_SECRET || 'luminila-secret-key';
+// No default token: a shipped literal would be readable by anyone with the app.
+// The desktop shell generates one per launch; developer runs must set it.
+const SECRET_KEY = (process.env.WPPCONNECT_SECRET || '').trim();
+if (SECRET_KEY.length < 16) {
+    console.error('[sidecar] WPPCONNECT_SECRET must be set to at least 16 characters. Refusing to start with a default or short token.');
+    process.exit(1);
+}
+
+function safeEqual(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
+}
 
 // Tokens directory: securely stored in user home to prevent git contamination and exFAT volume locks
 const TOKENS_BASE_DIR = process.env.WPP_TOKENS_DIR || path.join(os.homedir(), '.luminila', 'wpp_tokens');
@@ -111,7 +124,7 @@ const io = new Server(server, {
 
 io.use((socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.query?.token;
-    if (!token || token !== SECRET_KEY) {
+    if (!token || !safeEqual(String(token), SECRET_KEY)) {
         return next(new Error('Unauthorized: Invalid sidecar socket token'));
     }
     next();
@@ -144,7 +157,7 @@ function requireSidecarAuth(req, res, next) {
         ? authHeader.slice(7).trim() 
         : (req.query.token || req.headers['x-api-key']);
         
-    if (!token || token !== SECRET_KEY) {
+    if (!token || !safeEqual(String(token), SECRET_KEY)) {
         return res.status(401).json({ success: false, error: 'Unauthorized: Invalid or missing sidecar API token' });
     }
     next();

@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>29 open · 26 fixed</span>
+            <span class="chip accent"><span class="dot"></span>28 open · 27 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1112,7 +1112,7 @@ const DEFECTS = [
     where:"src/lib/rbac.ts:241-300 · one importer",
     impact:"Any valid staff token can create payment links, push to Meta, and write storefront content. A cashier with zero capabilities passes every route check.",
     fix:"Check capabilities server-side in every route that mutates money or catalog." },
-  { id:"S-08", sev:"P2", area:"security", title:"Sidecar bearer token defaults to a literal in the client bundle",
+  { id:"S-08", sev:"P2", status:"fixed", area:"security", title:"Sidecar bearer token defaults to a literal in the client bundle",
     where:"src/lib/whatsapp.ts:10 · wppconnect-sidecar/server.js:18,98-104",
     impact:"The token ships to browsers. Loopback binding and an origin allowlist are the only controls against full WhatsApp account control.",
     fix:"Provision a per-install secret server-side and stop importing it into client code." },
@@ -1266,7 +1266,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","105 assertions across fourteen suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","111 assertions across fifteen suites; non-zero exit on failure."],
+  ["Sidecar token tests","npx tsx src/scripts/test-whatsapp-secret.ts","pass","6 assertions: resolution order, minimum length, no default."],
   ["Customer token tests","npx tsx src/scripts/test-customer-token.ts","pass","5 assertions: roundtrip, tamper, expiry, missing secret, JWT fallback."],
   ["Rate limiter tests","npx tsx src/scripts/test-rate-limit.ts","pass","6 assertions: window, refusal, reset, key independence, pruning, client key."],
   ["Imitation tests","npx tsx src/scripts/test-imitation.ts","pass","8 assertions: label order, tag codes, durability, tiers, rounding."],

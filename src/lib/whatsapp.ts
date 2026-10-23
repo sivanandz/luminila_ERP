@@ -7,15 +7,63 @@
  */
 
 const DEFAULT_WPPCONNECT_URL = process.env.NEXT_PUBLIC_WPPCONNECT_URL || "http://127.0.0.1:21465";
-const WPPCONNECT_SECRET = process.env.NEXT_PUBLIC_WPPCONNECT_SECRET || process.env.WPPCONNECT_SECRET || "luminila-secret-key";
+
+declare global {
+    interface Window {
+        /** Injected by the desktop shell at launch; never compiled into the bundle. */
+        __WPPCONNECT_SECRET__?: string;
+    }
+}
+
+/**
+ * Resolve the sidecar bearer token, in trust order:
+ * 1. the desktop shell's per-launch value injected at runtime,
+ * 2. a value the operator stored for this browser,
+ * 3. a build-time value, which exists only to keep `npm run dev` usable and is
+ *    documented as dev-only.
+ *
+ * A token shorter than 16 characters is ignored, because the sidecar refuses to
+ * start with one.
+ */
+export function resolveWppSecret(
+    runtimeValue?: string | null,
+    storedValue?: string | null,
+    buildValue?: string | null
+): string {
+    for (const candidate of [runtimeValue, storedValue, buildValue]) {
+        const value = (candidate || "").trim();
+        if (value.length >= 16) return value;
+    }
+    return "";
+}
+
+function readSidecarSecret(): string {
+    if (typeof window === "undefined") {
+        return resolveWppSecret(undefined, undefined, process.env.NEXT_PUBLIC_WPPCONNECT_SECRET);
+    }
+    let stored: string | null = null;
+    try {
+        stored = window.localStorage.getItem("WA_SIDECAR_TOKEN");
+    } catch {
+        stored = null;
+    }
+    return resolveWppSecret(window.__WPPCONNECT_SECRET__, stored, process.env.NEXT_PUBLIC_WPPCONNECT_SECRET);
+}
+
+const WPPCONNECT_SECRET = readSidecarSecret();
+
+/** False when no token is available, which means WhatsApp calls cannot authenticate. */
+export function isWhatsAppConfigured(): boolean {
+    return WPPCONNECT_SECRET.length >= 16;
+}
 
 // Wrap global fetch for WhatsApp sidecar requests to automatically attach Bearer authentication
 const _nativeFetch = typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch;
 const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
     const isWppReq = urlStr.includes("21465") || urlStr.includes("/api/");
-    
-    if (isWppReq) {
+
+    if (isWppReq && WPPCONNECT_SECRET) {
         init = init || {};
         const headers = new Headers(init.headers || {});
         if (!headers.has("Authorization")) {

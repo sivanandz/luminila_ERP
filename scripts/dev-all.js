@@ -10,6 +10,9 @@ const { spawn, exec } = require('child_process');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
+// Dev-only shared token: the sidecar refuses to start without one, and the dev
+// browser has no desktop shell to inject a per-launch value.
+const DEV_SIDECAR_SECRET = require('crypto').randomBytes(24).toString('hex');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const PB_DIR = path.join(ROOT_DIR, 'pocketbase');
@@ -222,7 +225,7 @@ async function main() {
         const wppProc = spawn('node', ['server.js'], {
             cwd: WPP_DIR,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env, WPPCONNECT_PORT: '21465' }
+            env: { ...process.env, WPPCONNECT_PORT: '21465', WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
         });
         children.push(wppProc);
         pipeOutput(wppProc, '[WPP]', MAGENTA);
@@ -236,7 +239,7 @@ async function main() {
         ? spawn(process.execPath, [nextBin, 'dev', '--webpack'], {
             cwd: ROOT_DIR,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env }
+            env: { ...process.env, NEXT_PUBLIC_WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
         })
         : spawn(isWin ? 'npx.cmd' : 'npx', ['next', 'dev', '--webpack'], {
             cwd: ROOT_DIR,
