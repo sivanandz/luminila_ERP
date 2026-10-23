@@ -305,6 +305,20 @@ Column and enum drift adds four more:
 - `types/database.ts` declares nine interfaces with no backing collection: `ManufacturingTransaction`, `Cheque`, `ChannelBufferRule`, `ShipmentRecord`, `DispatchManifest`, `ReturnQcInspection`, `CrossBorderExportInvoice`, `LocationRecord`, `StockTransferRecord`.
 - `docs/WHATSAPP_ERP_CRM_SPECIFICATION.md:457` still points at the non-existent `init-pocketbase.ts`.
 
+#### 3.5.1 Proposed migration bundle (draft, not applied)
+
+Five migrations are drafted under `docs/migrations-draft/` and **have not been run**. They are kept outside `pocketbase/pb_migrations` so a PocketBase restart cannot apply them before review. The README in that folder carries the apply steps, the duplicate-invoice pre-check, the rollback per migration, and the risk notes.
+
+| Draft | Changes | Would unblock |
+|---|---|---|
+| `001_manufacturing_jobs.js` | New collection replacing the `store_settings` JSON | Karigar jobs as a queryable ledger |
+| `002_cheques.js` | New `cheques` collection with a unique tenant cheque index | Cheque register out of JSON |
+| `003_products_craft_and_gst_rate.js` | `products.craft`, `plating`, `occasion`, `base_metal`, `gst_rate` | Taxonomy persistence and D-14 |
+| `004_landed_cost_and_channels.js` | PO overhead column, item landed cost, `sales.channel`, `whatsapp_campaigns`, `sales.campaign` | D-13, channel enum, campaign attribution |
+| `005_indexes.js` | Unique `invoices.order` index and reporting indexes | D-20 hardening |
+
+Each file was syntax-checked with `node --check`. None was executed, and no schema was inspected against a live database.
+
 ### 3.6 Integrations
 
 | Integration | Module | Transport | State |
@@ -630,7 +644,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1295,6 +1309,18 @@ The module was not a stub in the harmless sense. `connect()` flipped a localStor
 **Verified:** `npm run typecheck` clean; `npm test` 93 assertions across 12 suites; targeted ESLint clean.
 
 **Cluster 6 status:** every domain engine that can work without a schema change is now wired. What remains is the phantom collections and their migrations (D-36).
+
+### 11.18 Slice 18: migration bundle drafted (2026-10-23)
+
+**No code changed. Nothing was applied.**
+
+Five migrations were written under `docs/migrations-draft/`, outside the directory PocketBase scans, and presented in §3.5.1. Each has an `up` and a `down`, each was syntax-checked with `node --check`, and none has been executed. `pocketbase/pb_data` and `pb_tenants/registry.json` were not touched.
+
+The bundle covers the three domains that currently store JSON in `store_settings` (job cards, cheques), the columns the reporting and POS work waits on (`products.gst_rate`, `sales.channel`, `purchase_orders.overhead_amount`, `purchase_order_items.landed_unit_cost`), the campaign table that `campaign-attribution.ts` already expects, and the unique `invoices.order` index.
+
+**Deliberately excluded:** the six phantom collections, because their engines are still unwired and empty tables would recreate the original defect; tenant registry encryption, which is a re-key plan rather than a schema addition; and a weighted-average cost history, which is a follow-up.
+
+**To proceed I need an explicit yes.** The README lists the steps: back up through `/backup`, check for duplicate invoice orders, copy the files into `pocketbase/pb_migrations`, restart, and verify four screens.
 
 ## Appendix A: Route inventory
 

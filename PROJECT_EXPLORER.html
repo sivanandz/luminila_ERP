@@ -470,7 +470,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
     <a href="#data"><span class="n">03</span>Data model<span class="rail-count">55</span></a>
     <a href="#features"><span class="n">04</span>Features<span class="rail-count" id="railFeatures">0</span></a>
     <a href="#defects"><span class="n">05</span>Defects<span class="rail-count" id="railDefects">0</span></a>
-    <a href="#build"><span class="n">06</span>Build reality<span class="rail-count">3</span></a>
+    <a href="#build"><span class="n">06</span>Build reality<span class="rail-count">4</span></a>
     <a href="#missing"><span class="n">07</span>Missing<span class="rail-count">15</span></a>
     <a href="#verify"><span class="n">08</span>Verification<span class="rail-count">6</span></a>
     <div class="rail-foot">
@@ -1221,7 +1221,8 @@ const BUILD_OPTIONS = [
 const BLOCKERS = [
   ["P1","Static export versus route handlers","next.config.ts:9 enables output export in production. Three handlers declare force-dynamic. The export step cannot emit them, so the build stops.","D-08"],
   ["P2","exFAT volume blocks native Android","Tauri and Gradle need symlinks for libapp_lib.so. exFAT cannot store them, so the APK build aborts on this machine.","D-33"],
-  ["P2","No webpack fallback for release builds","The dev script passes --webpack to avoid the Turbopack symlink panic. next build passes no flag.","D-08"]
+  ["P2","No webpack fallback for release builds","The dev script passes --webpack to avoid the Turbopack symlink panic. next build passes no flag.","D-08"],
+  ["P2","Schema debt behind working screens","Job cards and cheques live in a settings JSON blob, product GST rate and channel have no columns, and the invoice order index is missing. A five-file migration draft exists in docs/migrations-draft but is deliberately unapplied.","D-36"]
 ];
 
 const ROADMAP = [
