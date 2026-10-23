@@ -2280,7 +2280,7 @@ Requirement from the owner: one inventory across POS, WhatsApp and the web store
 
 ### 11.67 Online payments join the unified stock path (2026-10-24)
 
-§11.65 left one channel outside the shared service: the Razorpay paid webhook deducted stock with its own logic. Inspecting it showed the same defects the storefront had.
+§11.66 left one channel outside the shared service: the Razorpay paid webhook deducted stock with its own logic. Inspecting it showed the same defects the storefront had.
 
 **What the webhook did before**
 
@@ -2299,7 +2299,7 @@ Requirement from the owner: one inventory across POS, WhatsApp and the web store
 
 | Check | Result |
 |---|---|
-| `npx tsx src/scripts/test-channel-stock.ts` | **15/15** (12 from §11.65 plus clamp-settles, clamp-at-zero, reject-never-clamps) |
+| `npx tsx src/scripts/test-channel-stock.ts` | **15/15** (12 from §11.66 plus clamp-settles, clamp-at-zero, reject-never-clamps) |
 | `npm run typecheck` | exit 0 |
 | `npm test` | all suites pass |
 | ESLint on the changed committed files | 0 problems |
@@ -2308,7 +2308,7 @@ Requirement from the owner: one inventory across POS, WhatsApp and the web store
 
 - POS still uses its own stock path. It is already correct (explicit variant, atomic decrement, ledger, clamp with an activity-log warning), but it is not yet the shared implementation.
 - `restoreChannelStockForReference()` remains uncalled: no sales-order cancellation UI exists.
-- The storefront/chat-sales integration and variant persistence stay uncommitted with the parallel agent's change set (see §11.65's commit-state note).
+- The storefront/chat-sales integration and variant persistence stay uncommitted with the parallel agent's change set (see §11.66's commit-state note).
 
 ### 11.68 POS joins the unified stock path — all four channels now share one implementation (2026-10-24)
 
@@ -2717,7 +2717,7 @@ Channel: this section and `§11.65` are the two halves of one working thread ins
 | F6 idempotency | **Closed** for web E1/E2; absent for chat | A61 |
 | F7 variant pick | Partial — resolved for stock, not persisted or collectable from the UI | A33/A59 |
 
-### 11.68 Cancellation closes the inventory lifecycle (2026-10-24)
+### 11.70 Cancellation closes the inventory lifecycle (2026-10-24)
 
 `restoreChannelStockForReference()` had no caller: stock could be deducted by any channel but nothing put it back when an order was cancelled.
 
@@ -2741,11 +2741,15 @@ Channel: this section and `§11.65` are the two halves of one working thread ins
 | `npm test` | all suites pass |
 | ESLint on the changed files | 0 errors (17 existing warnings in the touched UI/service files) |
 
+
+
+**Document co-ownership:** this document is edited by both agents working in the repository. Section 11.65 (pair-programming brief) and 11.69 (order-capture contract and §12) belong to the parallel agent; the stock/hosting sections belong to this session. Appends interleaved across both writers and produced two sections numbered 11.68 and duplicate cross-references; the cancellation section was renumbered to 11.70 and the stale references repaired here. Both writers' commits carry the merged document, which is unavoidable in a shared file and is recorded rather than hidden.
+
 **Remaining, stated honestly**
 
 - Only sales orders can be cancelled this way. POS sales are immediate `sales` records with no cancellation flow, and invoiced orders intentionally require a return/credit note.
 - The order list has no row-level cancel shortcut; cancellation lives on the detail page.
-- The storefront/chat-sales integration remains uncommitted with the parallel agent's change set (§11.65-11.67).
+- The storefront/chat-sales integration remains uncommitted with the parallel agent's change set (§11.66-11.67).
 
 ## Appendix A: Route inventory
 
