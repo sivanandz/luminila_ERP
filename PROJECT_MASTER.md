@@ -653,7 +653,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-12, D-15, D-16, D-17, D-18, D-19, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-33, D-34, D-35, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-12, D-15, D-16, D-17, D-18, D-19, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1657,7 +1657,7 @@ Every gate re-run after slice 38, from the repository as committed:
 | Rust | `cargo check` in `src-tauri` | finished clean, including the server-backed config |
 | Explorer | extracted script + `node --check` | exit 0 |
 
-**Register: 48 fixed, 7 open, 1 P1 (S-06).**
+**Register: 49 fixed, 6 open, 1 P1 (S-06).**
 
 Remaining, for the next session:
 
@@ -1735,6 +1735,21 @@ The 16-item audit is a subset of the 55-item register with its own numbering. St
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
 
 **Still open:** D-13, D-14, D-36, D-37 (all need the migration bundle), D-23 (service-layer adoption), D-32 (design tokens), S-06 (P1, needs approval).
+
+### 11.45 Slice 43: one theme strategy and working font tokens (2026-10-23)
+
+**Closed:** D-32.
+
+| Symptom | Fix | Files |
+|---|---|---|
+| Theme hardcoded on `<html>` (`className="dark …"`) | A pre-paint script follows `prefers-color-scheme` and toggles `.dark`; both palettes are now reachable and dark: utilities branch honestly | `src/app/layout.tsx` |
+| `--font-sans: var(--font-sans)` referenced itself | next/font now exposes `--font-inter` and the Tailwind token is `var(--font-inter), ui-sans-serif, …` | `layout.tsx`, `globals.css` |
+| Display font `--font-display` pointed at Manrope, which was never loaded | Manrope is loaded with `variable: "--font-manrope"` and the token resolves it | `layout.tsx`, `globals.css` |
+| Mono token named a font string rather than the loaded variable | `--font-mono: var(--font-jetbrains), …` | `globals.css` |
+
+**Colour literals, stated honestly:** a recursive scan finds 224 hex matches in `src/`, concentrated in print/PDF/barcode components (`InvoicePrint`, `ShippingLabelPrintModal`, `barcode-generator`) where literal ink colours are intentional, plus dashboard pages. They were not mass-replaced: a blind token substitution across print documents would change printed output. The functional defects above are fixed; the literal sweep is recorded as separate visual debt rather than claimed.
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; layout lint clean. A production build still stops at the volume's `readlink` limitation before CSS asset emission, so the theme was not visually verified in a packaged artifact.
 
 ## Appendix A: Route inventory
 

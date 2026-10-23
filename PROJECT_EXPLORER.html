@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>7 open · 48 fixed</span>
+            <span class="chip accent"><span class="dot"></span>6 open · 49 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1165,7 +1165,7 @@ const DEFECTS = [
     where:"src/components/layout/Sidebar.tsx:121 · MobileDrawer",
     impact:"The support link 404s, several real routes are reachable only from inside pages, and the drawer omits expense categories.",
     fix:"Align both navigation surfaces with the route table." },
-  { id:"D-32", sev:"P3", area:"ui", title:"The design system is half applied",
+  { id:"D-32", sev:"P3", status:"fixed", area:"ui", title:"The design system is half applied",
     where:"src/app/layout.tsx:45 · src/app/globals.css:172-174 · 145 hex literals",
     impact:"Dark mode is hardcoded, the light palette is dead, 74 dark utilities never fire, the sans token references itself, and the display font is never loaded.",
     fix:"Pick one theme strategy, fix the token block, and replace literals with tokens." },

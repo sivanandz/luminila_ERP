@@ -168,10 +168,11 @@
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 8px);
 
-  /* Fonts */
-  --font-sans: var(--font-sans);
-  --font-display: var(--font-manrope), "Manrope", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  /* Fonts. Each token resolves a next/font variable declared in layout.tsx;
+     the old `--font-sans: var(--font-sans)` referenced itself. */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-manrope), "Manrope", ui-sans-serif, sans-serif;
+  --font-mono: var(--font-jetbrains), "JetBrains Mono", ui-monospace, monospace;
 }
 
 @layer base {

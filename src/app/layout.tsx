@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono, Manrope } from "next/font/google";
 import { Toaster } from "sonner";
 import "./globals.css";
 import { Sidebar, MobileBottomNav } from "@/components/layout";
@@ -10,12 +10,26 @@ import { WhatsAppEventSyncProvider } from "@/components/whatsapp/WhatsAppEventSy
 import { WhatsAppDrawer } from "@/components/whatsapp/WhatsAppDrawer";
 import { OfflineSync } from "@/components/system/OfflineSync";
 
-const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
+// The CSS variables here are the ones globals.css consumes: `--font-inter` for
+// body text and `--font-manrope` for display headings. Naming them after the
+// font (rather than `--font-sans`) keeps the Tailwind token from referencing
+// itself, which made `font-sans` resolve to nothing.
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
+
+const manrope = Manrope({ subsets: ['latin'], variable: '--font-manrope' });
 
 const jetbrainsMono = JetBrains_Mono({
   variable: "--font-jetbrains",
   subsets: ["latin"],
 });
+
+/**
+ * Applies the theme before content paints. The palettes live in :root (light)
+ * and .dark in globals.css; the app previously forced `dark` on <html>, so the
+ * light palette could never be reached and every dark: utility was the only
+ * branch rendered. Follow the OS preference instead.
+ */
+const themeScript = `(function(){try{var dark=window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',dark);}catch(e){document.documentElement.classList.add('dark');}})();`;
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -42,10 +56,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning className={`dark ${inter.variable}`}>
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${manrope.variable}`}>
       <body
-        className={`${inter.variable} ${jetbrainsMono.variable} antialiased flex h-screen w-full overflow-hidden bg-background`}
+        className={`${inter.variable} ${manrope.variable} ${jetbrainsMono.variable} antialiased flex h-screen w-full overflow-hidden bg-background`}
       >
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <AuthProvider>
           <AuthGate>
             <WhatsAppEventSyncProvider />
