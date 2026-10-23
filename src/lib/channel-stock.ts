@@ -193,7 +193,9 @@ export async function resolveStockTargets(
             .getOne<ProductRecord>(line.productId)
             .catch(() => null);
         if (!product) throw new Error(`Product not found: ${line.productId}`);
-        if (product.account_email && product.account_email !== account.accountEmail) {
+        // An empty account email is the local desktop path (no tenant selected);
+        // server-side callers always pass the resolved tenant.
+        if (account.accountEmail && product.account_email && product.account_email !== account.accountEmail) {
             throw new StockTenantMismatchError(line.productId);
         }
         const name = line.name || product.name || line.productId;

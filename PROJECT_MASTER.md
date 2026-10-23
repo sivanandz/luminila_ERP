@@ -2632,6 +2632,38 @@ Channel: this section and `§11.65` are the two halves of one working thread ins
 - `restoreChannelStockForReference()` remains uncalled: no sales-order cancellation UI exists.
 - The storefront/chat-sales integration and variant persistence stay uncommitted with the parallel agent's change set (see §11.65's commit-state note).
 
+### 11.67 POS joins the unified stock path — all four channels now share one implementation (2026-10-24)
+
+POS was the last channel with its own stock logic: per-line movement creation, atomic decrement, first-variant fallback, a clamp-on-oversell branch and the audit row were all inline in `pos-sales.ts`.
+
+**What changed**
+
+- `createPOSSale` now builds one stock pass for the sale and calls `applyChannelStock` with `oversell: 'clamp'` — the same service the storefront, WhatsApp concierge orders and the paid webhook use.
+- The POS-specific behaviours were preserved, not dropped:
+  - clamp-on-oversell still completes the sale at available stock and emits the `INVENTORY_OVERSELL_WARNING` activity row with requested/available metadata;
+  - the customer-facing warnings list still explains each shortfall;
+  - facility/store stock is still adjusted by the quantity that actually left stock (previously the requested quantity, even when clamped);
+  - the compensating rollback still restores stock and deletes the ledger rows if a later step (shift totals, invoice) fails, and now handles product-level targets as well as variants.
+- The service's tenant gate skips validation when the account email is empty: that is the local desktop path where no tenant is selected. Server-side callers always pass the resolved tenant.
+- Sales lines with no `productId` (manual/custom lines) are excluded from stock, as before.
+
+**Verification**
+
+| Check | Result |
+|---|---|
+| `npx tsx src/scripts/test-channel-stock.ts` | **16/16** (new: empty account email skips the tenant gate) |
+| `npm run typecheck` | exit 0 |
+| `npm test` | all suites pass |
+| ESLint on the changed files | 0 problems |
+
+**Coverage now:** POS, WhatsApp concierge, web checkout intake, and the paid Razorpay webhook all dedupe inventory through one implementation — variant-accurate, ledger-backed, atomic and rollback-safe.
+
+**Remaining, stated honestly**
+
+- `restoreChannelStockForReference()` is still uncalled until a sales-order cancellation flow exists.
+- The storefront/chat-sales variant-persistence hunks remain with the uncommitted parallel integration (§11.65-11.66).
+- Legacy multi-variant orders captured before variant references were stored cannot be attributed to a unit; the webhook logs those.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

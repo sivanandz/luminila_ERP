@@ -295,6 +295,13 @@ async function main() {
         assert.equal(db.variants.get('var000000000001')?.stock_level, 2);
     });
 
+    await test('an empty account email skips the tenant gate (desktop path)', async () => {
+        const db = new FakeDb().addProduct('prod00000000004', 3, { account_email: 'tenant@example.com' });
+        const [target] = await resolveStockTargets(db, [{ productId: 'prod00000000004', quantity: 1 }], { accountEmail: '' });
+        assert.equal(target.kind, 'product');
+        assert.equal(target.stockLevel, 3);
+    });
+
     console.log(`\n${passed} passed, ${failed} failed`);
     if (failed > 0) process.exit(1);
 }

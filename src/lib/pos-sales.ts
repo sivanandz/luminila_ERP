@@ -10,11 +10,11 @@
  * 5. Generate invoice from sale
  */
 
-import { pb } from './pocketbase';
+import { pb, getCurrentTenantEmail } from './pocketbase';
 import { createInvoiceFromSale } from './invoice';
 import { enqueueTask } from './concurrency';
-import { ClientResponseError } from 'pocketbase';
 import { adjustLocationStock } from './multi-location';
+import { applyChannelStock, toStockDb } from './channel-stock';
 import type { Sale } from '../types/database';
 
 // ============================================
@@ -106,7 +106,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     let shiftTotalsApplied = false;
     const createdSaleItemIds: string[] = [];
     const createdMovementIds: string[] = [];
-    const stockDeductions: { variantId: string; quantity: number }[] = [];
+    const stockDeductions: { kind: 'variant' | 'product'; id: string; quantity: number }[] = [];
     const warnings: string[] = [];
 
     try {
@@ -157,77 +157,67 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
             });
             createdSaleItemIds.push(saleItem.id);
 
-            // 3. Create stock movement (decrement stock)
-            if (item.variantId) {
-                const movement = await pb.collection('stock_movements').create({
-                    variant: item.variantId,
-                    movement_type: 'sale',
-                    quantity: -item.quantity, // Negative for stock reduction
-                    reference_id: sale.id,
-                    source: 'pos',
-                    notes: `POS Sale: ${transactionId}`,
-                });
-                createdMovementIds.push(movement.id);
+        }
 
-                // Update variant stock level atomically
-                try {
-                    await pb.collection('product_variants').update(item.variantId, {
-                        'stock_level-': item.quantity,
-                    });
-                    stockDeductions.push({ variantId: item.variantId, quantity: item.quantity });
-
-                    // Deduct from specific physical POS facility/store
+        // 3. Unified channel stock: one atomic pass for the whole sale with the
+        // POS oversell policy (settle at what exists and audit the shortfall).
+        // This replaced the per-line movement/decline/clamp block, which was the
+        // last channel-specific copy of the stock logic.
+        const stockLines = data.items
+            .filter((item) => Boolean(item.productId))
+            .map((item) => ({
+                productId: item.productId as string,
+                variantId: item.variantId,
+                quantity: item.quantity,
+                name: item.name,
+            }));
+        if (stockLines.length > 0) {
+            const stockResult = await applyChannelStock(toStockDb(pb), stockLines, {
+                accountEmail: getCurrentTenantEmail(),
+                channel: 'pos',
+                referenceId: sale.id,
+                notes: `POS Sale: ${transactionId}`,
+                oversell: 'clamp',
+            });
+            for (const movementId of stockResult.movementIds) {
+                if (movementId) createdMovementIds.push(movementId);
+            }
+            const shortageByKey = new Map(
+                stockResult.shortages.map((shortage) => [shortage.variantId || shortage.productId, shortage])
+            );
+            for (const target of stockResult.targets) {
+                const key = target.kind === 'variant' ? target.id : target.productId;
+                const shortage = shortageByKey.get(key);
+                const appliedQuantity = shortage ? shortage.available : target.quantity;
+                if (appliedQuantity > 0) {
+                    stockDeductions.push({ kind: target.kind, id: target.id, quantity: appliedQuantity });
                     if (data.locationId) {
                         await adjustLocationStock(
-                            item.variantId || item.productId || item.id,
+                            target.id,
                             data.locationId,
-                            -item.quantity,
+                            -appliedQuantity,
                             `POS Sale [${transactionId}]`
                         ).catch(() => {});
                     }
-                } catch (stockErr) {
-                    const pbErr = stockErr instanceof ClientResponseError ? stockErr : null;
-                    const errorText = String(stockErr instanceof Error ? stockErr.message : stockErr);
-                    // Only the database min-constraint means "not enough stock".
-                    // A permissions or validation 400 used to be treated the same
-                    // way, which wrote stock_level 0 and destroyed the count.
-                    const isMinConstraint =
-                        pbErr?.data?.data?.stock_level?.code === 'validation_min_number_constraint' ||
-                        errorText.includes('validation_min_number_constraint');
-
-                    if (!isMinConstraint) throw stockErr;
-
-                    // Sell what is actually there, and keep the movement ledger in
-                    // agreement with the variant row instead of recording the full
-                    // requested quantity against a clamped count.
-                    const latest = await pb.collection('product_variants').getOne<{ stock_level?: number }>(item.variantId);
-                    const available = Math.max(0, latest.stock_level ?? 0);
-
-                    await pb.collection('product_variants').update(item.variantId, { stock_level: 0 });
-                    stockDeductions.push({ variantId: item.variantId, quantity: available });
-
-                    if (movement?.id) {
-                        await pb.collection('stock_movements').update(movement.id, {
-                            quantity: -available,
-                            notes: `POS Sale: ${transactionId} [OVERSELL: requested ${item.quantity}, only ${available} in stock]`,
-                        }).catch(() => {});
-                    }
-
+                }
+                if (shortage) {
+                    warnings.push(
+                        `Insufficient stock for "${target.name}" (requested ${shortage.requested}, available ${shortage.available}). Sale recorded for ${shortage.available}.`
+                    );
                     await pb.collection('activity_logs').create({
                         action: 'INVENTORY_OVERSELL_WARNING',
-                        entity_type: 'product_variants',
-                        entity_id: item.variantId,
-                        description: `POS sale ${transactionId} requested ${item.quantity} units for variant ${item.variantId}; only ${available} were available. Stock and movement reconciled to ${available}.`,
+                        entity_type: target.kind === 'variant' ? 'product_variants' : 'products',
+                        entity_id: target.id,
+                        description: `POS sale ${transactionId} requested ${shortage.requested} units for ${target.name}; only ${shortage.available} were available. Stock and ledger reconciled to ${shortage.available}.`,
                         metadata: JSON.stringify({
-                            variant_id: item.variantId,
+                            variant_id: target.kind === 'variant' ? target.id : null,
+                            product_id: target.productId,
                             sale_id: sale.id,
                             transaction_id: transactionId,
-                            requested_quantity: item.quantity,
-                            available_quantity: available,
+                            requested_quantity: shortage.requested,
+                            available_quantity: shortage.available,
                         }),
                     }).catch((err) => console.error('Failed to log oversell audit:', err));
-
-                    warnings.push(`Insufficient stock for "${item.name}" (requested ${item.quantity}, available ${available}). Sale recorded for ${available}.`);
                 }
             }
         }
@@ -257,11 +247,12 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
         // Rollback stock deductions atomically
         for (const deduction of stockDeductions) {
             try {
-                await pb.collection('product_variants').update(deduction.variantId, {
+                const collection = deduction.kind === 'variant' ? 'product_variants' : 'products';
+                await pb.collection(collection).update(deduction.id, {
                     'stock_level+': deduction.quantity,
                 });
             } catch (err) {
-                console.error(`Rollback error: unable to restore stock for variant ${deduction.variantId}:`, err);
+                console.error(`Rollback error: unable to restore stock for ${deduction.kind} ${deduction.id}:`, err);
             }
         }
 
