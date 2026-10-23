@@ -34,7 +34,8 @@ import {
     type DiscrepancyType,
     type ResolutionAction,
 } from "@/lib/discrepancies";
-import { pb } from "@/lib/pocketbase";
+import { getVariantById, getVariantForProduct, resolveBarcodeProduct } from "@/lib/products";
+import { getVendors } from "@/lib/vendors";
 
 interface DiscrepancyModalProps {
     isOpen: boolean;
@@ -111,13 +112,10 @@ export function DiscrepancyModal({
         if (!isOpen) return;
         const unregister = MobileScanner.registerContext("discrepancy_audit", async (result) => {
             try {
-                const prod = await pb.collection("products").getFirstListItem(`sku="${result.barcode}" || barcode="${result.barcode}"`);
+                const resolved = await resolveBarcodeProduct(result.barcode);
+                const prod = resolved?.product;
+                const v = resolved?.variant;
                 if (prod) {
-                    const variants = await pb.collection("product_variants").getList(1, 1, {
-                        filter: `product="${prod.id}"`,
-                        sort: "-stock_level"
-                    });
-                    const v = variants.items[0];
                     handleScannedItem({
                         barcode: result.barcode,
                         product: {
@@ -158,25 +156,17 @@ export function DiscrepancyModal({
                 // Resolve the variant that will actually be deducted and sync the
                 // displayed max to its own stock_level — preselectedProduct.stock may
                 // be a product-wide aggregate the server never validates against.
-                const syncVariant = (req: Promise<{ id: string; stock_level?: number }>) => {
-                    req.then((v) => {
-                        setVariantId(v.id);
-                        if (typeof v.stock_level === "number") {
-                            setCurrentAvailableStock(v.stock_level);
-                        }
-                    }).catch(() => {});
+                const applyVariant = (v: { id: string; stock_level?: number } | null) => {
+                    if (!v) return;
+                    setVariantId(v.id);
+                    if (typeof v.stock_level === "number") {
+                        setCurrentAvailableStock(v.stock_level);
+                    }
                 };
                 if (preselectedProduct.variant_id) {
-                    syncVariant(
-                        pb.collection("product_variants").getOne(preselectedProduct.variant_id)
-                    );
+                    getVariantById(preselectedProduct.variant_id).then(applyVariant).catch(() => {});
                 } else {
-                    syncVariant(
-                        pb.collection("product_variants").getFirstListItem(
-                            `product="${preselectedProduct.id}"`,
-                            { sort: "-stock_level" }
-                        )
-                    );
+                    getVariantForProduct(preselectedProduct.id).then(applyVariant).catch(() => {});
                 }
             } else {
                 setActiveTab("active_list");
@@ -198,8 +188,8 @@ export function DiscrepancyModal({
 
     const loadVendors = async () => {
         try {
-            const records = await pb.collection("vendors").getFullList<VendorRecord>({ sort: "name" }).catch(() => []);
-            setVendorList(records.map((r) => ({ id: r.id, name: r.name || r.company_name || "" })));
+            const records = await getVendors().catch(() => []);
+            setVendorList(records.map((r) => ({ id: r.id, name: r.name || (r as { company_name?: string }).company_name || "" })));
         } catch {
             setVendorList([]);
         }

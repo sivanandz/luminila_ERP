@@ -422,3 +422,27 @@ export async function getOrderDetails(id: string): Promise<OrderDetail | null> {
         return null;
     }
 }
+
+export interface DispatchableOrder {
+    id: string;
+    order_number?: string;
+    customer_name?: string;
+    customer_phone?: string | null;
+    status?: string;
+    total?: number;
+    shipping_address?: string;
+    created?: string;
+}
+
+/** Sales orders that can still be dispatched. */
+export async function getDispatchableOrders(): Promise<DispatchableOrder[]> {
+    const records = await pb.collection('sales_orders').getList(1, 30, {
+        filter: 'status != "delivered" && status != "cancelled"',
+        sort: '-created',
+    });
+    return records.items;
+}
+
+export async function markSalesOrderShipped(orderId: string): Promise<void> {
+    await pb.collection('sales_orders').update(orderId, { status: 'shipped' });
+}

@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { pb, ensureAuth, getCurrentTenantEmail } from "@/lib/pocketbase";
+import { ensureAuth } from "@/lib/pocketbase";
+import { getEwayBillConfig, saveEwayBillConfig } from "@/lib/eway-bill-settings";
 import { Loader2, FileText, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
 
 interface EwayBillSettings {
@@ -47,16 +48,14 @@ export function EwayBillSettings() {
     const loadSettings = async () => {
         try {
             ensureAuth();
-            const userEmail = getCurrentTenantEmail();
-            const filter = userEmail ? `key="eway_bill" && account_email="${userEmail}"` : `key="eway_bill"`;
-            const record = await pb.collection("store_settings").getFirstListItem<EwayBillSettingsRecord>(filter).catch(() => null);
-            if (record) {
+            const config = await getEwayBillConfig();
+            if (config) {
                 setSettings({
-                    client_id: record.eway_client_id || "",
-                    client_secret: record.eway_client_secret || "",
-                    username: record.eway_username || "",
-                    password: record.eway_password || "",
-                    is_production: record.eway_is_production || false,
+                    client_id: config.clientId,
+                    client_secret: config.clientSecret,
+                    username: config.username,
+                    password: config.password,
+                    is_production: config.isProduction,
                 });
             }
         } catch (error) {
@@ -70,27 +69,13 @@ export function EwayBillSettings() {
         setIsSaving(true);
         try {
             ensureAuth();
-            const userEmail = getCurrentTenantEmail();
-            const filter = userEmail ? `key="eway_bill" && account_email="${userEmail}"` : `key="eway_bill"`;
-            const existing = await pb.collection("store_settings")
-                .getFirstListItem(filter)
-                .catch(() => null);
-
-            const data = {
-                key: "eway_bill",
-                eway_client_id: settings.client_id,
-                eway_client_secret: settings.client_secret,
-                eway_username: settings.username,
-                eway_password: settings.password,
-                eway_is_production: settings.is_production,
-                account_email: userEmail,
-            };
-
-            if (existing) {
-                await pb.collection("store_settings").update(existing.id, data);
-            } else {
-                await pb.collection("store_settings").create(data);
-            }
+            await saveEwayBillConfig({
+                clientId: settings.client_id,
+                clientSecret: settings.client_secret,
+                username: settings.username,
+                password: settings.password,
+                isProduction: settings.is_production,
+            });
 
             toast.success("E-way Bill settings saved");
         } catch (error) {

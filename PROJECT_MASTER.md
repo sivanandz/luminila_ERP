@@ -1879,6 +1879,20 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **D-23 stays open:** nine surfaces migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`, `invoices/create`, `customers/detail`, WhatsApp catalog editor, WhatsApp chat page). Remaining: `DiscrepancyModal` (5), `EwayBillSettings` (4), `BarcodeScanDispatchModal` (3), POS page (3), and settings sub-components.
 
+### 11.54 Slice 52: discrepancy, e-way and dispatch surfaces (2026-10-23)
+
+**D-23 progress:** three more components hold **zero** direct PocketBase calls (12 calls removed).
+
+| Component | Before | After |
+|---|---|---|
+| `DiscrepancyModal.tsx` | 5 calls: barcode product lookup, variant lookup ×2, vendor list | `resolveBarcodeProduct`, new `getVariantById` / `getVariantForProduct`, and `getVendors()` |
+| `EwayBillSettings.tsx` | 4 calls: read and upsert the `eway_bill` settings row | `getEwayBillConfig` / `saveEwayBillConfig` in new `src/lib/eway-bill-settings.ts`; tenant filter and sanitized email live in one place |
+| `BarcodeScanDispatchModal.tsx` | 3 calls: dispatchable orders, order status, shipment row | `getDispatchableOrders` / `markSalesOrderShipped` in `orders.ts`, `createShipment` in new `src/lib/shipments.ts` (the `shipments` collection created by migration 008 is now written through a service) |
+
+**Census after this slice:** 31 direct calls remain outside `src/lib` — 13 in API route handlers and 18 across 15 pages/components (POS page 3, POS WhatsApp widget 2, quick barcode 2, then single-call sites).
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

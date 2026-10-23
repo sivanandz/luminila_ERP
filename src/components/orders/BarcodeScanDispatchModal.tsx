@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { pb } from "@/lib/pocketbase";
+import { createShipment } from "@/lib/shipments";
+import { getDispatchableOrders, markSalesOrderShipped } from "@/lib/orders";
 import { dispatchOrderMilestoneWhatsApp } from "@/lib/order-milestones";
 import { CourierCarrier, fetchStCourierLiveTracking } from "@/lib/logistics-engine";
 import { MobileScanner } from "@/lib/mobile-scanner";
@@ -128,19 +129,16 @@ export function BarcodeScanDispatchModal({
     const fetchPendingOrders = async () => {
         setLoadingOrders(true);
         try {
-            const records = await pb.collection("sales_orders").getList(1, 30, {
-                filter: 'status != "delivered" && status != "cancelled"',
-                sort: "-created",
-            });
-            const mapped = records.items.map((r) => ({
+            const records = await getDispatchableOrders();
+            const mapped = records.map((r) => ({
                 id: r.id,
                 order_number: r.order_number || r.id.slice(0, 8),
                 customer_name: r.customer_name || "Valued Customer",
                 customer_phone: r.customer_phone || null,
-                status: r.status,
+                status: r.status || "pending",
                 total: r.total || 0,
-                shipping_address: r.shipping_address,
-                created: r.created,
+                shipping_address: r.shipping_address || "",
+                created: r.created || "",
             }));
             setOrders(mapped);
         } catch (err) {
@@ -274,23 +272,19 @@ export function BarcodeScanDispatchModal({
 
             // 2. Update order status to 'shipped' in PocketBase
             try {
-                await pb.collection("sales_orders").update(selectedOrder.id, {
-                    status: "shipped",
-                });
+                await markSalesOrderShipped(selectedOrder.id);
             } catch (updateErr) {
                 console.warn("Could not update sales_orders status directly:", updateErr);
             }
 
             // 3. Register shipment in shipments collection if exists
             try {
-                await pb.collection("shipments").create({
-                    order_id: selectedOrder.id,
+                await createShipment({
+                    orderId: selectedOrder.id,
                     carrier,
-                    awb_number: cleanAwb,
-                    shipping_status: "manifested",
-                    tracking_url: trackingUrl,
-                    cod_amount: 0,
-                    weight_grams: 100,
+                    awbNumber: cleanAwb,
+                    trackingUrl,
+                    weightGrams: 100,
                 });
             } catch {
                 // shipments collection optional

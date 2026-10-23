@@ -439,3 +439,25 @@ export async function getSellableVariants(): Promise<SellableVariant[]> {
             : { id: '', name: '', sku: '', base_price: 0 },
     }));
 }
+
+/** Single variant by id, for discrepancy and stock flows. */
+export async function getVariantById(variantId: string): Promise<ProductVariant | null> {
+    try {
+        return await pb.collection('product_variants').getOne<ProductVariant>(variantId);
+    } catch {
+        return null;
+    }
+}
+
+/** Stockiest variant of a product, for flows that pick a default line. */
+export async function getVariantForProduct(productId: string): Promise<ProductVariant | null> {
+    try {
+        const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+            filter: `product="${sanitizeFilter(productId)}"`,
+            sort: '-stock_level',
+        });
+        return variants.items[0] || null;
+    } catch {
+        return null;
+    }
+}
