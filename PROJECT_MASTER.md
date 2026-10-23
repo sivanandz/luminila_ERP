@@ -6,7 +6,7 @@
 |---|---|
 | Document ID | `LUMINILA-MASTER-2026-10-23` |
 | Status | **SUPERSEDING**. Replaces every other project document on architecture, features, defects, and build state. |
-| Verified against | branch `fix/security-audit-remediation`, commit `f0e96b4` (2026-10-21), working tree clean except audit scratch files |
+| Verified against | audit baseline `f0e96b4` (2026-10-21). Slice 1 landed on `feat/finish-partial-features` as `dc70a9b`. |
 | Verification date | 2026-10-23 |
 | Verification performed by | static analysis + targeted line-level code audit + `tsc` + ESLint; production build attempted |
 | Scope | `E:\Local_GIT_2\luminila_inv_mgmt` (frontend, service layer, PocketBase schema, Tauri shell, WhatsApp sidecar, API routes) |
