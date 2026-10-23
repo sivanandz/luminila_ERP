@@ -1577,6 +1577,16 @@ Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 asse
 
 **What this session deliberately did not do:** apply any migration, modify `pocketbase/pb_data` or `pb_tenants/registry.json`, or run a restore against live data. Every such change has a prepared, reviewable artefact instead.
 
+### 11.35 Slice 34: dead sync modules removed (2026-10-23)
+
+**D-34 partially closed:** the stub clients and their orchestrator are deleted.
+
+`src/lib/sync/` (Shopify, WooCommerce, index) and `src/lib/sync-engine.ts` had zero importers and seven unimplemented TODOs. They are gone. The Settings page still shows the Shopify and WooCommerce cards, whose buttons only alert "Coming Soon"; removing those cards is the remaining half and is a UI edit rather than an integration decision.
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites. No behaviour changed because nothing imported the deleted files.
+
+**Still open:** D-17, D-21, D-32, the Settings cards for D-34, plus the schema-bound and decision-bound items.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
