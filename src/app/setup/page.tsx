@@ -2,7 +2,18 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { pb, getPocketBaseUrl, autoDiscoverPocketBase, provisionTenantPocketBase } from "@/lib/pocketbase";
+import { getPocketBaseUrl, autoDiscoverPocketBase, provisionTenantPocketBase } from "@/lib/pocketbase";
+import {
+    authenticateSetupSuperuser,
+    checkPocketBaseHealth,
+    ensureSetupAdminUser,
+    isSetupComplete,
+    linkUserToAdminRole,
+    loginSetupAdmin,
+    purgeTenantDemoData,
+    seedDefaultRoles,
+    seedStoreSettings,
+} from "@/lib/setup";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,81 +34,6 @@ import {
 } from "lucide-react";
 
 type SetupStep = "welcome" | "config" | "complete";
-
-const DEFAULT_ROLES = [
-    {
-        name: "Admin",
-        description: "Full access to all features and administration",
-        is_system: true,
-        permissions: {
-            products: ["create", "read", "update", "delete", "print", "export"],
-            inventory: ["create", "read", "update", "delete", "print", "export"],
-            sales: ["create", "read", "update", "delete", "print", "export"],
-            invoices: ["create", "read", "update", "delete", "print", "export"],
-            customers: ["create", "read", "update", "delete", "print", "export"],
-            vendors: ["create", "read", "update", "delete", "print", "export"],
-            purchase_orders: ["create", "read", "update", "delete", "print", "export"],
-            reports: ["read", "export"],
-            settings: ["read", "update"],
-            users: ["create", "read", "update", "delete"],
-            activity: ["read"],
-        },
-    },
-    {
-        name: "Manager",
-        description: "Manage store operations and view analytics",
-        is_system: true,
-        permissions: {
-            products: ["create", "read", "update", "print", "export"],
-            inventory: ["create", "read", "update", "print", "export"],
-            sales: ["create", "read", "update", "print", "export"],
-            invoices: ["create", "read", "update", "print", "export"],
-            customers: ["create", "read", "update", "print", "export"],
-            vendors: ["create", "read", "update", "print", "export"],
-            purchase_orders: ["create", "read", "update", "print", "export"],
-            reports: ["read", "export"],
-            settings: ["read"],
-            users: ["read"],
-            activity: ["read"],
-        },
-    },
-    {
-        name: "Staff",
-        description: "Point of sale and daily inventory updates",
-        is_system: true,
-        permissions: {
-            products: ["read"],
-            inventory: ["read", "update"],
-            sales: ["create", "read", "print"],
-            invoices: ["create", "read", "print"],
-            customers: ["create", "read", "update"],
-            vendors: ["read"],
-            purchase_orders: ["read"],
-            reports: [],
-            settings: [],
-            users: [],
-            activity: ["read"],
-        },
-    },
-    {
-        name: "Viewer",
-        description: "Read-only access for audits and reviews",
-        is_system: true,
-        permissions: {
-            products: ["read"],
-            inventory: ["read"],
-            sales: ["read"],
-            invoices: ["read"],
-            customers: ["read"],
-            vendors: ["read"],
-            purchase_orders: ["read"],
-            reports: ["read"],
-            settings: [],
-            users: [],
-            activity: ["read"],
-        },
-    },
-];
 
 export default function SetupWizardPage() {
     const router = useRouter();
@@ -129,19 +65,15 @@ export default function SetupWizardPage() {
             setPbUrl(activeUrl);
 
             // Direct PocketBase health check
-            const health = await pb.health.check();
-            setDbConnected(health.code === 200);
+            setDbConnected(await checkPocketBaseHealth());
 
             try {
                 const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
                 const isForce = searchParams?.get("force") === "true" || searchParams?.get("reset") === "true";
 
-                if (!isForce) {
-                    const users = await pb.collection("users").getList(1, 1);
-                    if (users.totalItems > 0) {
-                        router.push("/login");
-                        return;
-                    }
+                if (!isForce && await isSetupComplete()) {
+                    router.push("/login");
+                    return;
                 }
             } catch {
                 // Cold start 403 or empty, stay on wizard
@@ -210,192 +142,33 @@ export default function SetupWizardPage() {
             }
             setPbUrl(provisionRes.pbUrl);
 
-            // 1. Authenticate as Superuser using form credentials against the isolated instance
-            let superuserRecord: { id: string; email?: string } | null = null;
-            let authenticatedWithBootstrap = false;
+            // Authenticate as the tenant superuser created during provisioning.
+            await authenticateSetupSuperuser(formData.adminEmail, formData.adminPassword);
 
-            try {
-                const authData = await pb.collection("_superusers").authWithPassword(formData.adminEmail, formData.adminPassword);
-                superuserRecord = authData.record;
-            } catch {
-                // Cold-start fallback: authenticate using pre-seeded bootstrap superuser
-                try {
-                    const bootstrapAuth = await pb.collection("_superusers").authWithPassword(
-                        "admin@luminila.local",
-                        "LuminilaInit2026!"
-                    );
-                    superuserRecord = bootstrapAuth.record;
-                    authenticatedWithBootstrap = true;
-                } catch {
-                    throw new Error("Unable to authenticate with PocketBase. Ensure PocketBase is running on " + provisionRes.pbUrl);
-                }
-            }
+            // Seed default roles and the admin user, then link them.
+            const roleMap = await seedDefaultRoles();
+            const userRecord = await ensureSetupAdminUser({
+                email: formData.adminEmail,
+                password: formData.adminPassword,
+                name: formData.adminName,
+            });
+            await linkUserToAdminRole(userRecord.id, roleMap["Admin"]);
 
-            // 2. Seed Default System Roles
-            const roleMap: Record<string, string> = {};
-            for (const role of DEFAULT_ROLES) {
-                try {
-                    const existing = await pb.collection("roles").getFirstListItem(`name="${role.name}"`);
-                    roleMap[role.name] = existing.id;
-                } catch (err: unknown) {
-                    const errStatus = (err as { status?: number })?.status;
-                    if (errStatus === 404) {
-                        try {
-                            const created = await pb.collection("roles").create(role);
-                            roleMap[role.name] = created.id;
-                        } catch (createErr) {
-                            console.warn(`Could not create role ${role.name}:`, createErr);
-                        }
-                    }
-                }
-            }
-
-            // 3. Create or Update Application Admin User
-            let userRecord: { id: string } | null = null;
-            try {
-                const existing = await pb.collection("users").getFirstListItem(`email="${formData.adminEmail}"`);
-                userRecord = await pb.collection("users").update(existing.id, {
-                    name: formData.adminName,
-                    password: formData.adminPassword,
-                    passwordConfirm: formData.adminPassword,
-                    verified: true,
-                    is_active: true,
-                });
-            } catch (err: unknown) {
-                const errStatus = (err as { status?: number })?.status;
-                if (errStatus === 404) {
-                    userRecord = await pb.collection("users").create({
-                        email: formData.adminEmail,
-                        password: formData.adminPassword,
-                        passwordConfirm: formData.adminPassword,
-                        name: formData.adminName,
-                        emailVisibility: true,
-                        verified: true,
-                        is_active: true,
-                    });
-                } else {
-                    throw err;
-                }
-            }
-
-            // 4. Link User to Admin Role in user_roles
-            const adminRoleId = roleMap["Admin"];
-            if (adminRoleId && userRecord?.id) {
-                try {
-                    await pb.collection("user_roles").getFirstListItem(
-                        `user="${userRecord.id}" && role="${adminRoleId}"`
-                    );
-                } catch (err: unknown) {
-                    const errStatus = (err as { status?: number })?.status;
-                    if (errStatus === 404) {
-                        try {
-                            await pb.collection("user_roles").create({
-                                user: userRecord.id,
-                                role: adminRoleId,
-                            });
-                        } catch (urErr) {
-                            console.warn("user_roles creation notice:", urErr);
-                        }
-                    }
-                }
-            }
-
-            // 5. Seed Initial Store Settings
             if (formData.storeName) {
-                const initialSettings = [
-                    { key: "store_name", value: formData.storeName, category: "general", account_email: formData.adminEmail },
-                    { key: "currency", value: "INR", category: "general", account_email: formData.adminEmail },
-                    { key: "currency_symbol", value: "₹", category: "general", account_email: formData.adminEmail },
-                ];
-
-                for (const setting of initialSettings) {
-                    try {
-                        const existingSetting = await pb.collection("store_settings").getFirstListItem(
-                            `key="${setting.key}" && account_email="${formData.adminEmail}"`
-                        );
-                        await pb.collection("store_settings").update(existingSetting.id, { 
-                            value: setting.value,
-                            account_email: formData.adminEmail,
-                        });
-                    } catch (sErr: unknown) {
-                        const sErrStatus = (sErr as { status?: number })?.status;
-                        if (sErrStatus === 404) {
-                            try {
-                                await pb.collection("store_settings").create(setting);
-                            } catch { /* ignore */ }
-                        }
-                    }
-                }
+                await seedStoreSettings(formData.storeName, formData.adminEmail);
             }
 
-            // 6. Clean Slate: Purge prior demo inventory, vendors, discrepancies, and transactions if requested
             if (formData.cleanSlate) {
-                const purgeCollections = [
-                    "invoice_payments",
-                    "invoice_items",
-                    "invoices",
-                    "credit_note_items",
-                    "credit_notes",
-                    "delivery_challan_items",
-                    "delivery_challans",
-                    "stock_movements",
-                    "stock_discrepancies",
-                    "sale_items",
-                    "sales",
-                    "sales_order_items",
-                    "sales_orders",
-                    "grn_items",
-                    "goods_received_notes",
-                    "purchase_order_items",
-                    "purchase_orders",
-                    "vendor_products",
-                    "vendors",
-                    "expenses",
-                    "bank_transactions",
-                    "payment_links",
-                    "whatsapp_messages",
-                    "whatsapp_chats",
-                    "product_variants",
-                    "products",
-                    "customers",
-                ];
-                for (const col of purgeCollections) {
-                    try {
-                        const records = await pb.collection(col).getFullList({
-                            filter: `account_email = "${formData.adminEmail}"`,
-                            requestKey: null,
-                        }).catch(() => []);
-                        for (const r of records) {
-                            await pb.collection(col).delete(r.id).catch(() => {});
-                        }
-                    } catch (pErr) {
-                        console.warn(`Clean slate notice for ${col}:`, pErr);
-                    }
-                }
+                await purgeTenantDemoData(formData.adminEmail);
             }
 
-            // 7. Update superuser credentials to match chosen admin (done last so token remains valid)
-            if (authenticatedWithBootstrap && superuserRecord) {
-                try {
-                    await pb.collection("_superusers").update(superuserRecord.id, {
-                        email: formData.adminEmail,
-                        password: formData.adminPassword,
-                        passwordConfirm: formData.adminPassword,
-                    });
-                } catch (updateErr) {
-                    console.warn("Notice: superuser update:", updateErr);
-                }
-            }
-
-            // 7. Auto-Login directly into Application (Zero secondary login required)
-            pb.authStore.clear();
+            // Auto-login directly into the application.
             try {
-                await pb.collection("users").authWithPassword(formData.adminEmail, formData.adminPassword);
+                await loginSetupAdmin(formData.adminEmail, formData.adminPassword);
                 toast.success("System initialized and logged in!");
             } catch (authErr) {
                 console.warn("Direct login notice:", authErr);
             }
-
             setCurrentStep("complete");
         } catch (err: unknown) {
             let message = "Setup execution failed";

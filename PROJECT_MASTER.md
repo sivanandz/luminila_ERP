@@ -1793,6 +1793,20 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **Register: 53 fixed, 2 open (D-23, S-06).**
 
+### 11.48 Slice 46: setup wizard behind a service, hardcoded superuser removed (2026-10-23)
+
+**D-23 progress:** `src/app/setup/page.tsx` no longer touches PocketBase directly — its direct `pb.collection` count is **zero** (was 17).
+
+| Change | Files |
+|---|---|
+| New `src/lib/setup.ts`: setup-complete check, health check, superuser authentication, role seeding, admin user creation/linking, settings seeding, tenant-scoped demo purge, admin login | `src/lib/setup.ts` (new) |
+| The wizard orchestrates those calls; `DEFAULT_ROLES` moved with the logic | `src/app/setup/page.tsx` |
+| **Hardcoded credential removed** | `admin@luminila.local` / `LuminilaInit2026!` was a working superuser fallback compiled into the client bundle. Provisioning now authenticates only with the credentials the operator chose and fails with a clear message otherwise. |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint reports no problems; `grep` confirms no `pb.collection` call remains in the setup page.
+
+**D-23 stays open:** two pages migrated (`challan/create`, `setup`), `inventory` (13) and the remaining ~24 files still call PocketBase directly.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
