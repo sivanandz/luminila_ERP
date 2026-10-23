@@ -24,6 +24,7 @@ import {
     Tags,
 
     Diamond,
+    Gem,
     Users,
     Undo2,
     Activity,
@@ -92,6 +93,7 @@ const navGroups: NavItem[] = [
         children: [
             { href: "/inventory", icon: <Package size={18} />, label: "Stock Management" },
             { href: "/manufacturing", icon: <Hammer size={18} />, label: "Karigar Jobs" },
+            { href: "/imitation", icon: <Gem size={18} />, label: "Fashion Jewellery" },
             { href: "/labels", icon: <Printer size={18} />, label: "Print Labels" },
         ],
     },

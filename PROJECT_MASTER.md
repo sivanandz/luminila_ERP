@@ -103,9 +103,9 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 251 |
-| Lines of TypeScript/TSX | ~88,300 |
-| Route pages (`src/app/**/page.tsx`) | 44 |
+| TypeScript/TSX files | 253 |
+| Lines of TypeScript/TSX | ~88,700 |
+| Route pages (`src/app/**/page.tsx`) | 45 |
 | Service modules (`src/lib/*.ts`) | 85 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 85 assertions across 11 suites, exit 0 |
+| Test command | `npm test` | 93 assertions across 12 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -137,6 +137,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Backup tests | `npx tsx src/scripts/test-backup.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Offline queue tests | `npx tsx src/scripts/test-offline-queue.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Landed-cost tests | `npx tsx src/scripts/test-valuation.ts` | **7 passed, 0 failed** (2026-10-23) |
+| Imitation taxonomy tests | `npx tsx src/scripts/test-imitation.ts` | **8 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -354,7 +355,7 @@ Status vocabulary, applied strictly:
 | Metal rate engine | Live | `jewelry-engine.ts` computes rate-based pricing |
 | Manufacturing BOM | Live | `/manufacturing` costs a job card: metal, five charge heads, scrap credit, per-gram cost and loss reconciliation (section 11.10) |
 | Karigar job-work tracker | Live | Job cards persist with status and karigar name; metal issued and loss variance are visible, though no running artisan balance yet |
-| Imitation jewelry taxonomy | Scaffold | `imitation-jewelry-engine.ts` models kundan/polki/CZ crafts and wholesale tier pricing; zero importers |
+| Imitation jewelry taxonomy | Live | `/imitation` classifies craft, plating, occasion and base metal, prints the tag payload and applies wholesale tiers (section 11.17) |
 | Anti-oversell cart reservations | Scaffold | `omnichannel-buffer-engine.ts` implements per-channel buffers and an in-memory reservation manager; zero importers, and in-memory state cannot survive a reload |
 | Multi-location stock | Partial | `multi-location.ts` is wired to three screens but reads phantom collections and falls back to localStorage, so transfers are device-local |
 | Stock discrepancy audit | Partial | `discrepancies.ts` plus a seeding script; no reconciliation UI |
@@ -872,7 +873,6 @@ This is the most misleading category in the repository: substantial code exists,
 
 | Module | What it implements | Why it is unreachable |
 |---|---|---|
-| `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
 | `omnichannel-buffer-engine.ts` | Channel buffers and cart reservations | No importer; in-memory state would not survive reload anyway |
 | `sync-engine.ts` + `sync/shopify.ts` + `sync/woocommerce.ts` | E-commerce sync orchestration | Zero importers; seven TODOs; Settings shows "Coming Soon" |
 | `hooks.ts`, `alerts.ts` | Client data hooks, low-stock alerts | Zero importers; dashboard and inventory recompute inline |
@@ -1280,9 +1280,25 @@ The module was not a stub in the harmless sense. `connect()` flipped a localStor
 
 **Still open in this cluster:** weighted-average costing, channel enum, campaign attribution (the last two need the migration bundle).
 
+### 11.17 Slice 17: imitation taxonomy (2026-10-23)
+
+**Feature closed:** the last unwired domain engine.
+
+| Change | Files | Why |
+|---|---|---|
+| Studio screen | `src/app/imitation/page.tsx` (new) | Craft, plating, occasion, base metal and stone inputs produce a label line, a dumbbell tag payload with craft and plating codes, plating durability, and tiered wholesale pricing |
+| Navigation | `Sidebar.tsx`, `MobileDrawer.tsx` | Fashion Jewellery sits under Inventory |
+| Engine tests | `src/scripts/test-imitation.ts` (new) | Label order, empty and unknown values, tag codes, durability, tier thresholds, rounding and savings, quantity clamping |
+
+**Not persisted, by design:** the classification is not written to the product record because `products` has no craft, plating or occasion columns. Making it durable is part of the same migration bundle as channel and job cards; until then the studio is a classifying and pricing tool, and the page says so.
+
+**Verified:** `npm run typecheck` clean; `npm test` 93 assertions across 12 suites; targeted ESLint clean.
+
+**Cluster 6 status:** every domain engine that can work without a schema change is now wired. What remains is the phantom collections and their migrations (D-36).
+
 ## Appendix A: Route inventory
 
-44 route pages, all client components.
+45 route pages, all client components.
 
 | Route | Purpose | Size |
 |---|---|---|
@@ -1305,6 +1321,7 @@ The module was not a stub in the harmless sense. `connect()` flipped a localStor
 | `/invoices/create` | Invoice authoring | 45 KB |
 | `/invoices/detail` | Invoice print and payments | 42 KB |
 | `/labels` | Barcode label printing | 35 KB |
+| `/imitation` | Fashion jewellery taxonomy and tiers | 15 KB |
 | `/manufacturing` | Karigar job cards and metal-loss costing | 14 KB |
 | `/login` | Authentication | 7 KB |
 | `/orders` | Sales orders | 24 KB |
@@ -1373,7 +1390,7 @@ The module was not a stub in the harmless sense. `connect()` flipped a localStor
 
 **Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 5 modules, including the whole sync domain.
+**Modules with zero importers outside their own test scripts**: `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 4 modules, including the whole sync domain.
 
 ## Appendix D: Glossary
 

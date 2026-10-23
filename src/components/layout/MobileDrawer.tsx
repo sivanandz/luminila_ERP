@@ -18,6 +18,7 @@ import {
     Database,
     Wallet,
     Landmark,
+    Gem,
     BarChart3,
     MessageCircle,
     Settings,
@@ -63,6 +64,7 @@ const navSections = [
         items: [
             { href: "/inventory", label: "Products & Stock", icon: Package },
             { href: "/manufacturing", label: "Karigar Jobs", icon: Hammer },
+            { href: "/imitation", label: "Fashion Jewellery", icon: Gem },
             { href: "/labels", label: "Barcode Labels", icon: Printer },
             { href: "/purchase", label: "Purchase Orders", icon: Package },
             { href: "/vendors", label: "Suppliers & Vendors", icon: Users },

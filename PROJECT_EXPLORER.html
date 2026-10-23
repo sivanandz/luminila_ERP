@@ -496,9 +496,9 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <aside class="vitals" aria-label="Repository vitals">
           <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
           <div class="vitals-body">
-            <div class="vital"><div class="vital-num" data-count="88300">88,300</div><div class="vital-label">lines of TypeScript</div></div>
+            <div class="vital"><div class="vital-num" data-count="88700">88,700</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
-            <div class="vital"><div class="vital-num" data-count="5">5</div><div class="vital-label">modules with no importer</div></div>
+            <div class="vital"><div class="vital-num" data-count="4">4</div><div class="vital-label">modules with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
@@ -716,7 +716,7 @@ const NODES = [
   { id:"webview", x:40, y:36, w:200, h:66, kind:"process",
     title:"Showroom webview", sub:"Next 16 static · React 19",
     role:"CLIENT",
-    detail:"The 44 route pages, all client components. Holds auth in localStorage, the cart, the offline queue key, and the WhatsApp drawer.",
+    detail:"The 45 route pages, all client components. Holds auth in localStorage, the cart, the offline queue key, and the WhatsApp drawer.",
     files:"src/app/**/page.tsx · src/components/**",
     ports:"served from out/ in production, dev server :3000",
     risk:"AuthGate redirects unauthenticated visitors; admin pages are hidden from other roles." },
@@ -890,7 +890,7 @@ const FEATURES = [
   ["Metal rate engine","catalog","live","Rate-based pricing in jewelry-engine.ts"],
   ["Manufacturing BOM","catalog","live","Job card costing with metal loss, five charge heads and scrap credit"],
   ["Karigar job work","catalog","live","Job cards persist with karigar name and status; no running artisan balance yet"],
-  ["Imitation jewelry taxonomy","catalog","scaffold","Kundan, polki, CZ, plating, tiers. Zero importers"],
+  ["Imitation jewelry taxonomy","catalog","live","Craft, plating, tag payload and wholesale tiers on one screen"],
   ["Anti-oversell reservations","catalog","scaffold","In-memory manager, no importer, not persistent"],
   ["Multi-location stock","catalog","partial","Reads phantom collections, falls back to localStorage"],
   ["Stock discrepancy audit","catalog","partial","Quarantine ledger, no reconciliation screen"],
@@ -1249,7 +1249,6 @@ const ROADMAP = [
 ];
 
 const ORPHANS = [
-  ["imitation-jewelry-engine.ts","Craft taxonomy and wholesale tiers","No route, no importer"],
   ["omnichannel-buffer-engine.ts","Channel buffers, cart reservations","No importer, in-memory only"],
   ["sync-engine.ts and sync clients","Shopify and WooCommerce sync","Seven TODOs, no importer"],
   ["hooks.ts and alerts.ts","Client data hooks and alerts","No importer, dashboard recomputes inline"],
@@ -1266,7 +1265,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","85 assertions across eleven suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","93 assertions across twelve suites; non-zero exit on failure."],
+  ["Imitation tests","npx tsx src/scripts/test-imitation.ts","pass","8 assertions: label order, tag codes, durability, tiers, rounding."],
   ["Landed-cost tests","npx tsx src/scripts/test-valuation.ts","pass","7 assertions: proportional split, rounding, free goods, summary reconciliation."],
   ["Offline queue tests","npx tsx src/scripts/test-offline-queue.ts","pass","6 assertions: enqueue, remove, clear, corrupt store."],
   ["Backup tests","npx tsx src/scripts/test-backup.ts","pass","6 assertions: validation, summary counts, staleness."],
