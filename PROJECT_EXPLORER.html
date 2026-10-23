@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>37 open · 18 fixed</span>
+            <span class="chip accent"><span class="dot"></span>35 open · 20 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -499,7 +499,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
             <div class="vital"><div class="vital-num" data-count="84411">84,411</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">modules with no importer</div></div>
-            <div class="vital"><div class="vital-num" data-count="5">5</div><div class="vital-label">P1 defects open</div></div>
+            <div class="vital"><div class="vital-num" data-count="4">4</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
       </div>
@@ -975,8 +975,8 @@ const FEATURES = [
   ["Google Drive sync","platform","scaffold","Simulated with a timeout"],
   ["Backup and restore","platform","partial","31-collection module is unreachable (D-39)"],
   ["Activity log","platform","live","Before and after JSON snapshots"],
-  ["Automated tests","platform","absent","Hand-run scripts, no runner"],
-  ["CI pipeline","platform","absent","No workflow files"]
+  ["Automated tests","platform","partial","Three suites behind npm test and CI; no component or end-to-end layer"],
+  ["CI pipeline","platform","live","Typecheck, lint and tests on push and pull request"]
 ];
 
 const DEFECTS = [
@@ -993,7 +993,7 @@ const DEFECTS = [
     where:"src/lib/pos-sales.ts:166-176",
     impact:"A permissions or validation error silently destroys a variant's stock while the movement ledger still records the full deduction. The two never agree again.",
     fix:"Match only the min-constraint error code. On anything else, fail the line and compensate." },
-  { id:"D-04", sev:"P1", area:"ui", title:"Conditional hooks can crash the WhatsApp chat view",
+  { id:"D-04", sev:"P1", status:"fixed", area:"ui", title:"Conditional hooks can crash the WhatsApp chat view",
     where:"src/app/whatsapp/page.tsx:295-299",
     impact:"An early return before three useState calls changes hook order when a quoted reply is followed by a plain message. The page throws and the chat is lost until reload.",
     fix:"Move the early return below the hooks." },
@@ -1098,7 +1098,7 @@ const DEFECTS = [
     where:"97 direct pb.collection calls across 26 UI files",
     impact:"Validation, tenancy injection, and rollback exist in some paths and not others. Three pages exceed 100 KB and every page is a client component.",
     fix:"Extract page data access into hooks backed by services, starting with setup and inventory." },
-  { id:"D-24", sev:"P2", area:"platform", title:"No automated tests and no CI",
+  { id:"D-24", sev:"P2", status:"fixed", area:"platform", title:"No automated tests and no CI",
     where:"package.json · src/scripts/test-*.ts",
     impact:"Every regression in this register was findable by a test that does not exist. Hand-run scripts do not protect changes.",
     fix:"Adopt Vitest for services and Playwright for POS, returns, and drawer flows, then wire CI." },
@@ -1266,13 +1266,15 @@ const ORPHANS = [
 const VERIFY = [
   ["Type check","npx tsc --noEmit --incremental false","pass","Exit 0, clean at f0e96b4. No defect in this page is a type error."],
   ["Type check, default","npx tsc --noEmit","blocked","TS5033 EPERM writing tsconfig.tsbuildinfo on the exFAT volume."],
-  ["Lint","npx eslint src","fail","332 problems: 7 errors, 325 warnings. Four errors are the conditional hooks defect."],
+  ["Lint","npx eslint src","pass","324 problems, 0 errors, 324 warnings."],
   ["Routes counted","40 page files, 13 route handlers","pass","Matches appendix A and B in the master document."],
   ["Production build","npm run build","blocked","Stopped at .next/trace-build by file permissions. The export conflict is configuration-level and independent."],
   ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
-  ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","12 assertions: self-tenant access, superuser bypass, injection rejection, order tenant binding."]
+  ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","12 assertions: self-tenant access, superuser bypass, injection rejection, order tenant binding."],
+  ["Test command","npm test","pass","33 assertions across three suites; non-zero exit on failure."],
+  ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build excluded until D-08 is settled."]
 ];
 
 /* =====================================================================

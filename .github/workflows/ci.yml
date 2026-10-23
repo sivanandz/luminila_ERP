@@ -1,0 +1,33 @@
+name: verify
+
+on:
+  push:
+    branches: [main, "fix/**", "feat/**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests
+        run: npm test
+
+      # `next build` is intentionally not run yet. Production builds enable
+      # `output: "export"`, which cannot emit the 13 API route handlers; the
+      # release decision is tracked as D-08 in PROJECT_MASTER.md section 5.1.

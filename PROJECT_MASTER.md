@@ -123,11 +123,13 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|---|
 | Type safety | `npx tsc --noEmit --incremental false` | **Clean** (exit 0) |
 | Type safety, default | `npx tsc --noEmit` | Fails with `TS5033 EPERM` writing `tsconfig.tsbuildinfo` on this volume (see 5.3) |
-| Lint | `npx eslint src` | **332 problems: 7 errors, 325 warnings** |
-| Lint errors | same | 4 × `react-hooks/rules-of-hooks` in `src/app/whatsapp/page.tsx`; `prefer-const` in `excel-import.ts`, `purchase.ts`, `storefront.ts` |
+| Lint | `npx eslint src` | **324 problems: 0 errors, 324 warnings** |
+| Lint errors | same | none |
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **12 passed, 0 failed** (2026-10-23) |
+| Test command | `npm test` | 33 assertions across 3 suites, exit 0 |
+| CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
 
@@ -148,7 +150,7 @@ The seven lint errors are not cosmetic. Four of them are the React hooks violati
 | Multi-tenancy | Improving | Physical isolation is real; the control plane now requires a session for existing tenants. Shared client and plaintext registry remain (section 11). |
 | Build and release | **Blocked** | Static export vs 13 API routes; Tauri bundle omits PocketBase |
 | Frontend architecture | Uneven | 135 direct database calls in UI, three pages over 100 KB |
-| Test coverage | Weak | Hand-rolled scripts under `src/scripts`, no test runner in `package.json` |
+| Test coverage | Baseline | `npm test` runs three suites and CI re-runs them; no component or end-to-end layer yet |
 
 ---
 
@@ -613,7 +615,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11, D-20, D-25, S-01, S-02, S-03, S-04, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-10, D-11, D-20, D-24, D-25, S-01, S-02, S-03, S-04, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1065,6 +1067,25 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 - S-16: the feed phone default was removed, but the catalog id and phone are still hardcoded in `catalog/batch`, and the sync key still doubles as a Meta token.
 - S-10 and S-11 need secrets to be provisioned before they can be enforced; S-15 needs a rate limit; S-07 needs route-level capability checks.
+
+### 11.5 Slice 5: quality gate (2026-10-23)
+
+**Closed:** D-04, D-24.
+
+| Change | Files | Why |
+|---|---|---|
+| WhatsApp quoted-reply hooks fixed | `src/app/whatsapp/page.tsx` | The early return moved below the hooks; the quoted block reads a local `quoted` value, so a plain message after a quoted reply no longer changes hook order and crashes the chat |
+| Remaining lint errors fixed | `src/lib/excel-import.ts`, `src/lib/purchase.ts` | Two `prefer-const` errors; lint is now **0 errors** |
+| One test command | `package.json` | `npm test` runs the three suites (tax math, returns policy, tenant auth), 33 assertions, non-zero exit on failure |
+| Typecheck command | `package.json` | `npm run typecheck` runs `tsc --noEmit --incremental false`, which works on this volume |
+| CI | `.github/workflows/ci.yml` (new) | Typecheck, lint and tests on push and pull request. `next build` is deliberately excluded until D-08 is settled |
+
+**Verified:** `npm test` exit 0 (12 + 9 + 12 assertions); `npm run typecheck` exit 0; `npx eslint src` exit 0 with 324 warnings and **no errors**.
+
+**Still open in this cluster:**
+
+- No component or end-to-end layer: the suites cover pure policy and math, not the POS, drawer, or WhatsApp screens.
+- The backup, offline queue and Drive sync items in this cluster are untouched; only the test and CI half landed.
 
 ## Appendix A: Route inventory
 

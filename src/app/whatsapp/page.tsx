@@ -267,10 +267,11 @@ function QuotedBlock({
     chatMessages?: Message[];
     onLoadMedia?: (messageId: string) => Promise<string | null>;
 }) {
-    if (!msg.quotedMsg) return null;
-
-    const isMediaQuote = ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(msg.quotedMsg.type);
-    const hasImageThumbnail = ['image', 'sticker', 'video'].includes(msg.quotedMsg.type);
+    const quoted = msg.quotedMsg;
+    const isMediaQuote = quoted
+        ? ['image', 'sticker', 'video', 'ptt', 'audio', 'document'].includes(quoted.type)
+        : false;
+    const hasImageThumbnail = quoted ? ['image', 'sticker', 'video'].includes(quoted.type) : false;
 
     // Initial thumbnail check:
     // 1. QuotedMsg mediaUrl or thumbnail if data URL or valid non-whatsapp http URL
@@ -317,11 +318,16 @@ function QuotedBlock({
         }
     }, [msg.quotedMsg?.id, hasImageThumbnail, onLoadMedia, chatMessages]);
 
+    // Hooks must run in the same order on every render, so the empty state is
+    // decided after them. Returning earlier crashed the whole chat whenever a
+    // quoted reply was followed by a plain message in the same slot.
+    if (!quoted) return null;
+
     const handleQuoteClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        if (!msg.quotedMsg?.id) return;
+        if (!quoted.id) return;
 
-        const rawQuotedId = normalizeMessageId(msg.quotedMsg.id);
+        const rawQuotedId = normalizeMessageId(quoted.id);
         const stanzaId = getMessageStanzaId(rawQuotedId);
 
         // 1. Try exact match by full ID
@@ -403,19 +409,19 @@ function QuotedBlock({
             )}
 
             <div className="flex-1 min-w-0">
-                {msg.quotedMsg.sender && (
-                    <p className="font-semibold opacity-90 truncate">{msg.quotedMsg.sender}</p>
+                {quoted.sender && (
+                    <p className="font-semibold opacity-90 truncate">{quoted.sender}</p>
                 )}
                 <p className="opacity-75 line-clamp-2">
-                    {isMediaQuote && msg.quotedMsg.type !== 'image' && msg.quotedMsg.type !== 'sticker' && msg.quotedMsg.type !== 'video'
-                        ? `📎 ${msg.quotedMsg.type === 'ptt' ? 'Voice message' : msg.quotedMsg.type === 'document' ? 'Document' : msg.quotedMsg.type}`
-                        : isMediaQuote && msg.quotedMsg.type === 'image'
-                            ? (msg.quotedMsg.caption || '📷 Photo')
-                            : isMediaQuote && msg.quotedMsg.type === 'sticker'
+                    {isMediaQuote && quoted.type !== 'image' && quoted.type !== 'sticker' && quoted.type !== 'video'
+                        ? `📎 ${quoted.type === 'ptt' ? 'Voice message' : quoted.type === 'document' ? 'Document' : quoted.type}`
+                        : isMediaQuote && quoted.type === 'image'
+                            ? (quoted.caption || '📷 Photo')
+                            : isMediaQuote && quoted.type === 'sticker'
                                 ? 'Sticker'
-                                : isMediaQuote && msg.quotedMsg.type === 'video'
-                                    ? (msg.quotedMsg.caption || '🎬 Video')
-                                    : (msg.quotedMsg.body || msg.quotedMsg.caption || '')
+                                : isMediaQuote && quoted.type === 'video'
+                                    ? (quoted.caption || '🎬 Video')
+                                    : (quoted.body || quoted.caption || '')
                     }
                 </p>
             </div>

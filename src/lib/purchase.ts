@@ -291,7 +291,7 @@ export async function createPurchaseOrder(
     let subtotal = 0;
     let gstAmount = 0;
     let shippingCost = po.shipping_cost || 0;
-    let discountAmount = po.discount_amount || 0;
+    const discountAmount = po.discount_amount || 0;
     let total = 0;
 
     if (isBlanket) {

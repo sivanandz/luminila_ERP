@@ -471,7 +471,7 @@ export async function parseInventoryImportFile(
 
     // Find header row (usually row 1)
     let headerRowIndex = 1;
-    let headers: { index: number; normalized: string; original: string }[] = [];
+    const headers: { index: number; normalized: string; original: string }[] = [];
 
     sheet.eachRow((row, rowNumber) => {
         if (headers.length > 0) return; // already found
