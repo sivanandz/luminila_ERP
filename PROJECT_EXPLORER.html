@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>26 open · 29 fixed</span>
+            <span class="chip accent"><span class="dot"></span>25 open · 30 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -499,7 +499,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
             <div class="vital"><div class="vital-num" data-count="88700">88,700</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">modules with no importer</div></div>
-            <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
+            <div class="vital"><div class="vital-num" data-count="2">2</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
       </div>
@@ -1035,7 +1035,7 @@ const DEFECTS = [
     where:"src/lib/storefront.ts:22-26",
     impact:"A crafted accountEmail breaks out of the filter and returns another tenant's binding, which then becomes the write target for unauthenticated flows.",
     fix:"Apply sanitizeFilter and validate the email against an exact match." },
-  { id:"S-05", sev:"P1", area:"tenancy", title:"One mutable PocketBase client carries superuser sessions across requests",
+  { id:"S-05", sev:"P1", status:"fixed", area:"tenancy", title:"One mutable PocketBase client carries superuser sessions across requests",
     where:"src/lib/pocketbase.ts:32,80-128 · src/app/api/pos/payment/route.ts:32",
     impact:"Concurrent requests for different tenants race on one global client. Any route that forgets to re-authenticate inherits the previous tenant's superuser session. Partially mitigated: createTenantClient exists and eight of nine routes use it; pos/payment remains.",
     fix:"Create a client per request and pass it explicitly; never hold a superuser session in module state." },

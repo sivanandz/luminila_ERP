@@ -622,7 +622,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). **S-05 partially mitigated:** `createTenantClient` exists and eight of nine tenant-scoped API routes use it; `pos/payment` still authenticates the shared client for the Razorpay helper. S-06 remains partial (registry still holds passwords).
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). S-06 remains partial: the registry still holds tenant passwords in plaintext, which needs a re-key plan and your approval.
 
 Two honest qualifications:
 
@@ -649,7 +649,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, D-39, S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1445,6 +1445,22 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **Remaining:** `pos/payment`. Its two `ensureServerAuth` calls exist because the Razorpay helper it calls takes no client; that helper needs a client parameter before the route can be converted safely.
 
 **Verified:** `npm run typecheck` clean; `npm test` 122 assertions across 17 suites; full `npx eslint src` 0 errors.
+
+### 11.26 Slice 26: per-request clients complete (2026-10-23)
+
+**Closed:** S-05.
+
+| Change | Files | Why |
+|---|---|---|
+| Payment route uses a tenant client | `api/pos/payment/route.ts` | Token verification runs against a client built for the operator's tenant; the shared client is never authenticated or re-pointed |
+| Second `ensureServerAuth` removed | same | The Razorpay and PhonePe helpers read their configuration from the environment on the server, so the extra session was unnecessary; it existed only to satisfy the shared-client pattern |
+| Unused email tracking removed | same | `verifiedEmail` was assigned and never read once the second auth call went away |
+
+**All nine tenant-scoped API routes now build their own client.** The only remaining `ensureServerAuth` callers are the `pocketbase.ts` export itself and non-route helpers, so a request can no longer inherit another tenant's superuser session.
+
+**Verified:** `npm run typecheck` clean; `npm test` 122 assertions across 17 suites; full `npx eslint src` 0 errors.
+
+**Still open in this cluster:** S-06 only, which needs a re-key of `pb_tenants/registry.json` and your approval.
 
 ## Appendix A: Route inventory
 

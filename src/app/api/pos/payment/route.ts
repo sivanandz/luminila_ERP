@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import PocketBase from "pocketbase";
-import { pb, ensureServerAuth, getPocketBaseUrl } from "@/lib/pocketbase";
+import { createTenantClient } from "@/lib/pocketbase";
 import {
     createPaymentLink as serverCreateRazorpayLink,
     fetchPaymentLinkStatus as serverFetchRazorpayStatus,
@@ -28,24 +28,21 @@ export async function POST(req: Request) {
         const { action, payload, accountEmail } = body;
         const hintEmail = typeof accountEmail === "string" ? accountEmail.trim().toLowerCase() : undefined;
 
-        // Ensure server PocketBase points to the operator's isolated tenant DB before verifying the JWT
-        await ensureServerAuth(hintEmail);
+        // A client for the operator's tenant; the shared client is not touched.
+        const tenantClient = await createTenantClient(hintEmail);
 
-        const authPb = new PocketBase(pb.baseUrl || getPocketBaseUrl());
+        const authPb = new PocketBase(tenantClient.baseUrl);
         let isAuthorized = false;
-        let verifiedEmail = hintEmail;
         try {
             authPb.authStore.save(token, null);
             await authPb.collection("users").authRefresh();
             isAuthorized = authPb.authStore.isValid;
-            verifiedEmail = (authPb.authStore.record?.email || hintEmail || "").trim().toLowerCase() || undefined;
         } catch {
             try {
                 authPb.authStore.save(token, null);
                 await authPb.collection("_superusers").authRefresh();
                 isAuthorized = authPb.authStore.isValid;
-                verifiedEmail = (authPb.authStore.record?.email || hintEmail || "").trim().toLowerCase() || undefined;
-            } catch {
+                } catch {
                 isAuthorized = false;
             }
         }
@@ -57,9 +54,8 @@ export async function POST(req: Request) {
             );
         }
 
-        // Verify server authentication on the verified tenant's isolated DB
-        await ensureServerAuth(verifiedEmail);
-
+        // The gateway helpers read their configuration from the environment on
+        // the server, so no shared client session is required here.
         if (action === "razorpay_create_link") {
             const result = await serverCreateRazorpayLink(payload);
             return NextResponse.json(result, { status: result.success ? 200 : 400 });
