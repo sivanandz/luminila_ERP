@@ -496,7 +496,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <aside class="vitals" aria-label="Repository vitals">
           <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
           <div class="vitals-body">
-            <div class="vital"><div class="vital-num" data-count="88400">88,400</div><div class="vital-label">lines of TypeScript</div></div>
+            <div class="vital"><div class="vital-num" data-count="88100">88,100</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="5">5</div><div class="vital-label">modules with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
@@ -763,12 +763,12 @@ const NODES = [
     ports:"read and written by tenant-db-manager",
     risk:"Plaintext passwords remain; the hardcoded fallback is gone." },
   { id:"ext", x:540, y:36, w:180, h:66, kind:"external",
-    title:"External services", sub:"Razorpay · Meta · Drive",
+    title:"External services", sub:"Razorpay · Meta · Courier",
     role:"INTEGRATIONS",
-    detail:"Payment links and settlement, WhatsApp catalog push, Google Drive sync, courier tracking. All optional, none required to bill a customer.",
+    detail:"Payment links and settlement, WhatsApp catalog push, courier tracking. All optional, none required to bill a customer.",
     files:"razorpay.ts, meta-catalog-batch.ts, logistics-engine.ts",
     ports:"HTTPS outbound",
-    risk:"Drive sync is a mock; the Razorpay webhook secret is unset." },
+    risk:"The Razorpay webhook secret is unset. Cloud sync was removed; recovery is the JSON backup." },
   { id:"tunnel", x:540, y:150, w:180, h:60, kind:"external",
     title:"Cloudflare tunnel", sub:"trycloudflare.com",
     role:"REMOTE ACCESS",
@@ -974,7 +974,7 @@ const FEATURES = [
   ["Native Android APK","platform","partial","Blocked by exFAT symlinks on this machine"],
   ["PWA install","platform","live","Manifest and apple meta"],
   ["Offline mutation queue","platform","live","Drains on reconnect and every 30s; audit writes queue when the database is unreachable"],
-  ["Google Drive sync","platform","scaffold","Simulated with a timeout"],
+  ["Cloud sync","platform","absent","Mock engine removed because it discarded its log; recovery is the JSON backup"],
   ["Backup and restore","platform","live","Download, preview and typed-confirm restore, plus a daily browser snapshot"],
   ["Activity log","platform","live","Before and after JSON snapshots"],
   ["Automated tests","platform","partial","Three suites behind npm test and CI; no component or end-to-end layer"],

@@ -13,22 +13,18 @@ import {
 import { cn } from "@/lib/utils";
 import { MobileDrawer } from "./MobileDrawer";
 import { ServerConfigModal } from "@/components/settings/ServerConfigModal";
-import { GoogleDriveSyncModal } from "@/components/settings/GoogleDriveSyncModal";
 
 interface MobileBottomNavProps {
     onOpenServerConfig?: () => void;
-    onOpenDriveSync?: () => void;
 }
 
 export function MobileBottomNav({
     onOpenServerConfig,
-    onOpenDriveSync,
 }: MobileBottomNavProps) {
     const pathname = usePathname();
     const router = useRouter();
     const [isDrawerOpen, setIsDrawerOpen] = useState(false);
     const [serverModalOpen, setServerModalOpen] = useState(false);
-    const [driveModalOpen, setDriveModalOpen] = useState(false);
 
     // Hide bottom nav on specific fullscreen pages like login or setup
     const isAuthOrSetup = pathname === "/login" || pathname === "/setup" || pathname?.startsWith("/login/") || pathname?.startsWith("/setup/");
@@ -111,19 +107,12 @@ export function MobileBottomNav({
                 isOpen={isDrawerOpen}
                 onClose={() => setIsDrawerOpen(false)}
                 onOpenServerConfig={() => (onOpenServerConfig ? onOpenServerConfig() : setServerModalOpen(true))}
-                onOpenDriveSync={() => (onOpenDriveSync ? onOpenDriveSync() : setDriveModalOpen(true))}
             />
 
             {/* Server Configuration Modal */}
             <ServerConfigModal
                 isOpen={serverModalOpen}
                 onClose={() => setServerModalOpen(false)}
-            />
-
-            {/* Google Drive Sync Modal */}
-            <GoogleDriveSyncModal
-                isOpen={driveModalOpen}
-                onClose={() => setDriveModalOpen(false)}
             />
         </>
     );

@@ -28,7 +28,6 @@ import {
     LogIn,
     ChevronRight,
     Wifi,
-    Cloud,
     Smartphone,
     Globe,
 } from "lucide-react";
@@ -41,7 +40,6 @@ interface MobileDrawerProps {
     isOpen: boolean;
     onClose: () => void;
     onOpenServerConfig?: () => void;
-    onOpenDriveSync?: () => void;
 }
 
 /** Pages that only administrators should see in the drawer. */
@@ -96,7 +94,6 @@ export function MobileDrawer({
     isOpen,
     onClose,
     onOpenServerConfig,
-    onOpenDriveSync,
 }: MobileDrawerProps) {
     const pathname = usePathname();
     const router = useRouter();
@@ -141,8 +138,8 @@ export function MobileDrawer({
                     </Button>
                 </div>
 
-                {/* Cloud & Server Sync Shortcuts */}
-                <div className="p-3 border-b border-border bg-accent/20 grid grid-cols-2 gap-2">
+                {/* Server configuration shortcut */}
+                <div className="p-3 border-b border-border bg-accent/20 grid grid-cols-1 gap-2">
                     <button
                         onClick={() => {
                             onClose();
@@ -152,16 +149,6 @@ export function MobileDrawer({
                     >
                         <Wifi size={14} className="text-primary shrink-0" />
                         <span className="truncate font-medium">Server Host</span>
-                    </button>
-                    <button
-                        onClick={() => {
-                            onClose();
-                            onOpenDriveSync?.();
-                        }}
-                        className="flex items-center gap-2 p-2 rounded-md bg-card border border-border/80 hover:border-primary text-left text-xs transition-colors"
-                    >
-                        <Cloud size={14} className="text-primary shrink-0" />
-                        <span className="truncate font-medium">Drive Sync</span>
                     </button>
                 </div>
 

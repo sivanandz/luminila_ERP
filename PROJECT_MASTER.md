@@ -89,7 +89,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 
 - **Single-tenant per database file, multi-tenant per installation.** Each merchant account gets its own SQLite file and its own PocketBase process. Cross-tenant reporting is out of scope.
 - **No server-side rendering in production.** `output: "export"` means the packaged app has no Node server. This is the root cause of the largest open architectural conflict (5.1).
-- **No cloud dependency for core billing.** Google Drive sync, Razorpay, PhonePe, Meta catalog, and WhatsApp are all optional integrations.
+- **No cloud dependency for core billing.** Razorpay, PhonePe, Meta catalog, and WhatsApp are all optional integrations.
 - **India-specific statutory output.** GST, HSN, e-way bill, GSTR-1. No other tax regime is supported.
 - **Offline-first writes are queued, not merged.** `offline-queue.ts` replays mutations; it does not resolve conflicts.
 
@@ -103,10 +103,10 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 251 |
-| Lines of TypeScript/TSX | ~88,400 |
+| TypeScript/TSX files | 249 |
+| Lines of TypeScript/TSX | ~88,100 |
 | Route pages (`src/app/**/page.tsx`) | 44 |
-| Service modules (`src/lib/*.ts`) | 85 |
+| Service modules (`src/lib/*.ts`) | 84 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
 | Files starting with `"use client"` | 115 |
@@ -180,8 +180,8 @@ The seven lint errors are not cosmetic. Four of them are the React hooks violati
    +----------v-----------+     +--------v---------+     +-----------v-----------+
    | PocketBase process   |     | WPPConnect       |     | Razorpay / PhonePe /  |
    | one per tenant       |     | sidecar :21465   |     | Meta Graph /          |
-   | ports 8090, 8091,    |     | Node + Puppeteer |     | Google Drive /        |
-   | 8092..8199           |     | + Chromium       |     | ST Courier            |
+   | ports 8090, 8091,    |     | Node + Puppeteer |     | ST Courier            |
+   | 8092..8199           |     | + Chromium       |     |                       |
    | SQLite WAL           |     +------------------+     +-----------------------+
    +----------+-----------+
               |
@@ -312,7 +312,6 @@ Column and enum drift adds four more:
 | PhonePe QR | `phonepe.ts` | Server-side signed requests | Works; secrets stay server-side |
 | Meta catalog | `meta-catalog-batch.ts`, `catalog-sync.ts` | Graph API batch + CSV feed | Works; feed is unauthenticated |
 | Shopify / WooCommerce | `src/lib/sync/*`, `sync-engine.ts` | REST/GraphQL clients | Scaffold; no scheduler |
-| Google Drive sync | `google-drive-sync.ts` | Changelog JSON files | Scaffold with mock mode |
 | ST Courier tracking | `logistics-engine.ts`, `/api/tracking/st-courier` | Scrapes carrier site | Works; unauthenticated proxy |
 | Cloudflare Tunnel | `scripts/tunnel.js` | `cloudflared` | Working helper for remote devices |
 
@@ -483,7 +482,7 @@ Status vocabulary, applied strictly:
 | Android APK build | Blocked on this workstation | exFAT volume cannot host the required symlinks (5.3) |
 | PWA install | Live | Manifest plus apple meta |
 | Offline mutation queue | Live | `OfflineSync` drains the queue on reconnect and every 30 seconds; audit writes queue themselves when the database is unreachable (section 11.14) |
-| Google Drive sync | Scaffold (mock) | `google-drive-sync.ts:169-182` is a 1.2 s timeout that clears the changelog; `connect()` only flips a localStorage flag |
+| Cloud sync | **Removed** | The mock engine and its modal were deleted; a sync that reports success and discards its log is worse than no sync. Backup & Restore covers recovery (section 11.15) |
 | Backup and restore | Live | `/backup` downloads a 31-collection backup, previews a file before restoring, requires typed confirmation, and offers a daily browser snapshot (section 11.13) |
 | Activity log / audit trail | Live | Before/after JSON snapshots |
 | Automated test suite | **Absent as infrastructure** | Hand-rolled scripts under `src/scripts`; no runner in `package.json` |
@@ -858,7 +857,7 @@ Everything below was checked for absence in code, not merely for absence in the 
 | Capability | Note |
 |---|---|
 | Shopify / WooCommerce two-way sync | Clients are stubs with TODOs |
-| Google Drive sync beyond mock mode | Changelog engine exists; no real conflict policy |
+| Cloud sync of the change log | Removed with the mock engine; recovery is file-based through Backup & Restore |
 | WhatsApp Flows and newsletter flash drops | Flash-drop module present; no scheduling surface |
 | Customer-facing order tracking | Only courier tracking exists |
 | Abandoned-cart recovery | Cart bridge exists; no persistence or follow-up |
@@ -1246,6 +1245,23 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Still open in this cluster:** Drive sync (real or removed), the unused hooks and alerts, and the rest of D-39.
 
+### 11.15 Slice 15: Drive sync removed (2026-10-23)
+
+**Item closed:** "Drive sync real or removed" — removed, deliberately.
+
+The module was not a stub in the harmless sense. `connect()` flipped a localStorage flag, and `sync()` waited 1.2 seconds, reported success, and **cleared the change log without uploading anything**. A user who trusted it would have believed their data was in the cloud while it was only on that device. That is worse than an absent feature, so it was deleted rather than left pretending.
+
+| Change | Files |
+|---|---|
+| Deleted the simulated engine | `src/lib/google-drive-sync.ts` |
+| Deleted its modal | `src/components/settings/GoogleDriveSyncModal.tsx` |
+| Removed the drawer shortcut and the modal wiring | `MobileDrawer.tsx`, `MobileBottomNav.tsx` |
+| Pointed recovery at the real screen | `/backup` (section 11.13) |
+
+**What replaces it:** Backup & Restore downloads a full 31-collection JSON file, which can be copied to any cloud folder the user already trusts. That is a manual sync, and the documentation says so rather than implying continuous replication.
+
+**Verified:** `npm run typecheck` clean; `npm test` unchanged at 78 assertions; `npx eslint src` 0 errors.
+
 ## Appendix A: Route inventory
 
 44 route pages, all client components.
@@ -1319,7 +1335,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 79 modules in `src/lib`, grouped by responsibility. Modules marked *orphan* have no importer outside their own tests or no importer at all.
 
-**Database and platform**: `pocketbase.ts`, `tenant-db-manager.ts`, `concurrency.ts`, `sequence-generator.ts`, `settings.ts`, `backup.ts`, `activity.ts`, `offline-queue.ts`, `google-drive-sync.ts`
+**Database and platform**: `pocketbase.ts`, `tenant-db-manager.ts`, `concurrency.ts`, `sequence-generator.ts`, `settings.ts`, `backup.ts`, `activity.ts`, `offline-queue.ts`
 
 **Catalog**: `products.ts`, `categories.ts`, `attributes.ts`, `sku-generator.ts`, `barcode-generator.ts`, `excel-import.ts`, `image-matcher.ts`, `catalog-sync.ts`, `meta-catalog-batch.ts`
 
