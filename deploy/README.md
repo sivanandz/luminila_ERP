@@ -23,7 +23,9 @@ owner's laptop/phone ──► https://<machine>.<tailnet>.ts.net/       (ERP)
                          https://<machine>.<tailnet>.ts.net:8443   (WhatsApp sidecar)
 ```
 
-The app enforces the split itself through `src/proxy.ts` + `src/lib/host-guard.ts`:
+The app enforces the split itself through `src/proxy.ts` + `src/lib/host-guard.ts`
+(Next 16 runs proxy files on the Node.js runtime, so `ADMIN_HOSTS` and
+`STOREFRONT_HOSTS` are read at request time — no rebuild needed to change them):
 the storefront host can serve only `/checkout`, `/tracking`, `/api/storefront/*`,
 `/api/tracking/*` and static assets; everything else returns 404. Unknown hosts
 get the public-safe view. With `ADMIN_HOSTS`/`STOREFRONT_HOSTS` unset (desktop,

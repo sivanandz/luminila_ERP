@@ -2059,6 +2059,47 @@ Requested deployment model: only the storefront is publicly reachable; the ERP a
 
 **Not wired yet:** the two new test scripts are run manually because `package.json` is under the other agent's active edit; add them to the `npm test` chain once ownership is clear.
 
+### 11.63 Proxy execution verified; runtime env confirmed (2026-10-24)
+
+Two questions left open by §11.62 are now answered with evidence.
+
+**The file convention is correct.** Next 16.1's own build template loads
+`(isProxy ? mod.proxy : mod.middleware) || mod.default` and throws
+"must export a function named proxy or a default function" otherwise. A new
+execution test imports `src/proxy.ts` and calls it with synthetic `NextRequest`
+objects — no build required — and proves:
+
+| Case | Result |
+|---|---|
+| `shop.example.com/checkout/whatsapp`, `/api/storefront/order` | pass through |
+| `shop.example.com/inventory`, `/pos`, `/settings`, `/login`, `/backup` | **404** |
+| `shop.example.com/api/system/tenant-db`, `/api/pos/payment`, `/api/catalog/batch` | **404** |
+| unknown host `/inventory` / `/tracking/ABC` | 404 / pass through (public-safe default) |
+| `erp.tail1234.ts.net/inventory` | pass through + `X-Frame-Options: DENY`, `X-Robots-Tag: noindex`, `nosniff` |
+| host lists unset | guard disabled, everything passes (desktop/dev/CI unchanged) |
+
+8/8 assertions pass (`npx tsx src/scripts/test-proxy.ts`).
+
+**Runtime env is valid here.** Next 16 forces proxy files onto the Node.js
+runtime: its build manifest sets `runtime: 'nodejs'` when `isProxyFile(page)`.
+That matters because guard lists are secrets-adjacent configuration: with the
+Edge runtime they would be inlined at build time, so changing `ADMIN_HOSTS`
+would need a rebuild. As shipped, `ADMIN_HOSTS`/`STOREFRONT_HOSTS` are read at
+request time. `NEXT_PUBLIC_POCKETBASE_URL` and `NEXT_PUBLIC_WPPCONNECT_URL`
+remain build-time inlined by design.
+
+`deploy/README.md` now states this distinction.
+
+**Test totals for this profile:** 7 host-guard + 6 URL + 8 proxy = **21 assertions**.
+
+**Still blocked at the repository level:** the parallel agent's in-flight
+refactor keeps `tsc` red (their `inventory/page.tsx` `string | null` typing,
+plus stale `.next` route types for the deleted `imitation/page.tsx`) and crashes
+repo-wide ESLint on the half-deleted `src/app/imitation` directory. The
+directory is empty but handle-locked (exFAT has no ACLs to repair), so it cannot
+be removed from this session. This affects verification only, not the committed
+files.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

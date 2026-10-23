@@ -1255,6 +1255,7 @@ const ORPHANS = [
 ];
 
 const VERIFY = [
+  ["Proxy guard tests","npx tsx src/scripts/test-proxy.ts","pass","8 assertions: executes the proxy with synthetic requests, proves ERP 404s on the public host, admin headers, unknown-host default and disabled mode."],
   ["Host guard tests","npx tsx src/scripts/test-host-guard.ts","pass","7 assertions: host normalization, admin/storefront/unknown classification, exact ERP blocking, static assets."],
   ["PocketBase URL tests","npx tsx src/scripts/test-pocketbase-url.ts","pass","6 assertions: env override, stored override, HTTPS /pb fallback, Tauri/Android/LAN behaviour."],
   ["Type check","npx tsc --noEmit --incremental false","pass","Exit 0, clean at f0e96b4. No defect in this page is a type error."],
