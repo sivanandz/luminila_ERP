@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pb, ensureServerAuth } from '@/lib/pocketbase';
+import { createTenantClient } from '@/lib/pocketbase';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,9 +18,11 @@ export async function GET(req: NextRequest) {
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
         }
 
-        await ensureServerAuth(accountEmail);
+        // Per-request client: the shared one can carry another tenant's session
+        // when two requests interleave.
+        const client = await createTenantClient(accountEmail);
 
-        const product = await pb.collection('products').getOne(id).catch(() => null);
+        const product = await client.collection('products').getOne(id).catch(() => null);
 
         if (!product) {
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);

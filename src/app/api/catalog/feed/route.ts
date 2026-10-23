@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pb, ensureServerAuth, sanitizeFilter } from '@/lib/pocketbase';
+import { createTenantClient, sanitizeFilter } from '@/lib/pocketbase';
 import { getStorefrontBinding, normalizeBindingEmail } from '@/lib/storefront';
 import { resolvePublicCatalogOrigin } from '@/lib/meta-catalog-batch';
 import { authenticateOperator, constantTimeEqual, tenantAccessAllowed, extractBearer } from '@/lib/api-auth';
@@ -51,7 +51,9 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: 'account_email is required' }, { status: 400 });
         }
 
-        await ensureServerAuth(accountEmail);
+        // A client per request, scoped to this tenant; the shared one could hold
+        // another tenant's session under concurrency.
+        const client = await createTenantClient(accountEmail);
 
         const safeEmail = sanitizeFilter(accountEmail);
 
@@ -59,7 +61,7 @@ export async function GET(req: NextRequest) {
         const productFilter = accountEmail
             ? `is_active = true && account_email = "${safeEmail}"`
             : `is_active = true`;
-        const rawProducts = await pb.collection('products').getFullList({
+        const rawProducts = await client.collection('products').getFullList({
             filter: productFilter,
             sort: '-created'
         });
@@ -76,7 +78,7 @@ export async function GET(req: NextRequest) {
         const variantFilter = accountEmail
             ? `product.is_active = true && account_email = "${safeEmail}"`
             : `product.is_active = true`;
-        const rawVariants = await pb.collection('product_variants').getFullList({
+        const rawVariants = await client.collection('product_variants').getFullList({
             filter: variantFilter
         });
 

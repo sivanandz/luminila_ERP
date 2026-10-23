@@ -31,6 +31,81 @@ export function getPocketBaseUrl(): string {
 // Instantiate PocketBase client
 export const pb = new PocketBase(getPocketBaseUrl());
 
+export interface TenantRegistryLike {
+    activeTenantEmail?: string;
+    tenants?: Record<string, { port?: number; email?: string; adminPassword?: string }>;
+}
+
+/**
+ * Pure resolution of where a tenant lives and which credentials to use.
+ * Separated from I/O so the ordering rules are testable.
+ */
+export function resolveTenantRuntime(
+    email: string | undefined,
+    registry: TenantRegistryLike | null,
+    env: { email?: string; password?: string },
+    fallbackUrl: string
+): { url: string; adminEmail: string; adminPassword: string } {
+    const target = (email || registry?.activeTenantEmail || '').trim().toLowerCase();
+    const record = target && registry?.tenants ? registry.tenants[target] : undefined;
+
+    return {
+        url: record?.port ? `http://127.0.0.1:${record.port}` : fallbackUrl,
+        adminEmail: record?.email || env.email || '',
+        adminPassword: record?.adminPassword || env.password || '',
+    };
+}
+
+/**
+ * A fresh, authenticated client for one tenant.
+ *
+ * `ensureServerAuth` mutates the module-level client's base URL and auth store,
+ * which is unsafe under concurrency: two requests for different tenants can
+ * interleave and one can read the other's data. This helper never touches the
+ * shared client, so a route that uses it is isolated by construction.
+ */
+export async function createTenantClient(preferredTenantEmail?: string): Promise<PocketBase> {
+    let registry: TenantRegistryLike | null = null;
+
+    if (typeof window === "undefined") {
+        try {
+            const nodeRequire = eval("require") as NodeRequire;
+            const fs = nodeRequire("fs") as typeof import("fs");
+            const path = nodeRequire("path") as typeof import("path");
+            const registryPath = path.join(process.cwd(), "pocketbase", "pb_tenants", "registry.json");
+            if (fs.existsSync(registryPath)) {
+                registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as TenantRegistryLike;
+            }
+        } catch {
+            registry = null;
+        }
+    }
+
+    const runtime = resolveTenantRuntime(
+        preferredTenantEmail,
+        registry,
+        {
+            email: process.env.POCKETBASE_SUPERUSER_EMAIL || process.env.PB_ADMIN_EMAIL || '',
+            password: process.env.POCKETBASE_SUPERUSER_PASSWORD || process.env.PB_ADMIN_PASSWORD || '',
+        },
+        getPocketBaseUrl()
+    );
+
+    const client = new PocketBase(runtime.url);
+    client.autoCancellation(false);
+
+    if (runtime.adminEmail && runtime.adminPassword) {
+        try {
+            await client.collection("_superusers").authWithPassword(runtime.adminEmail, runtime.adminPassword);
+            return client;
+        } catch {
+            await client.collection("users").authWithPassword(runtime.adminEmail, runtime.adminPassword).catch(() => {});
+        }
+    }
+
+    return client;
+}
+
 // Disable auto-cancellation for duplicate requests
 pb.autoCancellation(false);
 

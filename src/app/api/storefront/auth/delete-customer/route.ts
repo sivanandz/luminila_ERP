@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { pb, ensureServerAuth } from "@/lib/pocketbase";
+import { createTenantClient } from "@/lib/pocketbase";
 import { verifyCustomerToken } from "@/lib/customer-token";
 import { getStorefrontBinding } from "@/lib/storefront";
 
@@ -57,10 +57,11 @@ async function handleDelete(req: Request) {
             );
         }
 
-        await ensureServerAuth(boundAdminEmail);
+        // Per-request tenant client; the shared one could hold another session.
+        const client = await createTenantClient(boundAdminEmail);
 
         // 4. Verify record exists and belongs to this tenant and customer
-        const existing = await pb.collection("customers").getOne(targetId).catch(() => null);
+        const existing = await client.collection("customers").getOne(targetId).catch(() => null);
         if (!existing) {
             return NextResponse.json(
                 { success: false, error: "Customer not found." },
@@ -76,7 +77,7 @@ async function handleDelete(req: Request) {
         }
 
         // 5. Delete customer record from PocketBase
-        await pb.collection("customers").delete(targetId);
+        await client.collection("customers").delete(targetId);
 
         return NextResponse.json(
             {

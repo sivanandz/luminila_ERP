@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 117 assertions across 16 suites, exit 0 |
+| Test command | `npm test` | 122 assertions across 17 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -142,6 +142,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Customer token tests | `npx tsx src/scripts/test-customer-token.ts` | **5 passed, 0 failed** (2026-10-23) |
 | Sidecar token tests | `npx tsx src/scripts/test-whatsapp-secret.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Webhook dedupe tests | `npx tsx src/scripts/test-webhook-dedupe.ts` | **6 passed, 0 failed** (2026-10-23) |
+| Tenant runtime tests | `npx tsx src/scripts/test-tenant-runtime.ts` | **5 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -621,7 +622,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). S-05 and S-06 are partially mitigated.
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). **S-05 partially mitigated:** a per-request client exists and three tenant-scoped routes use it; five routes still authenticate through the shared client. S-06 remains partial (registry still holds passwords).
 
 Two honest qualifications:
 
@@ -1413,6 +1414,21 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **Verified:** `npm run typecheck` clean; `npm test` 117 assertions across 16 suites; `npx eslint src` 0 errors. No behaviour changed, because nothing imported them.
 
 **What remains unwired:** three modules (`omnichannel-buffer-engine.ts`, `sync-engine.ts`, `whatsapp-commander.ts`), all deliberate — their features need schema or external credentials.
+
+### 11.24 Slice 24: per-request clients, first tranche (2026-10-23)
+
+**S-05 partially mitigated.** The mechanism and the first three conversions land here; five routes remain for the next slice.
+
+| Change | Files | Why |
+|---|---|---|
+| Tenant runtime resolution | `src/lib/pocketbase.ts` | `resolveTenantRuntime` picks the URL and credentials from the registry, environment or fallback without touching the shared client |
+| `createTenantClient` | same | Fresh PocketBase per call, authenticated as that tenant; the shared `pb` keeps its base URL and auth store untouched |
+| Converted routes | `catalog/image`, `catalog/feed`, `storefront/auth/delete-customer` | Each now reads through its own client, so an interleaved request cannot inherit another tenant's session |
+| Resolution tests | `src/scripts/test-tenant-runtime.ts` (new) | Registered tenant, active-tenant fallback, environment fallback, no-registry case, case and space handling |
+
+**Still on the shared client:** `storefront/order`, `storefront/auth/verify-otp`, `storefront/content`, `catalog/batch`, `pos/payment`, and `inventory/template` (whose generator function takes no client yet). Each conversion is mechanical but touches financial or media writes, so they are being done in small batches with a typecheck and test run between.
+
+**Verified:** `npm run typecheck` clean; `npm test` 122 assertions across 17 suites; targeted ESLint 0 errors.
 
 ## Appendix A: Route inventory
 
