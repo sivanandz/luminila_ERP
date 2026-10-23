@@ -45,7 +45,7 @@ import {
     type AudienceSegment,
 } from "@/lib/whatsapp-broadcast";
 import { getAllChats, whatsappManager, type WPPChat } from "@/lib/whatsapp";
-import { pb } from "@/lib/pocketbase";
+import { searchProductsForPicker } from "@/lib/products";
 import type { Product } from "@/types/database";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -161,10 +161,8 @@ export function ProductBroadcastModal({
         const timer = setTimeout(async () => {
             setSearchingProducts(true);
             try {
-                const res = await pb.collection('products').getList<Product>(1, 10, {
-                    filter: `name~"${searchQuery.trim()}" || sku~"${searchQuery.trim()}"`,
-                });
-                const mapped: BroadcastProductItem[] = res.items.map((p) => ({
+                const items = await searchProductsForPicker(searchQuery);
+                const mapped: BroadcastProductItem[] = items.map((p) => ({
                     id: p.id,
                     name: p.name,
                     sku: p.sku,

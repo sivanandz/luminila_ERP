@@ -51,6 +51,7 @@ import {
     type UserProfile,
     type Role,
 } from "@/lib/rbac";
+import { createAppUser } from "@/lib/app-users";
 
 const roleColors: Record<string, string> = {
     Admin: "bg-red-500/20 text-red-400 border-red-500/30",
@@ -151,14 +152,10 @@ function UsersContent() {
         setCreating(true);
         try {
             // 1. Create User
-            const { pb } = await import("@/lib/pocketbase");
-            const user = await pb.collection("users").create({
+            const user = await createAppUser({
                 email: newUser.email,
                 password: newUser.password,
-                passwordConfirm: newUser.password,
                 name: newUser.name,
-                emailVisibility: true,
-                verified: true,
             });
 
             // 2. Assign Role (default Viewer is assigned by AuthContext on signup, but here we are admin creating)

@@ -32,7 +32,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { whatsappManager, type WPPChat } from "@/lib/whatsapp";
-import { pb } from "@/lib/pocketbase";
+import { searchProductsForPicker } from "@/lib/products";
 import type { Product } from "@/types/database";
 import { formatPrice } from "@/lib/utils";
 import {
@@ -105,11 +105,8 @@ export function FlashDropModal({
         const timer = setTimeout(async () => {
             setSearching(true);
             try {
-                const res = await pb.collection('products').getList<Product>(1, 10, {
-                    filter: `name ~ "${searchQuery}" || sku ~ "${searchQuery}"`,
-                    expand: 'product_variants(product)',
-                });
-                setSearchResults(res.items);
+                const items = await searchProductsForPicker(searchQuery, { expandVariants: true });
+                setSearchResults(items);
             } catch {
                 setSearchResults([]);
             } finally {

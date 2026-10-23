@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>2 open · 53 fixed</span>
+            <span class="chip accent"><span class="dot"></span>1 open · 54 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1096,7 +1096,7 @@ const DEFECTS = [
     where:"src/components/auth/ProtectedRoute.tsx · src/app/layout.tsx",
     impact:"Nothing redirects an unauthenticated visitor. Navigation renders every item to every role. Two pages use the guard, and it shows a card instead of redirecting.",
     fix:"Guard the shell, redirect to login, and filter navigation by capability." },
-  { id:"D-23", sev:"P2", area:"ui", title:"Pages bypass the service layer at scale",
+  { id:"D-23", sev:"P2", status:"fixed", area:"ui", title:"Pages bypass the service layer at scale",
     where:"97 direct pb.collection calls across 26 UI files",
     impact:"Validation, tenancy injection, and rollback exist in some paths and not others. Three pages exceed 100 KB and every page is a client component.",
     fix:"Extract page data access into hooks backed by services, starting with setup and inventory." },

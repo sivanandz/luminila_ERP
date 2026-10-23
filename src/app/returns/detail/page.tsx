@@ -54,7 +54,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import { pb } from "@/lib/pocketbase";
+import { listVariantsWithProduct } from "@/lib/products";
 import { toast } from "sonner";
 import type { ProductVariant } from "@/lib/products";
 
@@ -138,10 +138,7 @@ function CreditNoteDetailContent() {
 
     const loadVariants = async () => {
         try {
-            const variants = await pb.collection("product_variants").getFullList<ProductVariant>({
-                expand: "product",
-                filter: "stock_level > 0",
-            });
+            const variants = await listVariantsWithProduct({ filter: 'stock_level > 0' });
             setAvailableVariants(
                 variants
                     .map((v) => {

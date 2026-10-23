@@ -58,7 +58,7 @@ import {
 } from "@/lib/purchase";
 import { getVendors, type Vendor } from "@/lib/vendors";
 import { formatINR, GST_RATES, HSN_CODES } from "@/lib/gst";
-import { pb } from "@/lib/pocketbase";
+import { listVariantsWithProduct } from "@/lib/products";
 import type { ProductVariant as ProductVariantRecord } from "@/types/database";
 import { toast } from "sonner";
 
@@ -130,10 +130,7 @@ export default function CreatePurchaseOrderPage() {
 
     const loadProducts = useCallback(async () => {
         try {
-            const variants = await pb.collection('product_variants').getFullList<ProductVariantRecord>({
-                sort: 'variant_name',
-                expand: 'product',
-            });
+            const variants = (await listVariantsWithProduct({ sort: 'variant_name' })) as unknown as ProductVariantRecord[];
             const productList: ProductVariant[] = variants.map((v) => ({
                 id: v.id,
                 variant_name: v.variant_name,

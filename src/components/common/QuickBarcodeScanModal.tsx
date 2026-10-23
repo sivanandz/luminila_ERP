@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { pb } from "@/lib/pocketbase";
+import { findProductBySkuOrBarcode, findVariantBySuffixOrBarcode } from "@/lib/products";
 import { MobileScanner } from "@/lib/mobile-scanner";
 import { ScanBarcode, Camera, Search, Loader2, CheckCircle2, Volume2 } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -114,9 +114,7 @@ export function QuickBarcodeScanModal({
             let variantRecord = null;
 
             try {
-                const prodList = await pb.collection("products").getList(1, 1, {
-                    filter: `sku = "${clean}" || barcode = "${clean}"`,
-                });
+                const prodList = await findProductBySkuOrBarcode(clean);
                 if (prodList.items.length > 0) {
                     prodRecord = prodList.items[0];
                 }
@@ -127,10 +125,7 @@ export function QuickBarcodeScanModal({
             // 2. If not found in product root, check product_variants
             if (!prodRecord) {
                 try {
-                    const varList = await pb.collection("product_variants").getList(1, 1, {
-                        filter: `sku_suffix = "${clean}" || barcode = "${clean}"`,
-                        expand: "product",
-                    });
+                    const varList = await findVariantBySuffixOrBarcode(clean);
                     if (varList.items.length > 0) {
                         variantRecord = varList.items[0];
                         prodRecord = varList.items[0].expand?.product || null;

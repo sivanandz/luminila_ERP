@@ -504,3 +504,85 @@ export async function resolvePOSBarcodeVariant(code: string): Promise<ProductVar
     });
     return byParentSku.items[0] || null;
 }
+
+export interface ScannedProductRecord {
+    id: string;
+    name: string;
+    sku: string;
+    base_price?: number;
+    price?: number;
+    category?: string;
+    hsn_code?: string;
+    stock?: number;
+    [key: string]: unknown;
+}
+
+export interface ScannedVariantRecord {
+    id: string;
+    sku_suffix?: string;
+    size?: string;
+    color?: string;
+    material?: string;
+    stock_level?: number;
+    price_adjustment?: number;
+    expand?: { product?: ScannedProductRecord };
+    [key: string]: unknown;
+}
+
+/** Scanner lookup: exact product SKU or barcode. */
+export async function findProductBySkuOrBarcode(code: string): Promise<{ items: ScannedProductRecord[] }> {
+    const clean = (code || '').trim();
+    if (!clean) return { items: [] };
+    try {
+        const list = await pb.collection('products').getList(1, 1, {
+            filter: `sku = "${sanitizeFilter(clean)}" || barcode = "${sanitizeFilter(clean)}"`,
+        });
+        return { items: list.items.map((item) => ({ ...(item as Record<string, unknown>), name: String(item.name || ""), sku: String(item.sku || "") })) as unknown as ScannedProductRecord[] };
+    } catch {
+        return { items: [] };
+    }
+}
+
+/** Scanner lookup: exact variant suffix or barcode, with product expanded. */
+export async function findVariantBySuffixOrBarcode(code: string): Promise<{ items: ScannedVariantRecord[] }> {
+    const clean = (code || '').trim();
+    if (!clean) return { items: [] };
+    try {
+        const list = await pb.collection('product_variants').getList(1, 1, {
+            filter: `sku_suffix = "${sanitizeFilter(clean)}" || barcode = "${sanitizeFilter(clean)}"`,
+            expand: 'product',
+        });
+        return { items: list.items.map((item) => ({ ...(item as Record<string, unknown>), material: item["material"] ? String(item["material"]) : undefined })) as unknown as ScannedVariantRecord[] };
+    } catch {
+        return { items: [] };
+    }
+}
+
+/** Variants with their product expanded, for purchase/returns/vendor pickers. */
+export async function listVariantsWithProduct(options?: {
+    filter?: string;
+    sort?: string;
+}): Promise<ProductVariant[]> {
+    return pb.collection('product_variants').getFullList<ProductVariant>({
+        expand: 'product',
+        sort: options?.sort || 'variant_name',
+        ...(options?.filter ? { filter: options.filter } : {}),
+    });
+}
+
+/** Product search for chat pickers, name or SKU. */
+export async function searchProductsForPicker(
+    query: string,
+    options?: { limit?: number; expandVariants?: boolean }
+): Promise<Product[]> {
+    const term = sanitizeFilter((query || '').trim());
+    if (!term) return [];
+    const result = await pb.collection('products').getList<Product>(
+        1,
+        options?.limit ?? 10,
+        options?.expandVariants
+            ? { filter: `name ~ "${term}" || sku ~ "${term}"`, expand: 'product_variants(product)' }
+            : { filter: `name ~ "${term}" || sku ~ "${term}"` }
+    );
+    return result.items;
+}

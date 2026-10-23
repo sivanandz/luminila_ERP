@@ -49,7 +49,7 @@ import {
     type VendorWithProducts,
 } from "@/lib/vendors";
 import { formatINR } from "@/lib/gst";
-import { pb } from "@/lib/pocketbase";
+import { listVariantsWithProduct } from "@/lib/products";
 
 interface ProductVariant {
     id: string;
@@ -116,10 +116,7 @@ function VendorDetailContent() {
 
     const fetchProducts = useCallback(async () => {
         try {
-            const variants = await pb.collection('product_variants').getFullList<PBVariant>({
-                sort: 'variant_name',
-                expand: 'product',
-            });
+            const variants = (await listVariantsWithProduct({ sort: 'variant_name' })) as unknown as PBVariant[];
 
             const mappedIds = vendor?.vendor_products?.map((vp) => vp.variant) || [];
             const available: ProductVariant[] = variants

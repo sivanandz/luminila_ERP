@@ -655,7 +655,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-12, D-15, D-16, D-17, D-18, D-19, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-12, D-15, D-16, D-17, D-18, D-19, D-21, D-22, D-23, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1659,14 +1659,13 @@ Every gate re-run after slice 38, from the repository as committed:
 | Rust | `cargo check` in `src-tauri` | finished clean, including the server-backed config |
 | Explorer | extracted script + `node --check` | exit 0 |
 
-**Register: 53 fixed, 2 open, 1 P1 (S-06).**
+**Register: 54 fixed, 1 open, 1 P1 (S-06).**
 
 Remaining, after the applied bundle (§11.47):
 
 | Item | What it needs |
 |---|---|
-| S-06 | Approval plus a `TENANT_REGISTRY_KEY` to run `scripts/rekey-tenant-registry.ts --apply` (no registry exists on this machine, so there is nothing to re-key locally) |
-| D-23 | Move page-level `pb.collection` calls behind services; `challan/create` is migrated, `setup` and `inventory` are next |
+| S-06 | Approval plus a `TENANT_REGISTRY_KEY` to run `scripts/rekey-tenant-registry.ts --apply` (no registry exists on this machine, so there is nothing to re-key locally). D-23 is closed (§11.57). |
 
 **What is proven and what is not:** the code-level conflict behind D-08 is gone and the server-backed config compiles; an installer was **not** produced, because this volume refuses the symlinks the build requires. Migrations **were applied on 2026-10-23** (§11.47) after sandbox and rollback tests; the tenant registry was not modified.
 
@@ -1922,6 +1921,25 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
 
 **Census after this slice:** **9 direct calls remain in 8 client files** — `QuickBarcodeScanModal` (2), then one each in purchase create/detail, returns detail, users, vendors detail, FlashDrop and ProductBroadcast.
+
+### 11.57 Slice 55: D-23 closed — the client tree no longer touches PocketBase directly (2026-10-24)
+
+**Closed:** D-23.
+
+Final pass removed the last nine direct calls across eight files:
+
+| Surface | Service |
+|---|---|
+| `QuickBarcodeScanModal` (2) | `findProductBySkuOrBarcode`, `findVariantBySuffixOrBarcode` (both sanitized) |
+| purchase create, purchase detail, returns detail, vendors detail (4) | one shared `listVariantsWithProduct({ filter?, sort? })` |
+| users (1) | new `src/lib/app-users.ts` (`createAppUser`) |
+| FlashDrop, ProductBroadcast (2) | `searchProductsForPicker(query, { expandVariants })`, sanitized search term |
+
+**Evidence:** a recursive scan of `src/app` (excluding API routes) and `src/components` for `pb.collection(` returns **zero** results. API routes were verified earlier to create one PocketBase client per request (`new PocketBase(client.baseUrl)`), so they do not use the shared global singleton either.
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
+
+**Register: 54 fixed, 1 open — S-06 only.**
 
 ## Appendix A: Route inventory
 

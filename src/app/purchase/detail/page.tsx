@@ -84,7 +84,7 @@ import {
     type GoodsReceivedNote,
     type PurchaseOrderItem,
 } from "@/lib/purchase";
-import { pb } from "@/lib/pocketbase";
+import { listVariantsWithProduct } from "@/lib/products";
 import { formatINR } from "@/lib/gst";
 import { toast } from "sonner";
 import { QuickProductModal, type QuickProductCreatedResult } from "@/components/inventory";
@@ -187,10 +187,7 @@ function PurchaseOrderDetailContent() {
     useEffect(() => {
         const loadVariants = async () => {
             try {
-                const vars = await pb.collection('product_variants').getFullList({
-                    expand: 'product',
-                    sort: 'product.name',
-                });
+                const vars = await listVariantsWithProduct({ sort: 'product.name' });
                 setAvailableVariants(
                     vars.map((v: any) => ({
                         id: v.id,
