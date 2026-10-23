@@ -652,7 +652,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-15, D-16, D-17, D-18, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-30, D-31, D-33, D-34, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-15, D-16, D-17, D-18, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-33, D-34, D-35, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1656,7 +1656,7 @@ Every gate re-run after slice 38, from the repository as committed:
 | Rust | `cargo check` in `src-tauri` | finished clean, including the server-backed config |
 | Explorer | extracted script + `node --check` | exit 0 |
 
-**Register: 44 fixed, 11 open, 1 P1 (S-06).**
+**Register: 46 fixed, 9 open, 1 P1 (S-06).**
 
 Remaining, for the next session:
 
@@ -1670,6 +1670,17 @@ Remaining, for the next session:
 | D-32 | One theme strategy and token replacement for the 145 hex literals |
 
 **What is proven and what is not:** the code-level conflict behind D-08 is gone and the server-backed config compiles; an installer was **not** produced, because this volume refuses the symlinks the build requires. No migration was applied and neither `pb_data` nor the tenant registry was modified.
+
+### 11.41 Slice 40: two findings verified closed (2026-10-23)
+
+Both were already fixed by earlier slices; the register had not caught up.
+
+| Finding | Evidence |
+|---|---|
+| D-29 settings writer invisible to the reader | The writer now stamps `account_email` from the authenticated user (`src/lib/invoice.ts:482,546`), matching the reader's `account_email` filter at line 310 |
+| D-35 hardcoded catalog id and phone | `src/app/api/catalog/batch/route.ts:86-96` reads `META_CATALOG_ID` and `META_BUSINESS_PHONE` from the environment and returns a configuration error when either is missing; `whatsapp.ts` no longer contains either literal |
+
+**Register corrected to 46 fixed, 9 open, 1 P1.** The nine open items are D-12, D-13, D-14, D-19, D-23, D-32, D-36, D-37 and S-06.
 
 ## Appendix A: Route inventory
 

@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>11 open · 44 fixed</span>
+            <span class="chip accent"><span class="dot"></span>9 open · 46 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1153,7 +1153,7 @@ const DEFECTS = [
     where:"src/lib/eway-bill.ts:629,635,638",
     impact:"A store with no state code files from the wrong state, and totalValue can disagree with the invoice.",
     fix:"Block generation until state codes and GSTIN are set." },
-  { id:"D-29", sev:"P3", area:"data", title:"The store settings writer creates rows the reader cannot see",
+  { id:"D-29", sev:"P3", status:"fixed", area:"data", title:"The store settings writer creates rows the reader cannot see",
     where:"src/lib/invoice.ts:390-408",
     impact:"Rows are written without account_email while the reader filters on it. The writer has no callers, so it is dead code waiting to be reused.",
     fix:"Delete it and use the settings service." },
@@ -1177,7 +1177,7 @@ const DEFECTS = [
     where:"src/lib/sync/shopify.ts:298-341 · woocommerce.ts:184-216",
     impact:"Seven upsert and inventory TODOs, zero importers, and a Settings button that alerts Coming Soon.",
     fix:"Implement or remove the surface." },
-  { id:"D-35", sev:"P3", area:"platform", title:"Catalog integration hardcodes a catalog id and phone number",
+  { id:"D-35", sev:"P3", status:"fixed", area:"platform", title:"Catalog integration hardcodes a catalog id and phone number",
     where:"src/app/api/catalog/batch/route.ts:70-72 · whatsapp.ts:1504-1505",
     impact:"The integration only works for one business and leaks identity into the bundle.",
     fix:"Move both into store settings." },
