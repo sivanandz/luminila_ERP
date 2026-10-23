@@ -1055,7 +1055,7 @@ export default function POSPage() {
             // must not be reported as a failed sale (retrying would double-sell).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
-                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
+                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption', Math.max(0, subtotal - discountAmount));
                 }
                 if (selectedCustomerId && pointsToEarn > 0) {
                     await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
@@ -1157,7 +1157,7 @@ export default function POSPage() {
             // must not be reported as a failed sale (the payment was received).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
-                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption');
+                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption', Math.max(0, subtotal - discountAmount));
                 }
                 if (selectedCustomerId && pointsToEarn > 0) {
                     await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');

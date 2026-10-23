@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>13 open · 42 fixed</span>
+            <span class="chip accent"><span class="dot"></span>12 open · 43 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1072,7 +1072,7 @@ const DEFECTS = [
     where:"src/lib/gstin.ts (new) · gst.ts · eway-bill.ts · gstr1-engine.ts · reports.ts",
     impact:"Any 15-character string of the right shape used to print on invoices and e-way bills, then fail at filing. The GSTN mod-36 check digit is now required everywhere.",
     fix:"Implement the mod-36 check digit once and reuse it." },
-  { id:"D-17", sev:"P2", area:"money", title:"Loyalty balances lose updates and the redemption cap is unenforced",
+  { id:"D-17", sev:"P2", status:"fixed", area:"money", title:"Loyalty balances lose updates and the redemption cap is unenforced",
     where:"src/lib/loyalty.ts:313-387",
     impact:"Absolute balance writes outside the queue lose points under concurrency, and a customer can pay a whole bill in points.",
     fix:"Use atomic increments inside the queue and enforce the percentage at redemption." },

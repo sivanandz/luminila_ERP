@@ -1616,6 +1616,19 @@ Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 asse
 
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; full ESLint 0 errors.
 
+### 11.38 Slice 37: loyalty atomicity and the redemption cap (2026-10-23)
+
+**Closed:** D-17.
+
+| Gap | Fix | File |
+|---|---|---|
+| Adjustments lost concurrent updates | `adjustPoints` now uses PocketBase's `+` operators instead of writing a balance read moments earlier; a resulting negative balance is compensated and refused | `loyalty.ts` |
+| Redemption cap lived only in the screen | `redeemPoints` accepts the bill amount and enforces the percentage cap at the service boundary, refusing over-redemption even for direct callers | `loyalty.ts` |
+| Callers | Both POS paths pass `max(0, subtotal - discountAmount)` so the cap applies to the same base the screen uses | `pos/page.tsx` |
+| Input hygiene | Redemptions must be positive and finite; adjustments must be non-zero and finite | `loyalty.ts` |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; full ESLint 0 errors.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

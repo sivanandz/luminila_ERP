@@ -314,11 +314,16 @@ export async function redeemPoints(
     customerId: string,
     pointsToRedeem: number,
     referenceType: string,
-    referenceId: string
+    referenceId: string,
+    billAmount?: number
 ): Promise<{ redeemed: boolean; valueApplied: number; newBalance: number } | null> {
     return enqueueTask(`loyalty_${customerId}`, async () => {
         const account = await getLoyaltyAccount(customerId);
         if (!account) return null;
+
+        if (!Number.isFinite(pointsToRedeem) || pointsToRedeem <= 0) {
+            throw new Error('Redemption must be a positive number of points');
+        }
 
         // Validate
         if (pointsToRedeem > account.current_balance) {
@@ -329,6 +334,15 @@ export async function redeemPoints(
 
         if (pointsToRedeem < settings.min_redemption_points) {
             throw new Error(`Minimum ${settings.min_redemption_points} points required for redemption`);
+        }
+
+        // The percentage cap must hold at the service boundary, not only in the
+        // POS screen that happens to call it.
+        if (typeof billAmount === 'number' && Number.isFinite(billAmount)) {
+            const maxRedeemable = await calculateMaxRedeemablePoints(billAmount, account.current_balance);
+            if (pointsToRedeem > maxRedeemable) {
+                throw new Error(`At most ${maxRedeemable} points can be redeemed on this bill`);
+            }
         }
 
         const valueApplied = await calculateRedemptionValue(pointsToRedeem);
@@ -368,23 +382,30 @@ export async function adjustPoints(
     reason: string,
     _performedBy?: string
 ): Promise<{ newBalance: number } | null> {
+    if (!Number.isFinite(pointsAdjustment) || pointsAdjustment === 0) {
+        throw new Error('Adjustment must be a non-zero number');
+    }
+
     const account = await getLoyaltyAccount(customerId);
     if (!account) return null;
 
-    const newBalance = account.current_balance + pointsAdjustment;
-    if (newBalance < 0) {
-        throw new Error('Adjustment would result in negative balance');
-    }
-
     try {
-        // Update account
-        await pb.collection('loyalty_accounts').update(account.id, {
-            current_balance: newBalance,
-            total_points_earned: pointsAdjustment > 0
-                ? account.total_points_earned + pointsAdjustment
-                : account.total_points_earned,
+        // Operators, not a value read a moment ago: a concurrent earn or redeem
+        // between the read and the write would otherwise be overwritten.
+        const updated = await pb.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
+            'current_balance+': pointsAdjustment,
+            ...(pointsAdjustment > 0 && { 'total_points_earned+': pointsAdjustment }),
             last_activity: new Date().toISOString(),
         });
+
+        const newBalance = updated.current_balance;
+        if (newBalance < 0) {
+            // Compensate and refuse; the pre-read cannot prove the balance.
+            await pb.collection('loyalty_accounts').update(account.id, {
+                'current_balance+': -pointsAdjustment,
+            }).catch(() => {});
+            throw new Error('Adjustment would result in negative balance');
+        }
 
         // Record transaction
         await recordTransaction(
@@ -399,7 +420,7 @@ export async function adjustPoints(
         return { newBalance };
     } catch (error) {
         console.error('Error adjusting loyalty points:', error);
-        return null;
+        throw error;
     }
 }
 
