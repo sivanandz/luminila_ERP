@@ -1682,6 +1682,31 @@ Both were already fixed by earlier slices; the register had not caught up.
 
 **Register corrected to 46 fixed, 9 open, 1 P1.** The nine open items are D-12, D-13, D-14, D-19, D-23, D-32, D-36, D-37 and S-06.
 
+### 11.42 Crosswalk: BUG_AUDIT_REPORT_2026-10-22 (2026-10-23)
+
+The 16-item audit is a subset of the 55-item register with its own numbering. Status of each finding, verified against the current tree:
+
+| # | Finding | Status | Evidence |
+|---|---|---|---|
+| 1 | POS adds GST on tax-exclusive totals; paid amount wrong | Fixed | Inclusive back-compute in `invoice.ts`; `paid_amount` equals grand total |
+| 2 | POS GST computed pre-discount | Fixed | Discount allocated before tax; §11.1 |
+| 3 | `tenant-db` unauthenticated | Fixed | `authenticateOperator` + `tenantAccessAllowed` at `tenant-db/route.ts:37,79` |
+| 4 | Conditional hooks in `QuotedBlock` | Fixed | Hooks at `whatsapp/page.tsx:296-319`, early return moved after them at `:321-324` |
+| 5 | Any 400 clamps stock to zero | Fixed | Only `validation_min_number_constraint` matches (`pos-sales.ts:195-196`) |
+| 6 | POS rollback skips shift totals and invoice | Fixed | Negative `updateShiftTotals` at `pos-sales.ts:304`; atomic invoice item loop |
+| 7 | OTP no daily cap; fake-customer token | Fixed | Cap at `otp-store.ts:111`; fail-closed 503 at `verify-otp/route.ts:79-87` |
+| 8 | `store_settings` rules unscoped; dead writer | **Partial** | Writer now stamps `account_email` (`invoice.ts:482,546`); the collection rules themselves remain `@request.auth.id != ''` — not covered by the migration drafts and not applied |
+| 9 | Build broken two ways | Fixed (with caveat) | Server-backed config and webpack build; an installer was not produced because this volume refuses symlinks (§11.36) |
+| 10 | Expense search injection | Fixed | `sanitizeFilter` in `expenses.ts` |
+| 11 | `opening_float` violates enum | Fixed | Writes `operation_type: 'add'` with a reason (`register.ts:107-112`) |
+| 12 | Order invoice state fallback, missing GSTIN, duplicates | **Partial** | GSTIN now written and duplicates prevented (`orders.ts:220-233,325`); `sellerStateCode` still falls back to `'27'` when the store has no state configured (`orders.ts:248`) |
+| 13 | Banking overdraft race | Fixed | Serialized via `enqueueTask` (`banking.ts:160`) with atomic operators |
+| 14 | Cross-process numbering | **Open** | D-19; in-process mutex only |
+| 15 | Storefront binding chosen by request body | **Mitigated** | Binding input normalized and sanitized (`storefront.ts`); selection by request body remains by design for multi-brand |
+| 16 | Unauthenticated tracking proxy | Fixed | `FixedWindowRateLimiter`, 30/min (`st-courier/route.ts:6,14`) |
+
+**Summary: 12 fixed, 3 partial or mitigated, 1 open.** The residual under #8 (collection rules) is a schema-level risk, not a code-path bug: each tenant normally has its own SQLite instance, which is why it does not appear among the nine open register items. It is recorded here so the register does not overclaim.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
