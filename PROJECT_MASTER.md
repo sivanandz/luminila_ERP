@@ -2129,6 +2129,113 @@ This closes the two doubts from §11.62–11.63: the proxy runs in a real produc
 
 **Objective status:** every code cluster is complete and, for the committed tree, all gates pass. The only open register item remains **S-06**, which is a deployment data step: it needs a checkout where tenants exist plus its own `TENANT_REGISTRY_KEY` (§11.60). The working tree still carries the parallel agent's uncommitted refactor; that state is theirs to commit.
 
+### 11.65 Storefront & WhatsApp order capture: cases, edge cases, failure modes (2026-10-24)
+
+Authored by the parallel agent (capture-layer implementer) as the pair-programming brief for the agent that owns this document. Ground truth: the uncommitted capture refactor in the working tree (`src/lib/channel-orders.ts`, `src/app/api/storefront/order/route.ts`, `src/lib/chat-sales.ts`, `storefront/src/app/checkout/page.tsx`, `src/app/whatsapp/page.tsx` — that tree is ours to commit) plus `docs/STOREFRONT_WHATSAPP_CRM_CAPTURE_GAPS_2026-10-24.md`.
+
+**What the capture layer stores today** (post-refactor): identity (name, canonical `+91…` phone, email, DPDP consent), address (street/city/state/pincode — shipping only), commercial (per-line DB-verified price, server-recomputed coupon, shipping+COD charges, tax-inclusive GST split on the post-discount base, UTM campaign), payment (method, Razorpay id, idempotent order number, `payment_links` trail on chat orders), fulfilment (status `draft|confirmed`, `payment_status`), CRM side-effects (customer upsert with blank-field merge, atomic `total_spent/total_orders/last_purchase_date`, loyalty: online at paid webhook, COD/concierge at confirmation).
+
+#### A. Case matrix — verified against current code
+
+| # | Case | Current behaviour | Verdict |
+|---|---|---|---|
+| A1 | Price changed between catalog load and submit | Server re-verifies from DB and recomputes; client's Razorpay charge used the stale total | **FAILS CLOSED** — see F1 |
+| A2 | Qty > 100 or ≤ 0 in payload | Clamped to 1..100 silently; charged total may differ from cart display | Partial — feeds F1 |
+| A3 | Product deactivated mid-cart | 400 `Product is unavailable` | handled |
+| A4 | Coupon deactivated / wrong tenant between display and submit | Server recomputes; discount silently drops to 0 (customer pays more than quoted) | Partial → F1 class |
+| A5 | `FESTIVE10` with no discounts row | Hardcoded 10%/₹500 fallback still in the route | Open — remove |
+| A6 | Retried submit (network flap, double-click) | Same-session idempotency key returns original order | handled within a session |
+| A7 | Page refresh mid-retry | Key lived in a `useRef`; refresh mints a new key → duplicate order | Open — persist key in `sessionStorage` keyed by cart hash |
+| A8 | Two buyers, one piece, both pay (online) | Drafts hold no stock; both captures match; second confirms with clamped-to-0 stock | **Open — F2 (no reservation)** |
+| A9 | COD order placed with 0 stock | Confirmed; decrement clamps to 0; oversell logged | By-design oversell, no reservation |
+| A10 | WhatsApp chat order | Confirmed but **no stock movement, no decrement at all** | **Open — F3** |
+| A11 | Webhook never delivered (tunnel down, endpoint error) | Money captured; order stuck `draft`; no reconciliation sweep | **Open — F4** |
+| A12 | Duplicate/replayed webhook | Event-key dedupe + `payment_status === 'PAID'` guard | handled |
+| A13 | Captured amount ≠ order total | Refused, left for a human | handled (fail-closed) |
+| A14 | Refund events (`payment.refund` etc.) | Not handled at all; ERP returns never link to online payments | Open |
+| A15 | Customer token (30d) expires mid-payment; `onSuccess` submits afterwards | 401; money captured, order not recorded | Open — rare; needs re-verify-before-pay or webhook-only settle |
+| A16 | Order phone ≠ OTP-verified phone | 403 | handled |
+| A17 | Phone recycled to a new person | CRM identity is phone-keyed; stale profile silently attaches to the new human | Open — periodic re-verify or order-count heuristic |
+| A18 | Family shares one WhatsApp number | One merged CRM customer (LIKE last-10) | accepted design |
+| A19 | Address containing commas/newlines | Joined `, ` string scrambles the address fields | Partial — structured address fields exist on the schema; the join is legacy |
+| A20 | `state` omitted (optional field) | Tax split falls back buyer = seller (intra-state) | Documented in code; wrong IGST if inter-state — capture state as required |
+| A21 | Pincode not serviceable / COD unavailable there | Accepted server-side; Shiprocket check is display-only | Open |
+| A22 | Order-number collision (CSPRNG 6 hex ≈ 16.7M/day space) | Unique index rejects; client sees 503 and retries with a fresh id | handled by index |
+| A23 | Idempotency key reused with a *different* cart | Returns the first order; second cart silently dropped | Partial — key should bind to a cart hash |
+| A24 | Attacker spams 5 orders on a victim's phone | In-memory limiter 429s the *victim* for 10 minutes | Open — raise cap, key on phone+IP |
+| A25 | Unknown-host storefront, tenant has no settings row | `getStorefrontBinding` falls back to an arbitrary first `store_settings` row | Residual P3-15 — bind hard to the session tenant or 400 |
+| A26 | Storefront API unreachable → client "fallback" | Direct PB `sales` create with client prices, no sales_order, no customer, no idempotency, orphan stock movements (no variant/product field) — dead today only because rules block anonymous writes | **Open — delete the fallback (F5)** |
+| A27 | Chat order's payment never verified manually | `payment_links` row stays `pending` forever; no expiry sweep | Open — reuse draft-order reconciliation (F4) |
+| A28 | Out-of-stock chat sale (operator enters any total) | Confirmed; no stock effect anywhere (see A10); total is operator-trusted | Accepted for concierge; revisit when chat scales |
+| A29 | Order cancelled / returned later | Aggregates (`total_spent`…) and COD-awarded points never reverse | **Open — F6** |
+| A30 | `marketingConsent` vs `whatsapp_opt_out` | Two disconnected stores; broadcast composer reads neither | Open — one consent ledger |
+| A31 | Flash-drop reservation expires while payment is in flight | Stock released; payment can still complete → confirmed order with no stock | Open — extend hold on payment initiation |
+| A32 | Guest without OTP session | 401 before any write | handled |
+
+#### B. Failure modes, ranked
+
+| ID | Mode | Trigger | Blast radius | Fix direction |
+|---|---|---|---|---|
+| F1 | **Charged ≠ recorded** (price/coupon/qty drift between display and settle) | Any catalog edit or coupon change during an open checkout | Money captured, webhook refuses the mismatch, order stuck `draft`; a support incident per occurrence | Re-verify price at payment-link creation and pass the *server* total to Razorpay; return the recomputed line set to the client before charging |
+| F2 | **No stock reservation on cart checkout** | Two concurrent buyers, one piece | Oversold sale confirmed; the clamp hides it until the audit log is read | Reservation service (the flash-drop engine already has reserve/expire/release) — hold at checkout, release on expiry |
+| F3 | **Chat orders bypass inventory entirely** | Any WhatsApp concierge sale | Stock parity broken silently for the whole channel | Add movement+decrement to `createSaleFromChat` (same shape as the storefront's COD branch) |
+| F4 | **Settlement reconciliation gap** | Webhook undelivered (A11) or chat payment never confirmed (A27) | Paid-but-draft orders; unclaimed revenue | Scheduled sweep: drafts older than N hours with a Razorpay reference → query Razorpay status API → settle or flag |
+| F5 | **Storefront direct-PB fallback** | API route down *and* rules permissive someday | Client-trusted prices/totals written as revenue; bypasses every guard | Delete the fallback in `storefront/src/lib/pocketbase.ts` (`2. Secondary` block); on API failure show retry (the route already 503s honestly) |
+| F6 | **Aggregates/loyalty never reverse** | Any return, cancellation, or COD refusal | Lifetime value inflated; tiers and campaigns target the wrong customers | Compensating `applyPurchaseReversal` in the returns/cancel path |
+
+#### C. Data still not captured (P3 tail from the gap report)
+
+Billing address & GSTIN (A3/A4), enrichment fields (A6 — DOB/anniversary/sizes have no capture surface), coupon usage ledger (B4), shipment/AWB records (C2), expected-delivery date (C3), COD settlement marking (D2), customer-initiated cancellation (D3), abandoned carts (E3), reviews (E4), wishlist (E5).
+
+#### D. Handoff — asks for the parallel agent
+
+1. **F2/F3 share one fix**: a stock-reservation primitive (the flash-drop engine already has reserve/expire/release) lifted into a service both the cart checkout and chat sales call. Suggest slicing it as the next 11.x entry.
+2. **F5 is a two-line deletion** in `storefront/src/lib/pocketbase.ts` — safe to fold into any storefront commit.
+3. **F1 needs a decision before code**: re-price-at-link-creation (the charge may differ from the cart display by rupees) vs block-on-mismatch at link time. The first is what marketplaces do.
+4. **Ownership**: the capture refactor listed at the top of this section is this agent's uncommitted work; per §11.64 practice, worktree verification on committed HEAD remains the reliable gate until it lands.
+5. The 22-suite gate in `package.json` now includes `test-channel-orders.ts` (pure, no DB) — it must stay green through any storefront touch.
+
+**Objective status:** capture surface verified for the happy paths; of 32 enumerated cases, 14 are handled fail-safe. Six named failure modes (F1–F6) remain open, ranked, with fix directions — none blocks the current desktop/tunnel deployment, and F1/F2 are the two that will generate real money incidents at any meaningful order volume.
+
+### 11.65 Unified channel inventory (2026-10-24)
+
+Requirement from the owner: one inventory across POS, WhatsApp and the web storefront. The hosted instance is the only topology that can satisfy it (the desktop installer serves no public storefront and has no sync), and the channels did share one database — but their stock writes had quietly diverged.
+
+**Defects found while implementing it**
+
+| # | Defect | Consequence |
+|---|---|---|
+| 1 | The web order route wrote `stock_movements` with a `product` field and `account_email`; the collection requires `variant` and has neither field | Every storefront ledger row was rejected and swallowed by `.catch(() => {})`, so storefront sales left no stock ledger at all |
+| 2 | The route decremented the product's **first** variant rather than the purchased one | Multi-variant products drifted |
+| 3 | WhatsApp concierge orders never deducted stock anywhere (`chat-sales.ts` and `generateInvoiceFromOrder`) | The same unit could be sold on the web after a WhatsApp sale |
+| 4 | Storefront sales were written with `channel: "website"`, which is not in the `sales.channel` enum (valid: pos, shopify, whatsapp, wholesale, exhibition, marketplace, woocommerce, other, counter, storefront, phone, export) | The row was rejected and swallowed: storefront revenue never appeared in the unified sales feed |
+| 5 | No channel checked available quantity before accepting an order | Last-unit oversell across concurrent channels |
+
+**Implementation**
+
+- `src/lib/channel-stock.ts` — one service both surfaces now use: resolve the real variant (explicit id; the only variant; or the product-level fallback for legacy rows with no variants), refuse ambiguous multi-variant lines instead of guessing, pre-check availability, apply an atomic `stock_level-` decrement with a `stock_movements` ledger row per line, compensate earlier lines if a later line or ledger write fails, and restore stock with reversal rows for cancellations (idempotent). PocketBase enforces the field minimum, so the atomic decrement is the authoritative last-unit guard.
+- `/api/storefront/order`: accepts `variantId` per item (400 when a multi-variant product is ambiguous), returns **409 with shortage details** when unfulfillable, deducts through the service for COD/offline (online still deducts at the paid webhook), records `channel: "storefront"` (valid enum, no migration needed), and cancels the just-created order if the decrement loses a race.
+- `chat-sales.ts`: refuses an unresolved multi-variant cart line, checks availability before writing any rows, deducts through the service after the order rows exist, and marks the order `cancelled` if the race guard rejects it.
+- `restoreChannelStockForReference()` is exported and tested for cancellation flows; no order-cancel UI call exists yet.
+
+**Verification**
+
+| Check | Result |
+|---|---|
+| `npx tsx src/scripts/test-channel-stock.ts` | **12/12** — variant resolution, ambiguity, tenant scoping, availability, decrement + ledger, insufficient stock, multi-line rollback, ledger-failure restore, idempotent cancellation restore |
+| `npm run typecheck` | exit 0 across the repository at capture time |
+| `npm test` | all suites pass |
+| ESLint on the changed files | 0 errors (4 pre-existing `any` warnings in the route); the repo-wide run still crashes because the Next page-linking rule cannot scan directories containing the exFAT workspace's locked edit temp dirs |
+
+**Commit state (important):** the storefront and chat-sales integration is applied and verified in the working tree, but those two files also carry another agent's uncommitted rewrite. An earlier attempt to commit them pulled that rewrite in and referenced a module that was never committed, so that commit was reset. Only the self-contained service, its tests and this documentation are committed here; the integration is uncommitted with the parallel owner's change set and must land with it. The service itself has no dependency on their rewrite.
+
+**Remaining, stated honestly**
+
+- POS keeps its existing implementation (already correct: variant id, atomic decrement, ledger, clamp-on-oversell with an activity log) rather than being migrated to the shared service; both paths now behave consistently for the last-unit guard, but the code is not yet one path.
+- The Razorpay paid webhook still deducts with its own clamp logic; a pending online payment can sit for a while after intake availability passed, so a late payment could clamp. Moving the webhook to the service is the next cleanup.
+- `restoreChannelStockForReference` has no caller yet: no sales-order cancellation UI exists in the app.
+- No migration was needed: the existing `storefront` enum value is reused instead of adding `website`.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

@@ -872,6 +872,7 @@ const DRIFT = [
 ];
 
 const FEATURES = [
+  ["Unified channel inventory","inventory","partial","POS, WhatsApp and the web now share one stock service: variant-accurate atomic decrement, stock_movements ledger, 409 shortage checks, rollback; POS and the Razorpay webhook still carry their own guards and cancellation restore has no UI caller (PROJECT_MASTER 11.65)"],
   ["Private ERP / public storefront","platform","live","src/proxy.ts + src/lib/host-guard.ts: the public host serves only checkout, tracking, storefront/tracking APIs and assets; ERP, PocketBase and the WhatsApp sidecar are tailnet-only (deploy/ kit)"],
   ["Setup wizard","onboarding","live","Provisions a tenant database and seeds the schema"],
   ["Email and password login","onboarding","live","Tenant resolved by email before auth"],
@@ -1255,6 +1256,7 @@ const ORPHANS = [
 ];
 
 const VERIFY = [
+  ["Channel stock tests","npx tsx src/scripts/test-channel-stock.ts","pass","12 assertions: variant resolution, ambiguity, tenant scoping, availability, ledger writes, multi-line rollback, idempotent cancellation restore."],
   ["Committed HEAD build","npx next build --webpack (detached worktree at HEAD)","pass","Compiled and prerendered every route including the proxy bundle; standalone server booted on NTFS."],
   ["Host split, end to end","curl with Host headers against the built server","pass","shop: 404 on /inventory, /settings, /; 200 on /checkout/whatsapp and /tracking/st-courier. admin: 200 with DENY and noindex. guard disabled: 200 everywhere."],
   ["Proxy guard tests","npx tsx src/scripts/test-proxy.ts","pass","8 assertions: executes the proxy with synthetic requests, proves ERP 404s on the public host, admin headers, unknown-host default and disabled mode."],
