@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>14 open · 41 fixed</span>
+            <span class="chip accent"><span class="dot"></span>13 open · 42 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1173,7 +1173,7 @@ const DEFECTS = [
     where:"src/app/layout.tsx:21-22 · fixed pb-16",
     impact:"Accessibility regression, and on notched devices the last row of content hides behind the navigation.",
     fix:"Allow scaling and reserve the safe area." },
-  { id:"D-34", sev:"P3", area:"platform", title:"E-commerce sync clients are stubs",
+  { id:"D-34", sev:"P3", status:"fixed", area:"platform", title:"E-commerce sync clients are stubs",
     where:"src/lib/sync/shopify.ts:298-341 · woocommerce.ts:184-216",
     impact:"Seven upsert and inventory TODOs, zero importers, and a Settings button that alerts Coming Soon.",
     fix:"Implement or remove the surface." },

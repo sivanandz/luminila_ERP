@@ -652,7 +652,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-15, D-16, D-18, D-20, D-22, D-24, D-25, D-26, D-27, D-28, D-30, D-31, D-33, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-15, D-16, D-18, D-20, D-22, D-24, D-25, D-26, D-27, D-28, D-30, D-31, D-33, D-34, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1604,6 +1604,17 @@ Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 asse
 **Build status, stated precisely:** with the export removed, `next build` now gets past the former contradiction and compiles the application until this volume's filesystem refuses a symlink operation (`readlink … EISDIR`, the same exFAT limitation the dev script works around). The route-versus-export conflict is gone; producing the artifact still requires a filesystem that supports symlinks, which this one does not.
 
 **Remaining P1:** S-06 only.
+
+### 11.37 Slice 36: e-commerce surface removed from Settings (2026-10-23)
+
+**Closed:** D-34, second half. The modules were deleted in §11.35; this removes the surface that promised them.
+
+| Change | Files |
+|---|---|
+| Shopify card deleted, including its "Coming Soon" alert and the credential fields that stored nothing | `src/app/settings/page.tsx` |
+| Notification trigger no longer claims a Shopify source | same |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; full ESLint 0 errors.
 
 ## Appendix A: Route inventory
 

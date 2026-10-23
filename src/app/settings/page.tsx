@@ -1013,61 +1013,6 @@ export default function SettingsPage() {
                                         </div>
                                     </div>
 
-                                    {/* Shopify */}
-                                    <div className="p-6 bg-background border border-border rounded-xl hover:border-primary/30 transition-colors">
-                                        <div className="flex items-center justify-between mb-6">
-                                            <div className="flex items-center gap-4">
-                                                <div className="w-12 h-12 bg-[#96BF48]/10 rounded-xl flex items-center justify-center text-[#96BF48] font-bold border border-[#96BF48]/20">
-                                                    <Globe size={24} />
-                                                </div>
-                                                <div>
-                                                    <h3 className="font-bold text-foreground text-lg">Shopify</h3>
-                                                    <p className="text-sm text-muted-foreground">
-                                                        E-commerce Store Sync
-                                                    </p>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-3">
-                                                {connections.shopify ? (
-                                                    <span className="badge badge-success flex items-center gap-1.5">
-                                                        <CheckCircle size={14} />
-                                                        Connected
-                                                    </span>
-                                                ) : (
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        onClick={() => alert("Shopify Integration: Coming Soon!")}
-                                                    >
-                                                        <ExternalLink size={14} className="mr-1" />
-                                                        Connect
-                                                    </Button>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div className="space-y-2">
-                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
-                                                    Store Domain
-                                                </Label>
-                                                <Input
-                                                    type="text"
-                                                    placeholder="your-store.myshopify.com"
-                                                />
-                                            </div>
-                                            <div className="space-y-2">
-                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
-                                                    Access Token
-                                                </Label>
-                                                <Input
-                                                    type="password"
-                                                    placeholder="shpat_xxxxx"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-
-
                                     {/* PhonePe */}
                                     <div className="p-6 bg-background border border-border rounded-xl hover:border-primary/30 transition-colors">
                                         <div className="flex items-center justify-between mb-6">
@@ -1419,7 +1364,7 @@ export default function SettingsPage() {
                                     <div className="space-y-4">
                                         {[
                                             { key: "lowStock", label: "Low Stock Alerts", desc: "When product stock falls below threshold" },
-                                            { key: "newOrder", label: "New Order", desc: "When a new order is received from Shopify" },
+                                            { key: "newOrder", label: "New Order", desc: "When a new online order is received" },
                                             { key: "syncError", label: "Sync Errors", desc: "When synchronization with external services fails" },
                                         ].map((item) => (
                                             <div key={item.key} className="flex items-center justify-between p-4 bg-background border border-border rounded-xl">
