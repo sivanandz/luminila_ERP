@@ -1,0 +1,1828 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Luminila Project Explorer</title>
+<meta name="description" content="Interactive map of the Luminila inventory management system: runtime topology, POS sale lifecycle, data model, feature status, defect register, build reality, and missing capabilities.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230B0E13'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='16' fill='%23F0B429' text-anchor='middle'%3EL%3C/text%3E%3C/svg%3E">
+<style>
+/* ============================================================================
+   Luminila Project Explorer
+   Design read: engineering instrument panel for maintainers and store owners.
+   Dark first, one citrine accent, monospace for evidence, hairline structure.
+   Shape lock: panels 14px, controls 8px, status pills full. Nothing else.
+   No webfonts: the file must render offline inside the Tauri webview.
+   ========================================================================= */
+
+:root {
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", ui-monospace, "SF Mono", Consolas, monospace;
+
+  --r-panel: 14px;
+  --r-ctl: 8px;
+  --r-pill: 999px;
+  --rail: 226px;
+  --maxw: 1340px;
+  --topbar: 56px;
+  --ease: cubic-bezier(.22,.61,.36,1);
+}
+
+html[data-theme="dark"] {
+  --bg: #07090D;
+  --glow: radial-gradient(1100px 560px at 80% -10%, rgba(240,180,41,.10), transparent 62%),
+          radial-gradient(820px 460px at 6% 6%, rgba(96,165,250,.05), transparent 58%);
+  --panel: #0F131A;
+  --panel-2: #141A24;
+  --panel-3: #1A212C;
+  --line: #222B38;
+  --line-soft: #1A222D;
+  --text: #E9EDF4;
+  --strong: #FFFFFF;
+  --muted: #98A5B8;
+  --faint: #6B788C;
+  --accent: #F0B429;
+  --accent-ink: #1B1404;
+  --accent-soft: rgba(240,180,41,.13);
+  --accent-line: rgba(240,180,41,.34);
+  --p1: #FF6B6B;
+  --p2: #FF9F45;
+  --p3: #E6D34A;
+  --ok: #4ADE80;
+  --info: #6AA9FF;
+  --grid: rgba(255,255,255,.032);
+}
+html[data-theme="light"] {
+  --bg: #F2F4F8;
+  --glow: radial-gradient(1000px 520px at 82% -8%, rgba(176,120,10,.10), transparent 62%),
+          radial-gradient(760px 420px at 4% 4%, rgba(37,99,235,.05), transparent 58%);
+  --panel: #FFFFFF;
+  --panel-2: #F7F9FC;
+  --panel-3: #EEF2F8;
+  --line: #D9E0EA;
+  --line-soft: #E6EBF2;
+  --text: #101720;
+  --strong: #05090E;
+  --muted: #4E5A6C;
+  --faint: #6E7B8E;
+  --accent: #7A4E00;
+  --accent-ink: #FFF8E6;
+  --accent-soft: #FBEFD4;
+  --accent-line: rgba(122,78,0,.32);
+  --p1: #C22F2F;
+  --p2: #A4540A;
+  --p3: #7A6410;
+  --ok: #146C3B;
+  --info: #1D4ED8;
+  --grid: rgba(16,23,32,.035);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--glow), var(--bg);
+  background-attachment: fixed;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 { font-family: var(--display); font-weight: 620; letter-spacing: -.018em; margin: 0; }
+p { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+code, .mono { font-family: var(--mono); font-size: .86em; letter-spacing: -.01em; }
+::selection { background: var(--accent); color: var(--accent-ink); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.skip {
+  position: absolute; left: 12px; top: -60px; z-index: 100;
+  background: var(--accent); color: var(--accent-ink);
+  padding: 10px 16px; border-radius: var(--r-ctl); font-weight: 600;
+  transition: top .18s var(--ease);
+}
+.skip:focus { top: 12px; }
+
+/* ---------- top bar ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 40;
+  height: var(--topbar);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 20px;
+  background: color-mix(in srgb, var(--bg) 84%, transparent);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
+.brand-mark {
+  width: 26px; height: 26px; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border: 1px solid var(--accent-line); border-radius: 7px;
+  background: var(--accent-soft); color: var(--accent);
+  font-family: var(--mono); font-size: 13px; font-weight: 700;
+}
+.brand-name { font-family: var(--display); font-weight: 640; font-size: 13.5px; letter-spacing: .01em; }
+.brand-sub { color: var(--faint); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.topbar-spacer { flex: 1 1 auto; }
+.top-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 10px; border-radius: var(--r-pill);
+  border: 1px solid var(--line); background: var(--panel);
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.top-chip b { color: var(--text); font-weight: 600; }
+.icon-btn {
+  width: 34px; height: 30px;
+  display: inline-grid; place-items: center;
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  background: var(--panel); color: var(--muted); cursor: pointer;
+  transition: color .18s var(--ease), border-color .18s var(--ease), background .18s var(--ease);
+}
+.icon-btn:hover { color: var(--text); background: var(--panel-2); border-color: var(--accent-line); }
+.icon-btn:active { transform: translateY(1px); }
+.icon-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.progress { position: fixed; top: var(--topbar); left: 0; height: 2px; width: 0; z-index: 41;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 45%, var(--info)));
+  transition: width .08s linear; }
+
+/* ---------- shell ---------- */
+.shell {
+  max-width: var(--maxw); margin: 0 auto; padding: 0 20px 90px;
+  display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); gap: 44px; align-items: start;
+}
+.rail {
+  position: sticky; top: calc(var(--topbar) + 24px);
+  display: flex; flex-direction: column; gap: 3px;
+  padding-top: 28px; max-height: calc(100vh - var(--topbar) - 40px); overflow: auto;
+  scrollbar-width: thin;
+}
+.rail-label { font-size: 10.5px; letter-spacing: .11em; text-transform: uppercase; color: var(--faint); padding: 0 10px 9px; }
+.rail a {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: var(--r-ctl);
+  color: var(--muted); text-decoration: none; font-size: 13.5px;
+  border-left: 2px solid transparent;
+  transition: color .16s var(--ease), background .16s var(--ease);
+}
+.rail a:hover { color: var(--text); background: var(--panel); }
+.rail a[aria-current="true"] { color: var(--text); background: var(--accent-soft); border-left-color: var(--accent); }
+.rail a .n { font-family: var(--mono); font-size: 10.5px; color: var(--faint); width: 15px; }
+.rail a[aria-current="true"] .n { color: var(--accent); }
+.rail-count { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+  background: var(--panel-2); border-radius: var(--r-pill); padding: 1px 7px; }
+.rail-foot { margin-top: 14px; padding: 12px 10px 0; border-top: 1px solid var(--line-soft);
+  font-size: 11.5px; color: var(--faint); }
+
+main { min-width: 0; padding-top: 22px; }
+.section { padding: 54px 0 10px; scroll-margin-top: calc(var(--topbar) + 18px); }
+.section + .section { border-top: 1px solid var(--line-soft); }
+.sec-head { display: flex; align-items: flex-start; gap: 15px; margin-bottom: 22px; }
+.sec-index { font-family: var(--mono); font-size: 11.5px; color: var(--accent); padding-top: 7px; min-width: 30px; }
+.sec-title { font-size: clamp(21px, 2.5vw, 28px); line-height: 1.16; }
+.sec-lede { color: var(--muted); margin-top: 8px; max-width: 76ch; font-size: 14.5px; }
+.sec-lede b { color: var(--text); font-weight: 600; }
+
+/* ---------- hero ---------- */
+.hero { padding: 34px 0 26px; }
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, .9fr); gap: 40px; align-items: end; }
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .13em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+.eyebrow::before { content: ""; width: 18px; height: 1px; background: var(--accent); }
+.hero h1 { font-size: clamp(31px, 4.2vw, 47px); line-height: 1.05; letter-spacing: -.028em; max-width: 24ch; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.hero-note { margin-top: 16px; color: var(--muted); max-width: 60ch; font-size: 15px; }
+.meta-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  border: 1px solid var(--line); background: var(--panel);
+  font-size: 11.5px; color: var(--muted); white-space: nowrap;
+}
+.chip b { color: var(--text); font-weight: 600; }
+.chip.accent { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); }
+.chip .mono { color: var(--text); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.vitals { border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--panel); overflow: hidden; }
+.vitals-head { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); display: flex; justify-content: space-between;
+  font-size: 10.5px; letter-spacing: .11em; text-transform: uppercase; color: var(--faint); }
+.vitals-body { display: grid; grid-template-columns: 1fr 1fr; }
+.vital { padding: 13px 14px; border-top: 1px solid var(--line-soft); }
+.vital:nth-child(odd) { border-right: 1px solid var(--line-soft); }
+.vital:nth-child(1), .vital:nth-child(2) { border-top: 0; }
+.vital-num { font-family: var(--mono); font-size: 21px; color: var(--strong); letter-spacing: -.03em; line-height: 1.2; }
+.vital-label { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+/* ---------- panels ---------- */
+.panel { border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--panel); overflow: hidden; }
+.panel-head { display: flex; align-items: center; gap: 12px; padding: 11px 16px;
+  border-bottom: 1px solid var(--line-soft); background: linear-gradient(180deg, var(--panel-2), var(--panel)); }
+.panel-head h3 { font-size: 13.5px; }
+.panel-head .sub { color: var(--faint); font-size: 11.5px; }
+.panel-body { padding: 16px; }
+.panel-body.tight { padding: 0; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.note { border-left: 2px solid var(--accent); background: var(--accent-soft);
+  padding: 12px 15px; border-radius: 0 var(--r-ctl) var(--r-ctl) 0; font-size: 13.5px; }
+.note strong { color: var(--strong); }
+.small { font-size: 12.5px; color: var(--muted); }
+
+/* ---------- topology ---------- */
+.diagram-wrap { position: relative; border: 1px solid var(--line); border-radius: var(--r-panel);
+  background: linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 100% 28px,
+              linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 28px 100%, var(--panel); overflow: hidden; }
+.diagram-toolbar { position: absolute; inset: 12px 12px auto auto; display: flex; gap: 8px; z-index: 3; }
+.diagram { display: block; width: 100%; height: auto; }
+.node { cursor: pointer; }
+.node .box { fill: var(--panel-2); stroke: var(--line); stroke-width: 1; transition: stroke .18s var(--ease), fill .18s var(--ease); }
+.node:hover .box, .node:focus-visible .box { stroke: var(--accent); }
+.node[aria-pressed="true"] .box { stroke: var(--accent); fill: var(--accent-soft); }
+.node-label { font-family: var(--sans); font-size: 11.5px; font-weight: 600; fill: var(--text); }
+.node-sub { font-family: var(--mono); font-size: 9.5px; fill: var(--muted); }
+.edge { stroke: var(--line); stroke-width: 1.3; fill: none; }
+.edge-hot { stroke: var(--accent); stroke-dasharray: 5 5; animation: dash 1.5s linear infinite; }
+.edge-label { font-family: var(--mono); font-size: 8.5px; fill: var(--faint); }
+@keyframes dash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .edge-hot { animation: none; } }
+.tenant-layer[hidden] { display: none; }
+.inspector { border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--panel-2); padding: 15px; min-height: 176px; }
+.inspector h4 { font-size: 14.5px; margin-bottom: 4px; }
+.inspector .role { font-family: var(--mono); font-size: 10.5px; color: var(--accent); letter-spacing: .04em; margin-bottom: 9px; }
+.inspector p { color: var(--muted); font-size: 13px; }
+.inspector dl { margin: 11px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 12px; }
+.inspector dt { color: var(--faint); }
+.inspector dd { margin: 0; font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+.inspector .risk { margin-top: 10px; font-size: 12px; color: var(--p2); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 11.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 8px; border-radius: 2px; border: 1px solid var(--line); background: var(--panel-2); display: inline-block; }
+
+/* ---------- stepper ---------- */
+.steps-nav { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.step-tab { border: 1px solid var(--line); background: var(--panel); border-radius: var(--r-ctl);
+  padding: 6px 10px; font-size: 12px; color: var(--muted); cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.step-tab:hover { color: var(--text); border-color: var(--accent-line); }
+.step-tab[aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent-line); color: var(--text); }
+.step-tab .sn { font-family: var(--mono); font-size: 10px; color: var(--accent); }
+.step-body { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(250px, .85fr); gap: 20px; }
+.step-main h4 { font-size: 16.5px; margin-bottom: 4px; }
+.step-where { font-family: var(--mono); font-size: 11.5px; color: var(--accent); margin-bottom: 11px; }
+.step-main p { color: var(--muted); font-size: 13.8px; }
+.step-main ul { margin: 11px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+.step-main li { margin-bottom: 5px; }
+.step-side { display: flex; flex-direction: column; gap: 10px; }
+.side-block { border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel-2); padding: 10px 12px; }
+.side-block .k { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--faint); margin-bottom: 5px; }
+.side-block .v { font-size: 12px; color: var(--text); }
+.side-block .v.mono { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+
+/* ---------- controls ---------- */
+.toolbar { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; padding: 11px 14px;
+  border-bottom: 1px solid var(--line-soft); background: var(--panel-2); }
+.search { display: flex; align-items: center; gap: 8px; flex: 1 1 210px; min-width: 170px;
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel); padding: 0 10px; height: 33px; }
+.search svg { width: 14px; height: 14px; fill: none; stroke: var(--faint); stroke-width: 1.7; flex: 0 0 auto; }
+.search input { border: 0; background: transparent; outline: none; width: 100%; font-size: 13px; }
+.search input::placeholder { color: var(--faint); }
+.search:focus-within { border-color: var(--accent); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-ctl); overflow: hidden; }
+.seg button { border: 0; background: var(--panel); padding: 0 10px; height: 31px; font-size: 11.5px;
+  color: var(--muted); cursor: pointer; border-right: 1px solid var(--line); white-space: nowrap; }
+.seg button:last-child { border-right: 0; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); }
+select.ctl { height: 33px; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  background: var(--panel); padding: 0 8px; font-size: 12px; color: var(--text); max-width: 190px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .track { width: 33px; height: 18px; border-radius: var(--r-pill); background: var(--panel-3);
+  border: 1px solid var(--line); position: relative; transition: background .2s var(--ease), border-color .2s var(--ease); }
+.switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--muted); transition: transform .2s var(--ease), background .2s var(--ease); }
+.switch input:checked + .track { background: var(--accent-soft); border-color: var(--accent-line); }
+.switch input:checked + .track::after { transform: translateX(15px); background: var(--accent); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+
+/* ---------- tables ---------- */
+table { width: 100%; border-collapse: collapse; font-size: 12.8px; }
+thead th { text-align: left; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+  font-weight: 600; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2);
+  position: sticky; top: var(--topbar); z-index: 2; }
+tbody td { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: var(--r-pill);
+  font-size: 10.5px; font-weight: 650; letter-spacing: .03em; border: 1px solid transparent; white-space: nowrap; }
+.pill.p1 { color: var(--p1); background: color-mix(in srgb, var(--p1) 12%, transparent); border-color: color-mix(in srgb, var(--p1) 34%, transparent); }
+.pill.p2 { color: var(--p2); background: color-mix(in srgb, var(--p2) 12%, transparent); border-color: color-mix(in srgb, var(--p2) 34%, transparent); }
+.pill.p3 { color: var(--p3); background: color-mix(in srgb, var(--p3) 12%, transparent); border-color: color-mix(in srgb, var(--p3) 34%, transparent); }
+.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+.pill.info { color: var(--info); background: color-mix(in srgb, var(--info) 11%, transparent); border-color: color-mix(in srgb, var(--info) 30%, transparent); }
+.pill.mute { color: var(--muted); background: var(--panel-2); border-color: var(--line); }
+.pill.accent { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.path { font-family: var(--mono); font-size: 10.8px; color: var(--muted); overflow-wrap: anywhere; }
+.empty { padding: 34px 16px; text-align: center; color: var(--faint); font-size: 13px; }
+.empty b { display: block; color: var(--text); font-size: 14px; margin-bottom: 4px; }
+
+/* ---------- feature matrix ---------- */
+.matrix { display: grid; gap: 1px; background: var(--line-soft); }
+.frow { display: grid; grid-template-columns: minmax(0, 1.6fr) 92px minmax(0, 2.1fr); gap: 12px;
+  align-items: start; background: var(--panel); padding: 8px 14px; }
+.frow:hover { background: var(--panel-2); }
+.fname { font-size: 13px; font-weight: 600; color: var(--text); }
+.fdomain { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 2px; }
+.fnote { font-size: 12.5px; color: var(--muted); }
+.status { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 650;
+  letter-spacing: .03em; padding: 1px 8px; border-radius: var(--r-pill); border: 1px solid transparent; }
+.st-live { color: var(--ok); background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 28%, transparent); }
+.st-partial { color: var(--p2); background: color-mix(in srgb, var(--p2) 11%, transparent); border-color: color-mix(in srgb, var(--p2) 28%, transparent); }
+.st-scaffold { color: var(--info); background: color-mix(in srgb, var(--info) 11%, transparent); border-color: color-mix(in srgb, var(--info) 28%, transparent); }
+.st-absent { color: var(--faint); background: var(--panel-2); border-color: var(--line); }
+.legend-row { display: flex; flex-wrap: wrap; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line-soft);
+  font-size: 11px; color: var(--faint); }
+
+/* ---------- defects ---------- */
+.defect { border-bottom: 1px solid var(--line-soft); }
+.defect:last-child { border-bottom: 0; }
+.defect summary { display: grid; grid-template-columns: 56px minmax(0, 1fr) 86px; gap: 10px; align-items: start;
+  padding: 11px 14px; cursor: pointer; list-style: none; }
+.defect summary::-webkit-details-marker { display: none; }
+.defect summary:hover { background: var(--panel-2); }
+.defect[open] summary { background: var(--panel-2); }
+.did { font-family: var(--mono); font-size: 10.5px; color: var(--faint); padding-top: 2px; }
+.dtitle { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.45; }
+.dtitle::before {
+  content: "\203A"; display: inline-block; width: 12px; margin-right: 4px;
+  color: var(--faint); transition: transform .18s var(--ease), color .18s var(--ease);
+}
+.defect[open] .dtitle::before { transform: rotate(90deg); color: var(--accent); }
+.defect summary:hover .dtitle::before { color: var(--accent); }
+.dmeta { text-align: right; }
+.dbody { padding: 2px 14px 15px 80px; display: grid; gap: 9px; }
+.dbody .lab { font-size: 9.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--faint); margin-bottom: 2px; }
+.dbody p { font-size: 12.5px; color: var(--muted); }
+.dbody .fix { color: var(--text); }
+
+/* ---------- build options ---------- */
+.opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.opt { border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--panel); padding: 15px; }
+.opt.on { border-color: var(--accent-line); background: linear-gradient(180deg, var(--accent-soft), transparent 65%); }
+.opt h4 { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.opt p { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.opt ul { margin: 8px 0 0; padding-left: 16px; font-size: 12px; color: var(--muted); }
+.opt li { margin-bottom: 3px; }
+.blocker { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 12px; padding: 11px 14px;
+  border-bottom: 1px solid var(--line-soft); }
+.blocker:last-child { border-bottom: 0; }
+.blocker .sev { padding-top: 1px; }
+.blocker .bt { font-size: 12.8px; font-weight: 600; }
+.blocker .bd { font-size: 12.2px; color: var(--muted); margin-top: 3px; }
+
+/* ---------- verification ---------- */
+.vrow { display: grid; grid-template-columns: 150px minmax(0, 1.5fr) 96px minmax(0, 1.1fr); gap: 12px;
+  padding: 11px 14px; border-bottom: 1px solid var(--line-soft); font-size: 12.4px; align-items: start; }
+.vrow:last-child { border-bottom: 0; }
+.vrow .cmd { font-family: var(--mono); font-size: 11px; color: var(--text); overflow-wrap: anywhere; }
+.vrow .res { color: var(--muted); }
+
+/* ---------- roadmap ---------- */
+.road { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.road-col { border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--panel); overflow: hidden; }
+.road-head { padding: 11px 14px; border-bottom: 1px solid var(--line-soft); font-size: 11px;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--faint); display: flex; justify-content: space-between; }
+.road-head b { color: var(--text); letter-spacing: 0; font-size: 12px; text-transform: none; }
+.road ul { margin: 0; padding: 6px 0; list-style: none; }
+.road li { padding: 9px 14px; border-bottom: 1px solid var(--line-soft); font-size: 12.6px; color: var(--muted); }
+.road li:last-child { border-bottom: 0; }
+.road li b { display: block; color: var(--text); font-weight: 600; font-size: 12.8px; margin-bottom: 2px; }
+
+/* ---------- footer ---------- */
+.footer { margin-top: 50px; padding: 24px 0 0; border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; font-size: 12px; color: var(--faint); }
+.footer b { color: var(--muted); font-weight: 600; }
+.footer code { color: var(--muted); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1100px) {
+  .rail { display: none; }
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .hero-grid { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+}
+@media (max-width: 860px) {
+  .step-body, .grid-2, .opt-grid, .footer { grid-template-columns: minmax(0, 1fr); }
+  .road { grid-template-columns: minmax(0, 1fr); }
+  .frow { grid-template-columns: minmax(0, 1fr) 84px; }
+  .frow .fnote { grid-column: 1 / -1; }
+  .vrow { grid-template-columns: minmax(0, 1fr) 90px; }
+  .vrow .res { grid-column: 1 / -1; }
+  .defect summary { grid-template-columns: 48px minmax(0, 1fr); }
+  .defect .dmeta { grid-column: 2; text-align: left; }
+  .dbody { padding-left: 14px; }
+  .top-chip.hide-sm { display: none; }
+}
+
+/* ---------- print ---------- */
+@media print {
+  body { background: #fff; color: #111; }
+  .topbar, .rail, .progress, .toolbar, .diagram-toolbar, .icon-btn { display: none !important; }
+  .shell { display: block; max-width: none; padding: 0; }
+  .panel, .opt, .road-col, .inspector { break-inside: avoid; border-color: #bbb; }
+  .section { break-before: auto; page-break-inside: auto; }
+  .defect[open] .dbody { display: grid; }
+  html[data-theme] { --panel:#fff; --panel-2:#f6f6f6; --text:#111; --muted:#444; --line:#ccc; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="progress" id="progress" aria-hidden="true"></div>
+
+<header class="topbar">
+  <a class="brand" href="#top" aria-label="Luminila project explorer, back to top">
+    <span class="brand-mark" aria-hidden="true">L</span>
+    <span>
+      <span class="brand-name">LUMINILA</span>
+      <span class="brand-sub">project explorer</span>
+    </span>
+  </a>
+  <span class="topbar-spacer"></span>
+  <span class="top-chip hide-sm"><span class="dot" style="color:var(--accent)"></span><b>f0e96b4</b> verified</span>
+  <button class="icon-btn" id="themeBtn" type="button" aria-label="Switch theme" title="Switch theme">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"></path></svg>
+  </button>
+  <button class="icon-btn" id="printBtn" type="button" aria-label="Print this page" title="Print">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4v-6h16v6h-2M6 14h12v7H6z"></path></svg>
+  </button>
+</header>
+
+<div class="shell">
+  <nav class="rail" aria-label="Sections">
+    <div class="rail-label">Map</div>
+    <a href="#topology"><span class="n">01</span>Topology<span class="rail-count">9</span></a>
+    <a href="#sale"><span class="n">02</span>Sale lifecycle<span class="rail-count">8</span></a>
+    <a href="#data"><span class="n">03</span>Data model<span class="rail-count">55</span></a>
+    <a href="#features"><span class="n">04</span>Features<span class="rail-count" id="railFeatures">0</span></a>
+    <a href="#defects"><span class="n">05</span>Defects<span class="rail-count" id="railDefects">0</span></a>
+    <a href="#build"><span class="n">06</span>Build reality<span class="rail-count">4</span></a>
+    <a href="#missing"><span class="n">07</span>Missing<span class="rail-count">15</span></a>
+    <a href="#verify"><span class="n">08</span>Verification<span class="rail-count">6</span></a>
+    <div class="rail-foot">
+      Read together with<br><code>PROJECT_MASTER.md</code>
+    </div>
+  </nav>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-grid">
+        <div>
+          <span class="eyebrow">Project explorer · 2026-10-23</span>
+          <h1>The Luminila system, <em>as it actually is</em>.</h1>
+          <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
+          <div class="meta-row">
+            <span class="chip accent"><span class="dot"></span>49 open · 6 fixed</span>
+            <span class="chip"><span class="mono">40</span> routes</span>
+            <span class="chip"><span class="mono">55</span> collections</span>
+            <span class="chip"><span class="mono">79</span> service modules</span>
+            <span class="chip">branch <b>fix/security-audit-remediation</b></span>
+          </div>
+        </div>
+        <aside class="vitals" aria-label="Repository vitals">
+          <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
+          <div class="vitals-body">
+            <div class="vital"><div class="vital-num" data-count="84411">84,411</div><div class="vital-label">lines of TypeScript</div></div>
+            <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
+            <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">modules with no importer</div></div>
+            <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">P1 defects open</div></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section" id="topology">
+      <div class="sec-head">
+        <span class="sec-index">01</span>
+        <div>
+          <h2 class="sec-title">Runtime topology</h2>
+          <p class="sec-lede">Three processes on the showroom machine, one optional control plane, and a set of external services. Click any node to read what it owns and how it fails. Turn on the isolation layer to see how tenants are physically separated.</p>
+        </div>
+      </div>
+      <div class="grid-2" style="grid-template-columns:minmax(0,1.55fr) minmax(280px,.85fr)">
+        <div>
+          <div class="diagram-wrap">
+            <div class="diagram-toolbar">
+              <label class="switch" title="Show per-tenant databases">
+                <input type="checkbox" id="isoToggle">
+                <span class="track"></span>
+                <span>Tenant layer</span>
+              </label>
+            </div>
+            <svg class="diagram" id="diagram" viewBox="0 0 760 470" role="group" aria-label="System topology diagram"></svg>
+          </div>
+          <div class="legend">
+            <span><i style="background:var(--accent-soft);border-color:var(--accent-line)"></i>showroom process</span>
+            <span><i></i>control plane</span>
+            <span><i style="border-color:var(--p1)"></i>unauthenticated surface</span>
+            <span><i style="border-style:dashed"></i>data or control flow</span>
+          </div>
+        </div>
+        <div class="inspector" id="inspector" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="section" id="sale">
+      <div class="sec-head">
+        <span class="sec-index">02</span>
+        <div>
+          <h2 class="sec-title">The sale lifecycle</h2>
+          <p class="sec-lede">One POS checkout writes to four collections across eight steps with no transaction. Walk the steps to see exactly where money, stock, and tax diverge. The red side blocks are the defects this path produces.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-body">
+          <div class="steps-nav" role="tablist" aria-label="Sale steps" id="stepsNav"></div>
+          <div class="step-body" id="stepBody"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="data">
+      <div class="sec-head">
+        <span class="sec-index">03</span>
+        <div>
+          <h2 class="sec-title">Data model</h2>
+          <p class="sec-lede">55 collections, grouped by domain. Tenancy is a hand-written <code>account_email</code> column, not a database feature. Six collections that the code reads or writes do not exist at all.</p>
+        </div>
+      </div>
+      <div id="dataGroups"></div>
+      <div class="panel" style="margin-top:16px;border-color:color-mix(in srgb,var(--p1) 30%,var(--line))">
+        <div class="panel-head">
+          <h3>Schema drift</h3>
+          <span class="sub">collections referenced by live code, absent from every migration</span>
+        </div>
+        <div class="panel-body tight" id="driftTable"></div>
+      </div>
+    </section>
+
+    <section class="section" id="features">
+      <div class="sec-head">
+        <span class="sec-index">04</span>
+        <div>
+          <h2 class="sec-title">Feature reality</h2>
+          <p class="sec-lede">Status is measured against code, not against the marketing documents. <b>Scaffold</b> means the module exists and no user can reach it. Filter by domain or status, or search the notes.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+            <input id="featSearch" type="search" placeholder="Search features, modules, evidence" aria-label="Search features">
+          </label>
+          <div class="seg" id="featStatus" role="group" aria-label="Filter by status">
+            <button type="button" data-status="all" aria-pressed="true">All</button>
+            <button type="button" data-status="live" aria-pressed="false">Live</button>
+            <button type="button" data-status="partial" aria-pressed="false">Partial</button>
+            <button type="button" data-status="scaffold" aria-pressed="false">Scaffold</button>
+            <button type="button" data-status="absent" aria-pressed="false">Absent</button>
+          </div>
+          <select class="ctl" id="featDomain" aria-label="Filter by domain"></select>
+          <span class="count" id="featCount" aria-live="polite"></span>
+        </div>
+        <div class="matrix" id="featMatrix"></div>
+        <div class="legend-row" id="featLegend"></div>
+      </div>
+    </section>
+
+    <section class="section" id="defects">
+      <div class="sec-head">
+        <span class="sec-index">05</span>
+        <div>
+          <h2 class="sec-title">Defect register</h2>
+          <p class="sec-lede">Every entry was verified against the current tree with file and line evidence. P1 corrupts money, stock, tenant data, or blocks release. Open a row for impact and the required fix.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+            <input id="defSearch" type="search" placeholder="Search id, title, path, impact" aria-label="Search defects">
+          </label>
+          <div class="seg" id="defSev" role="group" aria-label="Filter by severity">
+            <button type="button" data-sev="all" aria-pressed="true">All</button>
+            <button type="button" data-sev="P1" aria-pressed="false">P1</button>
+            <button type="button" data-sev="P2" aria-pressed="false">P2</button>
+            <button type="button" data-sev="P3" aria-pressed="false">P3</button>
+            <button type="button" data-sev="fixed" aria-pressed="false">Fixed</button>
+          </div>
+          <select class="ctl" id="defArea" aria-label="Filter by area"></select>
+          <label class="switch"><input type="checkbox" id="p1Only"><span class="track"></span><span>P1 only</span></label>
+          <span class="count" id="defCount" aria-live="polite"></span>
+        </div>
+        <div id="defList"></div>
+      </div>
+    </section>
+
+    <section class="section" id="build">
+      <div class="sec-head">
+        <span class="sec-index">06</span>
+        <div>
+          <h2 class="sec-title">Build reality</h2>
+          <p class="sec-lede">The release command cannot produce the artifact the desktop shell expects. This is a configuration contradiction, not a flaky machine: static export cannot contain server routes, and the installer does not contain the database.</p>
+        </div>
+      </div>
+      <div class="opt-grid" id="buildOpts"></div>
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-head"><h3>Blockers, in order of impact</h3><span class="sub">verified 2026-10-23</span></div>
+        <div class="panel-body tight" id="blockers"></div>
+      </div>
+      <div class="note" style="margin-top:14px">
+        <strong>What this means for planning.</strong> Any estimate that assumes the app ships today is wrong twice: the build fails, and if forced, the packaged app would have no database and no API routes. Resolution is an architecture decision, not a bug fix.
+      </div>
+    </section>
+
+    <section class="section" id="missing">
+      <div class="sec-head">
+        <span class="sec-index">07</span>
+        <div>
+          <h2 class="sec-title">What is missing</h2>
+          <p class="sec-lede">Grouped by the decision that unblocks each item. The third column is the important one: code exists for entire capabilities and no screen calls it.</p>
+        </div>
+      </div>
+      <div class="road" id="roadmap"></div>
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-head"><h3>Built but not connected</h3><span class="sub">modules with zero importers outside their own tests</span></div>
+        <div class="panel-body tight" id="orphans"></div>
+      </div>
+    </section>
+
+    <section class="section" id="verify">
+      <div class="sec-head">
+        <span class="sec-index">08</span>
+        <div>
+          <h2 class="sec-title">Verification log</h2>
+          <p class="sec-lede">What was actually run on 2026-10-23 against commit f0e96b4, and what could not be run on this workstation. A clean type check does not clear any defect in section 05: none of them are type errors.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Checks</h3><span class="sub">E:\Local_GIT_2\luminila_inv_mgmt · exFAT volume</span></div>
+        <div id="verifyRows"></div>
+      </div>
+      <div class="grid-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="panel-head"><h3>Re-run it</h3></div>
+          <div class="panel-body">
+            <pre class="mono" style="margin:0;font-size:11.5px;line-height:1.75;color:var(--muted);white-space:pre-wrap">npx tsc --noEmit --incremental false
+npx eslint src
+Get-ChildItem src/app -Recurse -Filter page.tsx | Measure-Object
+npm run build   # expected to fail while D-08 is open</pre>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>How to read status</h3></div>
+          <div class="panel-body small">
+            <p><b>Pass</b> means the command completed as expected. <b>Fail</b> means it returned an error that is itself a finding. <b>Blocked</b> means the environment prevented the check, so the verdict rests on configuration evidence instead.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div>
+        <p><b>Source of truth.</b> This page is the interactive companion to <code>PROJECT_MASTER.md</code>. Where the two disagree, the master document wins, and where it disagrees with the code, the code wins.</p>
+        <p style="margin-top:8px">Generated from a read of the working tree at <code>f0e96b4</code> on 2026-10-23. No application code was modified to produce it.</p>
+      </div>
+      <div>
+        <p><b>Supersedes</b> the architecture, feature, and defect claims in <code>CODEBASE.md</code>, <code>docs/ARCHITECTURE.md</code>, <code>docs/PROJECT_STATE.md</code>, <code>docs/FEATURES.md</code>, and the three prior audit reports.</p>
+        <p style="margin-top:8px">Regenerate the baseline in section 08 with every audit.</p>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   Data. Compiled from a read of the working tree at f0e96b4, 2026-10-23.
+   Line numbers refer to that commit. Nothing here is fetched at runtime.
+   ===================================================================== */
+
+const NODES = [
+  { id:"webview", x:40, y:36, w:200, h:66, kind:"process",
+    title:"Showroom webview", sub:"Next 16 static · React 19",
+    role:"CLIENT",
+    detail:"The 40 route pages, all client components. Holds auth in localStorage, the cart, the offline queue key, and the WhatsApp drawer.",
+    files:"src/app/**/page.tsx · src/components/**",
+    ports:"served from out/ in production, dev server :3000",
+    risk:"No route guard: nothing redirects an unauthenticated visitor." },
+  { id:"service", x:40, y:150, w:200, h:60, kind:"process",
+    title:"Service layer", sub:"79 modules · src/lib",
+    role:"DOMAIN LOGIC",
+    detail:"Where money, stock, tax, and tenancy rules are supposed to live. Many pages bypass it and call PocketBase directly: 97 such calls across 26 files.",
+    files:"src/lib/pos-sales.ts, invoice.ts, returns.ts, purchase.ts",
+    ports:"in-process",
+    risk:"Rule R1 is violated at scale, so guards exist in some paths only." },
+  { id:"pb", x:40, y:300, w:200, h:66, kind:"process",
+    title:"PocketBase", sub:"SQLite WAL · :8090 / :8091",
+    role:"DATABASE",
+    detail:"One Go process per tenant, serving one SQLite file. Row access is scoped by account_email API rules. The JS SDK re-points this client at runtime when the tenant changes.",
+    files:"pocketbase/pocketbase.exe · pb_data/data.db",
+    ports:"8090 (dev script), 8091 (client default)",
+    risk:"A single mutable module global serves every request." },
+  { id:"sidecar", x:288, y:36, w:196, h:66, kind:"process",
+    title:"WPPConnect sidecar", sub:"Node + Chromium · :21465",
+    role:"WHATSAPP",
+    detail:"Drives WhatsApp Web through Puppeteer. Exposes REST endpoints for send, catalog, session state, and broadcasts. Binds loopback with a bearer token and an origin allowlist.",
+    files:"wppconnect-sidecar/server.js (~3,000 lines)",
+    ports:"127.0.0.1:21465",
+    risk:"Token default is a literal compiled into the client bundle." },
+  { id:"rust", x:288, y:150, w:196, h:60, kind:"process",
+    title:"Rust supervisor", sub:"Tauri v2 · sidecar health",
+    role:"PROCESS CONTROL",
+    detail:"Starts the sidecar on launch and polls its health every five seconds. After three consecutive failures it clears the running flag and respawns. It starts nothing else.",
+    files:"src-tauri/src/lib.rs",
+    ports:"emits sidecar-status events",
+    risk:"PocketBase is not started or bundled here at all." },
+  { id:"api", x:288, y:246, w:196, h:66, kind:"untrusted",
+    title:"Next API routes", sub:"13 handlers · dev only",
+    role:"CONTROL PLANE",
+    detail:"Tenant provisioning, storefront checkout and OTP, payment links, catalog feed, tracking. Six handlers require no credential. None survive the static export.",
+    files:"src/app/api/**/route.ts",
+    ports:"same origin as the dev server",
+    risk:"An anonymous POST can reset any tenant's superuser password." },
+  { id:"registry", x:288, y:342, w:196, h:60, kind:"untrusted",
+    title:"Tenant registry", sub:"registry.json · plaintext",
+    role:"TENANCY STATE",
+    detail:"Maps account email to port, data directory, and superuser password. Also stores one process-global activeTenantEmail that later requests inherit.",
+    files:"pocketbase/pb_tenants/registry.json",
+    ports:"read and written by tenant-db-manager",
+    risk:"Plaintext passwords, plus a hardcoded fallback password." },
+  { id:"ext", x:540, y:36, w:180, h:66, kind:"external",
+    title:"External services", sub:"Razorpay · Meta · Drive",
+    role:"INTEGRATIONS",
+    detail:"Payment links and settlement, WhatsApp catalog push, Google Drive sync, courier tracking. All optional, none required to bill a customer.",
+    files:"razorpay.ts, meta-catalog-batch.ts, logistics-engine.ts",
+    ports:"HTTPS outbound",
+    risk:"Drive sync is a mock; the Razorpay webhook secret is unset." },
+  { id:"tunnel", x:540, y:150, w:180, h:60, kind:"external",
+    title:"Cloudflare tunnel", sub:"trycloudflare.com",
+    role:"REMOTE ACCESS",
+    detail:"Exposes PocketBase and the sidecar so showroom tablets on another network can reach them. Devices switch by setting PB_CUSTOM_URL.",
+    files:"scripts/tunnel.js",
+    ports:"HTTPS quick tunnel",
+    risk:"Turns every unauthenticated API route into a remote surface." },
+  { id:"tenants", x:540, y:330, w:180, h:66, kind:"process", tenantOnly:true,
+    title:"Tenant databases", sub:"pb_tenants/*.db · :8092+",
+    role:"ISOLATION",
+    detail:"Each provisioned account gets its own SQLite file and its own PocketBase process on a port between 8092 and 8199. This is the strongest control in the system.",
+    files:"pocketbase/pb_tenants/<slug>/data.db",
+    ports:"8092 to 8199, bound to 0.0.0.0",
+    risk:"Processes are reachable on every interface, not just loopback." }
+];
+
+const EDGES = [
+  { a:"webview", b:"service", label:"function calls" },
+  { a:"service", b:"pb", label:"SDK + JWT" },
+  { a:"webview", b:"sidecar", label:"REST" },
+  { a:"rust", b:"sidecar", label:"spawn + health", hot:true },
+  { a:"api", b:"pb", label:"superuser" },
+  { a:"api", b:"registry", label:"read / write" },
+  { a:"webview", b:"api", label:"fetch", hot:true },
+  { a:"webview", b:"tunnel", label:"remote device" },
+  { a:"tunnel", b:"pb", label:"HTTPS" },
+  { a:"service", b:"ext", label:"HTTPS" },
+  { a:"pb", b:"tenants", label:"tenant switch", tenantOnly:true }
+];
+
+const STEPS = [
+  { t:"Cart and totals", where:"src/app/pos/page.tsx:714-717",
+    what:"The cashier builds a cart. Line totals, item discounts, and the bill discount are computed here. No tax is computed anywhere in the POS interface.",
+    writes:["nothing yet"],
+    risk:"The amount the customer pays is tax-exclusive, but the invoice that follows is not.",
+    d:"D-01" },
+  { t:"Sale header", where:"src/lib/pos-sales.ts, createPOSSale",
+    what:"A sales row is created with channel, cashier, shift, subtotal, discount, and total. The channel is written unconditionally, even when it is not one of the three values the schema allows.",
+    writes:["sales"],
+    risk:"Channel enum drift: website, wholesale, and exhibition cannot be represented.",
+    d:"D-37" },
+  { t:"Line items", where:"src/lib/pos-sales.ts:114-133",
+    what:"One sale_items row per cart line. The schema has a gst_rate column for this row, and the code never writes it.",
+    writes:["sale_items"],
+    risk:"Without a line rate, invoicing falls back to a hardcoded 3 percent.",
+    d:"D-14" },
+  { t:"Stock deduction", where:"src/lib/pos-sales.ts:138-176",
+    what:"Each variant is decremented with an atomic field- operator. The database rejects a negative result via a min constraint. Any HTTP 400 is treated as insufficient stock and the variant is written to zero.",
+    writes:["product_variants"],
+    risk:"A permissions or validation error silently destroys the stock count.",
+    d:"D-03" },
+  { t:"Audit trail", where:"src/lib/pos-sales.ts:138-146",
+    what:"A negative stock movement is recorded per line, with the reason and reference. This ledger is the only way to reconstruct what happened when the variant row disagrees with it.",
+    writes:["stock_movements"],
+    risk:"When stock is clamped to zero, the movement still records the full quantity." },
+  { t:"Shift totals", where:"src/lib/pos-sales.ts:211",
+    what:"The open cash register shift accumulates cash and UPI totals. This happens outside the try block that owns the rollback.",
+    writes:["cash_register_shifts"],
+    risk:"A failure after this point leaves the drawer summary overstated.",
+    d:"D-10" },
+  { t:"GST invoice", where:"src/lib/invoice.ts:1074-1192",
+    what:"The invoice header is created, then items in a loop. GST is applied per line on the undiscounted base, the grand total adds tax, and paid_amount is set to the pre-tax sale total.",
+    writes:["invoices","invoice_items","number_sequences"],
+    risk:"The invoice says paid while the total is higher than the payment. Discounts are taxed.",
+    d:"D-01 · D-02 · D-11" },
+  { t:"Receipt and follow-up", where:"src/components/pos/POSWhatsAppWidget.tsx",
+    what:"The receipt prints, and optionally a WhatsApp receipt and a Razorpay payment link are dispatched. The link lands in payment_links and is settled later by a polling engine.",
+    writes:["payment_links"],
+    risk:"Settlement depends on a client poller because the webhook secret is unset.",
+    d:"S-10" }
+];
+
+const GROUPS = [
+  { k:"catalog", name:"Catalog", n:7,
+    cols:["products","product_variants","categories","product_attributes","product_attribute_values","stock_movements","stock_discrepancies"],
+    note:"products carries jewelry weights, purity, HUID, HSN, tax rate, and channel prices. Variants hold the stock that every other module depends on." },
+  { k:"sales", name:"Sales", n:13,
+    cols:["sales","sale_items","sales_orders","sales_order_items","invoices","invoice_items","invoice_payments","delivery_challans","delivery_challan_items","credit_notes","credit_note_items","discounts","discount_usage"],
+    note:"Three document families (counter sale, order, invoice) plus challans, credit notes, and discounts. Invoice items reference variants but not products." },
+  { k:"purchase", name:"Purchase", n:6,
+    cols:["purchase_orders","purchase_order_items","vendors","vendor_products","goods_received_notes","grn_items"],
+    note:"PO to GRN is the only inbound stock path. Landed cost is not a column; it is appended inside the PO notes blob." },
+  { k:"finance", name:"Finance", n:8,
+    cols:["bank_accounts","bank_transactions","cash_register_shifts","cash_drawer_operations","expenses","expense_categories","number_sequences","payment_links"],
+    note:"Double-entry banking, a cash drawer ledger, expenses, and document numbering. There is no cash refund ledger anywhere in this group." },
+  { k:"crm", name:"CRM and WhatsApp", n:11,
+    cols:["customers","customer_interactions","loyalty_accounts","loyalty_tiers","loyalty_settings","loyalty_transactions","whatsapp_chats","whatsapp_messages","whatsapp_opt_outs","broadcast_messages","label_print_queue"],
+    note:"Conversations, loyalty, opt-outs, the broadcast queue, and the barcode label queue. Campaign attribution expects a twelfth collection that does not exist." },
+  { k:"system", name:"System", n:10,
+    cols:["users","roles","user_roles","store_settings","activity_logs","_superusers","_mfas","_otps","_externalAuths","_authOrigins"],
+    note:"Auth, roles, key-value store settings, and the audit log. Tenancy is bolted on through account_email on roughly thirty collections." }
+];
+
+const DRIFT = [
+  ["whatsapp_campaigns","campaign-attribution.ts:10,89,141,220","Attribution and campaign ROI cannot persist"],
+  ["inventory_locations","multi-location.ts:133,212,214,352,458,513","Locations degrade to localStorage per device"],
+  ["inventory_transfers","multi-location.ts (same paths)","Transfers between locations are never saved"],
+  ["catalog_sync_logs","catalog-sync.ts:54,149,163","Catalog syncs run unlogged"],
+  ["shipments","BarcodeScanDispatchModal.tsx:286","AWB dispatch records are lost"],
+  ["cash_registers","backup.ts","Backup enumerates a collection that does not exist"]
+];
+
+const FEATURES = [
+  ["Setup wizard","onboarding","live","Provisions a tenant database and seeds the schema"],
+  ["Email and password login","onboarding","live","Tenant resolved by email before auth"],
+  ["Session restore","onboarding","live","Auth store hydrated from localStorage"],
+  ["Five seeded roles","onboarding","partial","Checks run in the UI only, never in API routes (S-07)"],
+  ["Per-tenant database","onboarding","live","Physical SQLite file and process per account"],
+  ["Account switching","onboarding","partial","activeTenantEmail is a process global (S-05)"],
+  ["PIN or QR cashier switch","onboarding","absent","Roadmap only"],
+  ["Product and variant CRUD","catalog","live","Size, color, material matrix with per-variant stock"],
+  ["Categories and attributes","catalog","live","Normalized attribute values"],
+  ["Code128 barcode generation","catalog","live","SVG and canvas via jsbarcode"],
+  ["Batch label printing","catalog","live","Thermal roll and A4 sheets"],
+  ["Low stock alerts","catalog","live","Threshold per variant"],
+  ["Stock movement audit trail","catalog","live","Every increment and decrement logged"],
+  ["Excel bulk import","catalog","live","36 KB import module plus template route"],
+  ["SKU generator","catalog","live","Encodes category, metal, purity, size"],
+  ["Metal rate engine","catalog","live","Rate-based pricing in jewelry-engine.ts"],
+  ["Manufacturing BOM","catalog","scaffold","Engine only, zero importers"],
+  ["Karigar job work","catalog","scaffold","Reconciliation math exists, no ledger screen"],
+  ["Imitation jewelry taxonomy","catalog","scaffold","Kundan, polki, CZ, plating, tiers. Zero importers"],
+  ["Anti-oversell reservations","catalog","scaffold","In-memory manager, no importer, not persistent"],
+  ["Multi-location stock","catalog","partial","Reads phantom collections, falls back to localStorage"],
+  ["Stock discrepancy audit","catalog","partial","Quarantine ledger, no reconciliation screen"],
+  ["Old gold trade-in","catalog","absent","No purity deduction or valuation"],
+  ["HUID and certificate vault","catalog","absent","No field, storage, or print block"],
+  ["Savings scheme","catalog","absent","No installment model"],
+  ["Cart and bill discounts","pos","live","Item and order level"],
+  ["Variant picker and search","pos","live","Grid, keyboard, barcode wedge"],
+  ["Hardware barcode scanner","pos","live","Keyboard wedge with context routing"],
+  ["Camera scanning","pos","live","html5-qrcode"],
+  ["Cash, card, UPI, PhonePe tenders","pos","live","One tender per sale"],
+  ["Split tender","pos","absent","Tenders are exclusive"],
+  ["Cash drawer and variance","pos","partial","Refunds never reach reconciliation (D-05)"],
+  ["Blind shift close","pos","live","Expected balance hidden during count"],
+  ["Receipt printing","pos","live","Browser and Android spooler"],
+  ["GST included at checkout","pos","live","Cart shows the tax already inside the quoted total, loaded from store settings"],
+  ["Offline sale queue","pos","scaffold","Module exists, nothing queues into it"],
+  ["Held carts","pos","absent","No park and resume"],
+  ["B2B and B2C invoices","gst","live","State codes drive CGST plus SGST versus IGST"],
+  ["Invoice numbering","gst","partial","In-process mutex only (D-19)"],
+  ["Amount in words","gst","live","Indian numbering, handles negatives"],
+  ["Reverse charge","gst","live","Field and print output"],
+  ["E-way bill JSON","gst","partial","Defaults state to Karnataka when unset (D-28)"],
+  ["GSTR-1 engine","gst","scaffold","Full GSTN schema exists, reports use a simpler builder"],
+  ["GSTIN validation","gst","partial","Regex only, no checksum (D-16)"],
+  ["Credit notes","gst","partial","Created and restocked, over-return unchecked (D-06)"],
+  ["Invoice PDF","gst","live","Print stylesheet based"],
+  ["E-invoice and IRN","gst","absent","Not implemented"],
+  ["Quotations and estimates","orders","live","Validity dates and conversion"],
+  ["Order lifecycle","orders","live","Draft through invoiced"],
+  ["Order to invoice","orders","live","Idempotent per order; buyer GSTIN and product HSN carried through"],
+  ["Delivery challans","orders","live","Job work, transfer, exhibition, approval"],
+  ["Purchase orders and GRN","orders","live","Accepted and rejected with reasons"],
+  ["GRN over-receipt guard","orders","partial","Racy across processes (D-12)"],
+  ["Vendor SKU mapping","orders","live","Lead times and purchase history"],
+  ["Advance tracking","orders","partial","Fields exist, no ledger integration"],
+  ["Landed cost reconciliation","orders","partial","Stored in a notes blob, lost on concurrency (D-13)"],
+  ["Customer directory","crm","live","Lifetime value, GSTIN, addresses"],
+  ["Interaction log","crm","live","Preferences and anniversaries"],
+  ["Loyalty accrual and tiers","crm","partial","Redemption cap not enforced (D-17)"],
+  ["Points ledger","crm","live","Earn, redeem, expire, adjust"],
+  ["RFM segmentation","crm","partial","Computed, not used for targeting"],
+  ["Campaign attribution","crm","partial","Reads a collection that does not exist (D-36)"],
+  ["Lifecycle triggers","crm","partial","Birthday and lapsed VIP scanners"],
+  ["Bank registry and double entry","finance","live","Overdraft pre-check with compensation"],
+  ["Expense vouchers","finance","live","Categories, payment modes, receipts"],
+  ["Cash refunds","finance","absent","No writer for total_cash_refunds (D-05)"],
+  ["Cheque and PDC tracking","finance","scaffold","State machine only, no screen"],
+  ["Bank reconciliation","finance","absent","Manual entry only"],
+  ["Dashboard KPIs","reports","live","Today, shifts, low stock"],
+  ["Report pages","reports","live","Sales, stock, GST"],
+  ["Inventory valuation","reports","partial","Inherits the landed cost gap"],
+  ["Channel attribution","reports","partial","Enum cannot hold configured channels (D-37)"],
+  ["Scheduled reports","reports","absent","No scheduler"],
+  ["Storefront content API","storefront","live","Unauthenticated read"],
+  ["WhatsApp OTP login","storefront","partial","No daily cap, token on DB failure (S-09)"],
+  ["COD and concierge orders","storefront","partial","Unauthenticated stock decrement (S-03)"],
+  ["Catalog feed for Meta","storefront","partial","Tenant leakage and public cache (S-12)"],
+  ["Product image streaming","storefront","partial","No tenant guard (S-14)"],
+  ["Customer self-service delete","storefront","live","Token and tenant checked"],
+  ["QR pairing and sessions","whatsapp","live","Restore hardened across recent commits"],
+  ["Chat persistence","whatsapp","live","Unread counts and attribution"],
+  ["Contact resolution","whatsapp","live","Customer, vendor, or new lead"],
+  ["Context actions","whatsapp","live","Right click and long press"],
+  ["Add to POS cart bridge","whatsapp","live","BroadcastChannel plus storage event"],
+  ["Vendor ingestion","whatsapp","live","Draft GRN and barcode queue"],
+  ["Payment links and polling","whatsapp","live","Settlement loop, webhook unarmed"],
+  ["Intent router and approval banner","whatsapp","live","STOP opt-out and draft order"],
+  ["Product cards in chat","whatsapp","live","Live stock and price"],
+  ["Catalog publishing","whatsapp","partial","Meta batch key doubles as the API key"],
+  ["Broadcast campaigns","whatsapp","live","Jitter, quota, opt-out filtering"],
+  ["Flash drops","whatsapp","partial","No scheduling surface"],
+  ["Admin bot commands","whatsapp","scaffold","Zero importers and schema-invalid writes (D-38)"],
+  ["WhatsApp Flows","whatsapp","absent","Roadmap"],
+  ["Desktop shell","platform","live","Supervises and restarts the sidecar"],
+  ["Desktop database","platform","absent","PocketBase is not bundled or started (D-09)"],
+  ["Static production build","platform","absent","13 routes cannot exist under export (D-08)"],
+  ["Native Android APK","platform","partial","Blocked by exFAT symlinks on this machine"],
+  ["PWA install","platform","live","Manifest and apple meta"],
+  ["Offline mutation queue","platform","scaffold","No importer, no connectivity listener"],
+  ["Google Drive sync","platform","scaffold","Simulated with a timeout"],
+  ["Backup and restore","platform","partial","31-collection module is unreachable (D-39)"],
+  ["Activity log","platform","live","Before and after JSON snapshots"],
+  ["Automated tests","platform","absent","Hand-run scripts, no runner"],
+  ["CI pipeline","platform","absent","No workflow files"]
+];
+
+const DEFECTS = [
+  // P1
+  { id:"D-01", sev:"P1", status:"fixed", area:"money", title:"POS invoices claim to be paid for more than the customer paid",
+    where:"src/lib/invoice.ts:1082-1190 · src/app/pos/page.tsx:714-717",
+    impact:"Every POS invoice is stamped paid while grand_total exceeds paid_amount by the tax. GST reports overstate output tax and drawer takings never reconcile.",
+    fix:"Pick one tax model. Recommended: treat POS totals as tax inclusive, back-compute the taxable value, and set paid_amount to grand_total." },
+  { id:"D-02", sev:"P1", status:"fixed", area:"tax", title:"POS GST is computed on the pre-discount base",
+    where:"src/lib/invoice.ts:1085-1111,1172 vs src/lib/orders.ts:246-251",
+    impact:"Discounted sales overstate CGST and SGST, and the two invoice paths disagree with each other. GST law requires a discount-adjusted taxable value.",
+    fix:"Apply the discount before tax in both paths and share one calculation function." },
+  { id:"D-03", sev:"P1", status:"fixed", area:"stock", title:"Any 400 on a stock update is read as oversell and writes stock to zero",
+    where:"src/lib/pos-sales.ts:166-176",
+    impact:"A permissions or validation error silently destroys a variant's stock while the movement ledger still records the full deduction. The two never agree again.",
+    fix:"Match only the min-constraint error code. On anything else, fail the line and compensate." },
+  { id:"D-04", sev:"P1", area:"ui", title:"Conditional hooks can crash the WhatsApp chat view",
+    where:"src/app/whatsapp/page.tsx:295-299",
+    impact:"An early return before three useState calls changes hook order when a quoted reply is followed by a plain message. The page throws and the chat is lost until reload.",
+    fix:"Move the early return below the hooks." },
+  { id:"D-05", sev:"P1", area:"money", title:"Cash refunds are never recorded anywhere",
+    where:"src/lib/returns.ts:424-435 · src/lib/register.ts:183-184,427-428",
+    impact:"total_cash_refunds has no writer in the entire codebase. Every cash return produces a false drawer variance and never reaches banking.",
+    fix:"Write a refund drawer operation and increment the shift refund total with the status change." },
+  { id:"D-06", sev:"P1", area:"money", title:"Returns can exceed the invoiced quantity",
+    where:"src/lib/returns.ts:458-499 · src/app/returns/create/page.tsx:119",
+    impact:"Two visits against the same line credit double the value and restock double the goods. The only cap is inside one form.",
+    fix:"Sum prior non-cancelled credit note lines per invoice item and reject anything above the remainder." },
+  { id:"D-07", sev:"P1", area:"tax", title:"Exchanges ship goods with no tax document and book a negative payment",
+    where:"src/lib/returns.ts:660-670,742-793 · src/lib/invoice.ts:172-175",
+    impact:"Output GST on replacement jewelry is never recorded, and the negative payment row later distorts paid_amount and the customer balance.",
+    fix:"Issue an exchange invoice or debit note, and keep payment rows non-negative." },
+  { id:"D-08", sev:"P1", area:"build", title:"The release pipeline cannot produce the artifact the shell expects",
+    where:"next.config.ts:9 · 13 files under src/app/api · tauri.conf.json:7,10",
+    impact:"Static export cannot contain dynamic route handlers. npm run tauri:build fails, and a forced export would lose provisioning, checkout, payments, and catalog sync.",
+    fix:"Choose server-backed or endpoint-free (see section 06) and delete the losing path." },
+  { id:"D-09", sev:"P1", area:"build", title:"The desktop package contains no database engine",
+    where:"src-tauri/tauri.conf.json:32-34 · src-tauri/src/lib.rs:24-58",
+    impact:"The installer declares only the WhatsApp sidecar. A packaged app opens a UI with no database, and fails silently.",
+    fix:"Bundle PocketBase, start it from Rust on a free port, pass the URL to the webview, and stop it on exit." },
+  { id:"S-01", sev:"P1", area:"security", title:"Unauthenticated tenant provisioning resets any merchant's superuser password",
+    where:"src/app/api/system/tenant-db/route.ts:36-64 · src/lib/tenant-db-manager.ts:310",
+    impact:"An anonymous POST runs a superuser upsert against any tenant data directory, then logs in to that database as superuser.",
+    fix:"Require an operator JWT and never accept a password change from an unauthenticated request." },
+  { id:"S-02", sev:"P1", area:"security", title:"Unauthenticated global tenant switch and tenant enumeration",
+    where:"src/app/api/system/tenant-db/route.ts:14-20 · tenant-db-manager.ts:376-393",
+    impact:"A GET flips the process-global active tenant and returns whether an email exists plus its port. Every later server request inherits that tenant.",
+    fix:"Remove the write from the GET path and authenticate the lookup." },
+  { id:"S-03", sev:"P1", area:"security", title:"Unauthenticated storefront order decrements real stock",
+    where:"src/app/api/storefront/order/route.ts:86-87,220-288",
+    impact:"The body chooses the tenant. For cash on delivery the route writes an order and decrements product and variant stock with no payment and no credential.",
+    fix:"Authenticate the caller, bind the tenant to the session, and never decrement stock before payment." },
+  { id:"S-04", sev:"P1", area:"tenancy", title:"Filter injection selects which tenant a storefront request binds to",
+    where:"src/lib/storefront.ts:22-26",
+    impact:"A crafted accountEmail breaks out of the filter and returns another tenant's binding, which then becomes the write target for unauthenticated flows.",
+    fix:"Apply sanitizeFilter and validate the email against an exact match." },
+  { id:"S-05", sev:"P1", area:"tenancy", title:"One mutable PocketBase client carries superuser sessions across requests",
+    where:"src/lib/pocketbase.ts:32,80-128 · src/app/api/pos/payment/route.ts:32",
+    impact:"Concurrent requests for different tenants race on one global client. Any route that forgets to re-authenticate inherits the previous tenant's superuser session.",
+    fix:"Create a client per request and pass it explicitly; never hold a superuser session in module state." },
+  { id:"S-06", sev:"P1", area:"security", title:"Tenant superuser passwords sit in plaintext with a hardcoded fallback",
+    where:"tenant-db-manager.ts:286,325,428,442,230",
+    impact:"registry.json stores each tenant password, a default password exists in code, and tenant databases bind to all interfaces. Local file read or LAN access means full control.",
+    fix:"Store hashed credentials or use the OS keychain, delete the fallback, and bind loopback." },
+  // P2
+  { id:"D-10", sev:"P2", status:"fixed", area:"money", title:"POS rollback leaves shift totals inflated and an orphan invoice",
+    where:"src/lib/pos-sales.ts:211,215,226-262",
+    impact:"Steps after stock deduction are outside the compensation, so a late failure leaves the drawer summary overstated and an invoice with no sale behind it.",
+    fix:"Move shift and invoice writes inside the compensated block and add deletion." },
+  { id:"D-11", sev:"P2", status:"fixed", area:"money", title:"Invoice headers and items are written without rollback",
+    where:"src/lib/invoice.ts:522-527,531-580",
+    impact:"An item failure leaves an empty invoice and burns a document number, so the sequence skips.",
+    fix:"Create items first, or delete the header and release the number on failure." },
+  { id:"D-12", sev:"P2", area:"stock", title:"GRN over-receipt guard is racy and its failures are swallowed",
+    where:"src/lib/purchase.ts:678-685,720-738",
+    impact:"Two concurrent GRNs both pass the cap. A failed stock or PO write only logs, so received quantity and physical stock diverge permanently.",
+    fix:"Serialize per PO item and fail the GRN on any write error." },
+  { id:"D-13", sev:"P2", area:"money", title:"Landed cost is stored inside a notes blob and lost on concurrency",
+    where:"src/lib/purchase.ts:1244-1300",
+    impact:"Read, add, write the whole blob: two reconciliations lose one cost, understating inventory value. The filter at 1246 is also unsanitized.",
+    fix:"Add a numeric column and use atomic increments." },
+  { id:"D-14", sev:"P2", area:"tax", title:"POS hardcodes 3 percent jewelry GST and ignores the line rate",
+    where:"src/lib/invoice.ts:1082 · src/lib/pos-sales.ts:114-133",
+    impact:"Imitation jewelry at 18 percent and making charges at 5 percent are under-taxed on every sale.",
+    fix:"Persist gst_rate on sale_items and use it at invoicing." },
+  { id:"D-15", sev:"P2", area:"tax", title:"Order to invoice emits 0 percent GST and a wrong HSN",
+    where:"src/lib/orders.ts:156,250,256",
+    impact:"A GST-registered store can issue a 0 percent invoice, and every line is stamped 7117 so the HSN summary disagrees with the invoice.",
+    fix:"Default to the store rate and derive HSN from the product." },
+  { id:"D-16", sev:"P2", area:"tax", title:"GSTIN is validated by shape only, never by checksum",
+    where:"src/lib/gst.ts:226-237 · src/lib/eway-bill.ts:689-694",
+    impact:"Any 15-character string of the right shape prints on invoices and e-way bills, then fails at filing.",
+    fix:"Implement the mod-36 check digit once and reuse it." },
+  { id:"D-17", sev:"P2", area:"money", title:"Loyalty balances lose updates and the redemption cap is unenforced",
+    where:"src/lib/loyalty.ts:313-387",
+    impact:"Absolute balance writes outside the queue lose points under concurrency, and a customer can pay a whole bill in points.",
+    fix:"Use atomic increments inside the queue and enforce the percentage at redemption." },
+  { id:"D-18", sev:"P2", area:"stock", title:"Negative quantities invert stock movements",
+    where:"src/lib/pos-sales.ts:113-152 · schema quantity fields",
+    impact:"A negative cart line increases stock while shrinking the bill, which is a direct inventory loss primitive.",
+    fix:"Validate quantity is positive and finite at every write." },
+  { id:"D-19", sev:"P2", area:"money", title:"Document numbering is only safe inside one process",
+    where:"src/lib/sequence-generator.ts:68-82 · src/lib/concurrency.ts:7-34",
+    impact:"Two windows or the desktop app plus a browser can allocate the same number. Unique indexes turn that into a visible failure, not correctness.",
+    fix:"Allocate through a transaction or a single writer." },
+  { id:"D-20", sev:"P2", status:"fixed", area:"money", title:"Order to invoice retries duplicate the invoice",
+    where:"src/lib/orders.ts:287-326",
+    impact:"If the order status update fails, the retry creates a second invoice. There is no unique index on invoices.order.",
+    fix:"Add the unique index and make the write idempotent." },
+  { id:"D-21", sev:"P2", area:"money", title:"Discount engine has four separate gaps",
+    where:"src/lib/discounts.ts:12,156,266,315-323,362",
+    impact:"BOGO yields zero discount, codes are not sanitized, usage limits race, and returns never reverse usage.",
+    fix:"Implement BOGO or remove it, sanitize, serialize usage, and reverse on return." },
+  { id:"D-22", sev:"P2", area:"ui", title:"Authentication is decorative on the client",
+    where:"src/components/auth/ProtectedRoute.tsx · src/app/layout.tsx",
+    impact:"Nothing redirects an unauthenticated visitor. Navigation renders every item to every role. Two pages use the guard, and it shows a card instead of redirecting.",
+    fix:"Guard the shell, redirect to login, and filter navigation by capability." },
+  { id:"D-23", sev:"P2", area:"ui", title:"Pages bypass the service layer at scale",
+    where:"97 direct pb.collection calls across 26 UI files",
+    impact:"Validation, tenancy injection, and rollback exist in some paths and not others. Three pages exceed 100 KB and every page is a client component.",
+    fix:"Extract page data access into hooks backed by services, starting with setup and inventory." },
+  { id:"D-24", sev:"P2", area:"platform", title:"No automated tests and no CI",
+    where:"package.json · src/scripts/test-*.ts",
+    impact:"Every regression in this register was findable by a test that does not exist. Hand-run scripts do not protect changes.",
+    fix:"Adopt Vitest for services and Playwright for POS, returns, and drawer flows, then wire CI." },
+  { id:"D-36", sev:"P2", area:"data", title:"Six collections the code uses do not exist",
+    where:"campaign-attribution.ts · multi-location.ts · catalog-sync.ts · backup.ts",
+    impact:"Campaign attribution, locations, transfers, sync logs, shipments, and part of backup silently produce nothing. Multi-location degrades to localStorage.",
+    fix:"Create the collections in a migration or delete the features and their entry points." },
+  { id:"S-07", sev:"P2", area:"security", title:"RBAC is enforced in the UI only",
+    where:"src/lib/rbac.ts:241-300 · one importer",
+    impact:"Any valid staff token can create payment links, push to Meta, and write storefront content. A cashier with zero capabilities passes every route check.",
+    fix:"Check capabilities server-side in every route that mutates money or catalog." },
+  { id:"S-08", sev:"P2", area:"security", title:"Sidecar bearer token defaults to a literal in the client bundle",
+    where:"src/lib/whatsapp.ts:10 · wppconnect-sidecar/server.js:18,98-104",
+    impact:"The token ships to browsers. Loopback binding and an origin allowlist are the only controls against full WhatsApp account control.",
+    fix:"Provision a per-install secret server-side and stop importing it into client code." },
+  { id:"S-09", sev:"P2", area:"security", title:"OTP has no daily cap and is not bound to a tenant",
+    where:"src/lib/otp-store.ts:76,98 · send-otp/route.ts:66-87",
+    impact:"Unlimited WhatsApp messages on the merchant account, and a code minted for one tenant verifies against another.",
+    fix:"Enforce a per-phone daily cap and include the tenant in the OTP key." },
+  { id:"S-10", sev:"P2", area:"security", title:"Razorpay webhook secret is unset, so every webhook is rejected",
+    where:"src/lib/razorpay.ts:20-25,639-665",
+    impact:"Settlement depends entirely on the client poller. There is no event-id dedupe, timestamp tolerance, or amount comparison.",
+    fix:"Require the secret at startup and verify idempotently." },
+  { id:"S-11", sev:"P2", area:"security", title:"Customer session secret is generated per process",
+    where:"src/lib/customer-token.ts:4-14",
+    impact:"With no configured secret, tokens break on restart and across workers. TTL is 30 days with no revocation list.",
+    fix:"Require a configured secret and add a revocation mechanism." },
+  { id:"S-12", sev:"P2", area:"security", title:"Catalog feed is unauthenticated and can be poisoned",
+    where:"src/app/api/catalog/feed/route.ts:20-53,179",
+    impact:"With no account it serves an arbitrary tenant, trusts x-forwarded-host, and caches publicly for 300 seconds.",
+    fix:"Require the sync key and derive the origin from configuration." },
+  { id:"S-13", sev:"P2", area:"security", title:"OTP verification issues tokens for customers that were never saved",
+    where:"src/app/api/storefront/auth/verify-otp/route.ts:70-90",
+    impact:"When the database is unreachable, a valid 30-day token is signed against a temporary id, and customers are auto-created with 50 points.",
+    fix:"Fail closed when persistence fails." },
+  // P3
+  { id:"D-25", sev:"P3", area:"money", title:"Opening float uses a value outside the schema enum, so the audit row never persists",
+    where:"src/lib/register.ts:107-114",
+    impact:"The create fails and the error is swallowed, so opening float has no audit trail.",
+    fix:"Add opening_float to the enum and stop swallowing the error." },
+  { id:"D-26", sev:"P3", area:"security", title:"Expense search reintroduces filter injection",
+    where:"src/lib/expenses.ts:113-119",
+    impact:"Raw input is interpolated into a PocketBase filter in the one module not yet sanitized.",
+    fix:"Import and apply sanitizeFilter." },
+  { id:"D-27", sev:"P3", area:"money", title:"Paid amount fallback misfires on zero-value invoices",
+    where:"src/lib/invoice.ts:1188",
+    impact:"A legitimate 100 percent discount is treated as a missing total and stamped as paid revenue.",
+    fix:"Use nullish coalescing and clamp to the grand total." },
+  { id:"D-28", sev:"P3", area:"tax", title:"E-way bills silently default to Karnataka when the state code is empty",
+    where:"src/lib/eway-bill.ts:629,635,638",
+    impact:"A store with no state code files from the wrong state, and totalValue can disagree with the invoice.",
+    fix:"Block generation until state codes and GSTIN are set." },
+  { id:"D-29", sev:"P3", area:"data", title:"The store settings writer creates rows the reader cannot see",
+    where:"src/lib/invoice.ts:390-408",
+    impact:"Rows are written without account_email while the reader filters on it. The writer has no callers, so it is dead code waiting to be reused.",
+    fix:"Delete it and use the settings service." },
+  { id:"D-30", sev:"P3", area:"platform", title:"Client default port disagrees with the dev script",
+    where:"src/lib/pocketbase.ts:4 · scripts/dev-all.js:106-123",
+    impact:"The client targets 8091 while the script serves 8090. It works only because of a fallback probe, and new callers inherit the inconsistency.",
+    fix:"Derive both from one source." },
+  { id:"D-31", sev:"P3", area:"ui", title:"Navigation points at a route that does not exist and omits others",
+    where:"src/components/layout/Sidebar.tsx:121 · MobileDrawer",
+    impact:"The support link 404s, several real routes are reachable only from inside pages, and the drawer omits expense categories.",
+    fix:"Align both navigation surfaces with the route table." },
+  { id:"D-32", sev:"P3", area:"ui", title:"The design system is half applied",
+    where:"src/app/layout.tsx:45 · src/app/globals.css:172-174 · 145 hex literals",
+    impact:"Dark mode is hardcoded, the light palette is dead, 74 dark utilities never fire, the sans token references itself, and the display font is never loaded.",
+    fix:"Pick one theme strategy, fix the token block, and replace literals with tokens." },
+  { id:"D-33", sev:"P3", area:"ui", title:"Pinch zoom is disabled and content can sit under the mobile nav",
+    where:"src/app/layout.tsx:21-22 · fixed pb-16",
+    impact:"Accessibility regression, and on notched devices the last row of content hides behind the navigation.",
+    fix:"Allow scaling and reserve the safe area." },
+  { id:"D-34", sev:"P3", area:"platform", title:"E-commerce sync clients are stubs",
+    where:"src/lib/sync/shopify.ts:298-341 · woocommerce.ts:184-216",
+    impact:"Seven upsert and inventory TODOs, zero importers, and a Settings button that alerts Coming Soon.",
+    fix:"Implement or remove the surface." },
+  { id:"D-35", sev:"P3", area:"platform", title:"Catalog integration hardcodes a catalog id and phone number",
+    where:"src/app/api/catalog/batch/route.ts:70-72 · whatsapp.ts:1504-1505",
+    impact:"The integration only works for one business and leaks identity into the bundle.",
+    fix:"Move both into store settings." },
+  { id:"D-37", sev:"P3", area:"data", title:"The channel enum cannot represent the pricing engine",
+    where:"schema select on sales.channel · channel-pricing.ts · pos-sales.ts:92",
+    impact:"Website, wholesale, exhibition, and custom channels cannot be stored, so channel pricing cannot be reported.",
+    fix:"Extend the enum or store a validated text value." },
+  { id:"D-38", sev:"P3", area:"data", title:"The WhatsApp admin bot writes schema-invalid data and nothing calls it",
+    where:"whatsapp-commander.ts:61,65,69,84",
+    impact:"Uppercase statuses and a non-existent razorpay_link_id mean its commands would fail at the database. Zero importers.",
+    fix:"Fix the enum casing and columns, then wire it or delete it." },
+  { id:"D-39", sev:"P3", area:"platform", title:"A dead client data layer sits beside inline queries",
+    where:"src/lib/hooks.ts · alerts.ts · backup.ts",
+    impact:"The dashboard recomputes statistics inline while purpose-built hooks go unused, and full backup and restore are unreachable from the UI.",
+    fix:"Adopt the hooks and expose backup, or remove both." },
+  { id:"S-14", sev:"P3", area:"security", title:"Single-record reads ignore the tenant parameter",
+    where:"src/app/api/catalog/image/route.ts:19-21 · inventory/template/route.ts:4-8",
+    impact:"A server superuser getOne returns metadata across tenants, and the template route serves whichever tenant the global client is authenticated as.",
+    fix:"Filter every read by tenant explicitly." },
+  { id:"S-15", sev:"P3", area:"security", title:"An unauthenticated proxy scrapes a courier site",
+    where:"src/app/api/tracking/st-courier/route.ts:44,162-168",
+    impact:"Anyone can use the deployment as a free scraping proxy, with a 60 second public cache and no rate limit.",
+    fix:"Add a rate limit and a signed or scoped caller." },
+  { id:"S-16", sev:"P3", area:"security", title:"Meta catalog identity is hardcoded and the sync key equals the Graph token",
+    where:"src/app/api/catalog/batch/route.ts:39,70-72",
+    impact:"A Meta Graph token doubles as a bearer-equivalent API key, and the catalog id is fixed to one business.",
+    fix:"Use a separate scoped key and configuration values." }
+];
+
+const BUILD_OPTIONS = [
+  { id:"A", name:"Server-backed", pick:true,
+    summary:"Drop static export and run the Next server inside or beside the desktop app.",
+    points:["All 13 API routes keep working","Rust must supervise a Node process","Installer must ship Node or a bundled server","Webhook and OTP flows become real"],
+    verdict:"Highest fidelity, highest packaging cost." },
+  { id:"B", name:"Endpoint-free", pick:false,
+    summary:"Keep static export and move the API surface into the existing WhatsApp sidecar.",
+    points:["No Node server beyond the sidecar already present","13 handlers rewritten as sidecar routes","Next routing conveniences are lost","Desktop bundle stays small"],
+    verdict:"Lowest packaging cost, real rewrite." }
+];
+
+const BLOCKERS = [
+  ["P1","Static export versus route handlers","next.config.ts:9 enables output export in production. Three handlers declare force-dynamic. The export step cannot emit them, so the build stops.","D-08"],
+  ["P1","No database in the installer","Only the WhatsApp sidecar is declared as an external binary. The Rust supervisor never starts PocketBase.","D-09"],
+  ["P1","Silent data loss on anonymous routes","Six API handlers require no credential. Tenant provisioning can reset a superuser password.","S-01"],
+  ["P2","exFAT volume blocks native Android","Tauri and Gradle need symlinks for libapp_lib.so. exFAT cannot store them, so the APK build aborts on this machine.","D-33"],
+  ["P2","No webpack fallback for release builds","The dev script passes --webpack to avoid the Turbopack symlink panic. next build passes no flag.","D-08"]
+];
+
+const ROADMAP = [
+  { name:"Release blockers", sub:"ships first", items:[
+    ["Resolve the build architecture","Choose server-backed or endpoint-free, then delete the other path."],
+    ["Ship the database","Bundle PocketBase, start it from Rust, pass the URL to the webview."],
+    ["Authenticate the control plane","Require an operator token on tenant provisioning and storefront order intake."],
+    ["Fix the POS tax model","One decision, then four defects close together."],
+    ["Make authorization real","Route guard, capability filtering, and server-side checks."]
+  ]},
+  { name:"Next", sub:"money and stock", items:[
+    ["Book cash refunds","A refund writer for the drawer and the shift total."],
+    ["Bound returns","Cumulative check against prior credit notes."],
+    ["Serialize stock and numbering","One writer or transactions for GRN, sequences, and loyalty."],
+    ["Persist line tax rates","Write gst_rate at sale time and use it at invoicing."],
+    ["Add the missing collections","Or delete six features that cannot persist."]
+  ]},
+  { name:"Later", sub:"product gaps", items:[
+    ["Split tender","Cash plus UPI in one sale."],
+    ["Old gold and trade-in","Purity deduction and valuation at the counter."],
+    ["Karigar ledger","Wire the existing manufacturing engine to a screen."],
+    ["GSTN filing","Use the GSTR-1 engine instead of the simple report."],
+    ["Tests and CI","Vitest for services, Playwright for the counter flows."]
+  ]}
+];
+
+const ORPHANS = [
+  ["manufacturing-engine.ts","Karigar BOM, metal loss, tolerance","No route, no importer"],
+  ["imitation-jewelry-engine.ts","Craft taxonomy and wholesale tiers","No route, no importer"],
+  ["gstr1-engine.ts","Full GSTN schema with CDNR and HSN","Reports use a simpler builder"],
+  ["returns-qc-engine.ts","QC grading and routing","Returns never call it"],
+  ["cross-border-engine.ts","LUT export invoice, static FX","No route"],
+  ["cheque-engine.ts","PDC lifecycle and maturity","No route, no collection"],
+  ["omnichannel-buffer-engine.ts","Channel buffers, cart reservations","No importer, in-memory only"],
+  ["sync-engine.ts and sync clients","Shopify and WooCommerce sync","Seven TODOs, no importer"],
+  ["backup.ts","31-collection backup and restore","No UI, settings exports six collections"],
+  ["offline-queue.ts","Queued mutation replay","No importer, no connectivity listener"],
+  ["hooks.ts and alerts.ts","Client data hooks and alerts","No importer, dashboard recomputes inline"],
+  ["whatsapp-commander.ts","Admin commands in chat","No importer, schema-invalid writes"]
+];
+
+const VERIFY = [
+  ["Type check","npx tsc --noEmit --incremental false","pass","Exit 0, clean at f0e96b4. No defect in this page is a type error."],
+  ["Type check, default","npx tsc --noEmit","blocked","TS5033 EPERM writing tsconfig.tsbuildinfo on the exFAT volume."],
+  ["Lint","npx eslint src","fail","332 problems: 7 errors, 325 warnings. Four errors are the conditional hooks defect."],
+  ["Routes counted","40 page files, 13 route handlers","pass","Matches appendix A and B in the master document."],
+  ["Production build","npm run build","blocked","Stopped at .next/trace-build by file permissions. The export conflict is configuration-level and independent."],
+  ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
+  ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."]
+];
+
+/* =====================================================================
+   Tiny helpers
+   ===================================================================== */
+const $ = (sel, root) => (root || document).querySelector(sel);
+const $$ = (sel, root) => Array.prototype.slice.call((root || document).querySelectorAll(sel));
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+/* =====================================================================
+   Theme
+   ===================================================================== */
+(function theme() {
+  const root = document.documentElement;
+  let saved = null;
+  try { saved = localStorage.getItem("lum-explorer-theme"); } catch (e) {}
+  if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+  $("#themeBtn").addEventListener("click", () => {
+    const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("lum-explorer-theme", next); } catch (e) {}
+  });
+  $("#printBtn").addEventListener("click", () => window.print());
+})();
+
+/* =====================================================================
+   Progress and scroll spy
+   ===================================================================== */
+(function nav() {
+  const bar = $("#progress");
+  const links = $$(".rail a");
+  const sections = links.map(a => document.querySelector(a.getAttribute("href"))).filter(Boolean);
+  function onScroll() {
+    const h = document.documentElement;
+    const max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + "%";
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+  if ("IntersectionObserver" in window) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (!e.isIntersecting) return;
+        links.forEach(a => a.setAttribute("aria-current", String(a.getAttribute("href") === "#" + e.target.id)));
+      });
+    }, { rootMargin: "-25% 0px -62% 0px", threshold: 0 });
+    sections.forEach(s => io.observe(s));
+  }
+})();
+
+/* =====================================================================
+   Vitals count up
+   ===================================================================== */
+(function vitals() {
+  // Values are set immediately. A count-up reads as a lie in print and screenshots,
+  // and this page is meant to be quoted.
+  $$("[data-count]").forEach(node => {
+    const target = Number(node.getAttribute("data-count"));
+    if (!isFinite(target)) return;
+    node.textContent = target.toLocaleString("en-IN");
+  });
+})();
+
+/* =====================================================================
+   Topology
+   ===================================================================== */
+(function topology() {
+  const svg = $("#diagram");
+  const NS = "http://www.w3.org/2000/svg";
+  const byId = {};
+  NODES.forEach(n => { byId[n.id] = n; });
+
+  function mk(tag, attrs) {
+    const n = document.createElementNS(NS, tag);
+    Object.keys(attrs || {}).forEach(k => n.setAttribute(k, attrs[k]));
+    return n;
+  }
+  function anchors(a, b) {
+    const sameCol = Math.abs((a.x + a.w / 2) - (b.x + b.w / 2)) < 30;
+    if (sameCol) {
+      if (a.y + a.h <= b.y) return [a.x + a.w / 2, a.y + a.h, b.x + b.w / 2, b.y];
+      return [a.x + a.w / 2, a.y, b.x + b.w / 2, b.y + b.h];
+    }
+    if (a.x + a.w <= b.x) return [a.x + a.w, a.y + a.h / 2, b.x, b.y + b.h / 2];
+    return [a.x, a.y + a.h / 2, b.x + b.w, b.y + b.h / 2];
+  }
+
+  const defs = mk("defs");
+  const marker = mk("marker", { id: "arrow", viewBox: "0 0 8 8", refX: "7", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" });
+  marker.appendChild(mk("path", { d: "M0,0 L8,4 L0,8 z", fill: "var(--line)" }));
+  defs.appendChild(marker);
+  const markerHot = mk("marker", { id: "arrowHot", viewBox: "0 0 8 8", refX: "7", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" });
+  markerHot.appendChild(mk("path", { d: "M0,0 L8,4 L0,8 z", fill: "var(--accent)" }));
+  defs.appendChild(markerHot);
+  svg.appendChild(defs);
+
+  const tenantLayer = mk("g", { class: "tenant-layer", id: "tenantLayer" });
+  tenantLayer.setAttribute("hidden", "");
+  svg.appendChild(tenantLayer);
+
+  const edgeGroup = mk("g");
+  const nodeGroup = mk("g");
+  svg.appendChild(edgeGroup);
+  svg.appendChild(nodeGroup);
+
+  EDGES.forEach(e => {
+    const a = byId[e.a], b = byId[e.b];
+    if (!a || !b) return;
+    const p = anchors(a, b);
+    const midX = (p[0] + p[2]) / 2;
+    const midY = (p[1] + p[3]) / 2;
+    const path = mk("path", {
+      d: "M" + p[0] + "," + p[1] + " C" + (p[0] + (p[2] - p[0]) * 0.45) + "," + p[1] + " " + (p[0] + (p[2] - p[0]) * 0.55) + "," + p[3] + " " + p[2] + "," + p[3],
+      class: "edge" + (e.hot ? " edge-hot" : ""),
+      "marker-end": "url(#" + (e.hot ? "arrowHot" : "arrow") + ")"
+    });
+    const label = mk("text", { x: midX, y: midY - 5, class: "edge-label", "text-anchor": "middle" });
+    label.textContent = e.label || "";
+    if (e.tenantOnly) { tenantLayer.appendChild(path); tenantLayer.appendChild(label); }
+    else { edgeGroup.appendChild(path); edgeGroup.appendChild(label); }
+  });
+
+  NODES.forEach(n => {
+    const g = mk("g", { class: "node", tabindex: "0", role: "button", "aria-pressed": "false", "aria-label": n.title + ": " + n.role });
+    const rect = mk("rect", {
+      x: n.x, y: n.y, width: n.w, height: n.h, rx: "10",
+      class: "box",
+      stroke: n.kind === "untrusted" ? "color-mix(in srgb, var(--p1) 45%, var(--line))" : "var(--line)",
+      "stroke-dasharray": n.kind === "external" ? "4 3" : "0"
+    });
+    const title = mk("text", { x: n.x + 13, y: n.y + 26, class: "node-label" });
+    title.textContent = n.title;
+    const sub = mk("text", { x: n.x + 13, y: n.y + 44, class: "node-sub" });
+    sub.textContent = n.sub;
+    g.appendChild(rect); g.appendChild(title); g.appendChild(sub);
+    g.addEventListener("click", () => select(n.id));
+    g.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(n.id); }
+    });
+    if (n.tenantOnly) tenantLayer.appendChild(g);
+    else nodeGroup.appendChild(g);
+  });
+
+  const inspector = $("#inspector");
+  let current = null;
+  function select(id) {
+    current = id;
+    $$(".node").forEach(g => {
+      const label = g.querySelector(".node-label").textContent;
+      const node = NODES.find(x => x.title === label);
+      g.setAttribute("aria-pressed", String(Boolean(node && node.id === id)));
+    });
+    const n = byId[id];
+    inspector.innerHTML =
+      '<h4></h4><div class="role"></div><p></p>' +
+      '<dl><dt>files</dt><dd class="f"></dd><dt>ports</dt><dd class="p"></dd><dt>control</dt><dd class="c"></dd></dl>' +
+      '<div class="risk r"></div>';
+    $("h4", inspector).textContent = n.title;
+    $(".role", inspector).textContent = n.role + (n.kind === "untrusted" ? " · UNAUTHENTICATED SURFACE" : "");
+    $("p", inspector).textContent = n.detail;
+    $(".f", inspector).textContent = n.files;
+    $(".p", inspector).textContent = n.ports;
+    $(".c", inspector).textContent = n.kind === "untrusted" ? "no credential required" : n.kind === "external" ? "outbound, optional" : "process local";
+    $(".r", inspector).textContent = n.risk;
+  }
+  select("pb");
+
+  $("#isoToggle").addEventListener("change", (e) => {
+    tenantLayer.toggleAttribute("hidden", !e.target.checked);
+    if (e.target.checked) select("tenants");
+  });
+})();
+
+/* =====================================================================
+   Sale stepper
+   ===================================================================== */
+(function stepper() {
+  const nav = $("#stepsNav");
+  const body = $("#stepBody");
+  let index = 0;
+
+  function render() {
+    $$(".step-tab", nav).forEach((b, i) => b.setAttribute("aria-selected", String(i === index)));
+    const s = STEPS[index];
+    body.innerHTML =
+      '<div class="step-main"><h4></h4><div class="step-where"></div><p class="what"></p>' +
+      '<ul class="risklist"></ul></div>' +
+      '<div class="step-side">' +
+      '<div class="side-block"><div class="k">writes</div><div class="v mono w"></div></div>' +
+      '<div class="side-block"><div class="k">where</div><div class="v mono p"></div></div>' +
+      '<div class="side-block"><div class="k">failure surface</div><div class="v r"></div></div>' +
+      '</div>';
+    $("h4", body).textContent = s.t;
+    $(".step-where", body).textContent = "step " + (index + 1) + " of " + STEPS.length;
+    $(".what", body).textContent = s.what;
+    $(".w", body).textContent = s.writes.join(", ");
+    $(".p", body).textContent = s.where;
+    const r = $(".r", body);
+    r.textContent = s.risk;
+    if (s.d) {
+      const link = el("span", "pill p1", s.d);
+      r.appendChild(document.createTextNode(" "));
+      r.appendChild(link);
+    }
+  }
+
+  STEPS.forEach((s, i) => {
+    const b = el("button", "step-tab");
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(i === 0));
+    b.innerHTML = '<span class="sn"></span><span></span>';
+    $(".sn", b).textContent = String(i + 1).padStart(2, "0");
+    b.lastChild.textContent = s.t;
+    b.addEventListener("click", () => { index = i; render(); });
+    nav.appendChild(b);
+  });
+  nav.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    index = (index + (e.key === "ArrowRight" ? 1 : STEPS.length - 1)) % STEPS.length;
+    render();
+    $$(".step-tab", nav)[index].focus();
+  });
+  render();
+})();
+
+/* =====================================================================
+   Data model
+   ===================================================================== */
+(function dataModel() {
+  const host = $("#dataGroups");
+  host.className = "grid-2";
+  GROUPS.forEach(g => {
+    const panel = el("div", "panel");
+    const head = el("div", "panel-head");
+    head.innerHTML = '<h3></h3><span class="sub"></span>';
+    $("h3", head).textContent = g.name;
+    $(".sub", head).textContent = g.n + " collections";
+    const body = el("div", "panel-body");
+    const chips = el("div");
+    chips.style.cssText = "display:flex;flex-wrap:wrap;gap:6px";
+    g.cols.forEach(c => {
+      const chip = el("span", "chip");
+      chip.style.fontSize = "11px";
+      chip.style.padding = "2px 8px";
+      chip.textContent = c;
+      chips.appendChild(chip);
+    });
+    const note = el("p", "small");
+    note.style.marginTop = "11px";
+    note.textContent = g.note;
+    body.appendChild(chips); body.appendChild(note);
+    panel.appendChild(head); panel.appendChild(body);
+    host.appendChild(panel);
+  });
+
+  const table = el("table");
+  table.innerHTML = "<thead><tr><th>Missing collection</th><th>Referenced by</th><th>Consequence</th></tr></thead>";
+  const tb = el("tbody");
+  DRIFT.forEach(row => {
+    const tr = el("tr");
+    tr.innerHTML = '<td class="path"></td><td class="path"></td><td></td>';
+    tr.children[0].textContent = row[0];
+    tr.children[1].textContent = row[1];
+    tr.children[2].textContent = row[2];
+    tb.appendChild(tr);
+  });
+  table.appendChild(tb);
+  $("#driftTable").appendChild(table);
+})();
+
+/* =====================================================================
+   Features
+   ===================================================================== */
+(function features() {
+  const matrix = $("#featMatrix");
+  const search = $("#featSearch");
+  const domain = $("#featDomain");
+  const count = $("#featCount");
+  const legend = $("#featLegend");
+  const statusBtns = $$("#featStatus button");
+  let state = "all";
+
+  const domains = Array.from(new Set(FEATURES.map(f => f[1]))).sort();
+  const all = el("option", null, "All domains");
+  all.value = "all";
+  domain.appendChild(all);
+  domains.forEach(d => {
+    const o = el("option", null, d);
+    o.value = d;
+    domain.appendChild(o);
+  });
+
+  const labels = { live:"Live", partial:"Partial", scaffold:"Scaffold", absent:"Absent" };
+  const counts = { live:0, partial:0, scaffold:0, absent:0 };
+  FEATURES.forEach(f => counts[f[2]]++);
+  $("#railFeatures").textContent = String(FEATURES.length);
+
+  statusBtns.forEach(b => b.addEventListener("click", () => {
+    state = b.getAttribute("data-status");
+    statusBtns.forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    render();
+  }));
+  search.addEventListener("input", render);
+  domain.addEventListener("change", render);
+
+  function render() {
+    const q = search.value.trim().toLowerCase();
+    const d = domain.value;
+    matrix.innerHTML = "";
+    let shown = 0;
+    FEATURES.forEach(f => {
+      if (state !== "all" && f[2] !== state) return;
+      if (d !== "all" && f[1] !== d) return;
+      if (q && (f[0] + " " + f[1] + " " + f[3]).toLowerCase().indexOf(q) === -1) return;
+      shown++;
+      const row = el("div", "frow");
+      const name = el("div");
+      name.innerHTML = '<div class="fname"></div><div class="fdomain"></div>';
+      $(".fname", name).textContent = f[0];
+      $(".fdomain", name).textContent = f[1];
+      const st = el("div");
+      const pill = el("span", "status st-" + f[2], labels[f[2]]);
+      st.appendChild(pill);
+      const note = el("div", "fnote", f[3]);
+      row.appendChild(name); row.appendChild(st); row.appendChild(note);
+      matrix.appendChild(row);
+    });
+    if (!shown) {
+      const empty = el("div", "empty");
+      empty.innerHTML = "<b>No feature matches</b>";
+      empty.appendChild(document.createTextNode("Change the status filter, the domain, or the search text."));
+      matrix.appendChild(empty);
+    }
+    count.textContent = shown + " of " + FEATURES.length;
+    legend.innerHTML = "";
+    Object.keys(labels).forEach(k => {
+      const s = el("span");
+      s.appendChild(el("i"));
+      s.lastChild.style.cssText = "width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--" + (k === "live" ? "ok" : k === "partial" ? "p2" : k === "scaffold" ? "info" : "faint") + ")";
+      s.appendChild(document.createTextNode(labels[k] + " " + counts[k]));
+      legend.appendChild(s);
+    });
+  }
+  render();
+})();
+
+/* =====================================================================
+   Defects
+   ===================================================================== */
+(function defects() {
+  const list = $("#defList");
+  const search = $("#defSearch");
+  const area = $("#defArea");
+  const count = $("#defCount");
+  const p1Only = $("#p1Only");
+  const sevBtns = $$("#defSev button");
+  let sev = "all";
+
+  const areas = Array.from(new Set(DEFECTS.map(d => d.area))).sort();
+  const all = el("option", null, "All areas");
+  all.value = "all";
+  area.appendChild(all);
+  areas.forEach(a => {
+    const o = el("option", null, a);
+    o.value = a;
+    area.appendChild(o);
+  });
+
+  const order = { P1:0, P2:1, P3:2 };
+  DEFECTS.sort((a, b) =>
+    order[a.sev] - order[b.sev] ||
+    (a.status === "fixed" ? 1 : 0) - (b.status === "fixed" ? 1 : 0) ||
+    a.id.localeCompare(b.id)
+  );
+  const total = DEFECTS.length;
+  const fixedTotal = DEFECTS.filter(d => d.status === "fixed").length;
+  const openTotal = total - fixedTotal;
+  const p1Open = DEFECTS.filter(d => d.sev === "P1" && d.status !== "fixed").length;
+  $("#railDefects").textContent = String(openTotal);
+
+  sevBtns.forEach(b => b.addEventListener("click", () => {
+    sev = b.getAttribute("data-sev");
+    sevBtns.forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    render();
+  }));
+  search.addEventListener("input", render);
+  area.addEventListener("change", render);
+  p1Only.addEventListener("change", render);
+
+  function render() {
+    const q = search.value.trim().toLowerCase();
+    const a = area.value;
+    list.innerHTML = "";
+    let shown = 0;
+    DEFECTS.forEach(d => {
+      if (sev === "fixed") {
+        if (d.status !== "fixed") return;
+      } else if (sev !== "all" && d.sev !== sev) {
+        return;
+      }
+      if (p1Only.checked && (d.sev !== "P1" || d.status === "fixed")) return;
+      if (a !== "all" && d.area !== a) return;
+      if (q && (d.id + " " + d.title + " " + d.where + " " + d.impact + " " + d.area).toLowerCase().indexOf(q) === -1) return;
+      shown++;
+      const det = el("details", "defect");
+      const sum = el("summary");
+      sum.innerHTML = '<span class="did"></span><span class="dtitle"></span><span class="dmeta"></span>';
+      $(".did", sum).textContent = d.id;
+      $(".dtitle", sum).textContent = d.title;
+      const meta = $(".dmeta", sum);
+      meta.style.cssText = "display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap";
+      meta.appendChild(el("span", "pill " + d.sev.toLowerCase(), d.sev));
+      if (d.status === "fixed") meta.appendChild(el("span", "pill ok", "FIXED"));
+      const body = el("div", "dbody");
+      body.innerHTML = '<div><div class="lab">evidence</div><div class="path"></div></div>' +
+        '<div><div class="lab">impact</div><p></p></div>' +
+        '<div><div class="lab">fix</div><p class="fix"></p></div>';
+      $(".path", body).textContent = d.where;
+      const ps = $$("p", body);
+      ps[0].textContent = d.impact;
+      ps[1].textContent = d.fix;
+      det.appendChild(sum); det.appendChild(body);
+      list.appendChild(det);
+    });
+    if (!shown) {
+      const empty = el("div", "empty");
+      empty.innerHTML = "<b>No defect matches</b>";
+      empty.appendChild(document.createTextNode("Clear the severity filter or the search text."));
+      list.appendChild(empty);
+    }
+    count.textContent = shown + " of " + total + " · " + p1Open + " P1 open · " + fixedTotal + " fixed";
+  }
+  render();
+})();
+
+/* =====================================================================
+   Build options and blockers
+   ===================================================================== */
+(function build() {
+  const host = $("#buildOpts");
+  BUILD_OPTIONS.forEach(o => {
+    const card = el("div", "opt" + (o.pick ? " on" : ""));
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-pressed", String(o.pick));
+    card.innerHTML = "<h4></h4><p class=\"s\"></p><ul></ul><p class=\"v small\" style=\"margin-top:9px\"></p>";
+    $("h4", card).textContent = "Option " + o.id + " · " + o.name;
+    const pill = el("span", "pill " + (o.pick ? "accent" : "mute"), o.pick ? "recommended" : "alternative");
+    $("h4", card).appendChild(pill);
+    $(".s", card).textContent = o.summary;
+    o.points.forEach(p => {
+      const li = el("li", null, p);
+      $("ul", card).appendChild(li);
+    });
+    $(".v", card).textContent = o.verdict;
+    function choose() {
+      $$(".opt", host).forEach(c => {
+        c.classList.remove("on");
+        c.setAttribute("aria-pressed", "false");
+        const p = $(".pill", c);
+        p.className = "pill mute";
+        p.textContent = "alternative";
+      });
+      card.classList.add("on");
+      card.setAttribute("aria-pressed", "true");
+      const p = $(".pill", card);
+      p.className = "pill accent";
+      p.textContent = "selected";
+    }
+    card.addEventListener("click", choose);
+    card.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(); }
+    });
+    host.appendChild(card);
+  });
+
+  const b = $("#blockers");
+  BLOCKERS.forEach(row => {
+    const wrap = el("div", "blocker");
+    wrap.innerHTML = '<div class="sev"><span class="pill ' + row[0].toLowerCase() + '"></span></div>' +
+      '<div><div class="bt"></div><div class="bd"></div></div>';
+    $(".pill", wrap).textContent = row[0];
+    $(".bt", wrap).textContent = row[1];
+    $(".bd", wrap).textContent = row[2] + " (" + row[3] + ")";
+    b.appendChild(wrap);
+  });
+})();
+
+/* =====================================================================
+   Roadmap and orphans
+   ===================================================================== */
+(function roadmap() {
+  const host = $("#roadmap");
+  ROADMAP.forEach(col => {
+    const wrap = el("div", "road-col");
+    const head = el("div", "road-head");
+    head.innerHTML = "<b></b><span></span>";
+    head.children[0].textContent = col.name;
+    head.children[1].textContent = col.sub;
+    const ul = el("ul");
+    col.items.forEach(it => {
+      const li = el("li");
+      li.innerHTML = "<b></b>";
+      li.firstChild.textContent = it[0];
+      li.appendChild(document.createTextNode(it[1]));
+      ul.appendChild(li);
+    });
+    wrap.appendChild(head); wrap.appendChild(ul);
+    host.appendChild(wrap);
+  });
+
+  const t = el("table");
+  t.innerHTML = "<thead><tr><th>Module</th><th>Implements</th><th>Why unreachable</th></tr></thead>";
+  const tb = el("tbody");
+  ORPHANS.forEach(r => {
+    const tr = el("tr");
+    tr.innerHTML = '<td class="path"></td><td></td><td></td>';
+    tr.children[0].textContent = r[0];
+    tr.children[1].textContent = r[1];
+    tr.children[2].textContent = r[2];
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+  $("#orphans").appendChild(t);
+})();
+
+/* =====================================================================
+   Verification
+   ===================================================================== */
+(function verify() {
+  const host = $("#verifyRows");
+  VERIFY.forEach(r => {
+    const row = el("div", "vrow");
+    row.innerHTML = '<div><div class="vt"></div></div><div class="cmd"></div><div><span class="pill"></span></div><div class="res"></div>';
+    $(".vt", row).textContent = r[0];
+    $(".cmd", row).textContent = r[1];
+    const pill = $(".pill", row);
+    pill.textContent = r[2];
+    pill.className = "pill " + (r[2] === "pass" ? "ok" : r[2] === "fail" ? "p1" : "mute");
+    $(".res", row).textContent = r[3];
+    host.appendChild(row);
+  });
+})();
+</script>
+
+</body>
+</html>

@@ -35,6 +35,8 @@ export interface Product {
     image_data?: string;
     barcode?: string;
     hsn_code?: string;
+    /** GST percentage. Optional until the column is provisioned. */
+    gst_rate?: number;
     location?: string;
     account_email?: string;
     is_active: boolean;

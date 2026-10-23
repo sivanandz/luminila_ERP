@@ -31,6 +31,8 @@ export interface POSCartItem {
     remarks?: string;
     productId?: string;   // PocketBase product ID
     variantId?: string;   // PocketBase variant ID
+    /** GST rate captured from the product at add-to-cart time. */
+    gst_rate?: number;
     // Jewelry Specifications (Vyapar / BIS Aligned)
     gross_weight?: number;
     net_weight?: number;
@@ -81,6 +83,8 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     const transactionId = `TXN-${Date.now().toString(36).toUpperCase()}`;
 
     let createdSaleId: string | null = null;
+    let createdInvoiceId: string | null = null;
+    let shiftTotalsApplied = false;
     const createdSaleItemIds: string[] = [];
     const createdMovementIds: string[] = [];
     const stockDeductions: { variantId: string; quantity: number }[] = [];
@@ -118,6 +122,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                 quantity: item.quantity,
                 unit_price: item.price,
                 total_price: item.price * item.quantity,
+                gst_rate: item.gst_rate ?? null,
                 remarks: item.remarks || '',
                 discount: 0,
                 total: item.price * item.quantity,
@@ -163,44 +168,47 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                     }
                 } catch (stockErr) {
                     const pbErr = stockErr instanceof ClientResponseError ? stockErr : null;
-                    const isMinConstraint = pbErr?.data?.data?.stock_level?.code === 'validation_min_number_constraint' ||
-                        String(stockErr instanceof Error ? stockErr.message : stockErr).includes('validation_min_number_constraint') ||
-                        pbErr?.status === 400;
+                    const errorText = String(stockErr instanceof Error ? stockErr.message : stockErr);
+                    // Only the database min-constraint means "not enough stock".
+                    // A permissions or validation 400 used to be treated the same
+                    // way, which wrote stock_level 0 and destroyed the count.
+                    const isMinConstraint =
+                        pbErr?.data?.data?.stock_level?.code === 'validation_min_number_constraint' ||
+                        errorText.includes('validation_min_number_constraint');
 
-                    if (isMinConstraint) {
-                        console.warn(`[pos-sales] Variant ${item.variantId} insufficient stock for quantity ${item.quantity}. Clamping to 0.`);
+                    if (!isMinConstraint) throw stockErr;
 
-                        // Clamp variant stock level to 0 so stale positive counts don't persist
-                        await pb.collection('product_variants').update(item.variantId, {
-                            stock_level: 0,
+                    // Sell what is actually there, and keep the movement ledger in
+                    // agreement with the variant row instead of recording the full
+                    // requested quantity against a clamped count.
+                    const latest = await pb.collection('product_variants').getOne<{ stock_level?: number }>(item.variantId);
+                    const available = Math.max(0, latest.stock_level ?? 0);
+
+                    await pb.collection('product_variants').update(item.variantId, { stock_level: 0 });
+                    stockDeductions.push({ variantId: item.variantId, quantity: available });
+
+                    if (movement?.id) {
+                        await pb.collection('stock_movements').update(movement.id, {
+                            quantity: -available,
+                            notes: `POS Sale: ${transactionId} [OVERSELL: requested ${item.quantity}, only ${available} in stock]`,
                         }).catch(() => {});
-
-                        // Documented audit trail in activity_logs
-                        await pb.collection('activity_logs').create({
-                            action: 'INVENTORY_OVERSELL_WARNING',
-                            entity_type: 'product_variants',
-                            entity_id: item.variantId,
-                            description: `CRITICAL INVENTORY NOTICE: POS sale ${transactionId} requested ${item.quantity} units for variant ${item.variantId}, exceeding available stock. Stock was clamped to 0.`,
-                            metadata: JSON.stringify({
-                                variant_id: item.variantId,
-                                sale_id: sale.id,
-                                transaction_id: transactionId,
-                                requested_quantity: item.quantity,
-                                warning: 'validation_min_number_constraint',
-                            }),
-                        }).catch((err) => console.error('Failed to log oversell audit:', err));
-
-                        // Annotate stock movement with discrepancy notice
-                        if (movement?.id) {
-                            await pb.collection('stock_movements').update(movement.id, {
-                                notes: `POS Sale: ${transactionId} [OVERSELL WARNING: requested ${item.quantity}, insufficient stock clamped to 0]`,
-                            }).catch(() => {});
-                        }
-
-                        warnings.push(`Insufficient stock for "${item.name}" (requested ${item.quantity}). Stock clamped to 0.`);
-                    } else {
-                        console.warn('Could not update stock level for variant:', item.variantId, stockErr);
                     }
+
+                    await pb.collection('activity_logs').create({
+                        action: 'INVENTORY_OVERSELL_WARNING',
+                        entity_type: 'product_variants',
+                        entity_id: item.variantId,
+                        description: `POS sale ${transactionId} requested ${item.quantity} units for variant ${item.variantId}; only ${available} were available. Stock and movement reconciled to ${available}.`,
+                        metadata: JSON.stringify({
+                            variant_id: item.variantId,
+                            sale_id: sale.id,
+                            transaction_id: transactionId,
+                            requested_quantity: item.quantity,
+                            available_quantity: available,
+                        }),
+                    }).catch((err) => console.error('Failed to log oversell audit:', err));
+
+                    warnings.push(`Insufficient stock for "${item.name}" (requested ${item.quantity}, available ${available}). Sale recorded for ${available}.`);
                 }
             }
         }
@@ -208,11 +216,12 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
         console.log('Sale items created');
 
         // 4. Update shift totals
-        await updateShiftTotals(data.shiftId, data.total, data.paymentMethod);
+        shiftTotalsApplied = await updateShiftTotals(data.shiftId, data.total, data.paymentMethod);
         console.log('Shift totals updated');
 
         // 5. Create invoice from sale
         const invoice = await createInvoiceFromSale(sale.id);
+        createdInvoiceId = invoice.id || null;
         console.log('Invoice created:', invoice.invoice_number);
 
         return {
@@ -258,6 +267,24 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
             );
         }
 
+        // Compensate writes that happen after the stock decrement: the invoice
+        // and the shift totals were previously left behind on failure.
+        if (createdInvoiceId) {
+            const orphanItems = await pb
+                .collection('invoice_items')
+                .getFullList<{ id: string }>({ filter: `invoice="${createdInvoiceId}"` })
+                .catch(() => []);
+            for (const orphan of orphanItems) {
+                await pb.collection('invoice_items').delete(orphan.id).catch(() => {});
+            }
+            await pb.collection('invoices').delete(createdInvoiceId).catch((err) =>
+                console.error(`Rollback error: unable to delete invoice ${createdInvoiceId}:`, err)
+            );
+        }
+        if (shiftTotalsApplied) {
+            await updateShiftTotals(data.shiftId, -Math.abs(data.total), data.paymentMethod);
+        }
+
         throw error;
     }
 }
@@ -270,7 +297,7 @@ async function updateShiftTotals(
     shiftId: string,
     amount: number,
     paymentMethod: string
-): Promise<void> {
+): Promise<boolean> {
     return enqueueTask(`shift_${shiftId}`, async () => {
         try {
             const updates: Record<string, number> = {};
@@ -290,9 +317,11 @@ async function updateShiftTotals(
             }
 
             await pb.collection('cash_register_shifts').update(shiftId, updates);
+            return true;
         } catch (error) {
             console.error('Error updating shift totals:', error);
             // Don't throw - shift update failure shouldn't fail the sale
+            return false;
         }
     });
 }

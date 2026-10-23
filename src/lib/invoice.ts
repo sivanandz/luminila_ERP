@@ -12,6 +12,12 @@ import {
 } from './gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
+import {
+    computeInclusiveLines,
+    resolveLineGstRate,
+    toPaise,
+    toRupees,
+} from './invoice-math';
 import type { ProductVariant } from '../types/database';
 
 // ===========================================
@@ -526,57 +532,68 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
             (allocatedNumber) => pb.collection('invoices').create({ ...invoicePayload, invoice_number: allocatedNumber })
         );
 
-    // Insert invoice items
+    // Insert invoice items. A failure here must not leave an item-less invoice
+    // header behind, so the header and any created items are removed on error.
     const itemsWithInvoiceId: InvoiceItem[] = [];
-    for (let index = 0; index < invoice.items.length; index++) {
-        const item = invoice.items[index];
-        const itemDiscount = item.discount_amount || (item.quantity * item.unit_price * (item.discount_percent / 100));
-        const itemTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0) + (item.cess_amount || 0);
+    const createdItemIds: string[] = [];
+    try {
+        for (let index = 0; index < invoice.items.length; index++) {
+            const item = invoice.items[index];
+            const itemDiscount = item.discount_amount || (item.quantity * item.unit_price * (item.discount_percent / 100));
+            const itemTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0) + (item.cess_amount || 0);
 
-        const itemPayload: Record<string, unknown> = {
-            account_email: (pb.authStore.model as any)?.email || '',
-            invoice: invoiceData.id,
-            variant: item.variant_id || item.variant || null,
-            sr_no: index + 1,
-            description: item.description,
-            hsn_code: item.hsn_code || '',
-            quantity: item.quantity,
-            unit: item.unit || 'PCS',
-            unit_price: item.unit_price,
-            discount: itemDiscount,
-            discount_percent: item.discount_percent || 0,
-            discount_amount: item.discount_amount || 0,
-            taxable_amount: item.taxable_amount,
-            tax: itemTax,
-            gst_rate: item.gst_rate || 0,
-            cgst_rate: item.cgst_rate || 0,
-            cgst_amount: item.cgst_amount || 0,
-            sgst_rate: item.sgst_rate || 0,
-            sgst_amount: item.sgst_amount || 0,
-            igst_rate: item.igst_rate || 0,
-            igst_amount: item.igst_amount || 0,
-            cess_rate: item.cess_rate || 0,
-            cess_amount: item.cess_amount || 0,
-            total: item.total_amount,
-            total_amount: item.total_amount,
-            gross_weight: item.gross_weight ?? null,
-            net_weight: item.net_weight ?? null,
-            stone_weight: item.stone_weight ?? null,
-            stone_amount: item.stone_amount ?? null,
-            purity_karat: item.purity_karat || '',
-            making_charges: item.making_charges ?? 0,
-            making_charges_type: item.making_charges_type || 'per_gram',
-            wastage_percent: item.wastage_percent ?? 0,
-            huid_code: item.huid_code || '',
-        };
+            const itemPayload: Record<string, unknown> = {
+                account_email: (pb.authStore.model as any)?.email || '',
+                invoice: invoiceData.id,
+                variant: item.variant_id || item.variant || null,
+                sr_no: index + 1,
+                description: item.description,
+                hsn_code: item.hsn_code || '',
+                quantity: item.quantity,
+                unit: item.unit || 'PCS',
+                unit_price: item.unit_price,
+                discount: itemDiscount,
+                discount_percent: item.discount_percent || 0,
+                discount_amount: item.discount_amount || 0,
+                taxable_amount: item.taxable_amount,
+                tax: itemTax,
+                gst_rate: item.gst_rate || 0,
+                cgst_rate: item.cgst_rate || 0,
+                cgst_amount: item.cgst_amount || 0,
+                sgst_rate: item.sgst_rate || 0,
+                sgst_amount: item.sgst_amount || 0,
+                igst_rate: item.igst_rate || 0,
+                igst_amount: item.igst_amount || 0,
+                cess_rate: item.cess_rate || 0,
+                cess_amount: item.cess_amount || 0,
+                total: item.total_amount,
+                total_amount: item.total_amount,
+                gross_weight: item.gross_weight ?? null,
+                net_weight: item.net_weight ?? null,
+                stone_weight: item.stone_weight ?? null,
+                stone_amount: item.stone_amount ?? null,
+                purity_karat: item.purity_karat || '',
+                making_charges: item.making_charges ?? 0,
+                making_charges_type: item.making_charges_type || 'per_gram',
+                wastage_percent: item.wastage_percent ?? 0,
+                huid_code: item.huid_code || '',
+            };
 
-        const itemRecord = await pb.collection('invoice_items').create(itemPayload);
-        itemsWithInvoiceId.push({
-            ...item,
-            id: itemRecord.id,
-            invoice_id: invoiceData.id,
-            sr_no: index + 1,
-        });
+            const itemRecord = await pb.collection('invoice_items').create(itemPayload);
+            createdItemIds.push(itemRecord.id);
+            itemsWithInvoiceId.push({
+                ...item,
+                id: itemRecord.id,
+                invoice_id: invoiceData.id,
+                sr_no: index + 1,
+            });
+        }
+    } catch (itemError) {
+        for (const itemId of createdItemIds) {
+            await pb.collection('invoice_items').delete(itemId).catch(() => {});
+        }
+        await pb.collection('invoices').delete(invoiceData.id).catch(() => {});
+        throw itemError;
     }
 
     return {
@@ -1045,6 +1062,8 @@ interface SaleItemRecord {
     variant?: string;
     quantity: number;
     unit_price: number;
+    /** Rate captured at sale time. Missing on historical rows. */
+    gst_rate?: number;
     gross_weight?: number;
     net_weight?: number;
     stone_weight?: number;
@@ -1060,116 +1079,127 @@ interface SaleItemRecord {
 }
 
 export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
-    // Fetch sale with items
     const sale = await pb.collection('sales').getOne(saleId);
     const saleItems = await pb.collection('sale_items').getFullList<SaleItemRecord>({
         filter: `sale="${saleId}"`,
         expand: 'variant,variant.product',
     });
 
-    // Get store settings
     const storeSettings = await getStoreSettings();
+    const isGstRegistered = storeSettings.is_gst_registered !== false;
+    const sellerStateCode = storeSettings.store_state_code || '27';
+    const buyerStateCode = sellerStateCode;
 
-    // Build invoice items with GST
-    const invoiceItems: InvoiceItem[] = saleItems.map((item, index) => {
+    // POS prices are the amounts the customer was quoted, so they already carry
+    // GST. Gross lines are built in paise and the bill discount is allocated
+    // across them, then tax is back-computed from the discounted amount.
+    const lines = saleItems.map((item) => {
         const variant = item.expand?.variant;
         const product = variant?.expand?.product;
+        return {
+            item,
+            variant,
+            product,
+            grossPaise: toPaise((item.quantity || 0) * (item.unit_price || 0)),
+            gstRate: resolveLineGstRate(
+                item.gst_rate,
+                product?.gst_rate,
+                isGstRegistered,
+                GST_RATES.JEWELRY
+            ),
+        };
+    });
 
-        const quantity = item.quantity;
-        const unitPrice = item.unit_price;
-        const lineTotal = quantity * unitPrice;
+    const grossTotalPaise = lines.reduce((sum, line) => sum + line.grossPaise, 0);
+    // Absorb paise-level rounding into the discount so the invoice total is
+    // exactly the amount collected at the counter.
+    const collectedPaise = sale.total === null || sale.total === undefined
+        ? grossTotalPaise - toPaise(sale.discount || 0)
+        : toPaise(sale.total);
+    const effectiveDiscountPaise = Math.max(0, grossTotalPaise - collectedPaise);
 
-        const effectiveGstRate = storeSettings.is_gst_registered === false ? 0 : GST_RATES.JEWELRY;
+    const taxed = computeInclusiveLines(
+        lines.map((line) => ({ grossPaise: line.grossPaise, gstRate: line.gstRate })),
+        effectiveDiscountPaise,
+        sellerStateCode,
+        buyerStateCode
+    );
 
-        // Calculate GST for this item
-        const gst = calculateGST(
-            lineTotal,
-            storeSettings.store_state_code,
-            '', // Buyer state - using intra-state for walk-in (no GSTIN)
-            effectiveGstRate
-        );
-
-        const grossWeight = item.gross_weight ?? variant?.gross_weight ?? product?.gross_weight;
-        const netWeight = item.net_weight ?? variant?.net_weight ?? product?.net_weight;
-        const stoneWeight = item.stone_weight ?? variant?.stone_weight ?? product?.stone_weight;
-        const stoneAmount = item.stone_amount ?? variant?.stone_amount ?? product?.stone_amount;
-        const purityKarat = item.purity_karat || variant?.purity_karat || product?.purity_karat;
-        const makingCharges = item.making_charges ?? variant?.making_charges ?? product?.making_charges;
-        const makingChargesType = item.making_charges_type || variant?.making_charges_type || product?.making_charges_type;
-        const wastagePercent = item.wastage_percent ?? variant?.wastage_percent ?? product?.wastage_percent;
-        const huidCode = item.huid_code || variant?.huid_code || product?.huid_code;
+    const invoiceItems: InvoiceItem[] = lines.map((line, index) => {
+        const { item, variant, product } = line;
+        const result = taxed.lines[index];
 
         return {
             variant_id: item.variant,
             sr_no: index + 1,
             description: (product?.name || 'Product') + (variant?.variant_name ? ` - ${variant.variant_name}` : ''),
             hsn_code: getHSNForProduct(product?.category, variant?.material),
-            quantity,
+            quantity: item.quantity,
             unit: 'PCS',
-            unit_price: unitPrice,
-            discount_percent: 0,
-            discount_amount: 0,
-            taxable_amount: gst.taxableAmount,
-            gst_rate: effectiveGstRate,
-            cgst_rate: gst.cgstRate,
-            cgst_amount: gst.cgstAmount,
-            sgst_rate: gst.sgstRate,
-            sgst_amount: gst.sgstAmount,
-            igst_rate: gst.igstRate,
-            igst_amount: gst.igstAmount,
-            cess_rate: 0,
-            cess_amount: 0,
-            total_amount: gst.grandTotal,
-            gross_weight: grossWeight,
-            net_weight: netWeight,
-            stone_weight: stoneWeight,
-            stone_amount: stoneAmount,
-            purity_karat: purityKarat,
-            making_charges: makingCharges,
-            making_charges_type: makingChargesType,
-            wastage_percent: wastagePercent,
-            huid_code: huidCode,
+            unit_price: item.unit_price,
+            discount_percent: result.grossPaise > 0
+                ? Math.round((result.discountPaise / result.grossPaise) * 10000) / 100
+                : 0,
+            discount_amount: toRupees(result.discountPaise),
+            taxable_amount: toRupees(result.taxablePaise),
+            gst_rate: line.gstRate,
+            cgst_rate: result.cgstRate,
+            cgst_amount: toRupees(result.cgstPaise),
+            sgst_rate: result.sgstRate,
+            sgst_amount: toRupees(result.sgstPaise),
+            igst_rate: result.igstRate,
+            igst_amount: toRupees(result.igstPaise),
+            cess_rate: result.cessRate,
+            cess_amount: toRupees(result.cessPaise),
+            total_amount: toRupees(result.totalPaise),
+            gross_weight: item.gross_weight ?? variant?.gross_weight ?? product?.gross_weight,
+            net_weight: item.net_weight ?? variant?.net_weight ?? product?.net_weight,
+            stone_weight: item.stone_weight ?? variant?.stone_weight ?? product?.stone_weight,
+            stone_amount: item.stone_amount ?? variant?.stone_amount ?? product?.stone_amount,
+            purity_karat: item.purity_karat || variant?.purity_karat || product?.purity_karat,
+            making_charges: item.making_charges ?? variant?.making_charges ?? product?.making_charges,
+            making_charges_type: item.making_charges_type || variant?.making_charges_type || product?.making_charges_type,
+            wastage_percent: item.wastage_percent ?? variant?.wastage_percent ?? product?.wastage_percent,
+            huid_code: item.huid_code || variant?.huid_code || product?.huid_code,
         };
     });
 
-    // Calculate totals
-    const taxableValue = invoiceItems.reduce((sum, item) => sum + item.taxable_amount, 0);
-    const cgstAmount = invoiceItems.reduce((sum, item) => sum + item.cgst_amount, 0);
-    const sgstAmount = invoiceItems.reduce((sum, item) => sum + item.sgst_amount, 0);
-    const igstAmount = invoiceItems.reduce((sum, item) => sum + item.igst_amount, 0);
-    const cessAmount = invoiceItems.reduce((sum, item) => sum + item.cess_amount, 0);
-    const totalTax = cgstAmount + sgstAmount + igstAmount + cessAmount;
-    const grandTotal = taxableValue + totalTax;
+    const taxableValue = toRupees(taxed.taxablePaise);
+    const totalTax = toRupees(taxed.taxPaise);
+    const grandTotal = toRupees(taxed.totalPaise);
+    const cgstAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.cgstPaise, 0));
+    const sgstAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.sgstPaise, 0));
+    const igstAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.igstPaise, 0));
+    const cessAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.cessPaise, 0));
 
     const sellerStatePin = [storeSettings.store_state, storeSettings.store_pincode].filter(Boolean).join(' - ');
     const formattedSellerAddress = [storeSettings.store_address, storeSettings.store_city, sellerStatePin].filter(Boolean).join(', ');
 
-    // Create invoice
     const invoice: Omit<Invoice, 'id' | 'invoice_number' | 'created_at' | 'updated_at'> = {
         invoice_date: new Date().toISOString(),
         invoice_type: 'regular',
 
-        seller_gstin: storeSettings.is_gst_registered === false ? '' : storeSettings.store_gstin,
+        seller_gstin: isGstRegistered ? storeSettings.store_gstin : '',
         seller_name: storeSettings.store_name,
         seller_address: formattedSellerAddress,
-        seller_state_code: storeSettings.store_state_code,
+        seller_state_code: sellerStateCode,
 
         buyer_name: sale.customer_name || 'Walk-in Customer',
         buyer_gstin: '',
         buyer_phone: sale.customer_phone || '',
         buyer_email: '',
         buyer_address: sale.customer_address || '',
-        buyer_state_code: storeSettings.store_state_code,
-        place_of_supply: storeSettings.store_state_code,
+        buyer_state_code: buyerStateCode,
+        place_of_supply: buyerStateCode,
 
         customer_id: sale.customer || undefined,
         sale_id: saleId,
 
         status: 'paid',
         subtotal: taxableValue,
-        discount: sale.discount || 0,
+        discount: toRupees(effectiveDiscountPaise),
         tax: totalTax,
-        total: grandTotal - (sale.discount || 0),
+        total: grandTotal,
 
         taxable_value: taxableValue,
         cgst_amount: cgstAmount,
@@ -1177,15 +1207,15 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
         igst_amount: igstAmount,
         cess_amount: cessAmount,
         total_tax: totalTax,
-        discount_amount: sale.discount || 0,
+        discount_amount: toRupees(effectiveDiscountPaise),
         shipping_charges: 0,
-        grand_total: grandTotal - (sale.discount || 0),
-        amount_in_words: amountToWords(grandTotal - (sale.discount || 0)),
+        grand_total: grandTotal,
+        amount_in_words: amountToWords(grandTotal),
 
         is_reverse_charge: false,
         payment_terms: storeSettings.invoice_terms,
         is_paid: true,
-        paid_amount: sale.total || (grandTotal - (sale.discount || 0)),
+        paid_amount: grandTotal,
         notes: sale.notes,
 
         items: invoiceItems,
@@ -1193,7 +1223,6 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
 
     return createInvoice(invoice);
 }
-
 // ===========================================
 // INVOICE CALCULATIONS HELPER
 // ===========================================

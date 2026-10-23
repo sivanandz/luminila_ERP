@@ -14,7 +14,7 @@ import type {
     SalesOrderItem as SalesOrderItemRow,
 } from '@/types/database';
 import { createInvoice, getStoreSettings } from '@/lib/invoice';
-import { calculateGST, getStateCode } from '@/lib/gst';
+import { calculateGST, getStateCode, GST_RATES } from '@/lib/gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from '@/lib/sequence-generator';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
@@ -87,6 +87,9 @@ interface SalesOrderItemRecord {
     total: number;
     product?: string;
     variant?: string;
+    expand?: {
+        product?: { name?: string; hsn_code?: string; gst_rate?: number };
+    };
 }
 
 /**
@@ -212,8 +215,27 @@ export async function convertEstimateToOrder(estimateId: string) {
 export async function generateInvoiceFromOrder(orderId: string) {
     try {
         const order = await pb.collection('sales_orders').getOne(orderId);
+
+        // Idempotency: a retry after the order status update failed must reuse
+        // the invoice that already exists rather than raising a second one for
+        // the same order.
+        const existingInvoices = await pb
+            .collection('invoices')
+            .getFullList<{ id: string; invoice_number?: string }>({
+                filter: `order="${orderId}"`,
+                sort: '-created',
+            })
+            .catch(() => []);
+        if (existingInvoices.length > 0) {
+            if (order.status !== 'invoiced') {
+                await pb.collection('sales_orders').update(orderId, { status: 'invoiced' }).catch(() => {});
+            }
+            return { success: true, order, invoice: existingInvoices[0], alreadyInvoiced: true };
+        }
+
         const orderItems = await pb.collection('sales_order_items').getFullList<SalesOrderItemRecord>({
-            filter: `order="${orderId}"`
+            filter: `order="${orderId}"`,
+            expand: 'product',
         });
 
         const store = await getStoreSettings();
@@ -225,10 +247,12 @@ export async function generateInvoiceFromOrder(orderId: string) {
         // back to the seller state, which forced every invoice intra-state.
         const sellerStateCode = store.store_state_code || '27';
         let buyerStateCode = sellerStateCode;
+        let buyerGstin = '';
         if (order.customer) {
             try {
                 const customer = await pb.collection('customers').getOne<Customer>(order.customer);
-                const gstinStateCode = String(customer.gstin || '').trim().substring(0, 2);
+                buyerGstin = String(customer.gstin || '').trim();
+                const gstinStateCode = buyerGstin.substring(0, 2);
                 buyerStateCode =
                     customer.state_code ||
                     getStateCode(customer.state || '') ||
@@ -245,15 +269,18 @@ export async function generateInvoiceFromOrder(orderId: string) {
             // the post-discount base so taxable + tax == line total.
             const gross = (item.unit_price || 0) * (item.quantity || 1);
             const taxable = Math.max(0, gross - (item.discount_amount || 0));
-            // Use each item's own tax rate instead of a hardcoded 3% so the
-            // header tax (sum of items) matches the item-level GST amounts.
-            const gstRate = isGstRegistered ? (item.tax_rate || 0) : 0;
+            // Nullish, not ||: an explicitly exempt line stays at 0%, while a
+            // missing rate falls back to the product rate instead of silently
+            // producing a 0% GST invoice.
+            const product = item.expand?.product;
+            const configuredRate = item.tax_rate ?? product?.gst_rate ?? GST_RATES.JEWELRY;
+            const gstRate = isGstRegistered ? configuredRate : 0;
             const gst = calculateGST(taxable, sellerStateCode, buyerStateCode, gstRate);
             return {
                 sr_no: idx + 1,
                 variant_id: item.variant || '',
                 description: item.description || 'Jewelry Item',
-                hsn_code: '7117',
+                hsn_code: product?.hsn_code || '7113',
                 quantity: item.quantity || 1,
                 unit: 'PCS',
                 unit_price: item.unit_price || 0,
@@ -295,7 +322,7 @@ export async function generateInvoiceFromOrder(orderId: string) {
             seller_address: `${store.store_address || ''} ${store.store_city || ''}`.trim(),
             seller_state_code: store.store_state_code || '27',
             buyer_name: order.customer_name || 'Walk-in Customer',
-            buyer_gstin: '',
+            buyer_gstin: buyerGstin,
             buyer_phone: order.customer_phone || '',
             buyer_email: order.customer_email || '',
             buyer_address: order.billing_address || order.shipping_address || '',

@@ -74,6 +74,9 @@ import {
     type LoyaltyAccount,
 } from "@/lib/loyalty";
 import { createPOSSale } from "@/lib/pos-sales";
+import { includedTaxPaise } from "@/lib/invoice-math";
+import { getStoreSettings } from "@/lib/settings";
+import { GST_RATES } from "@/lib/gst";
 import { getTypeAheadProducts, type ProductVariant } from "@/lib/products";
 import { pb, sanitizeFilter } from "@/lib/pocketbase";
 import { ClientResponseError } from "pocketbase";
@@ -121,6 +124,7 @@ interface CartItem {
     remarks?: string;
     productId?: string;  // PocketBase product ID
     variantId?: string;  // PocketBase variant ID
+    gst_rate?: number;   // GST rate from the product, captured at add time
     image?: string | null;
     hsn_code?: string;
 }
@@ -139,6 +143,7 @@ interface POSProduct {
     stock: number;
     image?: string | null;
     hsn_code?: string;
+    gst_rate?: number;
 }
 
 export interface HeldCart {
@@ -189,6 +194,7 @@ export default function POSPage() {
     const [searchResults, setSearchResults] = useState<POSProduct[]>([]);
     const [quickAddProducts, setQuickAddProducts] = useState<POSProduct[]>([]);
     const [, setIsLoadingProducts] = useState(false);
+    const [gstRegistered, setGstRegistered] = useState(false);
     const [lastTransaction, setLastTransaction] = useState<{
         id: string;
         invoiceNumber?: string;
@@ -428,6 +434,7 @@ export default function POSPage() {
                         stock: v.stock_level || 0,
                         image: p?.image_data || p?.image_url || null,
                         hsn_code: p?.hsn_code || "71179010",
+                        gst_rate: p?.gst_rate,
                     });
                 }
                 setQuickAddProducts(posProducts.filter(p => p.name !== 'Unknown Product'));
@@ -464,6 +471,7 @@ export default function POSPage() {
                         stock: p.stock,
                         image: p.image_data || p.image_url || null,
                         hsn_code: p.hsn_code || "71179010",
+                        gst_rate: p.gst_rate,
                     };
                 });
                 setSearchResults(posProducts);
@@ -597,6 +605,7 @@ export default function POSPage() {
                     variantId: product.id,
                     image: product.image || null,
                     hsn_code: product.hsn_code || "71179010",
+                    gst_rate: product.gst_rate,
                 },
             ];
         });
@@ -710,11 +719,34 @@ export default function POSPage() {
         return unsubscribe;
     }, []);
 
+    // Whether the store is GST registered decides whether the cart shows the
+    // tax that is already inside the quoted price.
+    useEffect(() => {
+        let cancelled = false;
+        getStoreSettings()
+            .then((settings) => {
+                if (!cancelled) {
+                    setGstRegistered(settings.isGstRegistered !== false);
+                }
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, []);
+
     // Calculate totals
     const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
     const discountAmount = (subtotal * discount) / 100;
     const loyaltyDiscount = redemptionValue;  // Points redemption value
     const total = Math.max(0, subtotal - discountAmount - loyaltyDiscount);
+    const gstIncluded = gstRegistered
+        ? includedTaxPaise(
+            cart.map((item) => ({
+                grossPaise: Math.round(item.price * item.quantity * 100),
+                gstRate: item.gst_rate ?? GST_RATES.JEWELRY,
+            })),
+            Math.round((discountAmount + loyaltyDiscount) * 100)
+        ) / 100
+        : 0;
     const changeAmount = cashTendered ? calculateChange(total, parseFloat(cashTendered) || 0) : 0;
 
     // Update points calculations when total or customer changes
@@ -1804,6 +1836,12 @@ export default function POSPage() {
                                     Points Redeemed ({pointsToRedeem})
                                 </span>
                                 <span>-{formatPrice(loyaltyDiscount)}</span>
+                            </div>
+                        )}
+                        {gstIncluded > 0 && (
+                            <div className="flex justify-between text-xs text-moonstone">
+                                <span>GST included in total</span>
+                                <span>{formatPrice(gstIncluded)}</span>
                             </div>
                         )}
                         <div className="flex justify-between text-xl font-bold text-primary mt-2 pt-2 border-t border-surface-hover border-dashed">

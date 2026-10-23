@@ -12,9 +12,11 @@
 
 ---
 
+> **Start here:** [`PROJECT_MASTER.md`](PROJECT_MASTER.md) is the authoritative record of this project's architecture, features, defects, and build state, verified on 2026-10-23 against commit `f0e96b4`. [`PROJECT_EXPLORER.html`](PROJECT_EXPLORER.html) is its interactive companion (open it in any browser, no build step). The guides below are retained for history and operator detail; where they disagree with the master document, the master document wins.
+
 ## 📚 Documentation Suite
 
-For detailed technical and operational documentation, consult the dedicated guides:
+The guides below predate the master document. Use them for historical context and end-user procedures, not for current system behaviour.
 
 | Guide | Description | Link |
 |---|---|---|
