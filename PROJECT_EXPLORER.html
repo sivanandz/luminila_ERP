@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>49 open · 6 fixed</span>
+            <span class="chip accent"><span class="dot"></span>45 open · 10 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -499,7 +499,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
             <div class="vital"><div class="vital-num" data-count="84411">84,411</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">modules with no importer</div></div>
-            <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">P1 defects open</div></div>
+            <div class="vital"><div class="vital-num" data-count="9">9</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
       </div>
@@ -903,7 +903,7 @@ const FEATURES = [
   ["Camera scanning","pos","live","html5-qrcode"],
   ["Cash, card, UPI, PhonePe tenders","pos","live","One tender per sale"],
   ["Split tender","pos","absent","Tenders are exclusive"],
-  ["Cash drawer and variance","pos","partial","Refunds never reach reconciliation (D-05)"],
+  ["Cash drawer and variance","pos","live","Refunds are booked, so the expected balance and variance are trustworthy"],
   ["Blind shift close","pos","live","Expected balance hidden during count"],
   ["Receipt printing","pos","live","Browser and Android spooler"],
   ["GST included at checkout","pos","live","Cart shows the tax already inside the quoted total, loaded from store settings"],
@@ -916,7 +916,8 @@ const FEATURES = [
   ["E-way bill JSON","gst","partial","Defaults state to Karnataka when unset (D-28)"],
   ["GSTR-1 engine","gst","scaffold","Full GSTN schema exists, reports use a simpler builder"],
   ["GSTIN validation","gst","partial","Regex only, no checksum (D-16)"],
-  ["Credit notes","gst","partial","Created and restocked, over-return unchecked (D-06)"],
+  ["Credit notes","gst","live","Restocked on approval, with a cumulative over-return guard"],
+  ["Exchanges","gst","live","Replacement goods raise their own invoice; cash difference settles through the drawer"],
   ["Invoice PDF","gst","live","Print stylesheet based"],
   ["E-invoice and IRN","gst","absent","Not implemented"],
   ["Quotations and estimates","orders","live","Validity dates and conversion"],
@@ -937,7 +938,7 @@ const FEATURES = [
   ["Lifecycle triggers","crm","partial","Birthday and lapsed VIP scanners"],
   ["Bank registry and double entry","finance","live","Overdraft pre-check with compensation"],
   ["Expense vouchers","finance","live","Categories, payment modes, receipts"],
-  ["Cash refunds","finance","absent","No writer for total_cash_refunds (D-05)"],
+  ["Cash refunds","finance","live","Cash refunds write a drawer operation and reduce the shift total"],
   ["Cheque and PDC tracking","finance","scaffold","State machine only, no screen"],
   ["Bank reconciliation","finance","absent","Manual entry only"],
   ["Dashboard KPIs","reports","live","Today, shifts, low stock"],
@@ -996,15 +997,15 @@ const DEFECTS = [
     where:"src/app/whatsapp/page.tsx:295-299",
     impact:"An early return before three useState calls changes hook order when a quoted reply is followed by a plain message. The page throws and the chat is lost until reload.",
     fix:"Move the early return below the hooks." },
-  { id:"D-05", sev:"P1", area:"money", title:"Cash refunds are never recorded anywhere",
+  { id:"D-05", sev:"P1", status:"fixed", area:"money", title:"Cash refunds are never recorded anywhere",
     where:"src/lib/returns.ts:424-435 · src/lib/register.ts:183-184,427-428",
     impact:"total_cash_refunds has no writer in the entire codebase. Every cash return produces a false drawer variance and never reaches banking.",
     fix:"Write a refund drawer operation and increment the shift refund total with the status change." },
-  { id:"D-06", sev:"P1", area:"money", title:"Returns can exceed the invoiced quantity",
+  { id:"D-06", sev:"P1", status:"fixed", area:"money", title:"Returns can exceed the invoiced quantity",
     where:"src/lib/returns.ts:458-499 · src/app/returns/create/page.tsx:119",
     impact:"Two visits against the same line credit double the value and restock double the goods. The only cap is inside one form.",
     fix:"Sum prior non-cancelled credit note lines per invoice item and reject anything above the remainder." },
-  { id:"D-07", sev:"P1", area:"tax", title:"Exchanges ship goods with no tax document and book a negative payment",
+  { id:"D-07", sev:"P1", status:"fixed", area:"tax", title:"Exchanges ship goods with no tax document and book a negative payment",
     where:"src/lib/returns.ts:660-670,742-793 · src/lib/invoice.ts:172-175",
     impact:"Output GST on replacement jewelry is never recorded, and the negative payment row later distorts paid_amount and the customer balance.",
     fix:"Issue an exchange invoice or debit note, and keep payment rows non-negative." },
@@ -1134,7 +1135,7 @@ const DEFECTS = [
     impact:"When the database is unreachable, a valid 30-day token is signed against a temporary id, and customers are auto-created with 50 points.",
     fix:"Fail closed when persistence fails." },
   // P3
-  { id:"D-25", sev:"P3", area:"money", title:"Opening float uses a value outside the schema enum, so the audit row never persists",
+  { id:"D-25", sev:"P3", status:"fixed", area:"money", title:"Opening float uses a value outside the schema enum, so the audit row never persists",
     where:"src/lib/register.ts:107-114",
     impact:"The create fails and the error is swallowed, so opening float has no audit trail.",
     fix:"Add opening_float to the enum and stop swallowing the error." },
@@ -1269,7 +1270,8 @@ const VERIFY = [
   ["Routes counted","40 page files, 13 route handlers","pass","Matches appendix A and B in the master document."],
   ["Production build","npm run build","blocked","Stopped at .next/trace-build by file permissions. The export conflict is configuration-level and independent."],
   ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
-  ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."]
+  ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
+  ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."]
 ];
 
 /* =====================================================================

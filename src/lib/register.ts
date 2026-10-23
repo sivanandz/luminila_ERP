@@ -102,11 +102,14 @@ export async function openShift(
             cash_removed: 0
         });
 
-        // Record initial opening float in audit trail without incrementing cash_added
+        // Record initial opening float in audit trail without incrementing cash_added.
+        // The schema enum only accepts add|remove|sale|refund, so the float is an
+        // 'add' with an explicit reason; the old 'opening_float' value was rejected
+        // and silently swallowed, leaving no audit row at all.
         if (openingBalance > 0) {
             await pb.collection('cash_drawer_operations').create({
                 shift: record.id,
-                operation_type: 'opening_float',
+                operation_type: 'add',
                 amount: openingBalance,
                 reason: "Opening Float",
                 performed_by: userId,
@@ -303,6 +306,54 @@ export async function removeCashFromDrawer(
             return true;
         } catch (error) {
             console.error('Error removing cash from drawer:', error);
+            return false;
+        }
+    });
+}
+
+/**
+ * Record a cash refund paid out of the drawer.
+ *
+ * Two writes matter: the cash_drawer_operations row is the audit trail, and
+ * total_cash_refunds is what closeShift subtracts from the expected balance.
+ * Refunds previously wrote neither, so every cash return produced a false
+ * variance at shift close.
+ */
+export async function recordCashRefund(
+    shiftId: string,
+    amount: number,
+    reason: string,
+    performedBy: string
+): Promise<boolean> {
+    if (!Number.isFinite(amount) || amount <= 0) return false;
+
+    return enqueueTask(`shift_${shiftId}`, async () => {
+        try {
+            // Balance first: a correct expected balance matters more than a
+            // missing audit row. A failed audit insert is logged, not treated
+            // as a failed refund, so callers never reverse a balance that did
+            // change.
+            await pb.collection('cash_register_shifts').update(shiftId, {
+                'total_cash_refunds+': amount,
+                'expected_balance-': amount
+            });
+
+            try {
+                await pb.collection('cash_drawer_operations').create({
+                    shift: shiftId,
+                    operation_type: 'refund',
+                    amount,
+                    reason,
+                    performed_by: performedBy,
+                    performed_at: new Date().toISOString()
+                });
+            } catch (opError) {
+                console.warn('Cash refund applied to shift but drawer audit row failed:', opError);
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error recording cash refund:', error);
             return false;
         }
     });

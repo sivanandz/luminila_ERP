@@ -7,7 +7,10 @@ import { pb } from './pocketbase';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
 import { calculateGST, GST_RATES } from './gst';
-import type { Invoice } from './invoice';
+import { createInvoice, getStoreSettings, type Invoice, type InvoiceItem } from './invoice';
+import { getCurrentShift, recordCashRefund } from './register';
+import { validateReturnQuantities } from './returns-policy';
+import { splitExclusiveLine, toPaise, toRupees } from './invoice-math';
 import type { ProductVariant } from '@/types/database';
 
 // ===========================================
@@ -426,12 +429,65 @@ export async function processRefund(
     refundMethod: string,
     refundReference?: string
 ): Promise<void> {
+    const cn = await pb.collection('credit_notes').getOne<{
+        id: string;
+        status?: string;
+        grand_total?: number;
+        credit_note_number?: string;
+        buyer_name?: string;
+    }>(id);
+
+    // A refund settles an approved note exactly once.
+    if (cn.status === 'refunded' || cn.status === 'exchanged') return;
+    if (cn.status !== 'approved') {
+        throw new Error(`Credit note ${cn.credit_note_number || id} must be approved before it can be refunded`);
+    }
+
+    const amount = Number(cn.grand_total) || 0;
+    const method = String(refundMethod || 'cash').toLowerCase();
+    const reference = refundReference || `REFUND-${cn.credit_note_number || id}`;
+
     await pb.collection('credit_notes').update(id, {
         status: 'refunded',
-        refund_method: refundMethod,
-        refund_reference: refundReference || '',
+        refund_method: method,
+        refund_reference: reference,
         refunded_at: new Date().toISOString(),
     });
+
+    // Only cash leaves the drawer. Bank, UPI, and store credit settle elsewhere.
+    if (method !== 'cash' || amount <= 0) return;
+
+    const userId = pb.authStore.model?.id || '';
+    const shift = userId ? await getCurrentShift(userId) : null;
+
+    if (!shift) {
+        // No open shift means no till to reconcile. Keep the refund visible
+        // rather than pretending it reached a drawer.
+        await pb.collection('activity_logs').create({
+            action: 'CASH_REFUND_OUTSIDE_SHIFT',
+            entity_type: 'credit_notes',
+            entity_id: id,
+            description: `Cash refund of ${amount} for ${cn.credit_note_number || id} processed with no open shift.`,
+            metadata: JSON.stringify({ amount, method, reference, customer: cn.buyer_name || '' }),
+        }).catch(() => {});
+        return;
+    }
+
+    const recorded = await recordCashRefund(
+        shift.id,
+        amount,
+        `Refund for credit note ${cn.credit_note_number || id} (${cn.buyer_name || 'customer'})`,
+        userId
+    );
+
+    if (!recorded) {
+        // Nothing reached the drawer, so put the note back to approved and let
+        // the caller retry instead of leaving a refunded note with no cash trail.
+        await pb.collection('credit_notes')
+            .update(id, { status: 'approved', refund_method: '', refund_reference: '', refunded_at: '' })
+            .catch(() => {});
+        throw new Error('Cash drawer entry failed; refund was rolled back');
+    }
 }
 
 export async function cancelCreditNote(id: string): Promise<void> {
@@ -458,6 +514,46 @@ export async function createReturnFromInvoice(
     const itemsToReturn = invoiceItems.filter((item) =>
         returnItems.some(ri => ri.invoice_item_id === item.id)
     );
+
+    // Reject over-return: a line can only be returned up to what remains after
+    // every non-cancelled credit note that already references it. The form used
+    // to cap each request in isolation, so two visits could credit double.
+    const requestedIds = new Set(returnItems.map((ri) => ri.invoice_item_id));
+    const matchedIds = new Set(itemsToReturn.map((item) => item.id));
+    const unknownIds = [...requestedIds].filter((itemId) => !matchedIds.has(itemId));
+    if (unknownIds.length > 0) {
+        throw new Error(`Invoice item(s) not found on this invoice: ${unknownIds.join(', ')}`);
+    }
+
+    const priorReturns = await pb
+        .collection('credit_note_items')
+        .getFullList<{ original_invoice_item?: string; quantity?: number }>({
+            filter: `credit_note.original_invoice="${invoiceId}" && credit_note.status != "cancelled"`,
+            fields: 'original_invoice_item,quantity',
+        })
+        .catch(() => []);
+
+    const priorByItem = new Map<string, number>();
+    for (const prior of priorReturns) {
+        if (!prior.original_invoice_item) continue;
+        priorByItem.set(
+            prior.original_invoice_item,
+            (priorByItem.get(prior.original_invoice_item) || 0) + (prior.quantity || 0)
+        );
+    }
+
+    const validation = validateReturnQuantities(
+        itemsToReturn.map((item) => ({
+            invoiceItemId: item.id,
+            description: item.description,
+            ordered: item.quantity,
+            alreadyReturned: priorByItem.get(item.id) || 0,
+            requested: returnItems.find((ri) => ri.invoice_item_id === item.id)?.quantity || 0,
+        }))
+    );
+    if (!validation.ok) {
+        throw new Error(validation.errors.join(' '));
+    }
 
     // Calculate totals
     let taxableValue = 0;
@@ -587,6 +683,113 @@ export interface ExchangeResult {
     invoicePaymentId?: string;
 }
 
+export interface ExchangeResult {
+    creditNoteId: string;
+    exchangedItems: ExchangeItem[];
+    creditUsed: number;
+    replacementTotal: number; // tax-inclusive (incl. GST) replacement value
+    balanceDue: number; // >0: customer paid extra, <0: store refunded difference, 0: exact match
+    paymentMethod?: string;
+    paymentReference?: string;
+    invoicePaymentId?: string;
+    exchangeInvoiceId?: string;
+}
+
+/**
+ * Raise the tax document for replacement goods.
+ *
+ * Exchange unit prices are the pre-tax base prices, so GST is added on top.
+ * This is what makes the replacement a recorded supply instead of stock that
+ * leaves the store with no invoice behind it.
+ */
+async function createExchangeInvoice(
+    creditNote: CreditNote,
+    lines: ExchangeItem[],
+    balanceDue: number,
+    paymentMethod: string
+): Promise<{ invoiceId: string; invoiceNumber: string; grandTotal: number }> {
+    const store = await getStoreSettings();
+    const sellerState = store.store_state_code || '27';
+    const buyerState = creditNote.buyer_state_code || sellerState;
+    const gstEnabled = store.is_gst_registered !== false;
+    const rate = gstEnabled ? GST_RATES.JEWELRY : 0;
+
+    const items: InvoiceItem[] = lines.map((line, index) => {
+        const split = splitExclusiveLine(toPaise(line.unit_price * line.quantity), rate, sellerState, buyerState);
+        return {
+            variant_id: line.variant_id,
+            sr_no: index + 1,
+            description: line.description,
+            hsn_code: '7113',
+            quantity: line.quantity,
+            unit: 'PCS',
+            unit_price: line.unit_price,
+            discount_percent: 0,
+            discount_amount: 0,
+            taxable_amount: toRupees(split.taxablePaise),
+            gst_rate: rate,
+            cgst_rate: split.cgstRate,
+            cgst_amount: toRupees(split.cgstPaise),
+            sgst_rate: split.sgstRate,
+            sgst_amount: toRupees(split.sgstPaise),
+            igst_rate: split.igstRate,
+            igst_amount: toRupees(split.igstPaise),
+            cess_rate: 0,
+            cess_amount: 0,
+            total_amount: toRupees(split.totalPaise),
+        };
+    });
+
+    const taxable = items.reduce((sum, item) => sum + toPaise(item.taxable_amount), 0);
+    const cgst = items.reduce((sum, item) => sum + toPaise(item.cgst_amount), 0);
+    const sgst = items.reduce((sum, item) => sum + toPaise(item.sgst_amount), 0);
+    const igst = items.reduce((sum, item) => sum + toPaise(item.igst_amount), 0);
+    const grandTotal = items.reduce((sum, item) => sum + toPaise(item.total_amount), 0);
+
+    const invoice = await createInvoice({
+        invoice_date: new Date().toISOString(),
+        invoice_type: 'regular',
+        seller_gstin: gstEnabled ? (store.store_gstin || '') : '',
+        seller_name: store.store_name || 'Luminila Jewelry',
+        seller_address: [store.store_address, store.store_city].filter(Boolean).join(', '),
+        seller_state_code: sellerState,
+        buyer_name: creditNote.buyer_name || 'Walk-in Customer',
+        buyer_gstin: creditNote.buyer_gstin || '',
+        buyer_phone: '',
+        buyer_email: '',
+        buyer_address: creditNote.buyer_address || '',
+        buyer_state_code: buyerState,
+        place_of_supply: buyerState,
+        status: balanceDue > 0 ? 'pending' : 'paid',
+        subtotal: toRupees(taxable),
+        tax: toRupees(cgst + sgst + igst),
+        discount: 0,
+        total: toRupees(grandTotal),
+        taxable_value: toRupees(taxable),
+        cgst_amount: toRupees(cgst),
+        sgst_amount: toRupees(sgst),
+        igst_amount: toRupees(igst),
+        cess_amount: 0,
+        total_tax: toRupees(cgst + sgst + igst),
+        discount_amount: 0,
+        shipping_charges: 0,
+        grand_total: toRupees(grandTotal),
+        amount_in_words: '',
+        is_reverse_charge: false,
+        payment_terms: store.invoice_terms,
+        is_paid: balanceDue <= 0,
+        paid_amount: balanceDue <= 0 ? toRupees(grandTotal) : 0,
+        notes: `Exchange against credit note ${creditNote.credit_note_number || creditNote.id || ''} (${paymentMethod.toUpperCase()})`,
+        items,
+    });
+
+    return {
+        invoiceId: invoice.id as string,
+        invoiceNumber: invoice.invoice_number || '',
+        grandTotal: toRupees(grandTotal),
+    };
+}
+
 export async function processExchange(
     creditNoteId: string,
     newItems: ExchangeItem[],
@@ -678,6 +881,8 @@ export async function processExchange(
     // retry pass the status guard and deduct those items a second time.
     const deducted: { variantId: string; quantity: number; movementId?: string }[] = [];
     let invoicePaymentId: string | undefined;
+    let exchangeInvoiceId: string | undefined;
+    let exchangeInvoiceNumber = '';
     let markedExchanged = false;
 
     const rollbackExchange = async () => {
@@ -698,6 +903,18 @@ export async function processExchange(
         if (invoicePaymentId) {
             await pb.collection('invoice_payments').delete(invoicePaymentId).catch((err) =>
                 console.warn(`Rollback: could not delete exchange payment record ${invoicePaymentId}:`, err)
+            );
+        }
+        if (exchangeInvoiceId) {
+            const exchangeItems = await pb
+                .collection('invoice_items')
+                .getFullList<{ id: string }>({ filter: `invoice="${exchangeInvoiceId}"` })
+                .catch(() => []);
+            for (const item of exchangeItems) {
+                await pb.collection('invoice_items').delete(item.id).catch(() => {});
+            }
+            await pb.collection('invoices').delete(exchangeInvoiceId).catch((err) =>
+                console.warn(`Rollback: could not delete exchange invoice ${exchangeInvoiceId}:`, err)
             );
         }
         if (markedExchanged) {
@@ -739,34 +956,25 @@ export async function processExchange(
             }
         }
 
-        // 3b. FINANCIAL BOOKKEEPING: Record ledger entry in invoice_payments if original invoice linked
+        // 3b. TAX DOCUMENT: replacement goods leave the store as a supply, so
+        // they get their own invoice. The previous code wrote a negative payment
+        // against the original invoice, which corrupted its paid_amount and
+        // recorded no output tax for the replacement.
         if (creditNote.original_invoice_id) {
-            try {
-                if (balanceDue > 0) {
-                    // Customer paid extra cash/UPI/card for upgrade
-                    const pRecord = await pb.collection('invoice_payments').create({
-                        invoice: creditNote.original_invoice_id,
-                        amount: balanceDue,
-                        payment_date: new Date().toISOString(),
-                        payment_method: paymentMethod,
-                        reference_number: paymentReference || `EXCH-PAY-${creditNote.credit_note_number || creditNoteId}`,
-                        notes: `Exchange balance collected (${paymentMethod.toUpperCase()}). Replaced items: ${newItems.map(i => `${i.description} (x${i.quantity})`).join(', ')}`,
-                    });
-                    invoicePaymentId = pRecord.id;
-                } else if (balanceDue < 0) {
-                    // Store gave partial cash/UPI refund to customer
-                    const pRecord = await pb.collection('invoice_payments').create({
-                        invoice: creditNote.original_invoice_id,
-                        amount: balanceDue,
-                        payment_date: new Date().toISOString(),
-                        payment_method: paymentMethod,
-                        reference_number: paymentReference || `EXCH-REFUND-${creditNote.credit_note_number || creditNoteId}`,
-                        notes: `Exchange partial refund to customer (${paymentMethod.toUpperCase()}). Replaced items: ${newItems.map(i => `${i.description} (x${i.quantity})`).join(', ')}`,
-                    });
-                    invoicePaymentId = pRecord.id;
-                }
-            } catch (err) {
-                console.warn('Could not record invoice payment bookkeeping entry:', err);
+            const exchange = await createExchangeInvoice(creditNote, newItems, balanceDue, paymentMethod);
+            exchangeInvoiceId = exchange.invoiceId;
+            exchangeInvoiceNumber = exchange.invoiceNumber;
+
+            if (balanceDue > 0) {
+                const pRecord = await pb.collection('invoice_payments').create({
+                    invoice: exchange.invoiceId,
+                    amount: balanceDue,
+                    payment_date: new Date().toISOString(),
+                    payment_method: paymentMethod,
+                    reference_number: paymentReference || `EXCH-PAY-${creditNote.credit_note_number || creditNoteId}`,
+                    notes: `Exchange balance collected (${paymentMethod.toUpperCase()}). Exchange invoice ${exchange.invoiceNumber}`,
+                });
+                invoicePaymentId = pRecord.id;
             }
         }
 
@@ -781,6 +989,7 @@ export async function processExchange(
             creditNote.notes,
             `[Exchange Settlement]: ${financialSummary}`,
             `[Replacement Items Issued]: ${newItems.map(i => `${i.description} (Qty: ${i.quantity} @ ₹${i.unit_price})`).join('; ')}`,
+            exchangeInvoiceNumber ? `[Exchange Invoice]: ${exchangeInvoiceNumber}` : '',
             options.notes ? `Staff Notes: ${options.notes}` : '',
         ].filter(Boolean).join('\n\n');
 
@@ -792,6 +1001,31 @@ export async function processExchange(
             refunded_at: new Date().toISOString(),
         });
         markedExchanged = true;
+
+        // Negative balance means cash leaves the drawer. Record it against the
+        // open shift so the refund reaches reconciliation instead of vanishing.
+        if (balanceDue < 0 && paymentMethod.toLowerCase() === 'cash') {
+            const refundAmount = Math.abs(balanceDue);
+            const userId = pb.authStore.model?.id || '';
+            const shift = userId ? await getCurrentShift(userId) : null;
+            if (shift) {
+                const recorded = await recordCashRefund(
+                    shift.id,
+                    refundAmount,
+                    `Exchange refund for credit note ${creditNote.credit_note_number || creditNoteId}`,
+                    userId
+                );
+                if (!recorded) console.warn('Exchange completed but the cash refund drawer entry failed');
+            } else {
+                await pb.collection('activity_logs').create({
+                    action: 'CASH_REFUND_OUTSIDE_SHIFT',
+                    entity_type: 'credit_notes',
+                    entity_id: creditNoteId,
+                    description: `Exchange refund of ${refundAmount} recorded with no open shift.`,
+                    metadata: JSON.stringify({ amount: refundAmount, credit_note: creditNoteId }),
+                }).catch(() => {});
+            }
+        }
     } catch (err) {
         await rollbackExchange();
         throw err;
@@ -806,6 +1040,7 @@ export async function processExchange(
         paymentMethod,
         paymentReference,
         invoicePaymentId,
+        exchangeInvoiceId,
     };
 }
 

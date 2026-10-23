@@ -126,6 +126,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Lint | `npx eslint src` | **332 problems: 7 errors, 325 warnings** |
 | Lint errors | same | 4 × `react-hooks/rules-of-hooks` in `src/app/whatsapp/page.tsx`; `prefer-const` in `excel-import.ts`, `purchase.ts`, `storefront.ts` |
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
+| Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
 
@@ -136,10 +137,10 @@ The seven lint errors are not cosmetic. Four of them are the React hooks violati
 | Layer | Rating | Basis |
 |---|---|---|
 | Core catalog and inventory | Solid | Schema constrained, stock arithmetic uses atomic operators, audit trail present |
-| POS billing | Improving | Tax model unified, invoice totals equal payments, rollback covers shift and invoice (section 11). Refund path still unbooked. |
+| POS billing | Improving | Tax model unified, invoice totals equal payments, rollback covers shift and invoice; cash refunds now reach the drawer (section 11) |
 | GST invoicing | Improving | Tax base and line rates correct on the POS and order paths; GSTIN checksum and a real product rate column remain open |
 | Procurement | Mostly solid | Over-receipt guard exists but is racy; inward cost reconciliation lossy |
-| Returns | **Fragile** | Over-return possible, refunds unbooked, exchanges undocumented in tax terms |
+| Returns | Improving | Refunds reach the drawer, over-return is blocked, exchanges raise their own invoice (section 11) |
 | Banking and expenses | Mostly solid | Double-entry with pre-checks; still process-local locking |
 | WhatsApp CRM | Feature-rich, unevenly hardened | Large surface, strong UX, weak authorization boundaries |
 | Storefront and API routes | **Unsafe as deployed** | Unauthenticated tenant and stock mutations (section 6) |
@@ -609,7 +610,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** D-01, D-02, D-03, D-10, D-11 and D-20 are closed. D-14 is partially closed and blocked on a `products.gst_rate` column. Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11, D-20, D-25. D-14 is partially closed and blocked on a `products.gst_rate` column. Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -992,6 +993,28 @@ Chronological record of work done after the audit. Each entry lists what changed
 - D-14 needs a `products.gst_rate` column (migration) and a field in the inventory form before rates can actually differ per product.
 - D-20 has a code-level guard but no unique index on `invoices.order`; the index is a proposed migration, not applied.
 - POS invoices created before this change still carry the old mismatch. They are left untouched; a backfill is a separate decision.
+
+### 11.2 Slice 2: returns and refunds (2026-10-23)
+
+**Closed:** D-05, D-06, D-07, D-25.
+
+| Change | Files | Why |
+|---|---|---|
+| Cash refunds reach the drawer | `src/lib/register.ts`, `src/lib/returns.ts` | `recordCashRefund` writes the drawer operation and increments `total_cash_refunds`, which `closeShift` already subtracts |
+| Refund is a state machine, not a field write | `src/lib/returns.ts` | Only approved notes refund; duplicates are ignored; a failed drawer write reverts the note so a retry is safe |
+| Refunds outside a shift stay visible | `src/lib/returns.ts` | With no open shift the event is logged as `CASH_REFUND_OUTSIDE_SHIFT` instead of silently losing the money |
+| Cumulative over-return guard | `src/lib/returns-policy.ts` (new), `src/lib/returns.ts` | Prior non-cancelled credit note lines are summed per invoice item and validated before any write |
+| Exchange raises its own tax invoice | `src/lib/returns.ts` | Replacement goods are invoiced with GST; the balance is a payment on the new invoice, never a negative row against the original |
+| Exchange cash difference hits the drawer | `src/lib/returns.ts` | A negative balance records a drawer refund against the open shift |
+| Opening float uses a valid enum | `src/lib/register.ts` | `opening_float` was rejected by the schema and swallowed; it is now an `add` with an explicit reason |
+| Errors reach the cashier | `src/app/returns/create/page.tsx`, `src/app/returns/detail/page.tsx` | Over-return and refund failures show the real message instead of a generic alert |
+
+**Verified:** `npx tsc --noEmit --incremental false` clean; `npx tsx src/scripts/test-returns-policy.ts` 9 passed, 0 failed; targeted ESLint reports no errors.
+
+**Still open in this cluster:**
+
+- Exchange invoices assume the 3 percent jewelry rate, the same limitation as D-14.
+- Bank and UPI refunds are recorded on the credit note but do not create a bank transaction; that belongs with banking reconciliation.
 
 ## Appendix A: Route inventory
 

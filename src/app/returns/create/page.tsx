@@ -149,7 +149,13 @@ function CreateReturnContent() {
             router.push(`/returns/detail?id=${creditNote.id}`);
         } catch (error) {
             console.error("Error creating return:", error);
-            toast.error("Failed to create return. Please try again.");
+            // Surface the policy message (over-return, unknown line) instead of a
+            // generic failure, so the cashier knows what to correct.
+            toast.error(
+                error instanceof Error && error.message
+                    ? error.message
+                    : "Failed to create return. Please try again."
+            );
         } finally {
             setSubmitting(false);
         }

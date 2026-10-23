@@ -255,9 +255,16 @@ function CreditNoteDetailContent() {
             await processRefund(id, refundMethod, refundReference || undefined);
             loadCreditNote();
             setShowRefundDialog(false);
+            toast.success(
+                refundMethod === "cash"
+                    ? "Refund recorded in the cash drawer and deducted from the shift total."
+                    : `Refund recorded via ${refundMethod.replace("_", " ")}.`
+            );
         } catch (error) {
             console.error("Error processing refund:", error);
-            alert("Failed to process refund");
+            toast.error(
+                error instanceof Error && error.message ? error.message : "Failed to process refund"
+            );
         } finally {
             setProcessing(false);
         }
