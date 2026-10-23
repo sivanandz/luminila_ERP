@@ -11,6 +11,7 @@ import { createInvoice, getStoreSettings, type Invoice, type InvoiceItem } from 
 import { getCurrentShift, recordCashRefund } from './register';
 import { validateReturnQuantities } from './returns-policy';
 import { splitExclusiveLine, toPaise, toRupees } from './invoice-math';
+import { executeInwardQcInspection, type QcDispositionGrade } from './returns-qc-engine';
 import type { ProductVariant } from '@/types/database';
 
 // ===========================================
@@ -336,6 +337,10 @@ export interface ApproveCreditNoteOptions {
     vendorName?: string;
     notes?: string;
     flaggedBy?: string;
+    /** Inward QC grade. When supplied it decides restock, repair or write-off. */
+    qcGrade?: QcDispositionGrade;
+    /** Artisan or workshop that receives items graded for repair. */
+    karigarName?: string;
 }
 
 export async function approveCreditNote(id: string, options?: ApproveCreditNoteOptions): Promise<void> {
@@ -364,11 +369,42 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
             filter: `credit_note="${id}"`
         });
 
+        // Inward QC: when a grade is supplied, the QC engine owns the routing
+        // decision (restock, karigar repair, write-off) and produces the summary
+        // attached to the note. Without a grade the old reason-based rule stands.
+        const qcGrade = options?.qcGrade;
+        const qcReason: 'manufacturing_defect' | 'size_fit_issue' | 'customer_remorse' =
+            cn.return_reason === 'defective' || cn.return_reason === 'quality_issue'
+                ? 'manufacturing_defect'
+                : cn.return_reason === 'size_exchange'
+                    ? 'size_fit_issue'
+                    : 'customer_remorse';
+
+        const qcResult = qcGrade
+            ? executeInwardQcInspection({
+                returnNumber: cn.credit_note_number || id,
+                originalInvoiceNumber: cn.original_invoice || '',
+                customerName: cn.buyer_name || 'Customer',
+                returnedItems: items.map((item) => ({
+                    variantId: item.variant || '',
+                    productName: item.description || '',
+                    quantityReturned: item.quantity || 0,
+                    unitPrice: item.unit_price || 0,
+                    taxRate: item.gst_rate || 0,
+                    returnReason: qcReason,
+                })),
+                dispositionGrade: qcGrade,
+                inspectorNotes: options?.notes,
+            })
+            : null;
+
         const isQuarantine = options?.routeDefectiveToQuarantine ?? (cn.return_reason === 'defective' || cn.return_reason === 'quality_issue');
+        const routeToQuarantine = qcGrade ? qcGrade !== 'restock_grade_a' : isQuarantine;
+        const quarantineType = qcGrade === 'karigar_repair' ? 'vendor_replacement' : (options?.discrepancyType || 'damaged');
 
         for (const item of items) {
             if (item.quantity > 0) {
-                if (isQuarantine) {
+                if (routeToQuarantine) {
                     // 1. Quarantined / Defective goods: DO NOT restore to sellable inventory.
                     // Log quarantine movement and create stock_discrepancies record
                     if (item.variant) {
@@ -388,10 +424,14 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                         variant: item.variant || '',
                         sku: item.description,
                         product_name: item.description,
-                        discrepancy_type: options?.discrepancyType || 'damaged',
+                        discrepancy_type: quarantineType,
                         quantity: item.quantity,
-                        vendor_name: options?.vendorName || '',
-                        reason: `Defective customer return #${cn.credit_note_number || id} (${cn.return_reason})`,
+                        vendor_name: qcGrade === 'karigar_repair'
+                            ? (options?.karigarName || 'Karigar Workshop')
+                            : (options?.vendorName || ''),
+                        reason: qcGrade
+                            ? `QC grade ${qcGrade} for return #${cn.credit_note_number || id} (${cn.return_reason})`
+                            : `Defective customer return #${cn.credit_note_number || id} (${cn.return_reason})`,
                         notes: options?.notes || `Customer: ${cn.buyer_name}. Routed to quarantine on approval.`,
                         status: 'active',
                         flagged_by: options?.flaggedBy || 'Staff',
@@ -418,6 +458,16 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                     }
                 }
             }
+        }
+        if (qcResult) {
+            await pb.collection('credit_notes').update(id, {
+                notes: [
+                    cn.notes,
+                    `[Inward QC ${new Date().toISOString().slice(0, 10)}]: ${qcResult.inspectorSummary}`,
+                ]
+                    .filter(Boolean)
+                    .join('\n\n'),
+            }).catch((err) => console.warn('Could not attach the QC summary to the credit note:', err));
         }
     } catch (itemErr) {
         console.error('Error handling inventory for credit note:', itemErr);

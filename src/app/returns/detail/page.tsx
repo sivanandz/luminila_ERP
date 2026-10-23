@@ -11,9 +11,6 @@ import {
     DollarSign,
     Printer,
     Clock,
-    AlertTriangle,
-
-    PackagePlus,
     Trash2,
     Plus,
     type LucideIcon,
@@ -71,6 +68,7 @@ import {
     type CreditNoteStatus,
     type ExchangeItem,
 } from "@/lib/returns";
+import type { QcDispositionGrade } from "@/lib/returns-qc-engine";
 import { formatINR } from "@/lib/gst";
 
 const statusConfig: Record<CreditNoteStatus, { label: string; color: string; icon: LucideIcon }> = {
@@ -98,6 +96,7 @@ function CreditNoteDetailContent() {
     // Approval condition routing
     const [routeToQuarantine, setRouteToQuarantine] = useState(true);
     const [quarantineType, setQuarantineType] = useState<"damaged" | "vendor_replacement">("damaged");
+    const [qcGrade, setQcGrade] = useState<QcDispositionGrade>("restock_grade_a");
     const [approvalNotes, setApprovalNotes] = useState("");
 
     // Exchange & Replacement state
@@ -128,6 +127,11 @@ function CreditNoteDetailContent() {
         setCreditNote(data);
         if (data) {
             setRouteToQuarantine(data.return_reason === "defective" || data.return_reason === "quality_issue");
+            setQcGrade(
+                data.return_reason === "defective" || data.return_reason === "quality_issue"
+                    ? "karigar_repair"
+                    : "restock_grade_a"
+            );
         }
         setLoading(false);
     };
@@ -170,6 +174,7 @@ function CreditNoteDetailContent() {
             await approveCreditNote(id, {
                 routeDefectiveToQuarantine: routeToQuarantine,
                 discrepancyType: quarantineType,
+                qcGrade,
                 notes: approvalNotes,
             });
             toast.success(
@@ -607,44 +612,28 @@ function CreditNoteDetailContent() {
                         </div>
 
                         <div className="space-y-2 border border-border/60 p-3 rounded-lg bg-card/60">
-                            <Label className="font-bold text-foreground">Inventory Condition & Routing:</Label>
-                            <div className="space-y-2 pt-1">
-                                <label className="flex items-start gap-2.5 cursor-pointer">
-                                    <input
-                                        type="radio"
-                                        name="routing"
-                                        checked={routeToQuarantine}
-                                        onChange={() => setRouteToQuarantine(true)}
-                                        className="mt-0.5 accent-amber-500"
-                                    />
-                                    <div>
-                                        <span className="font-bold text-amber-300 flex items-center gap-1">
-                                            <AlertTriangle className="w-3.5 h-3.5" /> Defective / Damaged (Route to Quarantine)
-                                        </span>
-                                        <p className="text-[11px] text-muted-foreground">
-                                            Does NOT restock into sellable inventory. Flags items in active quarantine / vendor RMA queue.
-                                        </p>
-                                    </div>
-                                </label>
-
-                                <label className="flex items-start gap-2.5 cursor-pointer pt-1">
-                                    <input
-                                        type="radio"
-                                        name="routing"
-                                        checked={!routeToQuarantine}
-                                        onChange={() => setRouteToQuarantine(false)}
-                                        className="mt-0.5 accent-emerald-500"
-                                    />
-                                    <div>
-                                        <span className="font-bold text-emerald-300 flex items-center gap-1">
-                                            <PackagePlus className="w-3.5 h-3.5" /> Resellable / Good Condition (Restock)
-                                        </span>
-                                        <p className="text-[11px] text-muted-foreground">
-                                            Adds returned quantity directly back to sellable stock levels.
-                                        </p>
-                                    </div>
-                                </label>
-                            </div>
+                            <Label className="font-bold text-foreground">Inward QC grade &amp; routing:</Label>
+                            <Select
+                                value={qcGrade}
+                                onValueChange={(value) => {
+                                    const grade = value as QcDispositionGrade;
+                                    setQcGrade(grade);
+                                    setRouteToQuarantine(grade !== "restock_grade_a");
+                                }}
+                            >
+                                <SelectTrigger className="bg-background">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="restock_grade_a">Grade A, resellable (restock)</SelectItem>
+                                    <SelectItem value="karigar_repair">Minor defect, send to karigar (repair)</SelectItem>
+                                    <SelectItem value="damaged_writeoff">Damaged beyond repair (write off)</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <p className="text-[11px] text-muted-foreground">
+                                The grade decides where the goods go. Repair routes to the karigar queue; write-off
+                                records the loss in the quarantine ledger.
+                            </p>
                         </div>
 
                         {routeToQuarantine && (

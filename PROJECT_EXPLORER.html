@@ -916,7 +916,8 @@ const FEATURES = [
   ["E-way bill JSON","gst","partial","Defaults state to Karnataka when unset (D-28)"],
   ["GSTR-1 engine","gst","live","Official GSTN file with CDNR, CDNUR and HSN built from invoices and credit notes"],
   ["GSTIN validation","gst","partial","Regex only, no checksum (D-16)"],
-  ["Credit notes","gst","live","Restocked on approval, with a cumulative over-return guard"],
+  ["Credit notes","gst","live","Restocked, repaired or written off per QC grade, with a cumulative over-return guard"],
+  ["Inward QC routing","gst","live","Approval grade decides restock, karigar repair or write-off"],
   ["Exchanges","gst","live","Replacement goods raise their own invoice; cash difference settles through the drawer"],
   ["Invoice PDF","gst","live","Print stylesheet based"],
   ["E-invoice and IRN","gst","absent","Not implemented"],
@@ -1249,7 +1250,6 @@ const ROADMAP = [
 const ORPHANS = [
   ["manufacturing-engine.ts","Karigar BOM, metal loss, tolerance","No route, no importer"],
   ["imitation-jewelry-engine.ts","Craft taxonomy and wholesale tiers","No route, no importer"],
-  ["returns-qc-engine.ts","QC grading and routing","Returns never call it"],
   ["cross-border-engine.ts","LUT export invoice, static FX","No route"],
   ["cheque-engine.ts","PDC lifecycle and maturity","No route, no collection"],
   ["omnichannel-buffer-engine.ts","Channel buffers, cart reservations","No importer, in-memory only"],
@@ -1270,7 +1270,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","40 assertions across four suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","44 assertions across five suites; non-zero exit on failure."],
+  ["QC routing tests","npx tsx src/scripts/test-returns-qc.ts","pass","4 assertions: grade to action mapping, and deductions only on remorse."],
   ["GSTR-1 period tests","npx tsx src/scripts/test-gstr1-period.ts","pass","3 assertions: MMYYYY period and the 1 April financial-year boundary."],
   ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build excluded until D-08 is settled."]
 ];

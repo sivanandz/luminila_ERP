@@ -128,8 +128,9 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 40 assertions across 4 suites, exit 0 |
+| Test command | `npm test` | 44 assertions across 5 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
+| QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -384,7 +385,7 @@ Status vocabulary, applied strictly:
 | E-way bill JSON | Partial | Payload builder exists; defaults to Karnataka state code 29 when unset (D-13) |
 | GSTR-1 engine | Live | `/reports/gst` builds the official GSTN v3.0.4 file (B2B, B2CL, B2CS, CDNR, CDNUR, HSN, DOCS) from invoices and credit notes (section 11.8) |
 | GSTIN validation | **Partial** | Regex only, no checksum (D-11) |
-| Credit notes against invoices | Partial | Created and restocked; cumulative over-return unchecked (D-08) |
+| Credit notes against invoices | Live | Cumulative over-return guard, cash refunds hit the drawer, exchanges raise a GST invoice, and the QC grade routes the goods (section 11.9) |
 | Invoice PDF | Live | Print stylesheet based |
 | E-invoice / IRN | Absent | Not implemented |
 
@@ -422,7 +423,7 @@ Status vocabulary, applied strictly:
 | Expense vouchers and categories | Live | Filter injection fixed in some modules, still open in expenses (D-20) |
 | Cash refunds | **Absent** | No code path writes cash refunds to the drawer or ledger (D-07) |
 | Cheque / PDC tracking | Scaffold | `cheque-engine.ts` models the clearing lifecycle; zero importers, no screen, no collection |
-| Returns QC routing | Scaffold | `returns-qc-engine.ts` grades returns into restock, repair, or write-off; not called by `/returns` |
+| Returns QC routing | Live | Approval records a grade that restocks, sends to karigar repair, or writes off through the quarantine ledger |
 | Cross-border LUT export | Scaffold | `cross-border-engine.ts` compiles zero-rated export invoices against a static FX table; no route |
 | Bank reconciliation import | Absent | Manual entry only |
 | Day book / trial balance | Partial | Reports exist; no formal accounting statements |
@@ -868,7 +869,6 @@ This is the most misleading category in the repository: substantial code exists,
 |---|---|---|
 | `manufacturing-engine.ts` | Karigar BOM cost, metal loss, tolerance | No route, no importer |
 | `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
-| `returns-qc-engine.ts` | QC grading and routing | `/returns` does not call it |
 | `cross-border-engine.ts` | LUT export invoice with static FX | No route |
 | `cheque-engine.ts` | PDC lifecycle and maturity math | No route, no collection |
 | `omnichannel-buffer-engine.ts` | Channel buffers and cart reservations | No importer; in-memory state would not survive reload anyway |
@@ -1144,6 +1144,23 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Still open in this cluster:** returns QC routing, manufacturing/karigar, cheque/PDC, cross-border and imitation taxonomy wiring.
 
+### 11.9 Slice 9: inward QC routing (2026-10-23)
+
+**Feature closed:** returns QC routing, previously scaffold with zero importers.
+
+| Change | Files | Why |
+|---|---|---|
+| Grade decides routing | `src/lib/returns.ts` | `qcGrade` on approval: Grade A restocks, repair routes to the karigar queue as a vendor-replacement discrepancy, write-off records a damaged discrepancy; no grade keeps the old reason-based rule |
+| QC summary attached | `src/lib/returns.ts` | `executeInwardQcInspection` runs over the returned lines and its inspector summary is appended to the credit note notes |
+| Grade selector | `src/app/returns/detail/page.tsx` | One select replaces the two radios and defaults to repair for defective or quality returns |
+| Decision tests | `src/scripts/test-returns-qc.ts` (new) | Grade-to-action mapping, and deductions apply to remorse but not to store faults |
+
+**Verified:** `npm run typecheck` clean; `npm test` 12 + 9 + 16 + 3 + 4 assertions; ESLint 0 errors.
+
+**Scope note:** the engine also computes restocking-fee and reverse-shipping deductions. Only routing and the summary are wired, because reducing the credit note total after approval would change a GST document; that is left as a product decision.
+
+**Still open in this cluster:** manufacturing/karigar, cheque/PDC, cross-border and imitation taxonomy wiring, plus the six phantom collections (D-36).
+
 ## Appendix A: Route inventory
 
 40 route pages, all client components.
@@ -1233,7 +1250,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `manufacturing-engine.ts`, `gstr1-engine.ts`, `omnichannel-buffer-engine.ts`, `returns-qc-engine.ts`, `cross-border-engine.ts`, `cheque-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 12 modules, including three entire statutory and manufacturing domains.
+**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `manufacturing-engine.ts`, `omnichannel-buffer-engine.ts`, `cross-border-engine.ts`, `cheque-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 10 modules, including whole manufacturing, payment and sync domains.
 
 ## Appendix D: Glossary
 
