@@ -12,6 +12,7 @@ import { getCurrentShift, recordCashRefund } from './register';
 import { validateReturnQuantities } from './returns-policy';
 import { splitExclusiveLine, toPaise, toRupees } from './invoice-math';
 import { executeInwardQcInspection, type QcDispositionGrade } from './returns-qc-engine';
+import { reverseDiscountUsage } from './discounts';
 import type { ProductVariant } from '@/types/database';
 
 // ===========================================
@@ -502,6 +503,18 @@ export async function processRefund(
         refund_method: method,
         refund_reference: reference,
         refunded_at: new Date().toISOString(),
+    });
+
+    // The order came back, so the coupon use goes back to the pool too.
+    const linkage = await pb.collection('credit_notes').getOne<{
+        original_invoice?: string;
+        original_sale?: string;
+    }>(id).catch(() => null);
+    await reverseDiscountUsage({
+        invoiceId: linkage?.original_invoice,
+        saleId: linkage?.original_sale,
+    }).catch((error) => {
+        console.warn('Discount usage reversal failed:', error);
     });
 
     // Only cash leaves the drawer. Bank, UPI, and store credit settle elsewhere.

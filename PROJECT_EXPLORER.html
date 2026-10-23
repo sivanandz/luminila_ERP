@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>12 open · 43 fixed</span>
+            <span class="chip accent"><span class="dot"></span>11 open · 44 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1088,7 +1088,7 @@ const DEFECTS = [
     where:"src/lib/orders.ts:287-326",
     impact:"If the order status update fails, the retry creates a second invoice. There is no unique index on invoices.order.",
     fix:"Add the unique index and make the write idempotent." },
-  { id:"D-21", sev:"P2", area:"money", title:"Discount engine has four separate gaps",
+  { id:"D-21", sev:"P2", status:"fixed", area:"money", title:"Discount engine has four separate gaps",
     where:"src/lib/discounts.ts:12,156,266,315-323,362",
     impact:"BOGO yields zero discount, codes are not sanitized, usage limits race, and returns never reverse usage.",
     fix:"Implement BOGO or remove it, sanitize, serialize usage, and reverse on return." },

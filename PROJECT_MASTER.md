@@ -652,7 +652,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-15, D-16, D-17, D-18, D-20, D-22, D-24, D-25, D-26, D-27, D-28, D-30, D-31, D-33, D-34, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-15, D-16, D-17, D-18, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-30, D-31, D-33, D-34, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1628,6 +1628,21 @@ Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 asse
 | Input hygiene | Redemptions must be positive and finite; adjustments must be non-zero and finite | `loyalty.ts` |
 
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; full ESLint 0 errors.
+
+### 11.39 Slice 38: the four discount gaps (2026-10-23)
+
+**Closed:** D-21.
+
+| Gap | Fix | File |
+|---|---|---|
+| BOGO silently returned zero | `buy_x_get_y` now returns an explicit unsupported error instead of a "valid" discount of zero; no UI ever offered it, so nothing is lost | `discounts.ts` |
+| Code lookup reached a raw filter | `getDiscountByCode` sanitizes the code before interpolation | `discounts.ts` |
+| Check-then-increment usage race | `recordDiscountUsage` reserves a slot with `used_count+`, rolls back when the result exceeds the limit, and undoes the use when the usage row cannot be written; the per-customer cap is checked after writing and rolled back the same way | `discounts.ts` |
+| Returned orders burned the coupon | New `reverseDiscountUsage` deletes the usage rows for a sale, order or invoice and decrements `used_count`; called from `processRefund` | `discounts.ts`, `returns.ts` |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
+
+**Note:** no production path currently calls `recordDiscountUsage` — discounts are validated but their usage is not recorded outside tests. That is recorded here rather than papered over; wiring it belongs with the POS checkout that already computes the discount.
 
 ## Appendix A: Route inventory
 

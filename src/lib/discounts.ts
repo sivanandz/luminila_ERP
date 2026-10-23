@@ -3,7 +3,7 @@
  * Coupon validation, discount calculations, and management using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -153,7 +153,9 @@ export async function getDiscount(id: string): Promise<Discount | null> {
 
 export async function getDiscountByCode(code: string): Promise<Discount | null> {
     try {
-        const d = await pb.collection('discounts').getFirstListItem<DiscountRecord>(`code="${code.toUpperCase()}"`);
+        const d = await pb.collection('discounts').getFirstListItem<DiscountRecord>(
+            `code="${sanitizeFilter(code.toUpperCase())}"`
+        );
         return mapDiscountRecord(d);
     } catch {
         return null;
@@ -320,6 +322,10 @@ export async function validateDiscount(
         }
     } else if (discount.discount_type === 'fixed') {
         discountAmount = Math.min(discount.value, orderValue);
+    } else if (discount.discount_type === 'buy_x_get_y') {
+        // No buy/get parameters exist on the record, so this used to return a
+        // valid discount of zero. Say so instead of silently doing nothing.
+        return { valid: false, error: 'Buy X Get Y discounts are not supported', discountAmount: 0 };
     }
 
     return {
@@ -344,27 +350,78 @@ export async function recordDiscountUsage(
         orderId?: string;
     }
 ): Promise<void> {
-    try {
-        const payload: Record<string, unknown> = {
-            discount: discountId,
-            discount_amount: discountAmount,
-            amount_saved: discountAmount,
-            order_value: orderValue,
-        };
-        if (options?.customerId) payload.customer = options.customerId;
-        if (options?.orderId) payload.order = options.orderId;
-        if (options?.saleId) payload.sale = options.saleId;
-        if (options?.invoiceId) payload.invoice = options.invoiceId;
+    const discount = await pb.collection('discounts').getOne<DiscountRecord>(discountId);
 
-        await pb.collection('discount_usage').create(payload);
-
-        // Increment used_count atomically
-        await pb.collection('discounts').update(discountId, {
-            'used_count+': 1,
-        });
-    } catch (error) {
-        console.error('Error recording discount usage:', error);
+    // Reserve the slot first: a check followed by an increment lets two
+    // concurrent checkouts both pass the limit.
+    const reserved = await pb.collection('discounts').update<DiscountRecord>(discountId, {
+        'used_count+': 1,
+    });
+    if (discount.usage_limit && (reserved.used_count || 0) > discount.usage_limit) {
+        await pb.collection('discounts').update(discountId, { 'used_count+': -1 }).catch(() => {});
+        throw new Error('This discount has reached its usage limit');
     }
+
+    const payload: Record<string, unknown> = {
+        discount: discountId,
+        discount_amount: discountAmount,
+        amount_saved: discountAmount,
+        order_value: orderValue,
+    };
+    if (options?.customerId) payload.customer = options.customerId;
+    if (options?.orderId) payload.order = options.orderId;
+    if (options?.saleId) payload.sale = options.saleId;
+    if (options?.invoiceId) payload.invoice = options.invoiceId;
+
+    let usageId = '';
+    try {
+        const usage = await pb.collection('discount_usage').create(payload);
+        usageId = usage.id;
+    } catch (error) {
+        await pb.collection('discounts').update(discountId, { 'used_count+': -1 }).catch(() => {});
+        throw error;
+    }
+
+    // The per-customer cap has the same race; count after writing and undo the
+    // extra use rather than trusting the pre-check.
+    if (options?.customerId && (discount.per_customer_limit || 0) > 0) {
+        const usages = await pb.collection('discount_usage').getFullList({
+            filter: `discount="${discountId}" && customer="${sanitizeFilter(options.customerId)}"`,
+        });
+        if (usages.length > (discount.per_customer_limit || 0)) {
+            await pb.collection('discount_usage').delete(usageId).catch(() => {});
+            await pb.collection('discounts').update(discountId, { 'used_count+': -1 }).catch(() => {});
+            throw new Error('You have already used this discount');
+        }
+    }
+}
+
+/**
+ * Return a discount use to the pool when the order it was applied to comes
+ * back. Without this, a returned sale permanently burns the coupon.
+ */
+export async function reverseDiscountUsage(options: {
+    saleId?: string;
+    orderId?: string;
+    invoiceId?: string;
+}): Promise<number> {
+    const filters: string[] = [];
+    if (options.saleId) filters.push(`sale="${sanitizeFilter(options.saleId)}"`);
+    if (options.orderId) filters.push(`order="${sanitizeFilter(options.orderId)}"`);
+    if (options.invoiceId) filters.push(`invoice="${sanitizeFilter(options.invoiceId)}"`);
+    if (filters.length === 0) return 0;
+
+    const usages = await pb.collection('discount_usage').getFullList({
+        filter: filters.join(' || '),
+    });
+
+    let reversed = 0;
+    for (const usage of usages) {
+        await pb.collection('discount_usage').delete(usage.id);
+        await pb.collection('discounts').update(usage.discount, { 'used_count+': -1 }).catch(() => {});
+        reversed += 1;
+    }
+    return reversed;
 }
 
 // ===========================================
