@@ -12,15 +12,27 @@ export async function GET(req: NextRequest) {
         const id = searchParams.get('id');
         const accountEmail = (searchParams.get('account_email') || '').trim().toLowerCase();
 
-        if (!id) {
+        if (!id || !accountEmail) {
+            // Without a tenant there is nothing safe to serve: the product lookup
+            // used to run as a server superuser and could read any tenant's row.
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
         }
 
-        await ensureServerAuth(accountEmail || undefined);
+        await ensureServerAuth(accountEmail);
 
         const product = await pb.collection('products').getOne(id).catch(() => null);
 
         if (!product) {
+            return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
+        }
+
+        // Refuse to serve a row that belongs to a different tenant, even if the
+        // id was guessed correctly.
+        if (product.account_email && String(product.account_email).toLowerCase() !== accountEmail) {
+            return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
+        }
+
+        if (product.is_active === false) {
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
         }
 

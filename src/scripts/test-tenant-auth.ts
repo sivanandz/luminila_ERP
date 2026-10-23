@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { tenantAccessAllowed } from '../lib/api-auth';
-import { normalizeBindingEmail } from '../lib/storefront';
+import { normalizeBindingEmail, resolveOrderTenant } from '../lib/storefront';
 
 let passed = 0;
 let failed = 0;
@@ -64,6 +64,28 @@ test('empty and malformed values fall back to no tenant', () => {
     assert.equal(normalizeBindingEmail(''), '');
     assert.equal(normalizeBindingEmail('not-an-email'), '');
     assert.equal(normalizeBindingEmail('a@'), '');
+});
+
+test('an order uses the tenant from the session', () => {
+    const result = resolveOrderTenant('owner@shop.in');
+    assert.equal(result.ok, true);
+    assert.equal(result.tenant, 'owner@shop.in');
+});
+
+test('an order may repeat its own tenant', () => {
+    const result = resolveOrderTenant('owner@shop.in', 'OWNER@shop.in');
+    assert.equal(result.ok, true);
+});
+
+test('an order cannot name a different tenant', () => {
+    const result = resolveOrderTenant('owner@shop.in', 'other@shop.in');
+    assert.equal(result.ok, false);
+    assert.match(result.error || '', /does not match/);
+});
+
+test('a session without a valid tenant cannot order', () => {
+    assert.equal(resolveOrderTenant('').ok, false);
+    assert.equal(resolveOrderTenant('garbage').ok, false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -25,6 +25,25 @@ export function normalizeBindingEmail(raw?: string | null): string {
 }
 
 /**
+ * An order belongs to the tenant in the customer's signed session. The body may
+ * repeat that tenant, but it may not choose a different one.
+ */
+export function resolveOrderTenant(
+    tokenTenant: string,
+    requestedEmail?: string | null
+): { ok: boolean; tenant: string; error?: string } {
+    const tenant = normalizeBindingEmail(tokenTenant);
+    if (!tenant) {
+        return { ok: false, tenant: "", error: "Session has no valid tenant" };
+    }
+    const requested = normalizeBindingEmail(requestedEmail);
+    if (requested && requested !== tenant) {
+        return { ok: false, tenant, error: "Order account does not match the session" };
+    }
+    return { ok: true, tenant };
+}
+
+/**
  * Resolves active storefront binding (admin email & brand name) from PocketBase store_settings
  */
 export async function getStorefrontBinding(preferredEmail?: string): Promise<StorefrontBinding> {

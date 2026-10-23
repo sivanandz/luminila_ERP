@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>42 open · 13 fixed</span>
+            <span class="chip accent"><span class="dot"></span>37 open · 18 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -499,7 +499,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
             <div class="vital"><div class="vital-num" data-count="84411">84,411</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">modules with no importer</div></div>
-            <div class="vital"><div class="vital-num" data-count="6">6</div><div class="vital-label">P1 defects open</div></div>
+            <div class="vital"><div class="vital-num" data-count="5">5</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
       </div>
@@ -947,10 +947,10 @@ const FEATURES = [
   ["Channel attribution","reports","partial","Enum cannot hold configured channels (D-37)"],
   ["Scheduled reports","reports","absent","No scheduler"],
   ["Storefront content API","storefront","live","Unauthenticated read"],
-  ["WhatsApp OTP login","storefront","partial","No daily cap, token on DB failure (S-09)"],
-  ["COD and concierge orders","storefront","partial","Unauthenticated stock decrement (S-03)"],
-  ["Catalog feed for Meta","storefront","partial","Tenant leakage and public cache (S-12)"],
-  ["Product image streaming","storefront","partial","No tenant guard (S-14)"],
+  ["WhatsApp OTP login","storefront","live","Daily cap, resend cooldown, tenant-scoped codes, fails closed when persistence fails"],
+  ["COD and concierge orders","storefront","live","Requires a verified WhatsApp session; tenant and phone come from the token"],
+  ["Catalog feed for Meta","storefront","live","Sync key or operator session, explicit tenant, private no-store response"],
+  ["Product image streaming","storefront","live","Requires a tenant and verifies the product belongs to it"],
   ["Customer self-service delete","storefront","live","Token and tenant checked"],
   ["QR pairing and sessions","whatsapp","live","Restore hardened across recent commits"],
   ["Chat persistence","whatsapp","live","Unread counts and attribution"],
@@ -1025,7 +1025,7 @@ const DEFECTS = [
     where:"src/app/api/system/tenant-db/route.ts:14-20 · tenant-db-manager.ts:376-393",
     impact:"A GET flips the process-global active tenant and returns whether an email exists plus its port. Every later server request inherits that tenant.",
     fix:"Remove the write from the GET path and authenticate the lookup." },
-  { id:"S-03", sev:"P1", area:"security", title:"Unauthenticated storefront order decrements real stock",
+  { id:"S-03", sev:"P1", status:"fixed", area:"security", title:"Unauthenticated storefront order decrements real stock",
     where:"src/app/api/storefront/order/route.ts:86-87,220-288",
     impact:"The body chooses the tenant. For cash on delivery the route writes an order and decrements product and variant stock with no payment and no credential.",
     fix:"Authenticate the caller, bind the tenant to the session, and never decrement stock before payment." },
@@ -1114,7 +1114,7 @@ const DEFECTS = [
     where:"src/lib/whatsapp.ts:10 · wppconnect-sidecar/server.js:18,98-104",
     impact:"The token ships to browsers. Loopback binding and an origin allowlist are the only controls against full WhatsApp account control.",
     fix:"Provision a per-install secret server-side and stop importing it into client code." },
-  { id:"S-09", sev:"P2", area:"security", title:"OTP has no daily cap and is not bound to a tenant",
+  { id:"S-09", sev:"P2", status:"fixed", area:"security", title:"OTP has no daily cap and is not bound to a tenant",
     where:"src/lib/otp-store.ts:76,98 · send-otp/route.ts:66-87",
     impact:"Unlimited WhatsApp messages on the merchant account, and a code minted for one tenant verifies against another.",
     fix:"Enforce a per-phone daily cap and include the tenant in the OTP key." },
@@ -1126,11 +1126,11 @@ const DEFECTS = [
     where:"src/lib/customer-token.ts:4-14",
     impact:"With no configured secret, tokens break on restart and across workers. TTL is 30 days with no revocation list.",
     fix:"Require a configured secret and add a revocation mechanism." },
-  { id:"S-12", sev:"P2", area:"security", title:"Catalog feed is unauthenticated and can be poisoned",
+  { id:"S-12", sev:"P2", status:"fixed", area:"security", title:"Catalog feed is unauthenticated and can be poisoned",
     where:"src/app/api/catalog/feed/route.ts:20-53,179",
     impact:"With no account it serves an arbitrary tenant, trusts x-forwarded-host, and caches publicly for 300 seconds.",
     fix:"Require the sync key and derive the origin from configuration." },
-  { id:"S-13", sev:"P2", area:"security", title:"OTP verification issues tokens for customers that were never saved",
+  { id:"S-13", sev:"P2", status:"fixed", area:"security", title:"OTP verification issues tokens for customers that were never saved",
     where:"src/app/api/storefront/auth/verify-otp/route.ts:70-90",
     impact:"When the database is unreachable, a valid 30-day token is signed against a temporary id, and customers are auto-created with 50 points.",
     fix:"Fail closed when persistence fails." },
@@ -1191,7 +1191,7 @@ const DEFECTS = [
     where:"src/lib/hooks.ts · alerts.ts · backup.ts",
     impact:"The dashboard recomputes statistics inline while purpose-built hooks go unused, and full backup and restore are unreachable from the UI.",
     fix:"Adopt the hooks and expose backup, or remove both." },
-  { id:"S-14", sev:"P3", area:"security", title:"Single-record reads ignore the tenant parameter",
+  { id:"S-14", sev:"P3", status:"fixed", area:"security", title:"Single-record reads ignore the tenant parameter",
     where:"src/app/api/catalog/image/route.ts:19-21 · inventory/template/route.ts:4-8",
     impact:"A server superuser getOne returns metadata across tenants, and the template route serves whichever tenant the global client is authenticated as.",
     fix:"Filter every read by tenant explicitly." },
@@ -1272,7 +1272,7 @@ const VERIFY = [
   ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
-  ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","8 assertions: self-tenant access, superuser bypass, injection rejection, email normalization."]
+  ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","12 assertions: self-tenant access, superuser bypass, injection rejection, order tenant binding."]
 ];
 
 /* =====================================================================

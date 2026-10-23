@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import crypto from "crypto";
 import { verifyOtp } from "@/lib/otp-store";
 import { signCustomerToken } from "@/lib/customer-token";
-import { pb, ensureServerAuth } from "@/lib/pocketbase";
+import { pb, ensureServerAuth, sanitizeFilter } from "@/lib/pocketbase";
 import { getStorefrontBinding } from "@/lib/storefront";
 
 const CORS_HEADERS = {
@@ -37,18 +36,19 @@ export async function POST(req: Request) {
             );
         }
 
-        // 1. Verify OTP with attempts protection
-        const check = verifyOtp(cleanDigits, otp);
+        // 1. Resolve the tenant first: OTP codes are scoped to it, so a code
+        // minted for one storefront cannot be replayed against another.
+        const reqEmail = typeof body.accountEmail === "string" ? body.accountEmail : undefined;
+        const { boundAdminEmail } = await getStorefrontBinding(reqEmail);
+
+        // 2. Verify the code with attempts protection
+        const check = verifyOtp(cleanDigits, otp, boundAdminEmail);
         if (!check.valid) {
             return NextResponse.json(
                 { success: false, error: check.reason || "Invalid or expired OTP." },
                 { status: 400, headers: CORS_HEADERS }
             );
         }
-
-        // 2. Fetch bound admin email for tenant isolation
-        const reqEmail = typeof body.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : undefined;
-        const { boundAdminEmail } = await getStorefrontBinding(reqEmail);
 
         // 3. Ensure PocketBase server-side authentication on the tenant's isolated DB
         await ensureServerAuth(boundAdminEmail);
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
 
         try {
             customerRecord = await pb.collection("customers").getFirstListItem(
-                `phone ~ "${phoneSuffix}" && account_email = "${boundAdminEmail}"`
+                `phone ~ "${sanitizeFilter(phoneSuffix)}" && account_email = "${sanitizeFilter(boundAdminEmail)}"`
             );
         } catch {
             // Customer does not exist yet for this tenant
@@ -76,17 +76,14 @@ export async function POST(req: Request) {
                     loyalty_points: 50, // Welcome gift
                     notes: `Verified & Registered via Storefront WhatsApp OTP on ${new Date().toLocaleDateString("en-IN")}`,
                 });
-            } catch (err: any) {
-                console.warn("[Verify OTP] PocketBase customer create fallback:", err);
-                // Create virtual customer object if PB is temporarily unreachable
-                customerRecord = {
-                    id: `temp_${Date.now()}`,
-                    name: customerName || `Client ${phoneSuffix.slice(-4)}`,
-                    phone: cleanDigits,
-                    account_email: boundAdminEmail,
-                    loyalty_points: 50,
-                    source: "website_otp",
-                };
+            } catch (err) {
+                // Fail closed. Signing a 30-day token for a customer id that was
+                // never saved used to hand out a usable session with no record.
+                console.error("[Verify OTP] Could not persist customer:", err);
+                return NextResponse.json(
+                    { success: false, error: "Could not complete sign in. Please try again." },
+                    { status: 503, headers: CORS_HEADERS }
+                );
             }
         } else if (customerName && customerRecord.name?.startsWith("Client ")) {
             // Update customer name if provided

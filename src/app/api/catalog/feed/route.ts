@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pb, ensureServerAuth, sanitizeFilter } from '@/lib/pocketbase';
-import { getStorefrontBinding } from '@/lib/storefront';
+import { getStorefrontBinding, normalizeBindingEmail } from '@/lib/storefront';
 import { resolvePublicCatalogOrigin } from '@/lib/meta-catalog-batch';
+import { authenticateOperator, tenantAccessAllowed, extractBearer } from '@/lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,26 +21,36 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
     try {
         const { searchParams } = new URL(req.url);
-        let accountEmail = (
-            searchParams.get('account_email') ||
-            process.env.META_FEED_ACCOUNT_EMAIL ||
-            ''
-        ).trim().toLowerCase();
-        const phone = (searchParams.get('phone') || process.env.META_BUSINESS_PHONE || '917092122334').trim();
+        let accountEmail = normalizeBindingEmail(
+            searchParams.get('account_email') || process.env.META_FEED_ACCOUNT_EMAIL || ''
+        );
+        const phone = (searchParams.get('phone') || process.env.META_BUSINESS_PHONE || '').trim();
 
-        // Authenticate via tenant registry or server environment credentials
-        await ensureServerAuth(accountEmail || undefined);
+        // The feed is tenant data. Accept either the catalog sync key (server to
+        // server: Meta or a scheduler) or a valid operator session. An
+        // unauthenticated caller used to receive an arbitrary tenant's catalog.
+        const syncKey = process.env.CATALOG_SYNC_KEY || process.env.META_GRAPH_ACCESS_TOKEN || '';
+        const providedKey = req.headers.get('x-catalog-sync-key') || extractBearer(req);
+        const keyValid = Boolean(syncKey) && providedKey === syncKey;
 
-        // If no explicit account_email is passed in query or env, resolve the primary active catalog tenant
-        // so a single feed never mixes products across multiple tenants.
-        if (!accountEmail) {
-            const latestActive = await pb.collection('products').getFirstListItem('is_active = true && account_email != ""', {
-                sort: '-updated'
-            }).catch(() => null);
-            if (latestActive?.account_email) {
-                accountEmail = String(latestActive.account_email).trim().toLowerCase();
+        if (!keyValid) {
+            const session = await authenticateOperator(req, accountEmail || undefined);
+            if (!session.ok) {
+                return NextResponse.json({ error: 'Unauthorized catalog feed request' }, { status: 401 });
+            }
+            if (accountEmail && !tenantAccessAllowed(session.email, session.isSuperuser, accountEmail)) {
+                return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+            }
+            if (!accountEmail && session.email) {
+                accountEmail = normalizeBindingEmail(session.email);
             }
         }
+
+        if (!accountEmail) {
+            return NextResponse.json({ error: 'account_email is required' }, { status: 400 });
+        }
+
+        await ensureServerAuth(accountEmail);
 
         const safeEmail = sanitizeFilter(accountEmail);
 
@@ -176,7 +187,7 @@ export async function GET(req: NextRequest) {
             headers: {
                 'Content-Type': 'text/csv; charset=utf-8',
                 'Content-Disposition': 'inline; filename="whatsapp_catalog_feed.csv"',
-                'Cache-Control': 'public, max-age=300, s-maxage=300'
+                'Cache-Control': 'private, no-store'
             }
         });
 

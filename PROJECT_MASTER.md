@@ -127,7 +127,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Lint errors | same | 4 × `react-hooks/rules-of-hooks` in `src/app/whatsapp/page.tsx`; `prefer-const` in `excel-import.ts`, `purchase.ts`, `storefront.ts` |
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
-| Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **8 passed, 0 failed** (2026-10-23) |
+| Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
 
@@ -144,7 +144,7 @@ The seven lint errors are not cosmetic. Four of them are the React hooks violati
 | Returns | Improving | Refunds reach the drawer, over-return is blocked, exchanges raise their own invoice (section 11) |
 | Banking and expenses | Mostly solid | Double-entry with pre-checks; still process-local locking |
 | WhatsApp CRM | Feature-rich, unevenly hardened | Large surface, strong UX, weak authorization boundaries |
-| Storefront and API routes | **Unsafe as deployed** | Unauthenticated tenant and stock mutations (section 6) |
+| Storefront and API routes | Improving | Order intake needs a verified WhatsApp session; feed and image endpoints are tenant-scoped (section 11.4). Remaining public endpoints are listed in 6.3. |
 | Multi-tenancy | Improving | Physical isolation is real; the control plane now requires a session for existing tenants. Shared client and plaintext registry remain (section 11). |
 | Build and release | **Blocked** | Static export vs 13 API routes; Tauri bundle omits PocketBase |
 | Frontend architecture | Uneven | 135 direct database calls in UI, three pages over 100 KB |
@@ -586,7 +586,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** S-01, S-02 and S-04 are closed (section 11.3). S-05 and S-06 are partially mitigated: the control plane no longer mutates the global tenant and the hardcoded fallback password is gone, but the shared client and the plaintext registry remain. S-03, S-07 and S-08 through S-16 are open.
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-09, S-12, S-13, S-14 (section 11). S-05 and S-06 are partially mitigated. S-07, S-08, S-10, S-11, S-15 and S-16 remain open.
 
 Two honest qualifications:
 
@@ -613,7 +613,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11, D-20, D-25, S-01, S-02, S-04. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11, D-20, D-25, S-01, S-02, S-03, S-04, S-09, S-12, S-13, S-14. Partial: D-14 (needs a product rate column), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1042,6 +1042,29 @@ Chronological record of work done after the audit. Each entry lists what changed
 - S-07: `hasCapability` exists in `api-auth.ts` but no route enforces a capability yet.
 - D-22: the redirect landed; navigation still renders every item to every role.
 - S-03 (unauthenticated storefront order intake) stays queued with the channel-surfaces slice.
+
+### 11.4 Slice 4: channel surfaces (2026-10-23)
+
+**Closed:** S-03, S-09, S-12, S-13, S-14. **Partial:** S-16.
+
+| Change | Files | Why |
+|---|---|---|
+| Storefront order requires a verified session | `src/app/api/storefront/order/route.ts`, `src/lib/storefront.ts` | The tenant and phone come from the signed customer token; the body cannot choose either. Phone mismatch and cross-tenant bodies are rejected |
+| OTP codes are tenant-scoped | `src/lib/otp-store.ts` | Key is tenant plus phone, so a code minted for one storefront cannot verify against another |
+| Daily OTP cap | `src/lib/otp-store.ts` | Five accepted requests per phone per tenant per day (configurable with `OTP_DAILY_LIMIT`), with counters preserved when a code is consumed |
+| OTP delivery fails closed | `src/app/api/storefront/auth/send-otp/route.ts` | A message that was not delivered is no longer reported as sent, and the tenant's WhatsApp session id is not echoed to anonymous callers |
+| Sign-in fails closed | `src/app/api/storefront/auth/verify-otp/route.ts` | A token is only issued after the customer record really exists; the `temp_<timestamp>` fallback is gone |
+| Catalog feed is authenticated | `src/app/api/catalog/feed/route.ts` | Requires the catalog sync key or an operator session, requires a tenant, and no longer falls back to an arbitrary tenant |
+| Feed cache is private | same | `private, no-store` replaces the public five-minute cache that let a poisoned response reach other callers |
+| Catalog images are tenant-checked | `src/app/api/catalog/image/route.ts` | Requires an account, verifies row ownership and active state, and refuses to serve another tenant's product |
+| Import template requires a session | `src/app/api/inventory/template/route.ts` | The template is generated from store settings, so it can no longer serve whichever tenant the global client held |
+
+**Verified:** `npx tsc --noEmit --incremental false` clean; `npx tsx src/scripts/test-tenant-auth.ts` 12 passed, 0 failed (the four new cases cover order tenant resolution); targeted ESLint reports no errors.
+
+**Still open in this cluster:**
+
+- S-16: the feed phone default was removed, but the catalog id and phone are still hardcoded in `catalog/batch`, and the sync key still doubles as a Meta token.
+- S-10 and S-11 need secrets to be provisioned before they can be enforced; S-15 needs a rate limit; S-07 needs route-level capability checks.
 
 ## Appendix A: Route inventory
 

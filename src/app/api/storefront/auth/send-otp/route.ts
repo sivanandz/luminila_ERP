@@ -34,8 +34,8 @@ export async function POST(req: Request) {
         const reqEmail = typeof body.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : undefined;
         const { boundAdminEmail, brandName } = await getStorefrontBinding(reqEmail);
 
-        // 2. Generate secure 6-digit OTP
-        const otpResult = generateAndSaveOtp(phone10);
+        // 2. Generate a secure 6-digit OTP scoped to this tenant
+        const otpResult = generateAndSaveOtp(phone10, boundAdminEmail);
         if (!otpResult.success || !otpResult.otp) {
             return NextResponse.json(
                 {
@@ -72,15 +72,23 @@ _If you did not request this, please ignore this message._`;
         // Only allow devOtp when explicitly running in local dev and ALLOW_DEV_OTP is enabled
         const allowDevOtp = process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_OTP === "true";
 
+        // Fail closed: a code nobody received must not be reported as sent, and
+        // the tenant's WhatsApp session id is never echoed to an anonymous caller.
+        if (!waDelivered && !allowDevOtp) {
+            return NextResponse.json(
+                { success: false, error: "We could not send the code on WhatsApp. Please try again." },
+                { status: 502, headers: CORS_HEADERS }
+            );
+        }
+
         return NextResponse.json(
             {
                 success: true,
                 message: waDelivered
                     ? `Verification code sent to your WhatsApp number +91 ${phone10}`
-                    : "Verification code sent to your WhatsApp number.",
+                    : "Verification code generated in development mode.",
                 waDelivered,
                 phone: phone10,
-                session: tenantSession,
                 ...(allowDevOtp ? { devOtp: otp } : {}),
             },
             { status: 200, headers: CORS_HEADERS }

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { pb, ensureServerAuth } from "@/lib/pocketbase";
-import { getStorefrontBinding } from "@/lib/storefront";
+import { pb, ensureServerAuth, sanitizeFilter } from "@/lib/pocketbase";
+import { getStorefrontBinding, resolveOrderTenant } from "@/lib/storefront";
+import { verifyCustomerToken } from "@/lib/customer-token";
+import { extractBearer } from "@/lib/api-auth";
 
 // Rate limiter: max 5 orders per 10 minutes per clean phone number
 const orderRateLimit = new Map<string, { count: number; firstSeen: number }>();
@@ -71,6 +73,37 @@ export async function POST(req: Request) {
         }
 
         const cleanPhoneDigits = (body.customerPhone || "").replace(/\D/g, "");
+
+        // The storefront session is the only credential accepted here. The body
+        // may echo an account, but it cannot choose one: the tenant and the
+        // verified phone come from the signed token.
+        const customerSession = verifyCustomerToken(extractBearer(req));
+        if (!customerSession) {
+            return NextResponse.json(
+                { success: false, error: "Please verify your WhatsApp number before placing an order." },
+                { status: 401, headers: CORS_HEADERS }
+            );
+        }
+
+        const orderTenant = resolveOrderTenant(customerSession.tenant, body.accountEmail);
+        if (!orderTenant.ok) {
+            return NextResponse.json(
+                { success: false, error: orderTenant.error || "This session cannot place an order for that store." },
+                { status: 403, headers: CORS_HEADERS }
+            );
+        }
+        const tenant = orderTenant.tenant;
+
+        if (
+            customerSession.phone &&
+            cleanPhoneDigits.slice(-10) !== customerSession.phone.slice(-10)
+        ) {
+            return NextResponse.json(
+                { success: false, error: "The order phone number does not match the verified number." },
+                { status: 403, headers: CORS_HEADERS }
+            );
+        }
+
         if (!checkRateLimit(cleanPhoneDigits)) {
             return NextResponse.json(
                 { success: false, error: "Too many orders placed recently. Please wait a few minutes before trying again." },
@@ -82,9 +115,8 @@ export async function POST(req: Request) {
         let persistedOrderId: string = txnId;
         let pbSyncSuccess = false;
 
-        // Resolve bound admin account from PocketBase store_settings for data isolation
-        const reqEmail = (body.accountEmail || "").trim().toLowerCase();
-        const { boundAdminEmail, customDomain: boundDomain } = await getStorefrontBinding(reqEmail);
+        // Tenant is fixed by the session, not by the request body.
+        const { boundAdminEmail, customDomain: boundDomain } = await getStorefrontBinding(tenant);
 
         // 2. Attempt Database Sync via PocketBase
         try {
@@ -96,7 +128,7 @@ export async function POST(req: Request) {
 
             try {
                 const existing = await pb.collection("customers").getFirstListItem(
-                    `phone ~ "${cleanPhone.slice(-10)}" && account_email = "${boundAdminEmail}"`
+                    `phone ~ "${sanitizeFilter(cleanPhone.slice(-10))}" && account_email = "${sanitizeFilter(boundAdminEmail)}"`
                 );
                 if (existing) customerId = existing.id;
             } catch {}
@@ -186,7 +218,7 @@ export async function POST(req: Request) {
                 const code = body.couponCode.trim().toUpperCase();
                 try {
                     const discountRec = await pb.collection("discounts").getFirstListItem(
-                        `code = "${code}" && is_active = true && account_email = "${boundAdminEmail}"`
+                        `code = "${sanitizeFilter(code)}" && is_active = true && account_email = "${sanitizeFilter(boundAdminEmail)}"`
                     ).catch(() => null);
 
                     if (discountRec) {

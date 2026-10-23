@@ -1,8 +1,18 @@
 import { NextResponse } from 'next/server';
 import { getTemplateBufferFromDatabase } from '@/lib/excel-import';
+import { authenticateOperator } from '@/lib/api-auth';
+import { ensureServerAuth } from '@/lib/pocketbase';
 
-export async function GET() {
+export async function GET(req: Request) {
     try {
+        // The template is generated from the caller's store settings, which used
+        // to mean whichever tenant the global client happened to hold.
+        const session = await authenticateOperator(req);
+        if (!session.ok) {
+            return NextResponse.json({ error: session.error || 'Unauthorized' }, { status: session.status });
+        }
+        await ensureServerAuth(session.email);
+
         const buffer = await getTemplateBufferFromDatabase();
 
         const uint8Array = new Uint8Array(buffer);
