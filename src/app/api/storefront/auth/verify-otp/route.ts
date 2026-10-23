@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifyOtp } from "@/lib/otp-store";
 import { isCustomerTokenConfigured, signCustomerToken } from "@/lib/customer-token";
-import { pb, ensureServerAuth, sanitizeFilter } from "@/lib/pocketbase";
+import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
 import { getStorefrontBinding } from "@/lib/storefront";
 
 const CORS_HEADERS = {
@@ -51,14 +51,14 @@ export async function POST(req: Request) {
         }
 
         // 3. Ensure PocketBase server-side authentication on the tenant's isolated DB
-        await ensureServerAuth(boundAdminEmail);
+        const client = await createTenantClient(boundAdminEmail);
 
         // 4. Look up or auto-provision customer in PocketBase
         let customerRecord: any = null;
         const phoneSuffix = cleanDigits.slice(-10);
 
         try {
-            customerRecord = await pb.collection("customers").getFirstListItem(
+            customerRecord = await client.collection("customers").getFirstListItem(
                 `phone ~ "${sanitizeFilter(phoneSuffix)}" && account_email = "${sanitizeFilter(boundAdminEmail)}"`
             );
         } catch {
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
 
         if (!customerRecord) {
             try {
-                customerRecord = await pb.collection("customers").create({
+                customerRecord = await client.collection("customers").create({
                     name: customerName || `Client ${phoneSuffix.slice(-4)}`,
                     phone: cleanDigits,
                     customer_type: "retail",
@@ -88,7 +88,7 @@ export async function POST(req: Request) {
         } else if (customerName && customerRecord.name?.startsWith("Client ")) {
             // Update customer name if provided
             try {
-                customerRecord = await pb.collection("customers").update(customerRecord.id, {
+                customerRecord = await client.collection("customers").update(customerRecord.id, {
                     name: customerName,
                 });
             } catch {}

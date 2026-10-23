@@ -622,7 +622,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). **S-05 partially mitigated:** a per-request client exists and three tenant-scoped routes use it; five routes still authenticate through the shared client. S-06 remains partial (registry still holds passwords).
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). **S-05 partially mitigated:** `createTenantClient` exists and eight of nine tenant-scoped API routes use it; `pos/payment` still authenticates the shared client for the Razorpay helper. S-06 remains partial (registry still holds passwords).
 
 Two honest qualifications:
 
@@ -1429,6 +1429,22 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **Still on the shared client:** `storefront/order`, `storefront/auth/verify-otp`, `storefront/content`, `catalog/batch`, `pos/payment`, and `inventory/template` (whose generator function takes no client yet). Each conversion is mechanical but touches financial or media writes, so they are being done in small batches with a typecheck and test run between.
 
 **Verified:** `npm run typecheck` clean; `npm test` 122 assertions across 17 suites; targeted ESLint 0 errors.
+
+### 11.25 Slice 25: per-request clients, second tranche (2026-10-23)
+
+**S-05 now covers eight of nine routes.**
+
+| Route | Change |
+|---|---|
+| `storefront/order` | Order intake, customer creation, stock movement and sales row all run through one tenant client |
+| `storefront/auth/verify-otp` | Customer lookup, creation and rename use the tenant client instead of the shared one |
+| `storefront/content` | GET and POST build a tenant client; the staff token is still verified on a separate instance so it cannot replace the tenant session |
+| `catalog/batch` | Token verification and the product/variant reads use clients built for the caller's tenant |
+| `inventory/template` | Passes the tenant client into the template generator, which already accepted one |
+
+**Remaining:** `pos/payment`. Its two `ensureServerAuth` calls exist because the Razorpay helper it calls takes no client; that helper needs a client parameter before the route can be converted safely.
+
+**Verified:** `npm run typecheck` clean; `npm test` 122 assertions across 17 suites; full `npx eslint src` 0 errors.
 
 ## Appendix A: Route inventory
 

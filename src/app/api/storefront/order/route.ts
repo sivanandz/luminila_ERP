@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { pb, ensureServerAuth, sanitizeFilter } from "@/lib/pocketbase";
+import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
 import { getStorefrontBinding, resolveOrderTenant } from "@/lib/storefront";
 import { verifyCustomerToken } from "@/lib/customer-token";
 import { extractBearer } from "@/lib/api-auth";
@@ -120,14 +120,14 @@ export async function POST(req: Request) {
 
         // 2. Attempt Database Sync via PocketBase
         try {
-            await ensureServerAuth(boundAdminEmail);
+            const client = await createTenantClient(boundAdminEmail);
 
             // Find or create customer
             const cleanPhone = body.customerPhone.replace(/\D/g, "");
             let customerId = "";
 
             try {
-                const existing = await pb.collection("customers").getFirstListItem(
+                const existing = await client.collection("customers").getFirstListItem(
                     `phone ~ "${sanitizeFilter(cleanPhone.slice(-10))}" && account_email = "${sanitizeFilter(boundAdminEmail)}"`
                 );
                 if (existing) customerId = existing.id;
@@ -135,7 +135,7 @@ export async function POST(req: Request) {
 
             if (!customerId) {
                 try {
-                    const newCust = await pb.collection("customers").create({
+                    const newCust = await client.collection("customers").create({
                         name: body.customerName,
                         phone: cleanPhone,
                         address: body.shippingAddress,
@@ -170,7 +170,7 @@ export async function POST(req: Request) {
 
                 let dbProd: any = null;
                 try {
-                    dbProd = await pb.collection("products").getOne(item.productId);
+                    dbProd = await client.collection("products").getOne(item.productId);
                 } catch {
                     return NextResponse.json(
                         { success: false, error: `Product not found: ${item.name || item.productId}` },
@@ -217,7 +217,7 @@ export async function POST(req: Request) {
             if (body.couponCode && typeof body.couponCode === "string" && body.couponCode.trim()) {
                 const code = body.couponCode.trim().toUpperCase();
                 try {
-                    const discountRec = await pb.collection("discounts").getFirstListItem(
+                    const discountRec = await client.collection("discounts").getFirstListItem(
                         `code = "${sanitizeFilter(code)}" && is_active = true && account_email = "${sanitizeFilter(boundAdminEmail)}"`
                     ).catch(() => null);
 
@@ -249,7 +249,7 @@ export async function POST(req: Request) {
             const paymentStatus = body.paymentMethod === "cod" ? "UNPAID" : "PENDING";
 
             // Create official Sales Order bound to single admin account
-            const salesOrder = await pb.collection("sales_orders").create({
+            const salesOrder = await client.collection("sales_orders").create({
                 order_number: txnId,
                 order_type: "sales_order",
                 customer: customerId,
@@ -274,7 +274,7 @@ export async function POST(req: Request) {
 
             // Create Sales Order Items and handle stock decrement
             for (const item of validatedItems) {
-                await pb.collection("sales_order_items").create({
+                await client.collection("sales_order_items").create({
                     order: salesOrder.id,
                     product: item.productId,
                     description: `${item.name} (${item.sku})`,
@@ -287,7 +287,7 @@ export async function POST(req: Request) {
                 // Record Inventory stock movement and decrement variant stock for COD/offline orders
                 // (Online orders deduct when confirmed paid via webhook)
                 if (body.paymentMethod !== "razorpay_online") {
-                    await pb.collection("stock_movements").create({
+                    await client.collection("stock_movements").create({
                         product: item.productId,
                         movement_type: "sale",
                         quantity: -item.quantity,
@@ -298,20 +298,20 @@ export async function POST(req: Request) {
                     }).catch(() => {});
 
                     try {
-                        const variants = await pb.collection("product_variants").getFullList({
+                        const variants = await client.collection("product_variants").getFullList({
                             filter: `product = "${item.productId}"`,
                         }).catch(() => []);
                         if (variants.length > 0) {
-                            await pb.collection("product_variants").update(variants[0].id, {
+                            await client.collection("product_variants").update(variants[0].id, {
                                 "stock_level-": item.quantity,
                             }).catch(async () => {
-                                await pb.collection("product_variants").update(variants[0].id, { stock_level: 0 }).catch(() => {});
+                                await client.collection("product_variants").update(variants[0].id, { stock_level: 0 }).catch(() => {});
                             });
                         }
-                        await pb.collection("products").update(item.productId, {
+                        await client.collection("products").update(item.productId, {
                             "stock_level-": item.quantity,
                         }).catch(async () => {
-                            await pb.collection("products").update(item.productId, { stock_level: 0 }).catch(() => {});
+                            await client.collection("products").update(item.productId, { stock_level: 0 }).catch(() => {});
                         });
                     } catch (stockDecErr) {
                         console.warn("[order] Stock decrement error:", stockDecErr);
@@ -320,7 +320,7 @@ export async function POST(req: Request) {
             }
 
             // Also create POS sales record for unified daily revenue reporting
-            await pb.collection("sales").create({
+            await client.collection("sales").create({
                 channel: "website",
                 channel_order_id: txnId,
                 customer_name: body.customerName,

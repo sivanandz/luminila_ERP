@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateOperator, constantTimeEqual, hasCapability } from '@/lib/api-auth';
 import PocketBase from 'pocketbase';
-import { pb, ensureServerAuth, getPocketBaseUrl, sanitizeFilter } from '@/lib/pocketbase';
+import { createTenantClient, getPocketBaseUrl, sanitizeFilter } from '@/lib/pocketbase';
 import { getStorefrontBinding } from '@/lib/storefront';
 import { buildMetaBatchRequests, resolvePublicCatalogOrigin, sendMetaCatalogBatch } from '@/lib/meta-catalog-batch';
 
@@ -44,8 +44,8 @@ export async function POST(req: NextRequest) {
             isAuthorized = true;
             isSuperuserCaller = true;
         } else if (token) {
-            await ensureServerAuth(requestedEmail || undefined);
-            const authPb = new PocketBase(pb.baseUrl || getPocketBaseUrl());
+            const tenantClient = await createTenantClient(requestedEmail || undefined);
+            const authPb = new PocketBase(tenantClient.baseUrl || getPocketBaseUrl());
             try {
                 authPb.authStore.save(token, null);
                 const refreshed = await authPb.collection('users').authRefresh();
@@ -116,12 +116,12 @@ export async function POST(req: NextRequest) {
         const safeTenantEmail = sanitizeFilter(tenantEmail);
 
         // 2. Authenticate server PocketBase client via tenant registry or env credentials
-        await ensureServerAuth(tenantEmail);
+        const client = await createTenantClient(tenantEmail);
 
         // 3. Fetch products with Dual-Layer Tenant Isolation (DB Clause + In-Memory Guard)
         let products: any[] = [];
         if (all) {
-            products = await pb.collection('products').getFullList({
+            products = await client.collection('products').getFullList({
                 filter: `is_active = true && account_email = "${safeTenantEmail}"`,
                 sort: '-created'
             });
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
             if (!idClauses) {
                 return NextResponse.json({ error: 'Invalid productIds array' }, { status: 400 });
             }
-            products = await pb.collection('products').getFullList({
+            products = await client.collection('products').getFullList({
                 filter: `(${idClauses}) && account_email = "${safeTenantEmail}"`
             });
         } else {
@@ -157,7 +157,7 @@ export async function POST(req: NextRequest) {
 
         // 4. Fetch variants with relational active guard + tenant filter
         const productPids = products.map(p => `product = "${sanitizeFilter(p.id)}"`).join(' || ');
-        const rawVariants = await pb.collection('product_variants').getFullList({
+        const rawVariants = await client.collection('product_variants').getFullList({
             filter: `(${productPids}) && product.is_active = true && account_email = "${safeTenantEmail}"`
         });
 

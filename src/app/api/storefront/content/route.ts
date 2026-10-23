@@ -1,6 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
 import PocketBase from "pocketbase";
-import { pb as sharedPb, ensureServerAuth, getPocketBaseUrl } from "@/lib/pocketbase";
+import { createTenantClient } from "@/lib/pocketbase";
 import { hasCapability } from "@/lib/api-auth";
 
 const PB_KEY = "storefront_content";
@@ -251,9 +251,10 @@ export async function OPTIONS() {
 export async function GET(req: NextRequest) {
     try {
         const queryEmail = req.nextUrl.searchParams.get("account_email") || req.headers.get("x-account-email") || "";
-        await ensureServerAuth(queryEmail || undefined);
+        // One client per request, authenticated for this tenant.
+        const client = await createTenantClient(queryEmail || undefined);
 
-        const pb = new PocketBase(sharedPb.baseUrl || getPocketBaseUrl());
+        const pb = new PocketBase(client.baseUrl);
         const authHeader = req.headers.get("authorization") || "";
         const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
         
@@ -281,10 +282,7 @@ export async function GET(req: NextRequest) {
         const targetEmail = staffEmail || queryEmail;
 
         let record = null;
-        const readPb = isAuthorized ? pb : sharedPb;
-        if (!isAuthorized && targetEmail) {
-            await ensureServerAuth(targetEmail);
-        }
+        const readPb = isAuthorized ? pb : client;
 
         if (targetEmail) {
             try {
@@ -340,9 +338,11 @@ export async function POST(req: Request) {
             ""
         ).trim().toLowerCase();
 
-        await ensureServerAuth(hintEmail || undefined);
+        // One client per request; the staff token is verified on its own
+        // instance so it cannot replace the tenant session.
+        const client = await createTenantClient(hintEmail || undefined);
 
-        const pb = new PocketBase(sharedPb.baseUrl || getPocketBaseUrl());
+        const pb = new PocketBase(client.baseUrl);
         let staffEmail = "";
         let isAuthorized = false;
 

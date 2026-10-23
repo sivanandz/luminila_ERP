@@ -1037,7 +1037,7 @@ const DEFECTS = [
     fix:"Apply sanitizeFilter and validate the email against an exact match." },
   { id:"S-05", sev:"P1", area:"tenancy", title:"One mutable PocketBase client carries superuser sessions across requests",
     where:"src/lib/pocketbase.ts:32,80-128 · src/app/api/pos/payment/route.ts:32",
-    impact:"Concurrent requests for different tenants race on one global client. Any route that forgets to re-authenticate inherits the previous tenant's superuser session. Partially mitigated: createTenantClient exists and image, feed and delete-customer use it; five routes remain.",
+    impact:"Concurrent requests for different tenants race on one global client. Any route that forgets to re-authenticate inherits the previous tenant's superuser session. Partially mitigated: createTenantClient exists and eight of nine routes use it; pos/payment remains.",
     fix:"Create a client per request and pass it explicitly; never hold a superuser session in module state." },
   { id:"S-06", sev:"P1", area:"security", title:"Tenant superuser passwords sit in plaintext with a hardcoded fallback",
     where:"tenant-db-manager.ts:286,325,428,442,230",
