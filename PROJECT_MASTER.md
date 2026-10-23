@@ -1958,6 +1958,29 @@ Final pass removed the last nine direct calls across eight files:
 
 **Still open:** S-06 only (deployment-time registry re-key; no registry exists on this machine).
 
+### 11.59 Final completion audit (2026-10-24)
+
+All eight objective clusters were re-checked against the code, not against slice notes.
+
+| Cluster | Evidence |
+|---|---|
+| Money and tax | `invoice.ts` imports the integer-paise module (`allocateDiscountPaise`, `splitInclusiveLine`, `computeInclusiveLines`) and treats POS totals as tax-inclusive; `paid_amount = grand_total`; order invoices idempotent with the unique order index applied |
+| Returns and refunds | `processRefund` records the cash ledger entry via `recordCashRefund`; `validateReturnQuantities` guards cumulative over-return; exchange invoices created with GST |
+| Tenancy and auth | 13 API routes audited: tenant/provisioning/payment routes call `authenticateOperator` or `createTenantClient`; POS payment has explicit 401 paths; Razorpay webhook verifies its signature and maps failures to 401/409/400; tracking has a rate limiter; OTP is capped and fail-closed |
+| Release and packaging | Server-backed config; PocketBase and Next supervised from Rust; `server-dist` assembled; standalone server booted with `/login` 200 and an API handler executing (verified independently in §11.58) |
+| Channel surfaces | Storefront order intake bound to the session token with tenant fallback rules; catalog feed/image keyed; OTP capped; Meta publish protected by `CATALOG_SYNC_KEY` |
+| Domain engines | Manufacturing, cheque, QC, GSTR-1, cross-border and imitation engines wired; all eight migrations applied; live schema confirms the collections and columns |
+| Ops and tests | Backup UI with guarded restore, offline drain, Drive mock removed; `npm test` runs 20 suites / 144 assertions |
+| Reporting | Weighted-average landed cost, channel enum extended in the live schema, campaign attribution backed by a real collection |
+
+**Client-side architecture:** recursive scan of `src/app` (excluding API routes) and `src/components` for `pb.collection(` returns **0**.
+
+**Gates:** typecheck exit 0; 144 assertions / 20 suites; ESLint 0 errors; explorer script parses; `cargo check` clean; registry re-key tooling dry-run and `--verify` exit clean.
+
+**Register: 54 fixed, 1 open.** The single open item is S-06 (tenant registry plaintext passwords). Its code, migration script, plan and tests are complete, but applying it needs a human-supplied `TENANT_REGISTRY_KEY` and an actual registry — this machine has none (`pocketbase/pb_tenants/registry.json` does not exist). Native Android packaging and a Tauri installer remain blocked by this workstation's exFAT volume, documented in §5.3.
+
+**Shared workspace:** a second agent's build-unblock work was verified but left uncommitted and untouched by this round (§11.58).
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.
