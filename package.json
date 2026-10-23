@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "tsx src/scripts/test-invoice-math.ts && tsx src/scripts/test-returns-policy.ts && tsx src/scripts/test-tenant-auth.ts && tsx src/scripts/test-gstr1-period.ts && tsx src/scripts/test-returns-qc.ts && tsx src/scripts/test-manufacturing.ts && tsx src/scripts/test-cheque-register.ts && tsx src/scripts/test-cross-border.ts && tsx src/scripts/test-backup.ts && tsx src/scripts/test-offline-queue.ts && tsx src/scripts/test-valuation.ts && tsx src/scripts/test-imitation.ts && tsx src/scripts/test-rate-limit.ts && tsx src/scripts/test-customer-token.ts && tsx src/scripts/test-whatsapp-secret.ts",
+    "test": "tsx src/scripts/test-invoice-math.ts && tsx src/scripts/test-returns-policy.ts && tsx src/scripts/test-tenant-auth.ts && tsx src/scripts/test-gstr1-period.ts && tsx src/scripts/test-returns-qc.ts && tsx src/scripts/test-manufacturing.ts && tsx src/scripts/test-cheque-register.ts && tsx src/scripts/test-cross-border.ts && tsx src/scripts/test-backup.ts && tsx src/scripts/test-offline-queue.ts && tsx src/scripts/test-valuation.ts && tsx src/scripts/test-imitation.ts && tsx src/scripts/test-rate-limit.ts && tsx src/scripts/test-customer-token.ts && tsx src/scripts/test-whatsapp-secret.ts && tsx src/scripts/test-webhook-dedupe.ts",
     "lint": "eslint",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 111 assertions across 15 suites, exit 0 |
+| Test command | `npm test` | 117 assertions across 16 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -141,6 +141,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Rate limiter tests | `npx tsx src/scripts/test-rate-limit.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Customer token tests | `npx tsx src/scripts/test-customer-token.ts` | **5 passed, 0 failed** (2026-10-23) |
 | Sidecar token tests | `npx tsx src/scripts/test-whatsapp-secret.ts` | **6 passed, 0 failed** (2026-10-23) |
+| Webhook dedupe tests | `npx tsx src/scripts/test-webhook-dedupe.ts` | **6 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -620,7 +621,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). S-05 and S-06 are partially mitigated. S-10 remains open.
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). S-05 and S-06 are partially mitigated.
 
 Two honest qualifications:
 
@@ -647,7 +648,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1378,6 +1379,23 @@ The bundle covers the three domains that currently store JSON in `store_settings
 **What this does not do:** the browser still talks to the sidecar directly, so the token is present in webview memory while the app runs. Loopback binding and the origin allowlist remain the controls against other local processes; this change removes the token from the shipped bundle, which was the part an attacker could read statically.
 
 **Still open in this cluster:** S-10 (Razorpay webhook secret, dedupe, amount check), plus the approval-bound S-05 and S-06.
+
+### 11.22 Slice 22: Razorpay webhook integrity (2026-10-23)
+
+**Closed:** S-10.
+
+| Change | Files | Why |
+|---|---|---|
+| Event-id dedupe | `src/lib/webhook-dedupe.ts` (new), handler | Events are keyed by event name plus payment or link id and remembered in `store_settings` (last 200), so a replay cannot repeat side effects |
+| Amount comparison | same | Captured paise must equal the order total in rupees; a mismatch is refused and logged instead of settling the order |
+| Error mapping | `api/webhooks/razorpay/route.ts` | 503 when the secret is unset, 401 for a bad signature, 409 for an amount mismatch, 400 otherwise, instead of a blanket 400 |
+| Tests | `src/scripts/test-webhook-dedupe.ts` (new) | Key rules, duplicate detection, idempotent remembering, cap trimming, exact paise matching, non-numeric refusal |
+
+**Configuration still required:** `RAZORPAY_WEBHOOK_SECRET`. With it unset the route answers 503 and settlement stays on the client-side poller; that is now explicit rather than a blanket 400.
+
+**Verified:** `npm run typecheck` clean; `npm test` 117 assertions across 16 suites; targeted ESLint 0 errors.
+
+**Still open in this cluster:** S-05 (shared client) and S-06 (plaintext registry), both waiting on your approval; everything else in the security register is closed.
 
 ## Appendix A: Route inventory
 

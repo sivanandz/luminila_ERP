@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 import { processRazorpayWebhookEvent } from "@/lib/razorpay-webhook-handler";
 
+/** Map a handler failure to a status Razorpay and an operator can act on. */
+function statusForError(error?: string): number {
+    const message = (error || "").toLowerCase();
+    if (message.includes("secret is not configured")) return 503;
+    if (message.includes("signature")) return 401;
+    if (message.includes("amount does not match")) return 409;
+    return 400;
+}
+
 export async function POST(req: Request) {
     try {
         const rawBody = await req.text();
@@ -20,15 +29,15 @@ export async function POST(req: Request) {
             console.error("[Razorpay Webhook] Processing failed:", result.error);
             return NextResponse.json(
                 { success: false, error: result.error },
-                { status: 400 }
+                { status: statusForError(result.error) }
             );
         }
 
         return NextResponse.json({ success: true, message: "Webhook processed successfully" }, { status: 200 });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error("[Razorpay Webhook Error]:", err);
         return NextResponse.json(
-            { success: false, error: err.message || "Internal webhook handler error" },
+            { success: false, error: err instanceof Error ? err.message : "Internal webhook handler error" },
             { status: 500 }
         );
     }

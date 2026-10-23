@@ -2,6 +2,14 @@ import { pb, ensureServerAuth } from '@/lib/pocketbase';
 import { getRazorpayConfig, verifyWebhookSignature } from '@/lib/razorpay';
 import { sendPaidOrderInvoice, sendLoyaltyMilestoneAlert } from '@/lib/whatsapp-notifications';
 import { earnPoints, calculatePointsToEarn } from '@/lib/loyalty';
+import {
+    amountMatchesRupees,
+    isDuplicateEvent,
+    loadProcessedEvents,
+    rememberEvent,
+    saveProcessedEvents,
+    webhookEventKey,
+} from '@/lib/webhook-dedupe';
 
 export interface WebhookProcessResult {
     success: boolean;
@@ -38,6 +46,20 @@ export async function processRazorpayWebhookEvent(
     const event = eventData.event;
     console.log(`Processing Razorpay webhook event: ${event}`);
 
+    // Replay protection by event id. The order-status check below covers a
+    // replayed settlement, but an event whose order is already settled for a
+    // different reason would otherwise repeat side effects such as notifications.
+    const eventEntityId =
+        eventData.payload?.payment?.entity?.id ||
+        eventData.payload?.payment_link?.entity?.id;
+    const eventKey = webhookEventKey(event, eventEntityId);
+    const processedEvents = await loadProcessedEvents().catch(() => []);
+
+    if (isDuplicateEvent(processedEvents, eventKey)) {
+        console.log(`[webhook] Duplicate event ignored: ${eventKey}`);
+        return { success: true, event };
+    }
+
     if (event === 'payment_link.paid' || event === 'payment.captured') {
         const paymentLink = eventData.payload?.payment_link?.entity;
         const payment = eventData.payload?.payment?.entity;
@@ -68,6 +90,25 @@ export async function processRazorpayWebhookEvent(
                 if (existingOrder.payment_status === 'PAID') {
                     console.log(`[webhook] Order ${orderId} already settled — skipping replayed ${event}`);
                     return { success: true, orderId, event, error: undefined };
+                }
+
+                // The captured amount must match the order. Settling a mismatch
+                // would hand goods away for the wrong money, so it is refused
+                // and left for a human rather than retried blindly.
+                const capturedPaise = Number(eventData.payload?.payment?.entity?.amount);
+                if (Number.isFinite(capturedPaise) && capturedPaise > 0) {
+                    const expectedRupees = Number(existingOrder.total ?? existingOrder.subtotal ?? 0);
+                    if (!amountMatchesRupees(expectedRupees, capturedPaise)) {
+                        console.error(
+                            `[webhook] Amount mismatch on order ${orderId}: expected ₹${expectedRupees}, captured ₹${(capturedPaise / 100).toFixed(2)}`
+                        );
+                        return {
+                            success: false,
+                            orderId,
+                            event,
+                            error: 'Captured amount does not match the order total',
+                        };
+                    }
                 }
 
                 // Update sales order in PocketBase
@@ -143,6 +184,10 @@ export async function processRazorpayWebhookEvent(
                         );
                     }
                 }
+
+                await saveProcessedEvents(rememberEvent(processedEvents, eventKey)).catch((err) => {
+                    console.warn('[webhook] Could not record the processed event:', err);
+                });
 
                 return { success: true, orderId, event };
             } catch (orderErr) {

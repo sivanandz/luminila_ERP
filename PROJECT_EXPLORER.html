@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>28 open · 27 fixed</span>
+            <span class="chip accent"><span class="dot"></span>27 open · 28 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1120,7 +1120,7 @@ const DEFECTS = [
     where:"src/lib/otp-store.ts:76,98 · send-otp/route.ts:66-87",
     impact:"Unlimited WhatsApp messages on the merchant account, and a code minted for one tenant verifies against another.",
     fix:"Enforce a per-phone daily cap and include the tenant in the OTP key." },
-  { id:"S-10", sev:"P2", area:"security", title:"Razorpay webhook secret is unset, so every webhook is rejected",
+  { id:"S-10", sev:"P2", status:"fixed", area:"security", title:"Razorpay webhook secret is unset, so every webhook is rejected",
     where:"src/lib/razorpay.ts:20-25,639-665",
     impact:"Settlement depends entirely on the client poller. There is no event-id dedupe, timestamp tolerance, or amount comparison.",
     fix:"Require the secret at startup and verify idempotently." },
@@ -1266,7 +1266,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","111 assertions across fifteen suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","117 assertions across sixteen suites; non-zero exit on failure."],
+  ["Webhook dedupe tests","npx tsx src/scripts/test-webhook-dedupe.ts","pass","6 assertions: event keys, duplicate detection, cap, exact paise match."],
   ["Sidecar token tests","npx tsx src/scripts/test-whatsapp-secret.ts","pass","6 assertions: resolution order, minimum length, no default."],
   ["Customer token tests","npx tsx src/scripts/test-customer-token.ts","pass","5 assertions: roundtrip, tamper, expiry, missing secret, JWT fallback."],
   ["Rate limiter tests","npx tsx src/scripts/test-rate-limit.ts","pass","6 assertions: window, refusal, reset, key independence, pruning, client key."],
