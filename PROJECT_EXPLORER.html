@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>30 open · 25 fixed</span>
+            <span class="chip accent"><span class="dot"></span>29 open · 26 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1124,7 +1124,7 @@ const DEFECTS = [
     where:"src/lib/razorpay.ts:20-25,639-665",
     impact:"Settlement depends entirely on the client poller. There is no event-id dedupe, timestamp tolerance, or amount comparison.",
     fix:"Require the secret at startup and verify idempotently." },
-  { id:"S-11", sev:"P2", area:"security", title:"Customer session secret is generated per process",
+  { id:"S-11", sev:"P2", status:"fixed", area:"security", title:"Customer session secret is generated per process",
     where:"src/lib/customer-token.ts:4-14",
     impact:"With no configured secret, tokens break on restart and across workers. TTL is 30 days with no revocation list.",
     fix:"Require a configured secret and add a revocation mechanism." },
@@ -1266,7 +1266,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","100 assertions across thirteen suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","105 assertions across fourteen suites; non-zero exit on failure."],
+  ["Customer token tests","npx tsx src/scripts/test-customer-token.ts","pass","5 assertions: roundtrip, tamper, expiry, missing secret, JWT fallback."],
   ["Rate limiter tests","npx tsx src/scripts/test-rate-limit.ts","pass","6 assertions: window, refusal, reset, key independence, pruning, client key."],
   ["Imitation tests","npx tsx src/scripts/test-imitation.ts","pass","8 assertions: label order, tag codes, durability, tiers, rounding."],
   ["Landed-cost tests","npx tsx src/scripts/test-valuation.ts","pass","7 assertions: proportional split, rounding, free goods, summary reconciliation."],

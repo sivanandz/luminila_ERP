@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 100 assertions across 13 suites, exit 0 |
+| Test command | `npm test` | 105 assertions across 14 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -139,6 +139,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Landed-cost tests | `npx tsx src/scripts/test-valuation.ts` | **7 passed, 0 failed** (2026-10-23) |
 | Imitation taxonomy tests | `npx tsx src/scripts/test-imitation.ts` | **8 passed, 0 failed** (2026-10-23) |
 | Rate limiter tests | `npx tsx src/scripts/test-rate-limit.ts` | **6 passed, 0 failed** (2026-10-23) |
+| Customer token tests | `npx tsx src/scripts/test-customer-token.ts` | **5 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -618,7 +619,7 @@ Severity here reflects exploitability of the deployed system, not code aesthetic
 | S-15 | P3 | Unauthenticated outbound scraping proxy to ST Courier with no rate limit and a 60 s public cache. | `src/app/api/tracking/st-courier/route.ts:44`, `:162-168` |
 | S-16 | P3 | Meta catalog id and phone number are hardcoded; the internal sync key is compared to a Meta Graph token with `===`, making a Meta token a bearer-equivalent key. | `src/app/api/catalog/batch/route.ts:39`, `:70-72` |
 
-> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14, S-15, S-16 (section 11). S-05 and S-06 are partially mitigated. S-08, S-10 and S-11 remain open.
+> **Status, 2026-10-23.** Closed: S-01, S-02, S-03, S-04, S-07, S-09, S-11, S-12, S-13, S-14, S-15, S-16 (section 11). S-05 and S-06 are partially mitigated. S-08 and S-10 remain open.
 
 Two honest qualifications:
 
@@ -645,7 +646,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-20, D-22, D-24, D-25, S-01, S-02, S-03, S-04, S-07, S-09, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1341,6 +1342,23 @@ The bundle covers the three domains that currently store JSON in `store_settings
 **Verified:** `npm run typecheck` clean; `npm test` 100 assertions across 13 suites; targeted ESLint 0 errors.
 
 **Still open in this cluster:** S-08 (sidecar token shipped to the client), S-10 (webhook secret unset), S-11 (ephemeral customer-session secret), plus the S-05 and S-06 items that need your approval.
+
+### 11.20 Slice 20: customer session secret (2026-10-23)
+
+**Closed:** S-11.
+
+| Change | Files | Why |
+|---|---|---|
+| Signing requires a configured secret | `src/lib/customer-token.ts` | The per-process fallback is gone; `signCustomerToken` throws `MissingSessionSecretError` instead of minting tokens that die on restart |
+| Verification fails closed | same | A missing secret returns null; a length-mismatched signature is rejected before `timingSafeEqual`, and payload shape is checked |
+| OTP sign-in refuses without configuration | `api/storefront/auth/verify-otp/route.ts` | Returns 503 with a clear message rather than a token nobody can verify |
+| Tests | `src/scripts/test-customer-token.ts` (new) | Roundtrip, tamper, expiry, missing secret, and the `JWT_SECRET` fallback |
+
+**Configuration now required for storefront sign-in:** `CUSTOMER_SESSION_SECRET` (or `JWT_SECRET`). Without it the storefront returns 503 on OTP verification. That is deliberate: a token signed with a random per-process key is worse than an explicit failure.
+
+**Verified:** `npm run typecheck` clean; `npm test` 105 assertions across 14 suites; targeted ESLint 0 errors.
+
+**Still open in this cluster:** S-08 (sidecar token shipped to the client), S-10 (webhook secret and dedupe), plus the approval-bound S-05 and S-06.
 
 ## Appendix A: Route inventory
 

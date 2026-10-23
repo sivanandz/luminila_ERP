@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { verifyOtp } from "@/lib/otp-store";
-import { signCustomerToken } from "@/lib/customer-token";
+import { isCustomerTokenConfigured, signCustomerToken } from "@/lib/customer-token";
 import { pb, ensureServerAuth, sanitizeFilter } from "@/lib/pocketbase";
 import { getStorefrontBinding } from "@/lib/storefront";
 
@@ -94,7 +94,15 @@ export async function POST(req: Request) {
             } catch {}
         }
 
-        // 4. Create cryptographically signed session token
+        // 4. Create cryptographically signed session token. Refuse rather than
+        // fall back to a per-process key that would invalidate on restart.
+        if (!isCustomerTokenConfigured()) {
+            return NextResponse.json(
+                { success: false, error: "Customer sessions are not configured on this server." },
+                { status: 503, headers: CORS_HEADERS }
+            );
+        }
+
         const token = signCustomerToken({
             id: customerRecord.id,
             phone: phoneSuffix,
