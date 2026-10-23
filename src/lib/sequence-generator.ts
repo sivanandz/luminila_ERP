@@ -73,13 +73,16 @@ export async function getNextSequenceNumber(options: SequenceOptions): Promise<s
                 let nextValue: number;
 
                 if (seq) {
-                    const current = Number(seq.current_value ?? seq.current_number ?? 0);
-                    nextValue = current + 1;
-
-                    await pb.collection('number_sequences').update(seq.id, {
-                        current_value: nextValue,
-                        current_number: nextValue,
+                    // Atomic increment: PocketBase serializes the update, so a
+                    // second process cannot read the same value and reuse it.
+                    const updated = await pb.collection('number_sequences').update(seq.id, {
+                        'current_value+': 1,
+                        'current_number+': 1,
                     });
+                    nextValue = Number(updated.current_value ?? updated.current_number ?? 0);
+                    if (!Number.isFinite(nextValue) || nextValue <= 0) {
+                        throw new Error(`Sequence '${seqName}' returned an invalid value`);
+                    }
                 } else {
                     nextValue = 1;
                     try {

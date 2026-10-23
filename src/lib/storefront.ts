@@ -66,21 +66,22 @@ export async function getStorefrontBinding(preferredEmail?: string): Promise<Sto
         }
 
         // If an email was provided but no custom storefront_content exists yet,
-        // strictly honor it and look up the tenant's store name.
+        // honor it only when that tenant actually has settings in this database.
+        // Previously any caller-supplied address was accepted, so an unknown
+        // storefront name was echoed back and used as the tenant.
         if (cleanEmail) {
-            let brandName = DEFAULT_BINDING.brandName;
-            try {
-                const nameRecord = await pb
-                    .collection("store_settings")
-                    .getFirstListItem(`key="store_name" && account_email="${sanitizeFilter(cleanEmail)}"`)
-                    .catch(() => null);
-                if (nameRecord?.value) brandName = String(nameRecord.value);
-            } catch {}
-            return {
-                boundAdminEmail: cleanEmail,
-                brandName,
-                customDomain: DEFAULT_BINDING.customDomain,
-            };
+            const nameRecord = await pb
+                .collection("store_settings")
+                .getFirstListItem(`key="store_name" && account_email="${sanitizeFilter(cleanEmail)}"`)
+                .catch(() => null);
+            if (nameRecord) {
+                return {
+                    boundAdminEmail: cleanEmail,
+                    brandName: nameRecord.value ? String(nameRecord.value) : DEFAULT_BINDING.brandName,
+                    customDomain: DEFAULT_BINDING.customDomain,
+                };
+            }
+            console.warn("[getStorefrontBinding] Requested storefront has no settings, using the default binding");
         }
     } catch (e) {
         console.warn("[getStorefrontBinding] Error resolving storefront binding:", e);

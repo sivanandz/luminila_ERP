@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>9 open · 46 fixed</span>
+            <span class="chip accent"><span class="dot"></span>8 open · 47 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1080,7 +1080,7 @@ const DEFECTS = [
     where:"src/lib/pos-sales.ts:113-152 · schema quantity fields",
     impact:"A negative cart line increases stock while shrinking the bill, which is a direct inventory loss primitive.",
     fix:"Validate quantity is positive and finite at every write." },
-  { id:"D-19", sev:"P2", area:"money", title:"Document numbering is only safe inside one process",
+  { id:"D-19", sev:"P2", status:"fixed", area:"money", title:"Document numbering is only safe inside one process",
     where:"src/lib/sequence-generator.ts:68-82 · src/lib/concurrency.ts:7-34",
     impact:"Two windows or the desktop app plus a browser can allocate the same number. Unique indexes turn that into a visible failure, not correctness.",
     fix:"Allocate through a transaction or a single writer." },
@@ -1222,7 +1222,7 @@ const BLOCKERS = [
   ["P1","Static export versus route handlers","next.config.ts:9 enables output export in production. Three handlers declare force-dynamic. The export step cannot emit them, so the build stops.","D-08"],
   ["P2","exFAT volume blocks native Android","Tauri and Gradle need symlinks for libapp_lib.so. exFAT cannot store them, so the APK build aborts on this machine.","D-33"],
   ["P2","No webpack fallback for release builds","The dev script passes --webpack to avoid the Turbopack symlink panic. next build passes no flag.","D-08"],
-  ["P2","Schema debt behind working screens","Job cards and cheques live in a settings JSON blob, product GST rate and channel have no columns, and the invoice order index is missing. A five-file migration draft exists in docs/migrations-draft but is deliberately unapplied.","D-36"]
+  ["P2","Schema debt behind working screens","Job cards and cheques live in a settings JSON blob, product GST rate and channel have no columns, and the invoice order index is missing. A six-file migration draft exists in docs/migrations-draft but is deliberately unapplied.","D-36"]
 ];
 
 const ROADMAP = [

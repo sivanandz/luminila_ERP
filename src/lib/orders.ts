@@ -245,7 +245,14 @@ export async function generateInvoiceFromOrder(orderId: string) {
         // (and createOrder never writes one), so derive the CGST/SGST vs IGST
         // split from the order's customer record instead of silently falling
         // back to the seller state, which forced every invoice intra-state.
-        const sellerStateCode = store.store_state_code || '27';
+        // Derive the seller state from configuration, then from the GSTIN, before
+        // any last resort: the old hardcoded '27' filed Maharashtra invoices for
+        // stores that had never configured a state at all.
+        const gstinState = String(store.store_gstin || '').trim().substring(0, 2);
+        const sellerStateCode =
+            store.store_state_code ||
+            (/^\d{2}$/.test(gstinState) ? gstinState : '') ||
+            '27';
         let buyerStateCode = sellerStateCode;
         let buyerGstin = '';
         if (order.customer) {

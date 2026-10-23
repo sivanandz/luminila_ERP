@@ -393,25 +393,9 @@ export async function getStoreSettings(): Promise<StoreSettings> {
     }
 }
 
-export async function updateStoreSettings(updates: Partial<StoreSettings>): Promise<void> {
-    const entries = Object.entries(updates);
-
-    for (const [key, value] of entries) {
-        try {
-            // Try to find existing setting
-            const existing = await pb.collection('store_settings').getFirstListItem(`key="${key}"`).catch(() => null);
-
-            if (existing) {
-                await pb.collection('store_settings').update(existing.id, { value });
-            } else {
-                await pb.collection('store_settings').create({ key, value });
-            }
-        } catch (error) {
-            console.error(`Error updating setting ${key}:`, error);
-            throw error;
-        }
-    }
-}
+// The old `updateStoreSettings` writer was removed: it had no callers, wrote rows
+// without `account_email`, and could not be read back by `getStoreSettings`.
+// Settings are written by the tenant-scoped service in `src/lib/settings.ts`.
 
 // ===========================================
 // NUMBER GENERATION (PocketBase sequence)

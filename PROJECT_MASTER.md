@@ -324,6 +324,7 @@ Five migrations are drafted under `docs/migrations-draft/` and **have not been r
 | `003_products_craft_and_gst_rate.js` | `products.craft`, `plating`, `occasion`, `base_metal`, `gst_rate` | Taxonomy persistence and D-14 |
 | `004_landed_cost_and_channels.js` | PO overhead column, item landed cost, `sales.channel`, `whatsapp_campaigns`, `sales.campaign` | D-13, channel enum, campaign attribution |
 | `005_indexes.js` | Unique `invoices.order` index and reporting indexes | D-20 hardening |
+| `006_store_settings_rules.js` | Tenant-scoped collection rules on `store_settings`; legacy empty-`account_email` rows stay readable | Audit #8: rule-level tenant isolation in a shared instance |
 
 Each file was syntax-checked with `node --check`. None was executed, and no schema was inspected against a live database.
 
@@ -652,7 +653,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-15, D-16, D-17, D-18, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-33, D-34, D-35, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-15, D-16, D-17, D-18, D-19, D-21, D-22, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-33, D-34, D-35, D-38, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1656,7 +1657,7 @@ Every gate re-run after slice 38, from the repository as committed:
 | Rust | `cargo check` in `src-tauri` | finished clean, including the server-backed config |
 | Explorer | extracted script + `node --check` | exit 0 |
 
-**Register: 46 fixed, 9 open, 1 P1 (S-06).**
+**Register: 47 fixed, 8 open, 1 P1 (S-06).**
 
 Remaining, for the next session:
 
@@ -1695,17 +1696,31 @@ The 16-item audit is a subset of the 55-item register with its own numbering. St
 | 5 | Any 400 clamps stock to zero | Fixed | Only `validation_min_number_constraint` matches (`pos-sales.ts:195-196`) |
 | 6 | POS rollback skips shift totals and invoice | Fixed | Negative `updateShiftTotals` at `pos-sales.ts:304`; atomic invoice item loop |
 | 7 | OTP no daily cap; fake-customer token | Fixed | Cap at `otp-store.ts:111`; fail-closed 503 at `verify-otp/route.ts:79-87` |
-| 8 | `store_settings` rules unscoped; dead writer | **Partial** | Writer now stamps `account_email` (`invoice.ts:482,546`); the collection rules themselves remain `@request.auth.id != ''` — not covered by the migration drafts and not applied |
+| 8 | `store_settings` rules unscoped; dead writer | **Fixed (code) + drafted rules** | Dead writer deleted (`invoice.ts`); `docs/migrations-draft/006_store_settings_rules.js` tenant-scopes list/view/update/delete, not applied |
 | 9 | Build broken two ways | Fixed (with caveat) | Server-backed config and webpack build; an installer was not produced because this volume refuses symlinks (§11.36) |
 | 10 | Expense search injection | Fixed | `sanitizeFilter` in `expenses.ts` |
 | 11 | `opening_float` violates enum | Fixed | Writes `operation_type: 'add'` with a reason (`register.ts:107-112`) |
-| 12 | Order invoice state fallback, missing GSTIN, duplicates | **Partial** | GSTIN now written and duplicates prevented (`orders.ts:220-233,325`); `sellerStateCode` still falls back to `'27'` when the store has no state configured (`orders.ts:248`) |
+| 12 | Order invoice state fallback, missing GSTIN, duplicates | **Fixed** | GSTIN written, duplicates prevented, and the seller state now derives from the store GSTIN before the `'27'` last resort (`orders.ts:248-252`) |
 | 13 | Banking overdraft race | Fixed | Serialized via `enqueueTask` (`banking.ts:160`) with atomic operators |
-| 14 | Cross-process numbering | **Open** | D-19; in-process mutex only |
-| 15 | Storefront binding chosen by request body | **Mitigated** | Binding input normalized and sanitized (`storefront.ts`); selection by request body remains by design for multi-brand |
+| 14 | Cross-process numbering | **Fixed** | Allocation is an atomic `current_value+` update, serialized by PocketBase across processes (`sequence-generator.ts`) |
+| 15 | Storefront binding chosen by request body | **Mitigated (tightened)** | Input normalized and sanitized, and a requested storefront is now honoured only when that tenant has settings; otherwise the default binding is used (`storefront.ts`) |
 | 16 | Unauthenticated tracking proxy | Fixed | `FixedWindowRateLimiter`, 30/min (`st-courier/route.ts:6,14`) |
 
-**Summary: 12 fixed, 3 partial or mitigated, 1 open.** The residual under #8 (collection rules) is a schema-level risk, not a code-path bug: each tenant normally has its own SQLite instance, which is why it does not appear among the nine open register items. It is recorded here so the register does not overclaim.
+**Summary after slice 41: 15 fixed, 1 mitigated.** The only residual is #8's rule half: `006_store_settings_rules.js` is drafted, syntax-checked and awaiting approval. Until it is applied, the live rules stay permissive; per-tenant SQLite instances keep that theoretical, which is why it is not one of the eight open register items.
+
+### 11.43 Slice 41: audit partials and the numbering race (2026-10-23)
+
+| Item | Change | Files |
+|---|---|---|
+| #12 order state fallback | Seller state derives from `store_state_code`, then the store GSTIN's leading digits, and only then `'27'` | `orders.ts` |
+| #14 / D-19 cross-process numbering | Sequence allocation now uses PocketBase's atomic `current_value+` update; the returned record carries the allocated value, so two processes cannot read the same number | `sequence-generator.ts` |
+| #8 dead settings writer | `updateStoreSettings` deleted: zero callers, wrote rows without `account_email`, unreadable by its own reader | `invoice.ts` |
+| #8 collection rules | Draft `006_store_settings_rules.js` tenant-scopes list/view/update/delete while keeping legacy rows readable; **not applied** | `docs/migrations-draft/` |
+| #15 binding selection | A requested storefront is honoured only when that tenant has settings in the database; otherwise the default binding is used and a warning is logged | `storefront.ts` |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors; the new migration passes `node --check`.
+
+**Register: 47 fixed, 8 open, 1 P1.** D-19 closed; the audit crosswalk is now 15 fixed, 1 mitigated (#15), with #8's rule half waiting on approval to apply `006`.
 
 ## Appendix A: Route inventory
 

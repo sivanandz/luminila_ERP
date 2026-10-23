@@ -16,6 +16,7 @@ Nothing here has been run. `pocketbase/pb_data` and
 | `003_products_craft_and_gst_rate.js` | `products.craft`, `plating`, `occasion`, `base_metal`, `gst_rate` | Imitation taxonomy persists; D-14 can read a real product rate |
 | `004_landed_cost_and_channels.js` | `purchase_orders.overhead_amount`, `purchase_order_items.landed_unit_cost`, `sales.channel`, `whatsapp_campaigns`, `sales.campaign` | D-13 concurrency fix, channel enum, campaign attribution |
 | `005_indexes.js` | Unique index on `invoices.order`; reporting indexes | D-20 hardening and faster report queries |
+| `006_store_settings_rules.js` | Tenant-scoped collection rules on `store_settings` (audit 2026-10-22, #8) | Authenticated users can no longer read or write another tenant's settings rows in a shared instance; legacy rows with an empty `account_email` stay readable |
 
 ## How to apply, when you approve
 
