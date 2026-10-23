@@ -1893,6 +1893,22 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
 
+### 11.55 Slice 53: POS page behind services, client-side tail counted (2026-10-23)
+
+**D-23 progress:** `src/app/pos/page.tsx` has **zero** direct PocketBase calls and no longer reads `pb.authStore` (3 collection calls plus two authStore reads removed).
+
+| Change | Files |
+|---|---|
+| `getPOSQuickAddVariants(limit)` — recent active variants, tenant-filtered | `src/lib/products.ts` |
+| `resolvePOSBarcodeVariant(code)` — exact suffix/barcode/full-SKU resolution with parent-SKU fallback, tenant-filtered, sanitized once | same |
+| POS page uses both and reads the tenant via `getCurrentTenantEmail()` instead of the global client | `src/app/pos/page.tsx` |
+
+**API route note:** `api/storefront/content` already creates one PocketBase client per request (`new PocketBase(client.baseUrl)`) for both GET and POST; its nine `pb.` references are per-request clients, not the global singleton. API routes are therefore excluded from the remaining D-23 count, and only the client-side tail is tracked.
+
+**Census after this slice:** **15 direct calls remain in client pages/components** across 13 files (two barcode modals at 2 each, then single-call sites in purchase, returns, users, vendors and WhatsApp/inventory modals).
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

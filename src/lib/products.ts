@@ -3,7 +3,7 @@
  * CRUD operations for products and variants using PocketBase
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -460,4 +460,47 @@ export async function getVariantForProduct(productId: string): Promise<ProductVa
     } catch {
         return null;
     }
+}
+
+/** Quick-add tiles for POS: recent active variants, tenant-filtered. */
+export async function getPOSQuickAddVariants(limit: number = 8): Promise<ProductVariant[]> {
+    const tenantEmail = getCurrentTenantEmail();
+    const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
+    const variants = await pb.collection('product_variants').getList<ProductVariant>(1, limit, {
+        filter: `product.is_active = true${tenantFilter}`,
+        expand: 'product',
+        sort: '-created',
+    });
+    return variants.items;
+}
+
+/**
+ * Exact barcode resolution for POS: bare variant suffix, product barcode, or a
+ * full "<parent sku>-<suffix>" variant SKU, falling back to an exact parent SKU.
+ * Fuzzy contains-matching is deliberately not used.
+ */
+export async function resolvePOSBarcodeVariant(code: string): Promise<ProductVariant | null> {
+    const safe = sanitizeFilter(code);
+    const tenantEmail = getCurrentTenantEmail();
+    const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
+
+    let filter = `(sku_suffix="${safe}" || product.barcode="${safe}") && product.is_active=true${tenantFilter}`;
+    const separator = code.lastIndexOf('-');
+    if (separator > 0 && separator < code.length - 1) {
+        filter = `((sku_suffix="${safe}" || product.barcode="${safe}") || (product.sku="${sanitizeFilter(code.slice(0, separator))}" && sku_suffix="${sanitizeFilter(code.slice(separator + 1))}")) && product.is_active=true${tenantFilter}`;
+    }
+
+    const exact = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+        filter,
+        expand: 'product',
+        sort: 'sku_suffix',
+    });
+    if (exact.items.length > 0) return exact.items[0];
+
+    const byParentSku = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+        filter: `product.sku="${safe}" && product.is_active=true${tenantFilter}`,
+        expand: 'product',
+        sort: 'sku_suffix',
+    });
+    return byParentSku.items[0] || null;
 }

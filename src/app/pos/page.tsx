@@ -78,7 +78,8 @@ import { includedTaxPaise } from "@/lib/invoice-math";
 import { getStoreSettings } from "@/lib/settings";
 import { GST_RATES } from "@/lib/gst";
 import { getTypeAheadProducts, type ProductVariant } from "@/lib/products";
-import { pb, sanitizeFilter } from "@/lib/pocketbase";
+import { getCurrentTenantEmail, sanitizeFilter } from "@/lib/pocketbase";
+import { getPOSQuickAddVariants, resolvePOSBarcodeVariant } from "@/lib/products";
 import { ClientResponseError } from "pocketbase";
 import { subscribeRemoteCartItems, type POSCartBroadcastItem } from "@/lib/whatsapp-crm";
 import { POSWhatsAppWidget, sendPOSReceiptViaWhatsApp } from "@/components/pos/POSWhatsAppWidget";
@@ -299,7 +300,7 @@ export default function POSPage() {
         getPOSLocations().then((locs) => {
             setPosLocations(locs);
             if (typeof window !== "undefined") {
-                const userEmail = pb.authStore.model?.email?.trim().toLowerCase() || "default";
+                const userEmail = getCurrentTenantEmail()?.trim().toLowerCase() || "default";
                 const saved = localStorage.getItem(`luminila_active_pos_loc_${userEmail}`);
                 if (saved && locs.some((l) => l.id === saved)) {
                     setSelectedPosLocationId(saved);
@@ -406,18 +407,11 @@ export default function POSPage() {
     useEffect(() => {
         const loadQuickAddProducts = async () => {
             try {
-                const tenantEmail = pb.authStore.model?.email?.trim().toLowerCase();
-                const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
-                const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 8, {
-                    filter: `product.is_active = true${tenantFilter}`,
-                    expand: 'product',
-                    sort: '-created',
-                });
+                const variants = await getPOSQuickAddVariants(8);
                 const posProducts: POSProduct[] = [];
-                for (const v of variants.items) {
+                for (const v of variants) {
                     const p = v.expand?.product;
                     if (!p || p.is_active === false) continue;
-                    if (tenantEmail && ((v.account_email && v.account_email.toLowerCase() !== tenantEmail) || (p.account_email && p.account_email.toLowerCase() !== tenantEmail))) continue;
                     const basePrice = p?.base_price || 0;
                     const channelPrices = p?.channel_prices;
                     const priceAdjustment = v.price_adjustment || 0;
@@ -492,44 +486,12 @@ export default function POSPage() {
         try {
             // Sanitize the raw scanner payload before it is interpolated into the
             // filter — arbitrary QR/DataMatrix content must not break or inject it.
-            const safe = sanitizeFilter(code);
-            const tenantEmail = pb.authStore.model?.email?.trim().toLowerCase();
-            const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
-
-            // Exact matches first: bare variant suffix, product barcode, or a full
-            // variant SKU ("<parent sku>-<suffix>"). Fuzzy contains-matching here
-            // could resolve a scan to an arbitrary variant with the wrong price.
-            let filter = `(sku_suffix="${safe}" || product.barcode="${safe}") && product.is_active=true${tenantFilter}`;
-            const sep = code.lastIndexOf('-');
-            if (sep > 0 && sep < code.length - 1) {
-                filter = `((sku_suffix="${safe}" || product.barcode="${safe}") || (product.sku="${sanitizeFilter(code.slice(0, sep))}" && sku_suffix="${sanitizeFilter(code.slice(sep + 1))}")) && product.is_active=true${tenantFilter}`;
-            }
-            const exact = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
-                filter,
-                expand: 'product',
-                sort: 'sku_suffix',
-            });
-
-            let v: ProductVariant | undefined;
-            if (exact.items.length > 0) {
-                v = exact.items[0];
-            } else {
-                // Parent-SKU scan (label without a suffix): exact parent match with a
-                // deterministic variant order instead of an arbitrary fuzzy pick.
-                const byParentSku = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
-                    filter: `product.sku="${safe}" && product.is_active=true${tenantFilter}`,
-                    expand: 'product',
-                    sort: 'sku_suffix',
-                });
-                v = byParentSku.items[0];
-            }
+            const resolved = await resolvePOSBarcodeVariant(code);
+            const v: ProductVariant | undefined = resolved || undefined;
 
             if (v) {
                 const p = v.expand?.product;
-                if (tenantEmail && ((v.account_email && v.account_email.toLowerCase() !== tenantEmail) || (p?.account_email && p.account_email.toLowerCase() !== tenantEmail))) {
-                    toast.error("This product belongs to another tenant/account.");
-                    return;
-                }
+
                 if (p?.is_active === false) {
                     toast.error(`"${p?.name || code}" is marked inactive and cannot be sold.`);
                     return;
@@ -1250,7 +1212,7 @@ export default function POSPage() {
                                     if (!val) return;
                                     setSelectedPosLocationId(val);
                                     if (typeof window !== "undefined") {
-                                        const userEmail = pb.authStore.model?.email?.trim().toLowerCase() || "default";
+                                        const userEmail = getCurrentTenantEmail()?.trim().toLowerCase() || "default";
                                         localStorage.setItem(`luminila_active_pos_loc_${userEmail}`, val);
                                     }
                                     const locName = posLocations.find(l => l.id === val)?.name || val;
