@@ -2005,6 +2005,23 @@ The user authorised the re-key. It was executed, and the honest result is that t
 
 **Caveat:** the key created here lives only in this checkout's git-ignored env file and the offline copy; a different deployment must not assume it has the same one.
 
+### 11.61 Document audit: the explorer caught up with the code (2026-10-24)
+
+With the code objective exhausted, both documents were checked against the tree. The explorer carried pre-remediation statuses; corrected rows:
+
+| Was | Now |
+|---|---|
+| ORPHANS listed deleted `sync-engine.ts` and sync clients | removed; only `omnichannel-buffer-engine.ts` remains unwired (1 module, matching the vital) |
+| Vital "13 API routes that cannot ship" | "13 API handlers served by the bundled server" |
+| VERIFY: production build *blocked* | *pass* — standalone output assembled and booted (§11.58) |
+| VERIFY: schema drift *fail* (six collections absent) | *pass* — eight migrations applied, live schema confirmed (§11.47) |
+| Features marked partial for D-12, D-13, D-16, D-17, D-19, D-28, D-36, D-37, S-05, S-11 | live, each citing the fixing slice |
+| Offline queue marked scaffold; admin bot marked scaffold | offline queue live (drains on reconnect); admin bot absent (deleted) |
+| Static production build marked absent | live (server-backed) |
+| Automated tests "three suites" | 20 suites / 144 assertions |
+
+Still accurately non-live: absence-category features (PIN/QR cashier switch, old-gold trade-in, HUID vault, savings scheme, split tender, held carts, e-invoice/IRN, bank reconciliation, scheduled reports, WhatsApp Flows), the unwired anti-oversell buffer, the still-blocked native Android APK, and cloud sync (removed mock). Those are product scope or environment, not regressions.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

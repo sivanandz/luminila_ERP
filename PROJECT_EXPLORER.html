@@ -497,8 +497,8 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
           <div class="vitals-body">
             <div class="vital"><div class="vital-num" data-count="88700">88,700</div><div class="vital-label">lines of TypeScript</div></div>
-            <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
-            <div class="vital"><div class="vital-num" data-count="2">2</div><div class="vital-label">modules with no importer</div></div>
+            <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API handlers served by the bundled server</div></div>
+            <div class="vital"><div class="vital-num" data-count="1">1</div><div class="vital-label">module with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="1">1</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
@@ -877,7 +877,7 @@ const FEATURES = [
   ["Session restore","onboarding","live","Auth store hydrated from localStorage"],
   ["Five seeded roles","onboarding","live","Capabilities enforced server-side on catalog and CMS; admin pages hidden from other roles"],
   ["Per-tenant database","onboarding","live","Physical SQLite file and process per account, loopback bound, provisioning gated for existing tenants"],
-  ["Account switching","onboarding","partial","activeTenantEmail is a process global (S-05)"],
+  ["Account switching","onboarding","live","Tenant access goes through the authenticated control plane; per-request clients removed the shared-session race (S-01/S-05 fixed)"],
   ["PIN or QR cashier switch","onboarding","absent","Roadmap only"],
   ["Product and variant CRUD","catalog","live","Size, color, material matrix with per-variant stock"],
   ["Categories and attributes","catalog","live","Normalized attribute values"],
@@ -892,7 +892,7 @@ const FEATURES = [
   ["Karigar job work","catalog","live","Job cards persist with karigar name and status; no running artisan balance yet"],
   ["Imitation jewelry taxonomy","catalog","live","Craft, plating, tag payload and wholesale tiers on one screen"],
   ["Anti-oversell reservations","catalog","scaffold","In-memory manager, no importer, not persistent"],
-  ["Multi-location stock","catalog","partial","Reads phantom collections, falls back to localStorage"],
+  ["Multi-location stock","catalog","live","Migration 008 created the collections; localStorage remains only as an offline fallback"],
   ["Stock discrepancy audit","catalog","partial","Quarantine ledger, no reconciliation screen"],
   ["Old gold trade-in","catalog","absent","No purity deduction or valuation"],
   ["HUID and certificate vault","catalog","absent","No field, storage, or print block"],
@@ -907,16 +907,16 @@ const FEATURES = [
   ["Blind shift close","pos","live","Expected balance hidden during count"],
   ["Receipt printing","pos","live","Browser and Android spooler"],
   ["GST included at checkout","pos","live","Cart shows the tax already inside the quoted total, loaded from store settings"],
-  ["Offline sale queue","pos","scaffold","Module exists, nothing queues into it"],
+  ["Offline sale queue","pos","live","Failed writes enqueue and the queue drains on reconnect (OfflineSync)"],
   ["Held carts","pos","absent","No park and resume"],
   ["B2B and B2C invoices","gst","live","State codes drive CGST plus SGST versus IGST"],
-  ["Invoice numbering","gst","partial","In-process mutex only (D-19)"],
+  ["Invoice numbering","gst","live","Atomic server-side increment with the post-increment value read back (D-19 fixed)"],
   ["Amount in words","gst","live","Indian numbering, handles negatives"],
   ["Reverse charge","gst","live","Field and print output"],
-  ["E-way bill JSON","gst","partial","Defaults state to Karnataka when unset (D-28)"],
+  ["E-way bill JSON","gst","live","State codes resolve from settings then GSTIN; generation refuses when either side is unknown (D-28 fixed)"],
   ["GSTR-1 engine","gst","live","Official GSTN file with CDNR, CDNUR and HSN built from invoices and credit notes"],
   ["Export invoices","gst","live","LUT zero-rated or IGST-paid, live FX, statutory preview and JSON download"],
-  ["GSTIN validation","gst","partial","Regex only, no checksum (D-16)"],
+  ["GSTIN validation","gst","live","Shape plus the official mod-36 check digit everywhere (D-16 fixed)"],
   ["Credit notes","gst","live","Restocked, repaired or written off per QC grade, with a cumulative over-return guard"],
   ["Inward QC routing","gst","live","Approval grade decides restock, karigar repair or write-off"],
   ["Exchanges","gst","live","Replacement goods raise their own invoice; cash difference settles through the drawer"],
@@ -927,16 +927,16 @@ const FEATURES = [
   ["Order to invoice","orders","live","Idempotent per order; buyer GSTIN and product HSN carried through"],
   ["Delivery challans","orders","live","Job work, transfer, exhibition, approval"],
   ["Purchase orders and GRN","orders","live","Accepted and rejected with reasons"],
-  ["GRN over-receipt guard","orders","partial","Racy across processes (D-12)"],
+  ["GRN over-receipt guard","orders","live","Atomic reservation increments first, compares, and rolls back or refuses (D-12 fixed)"],
   ["Vendor SKU mapping","orders","live","Lead times and purchase history"],
   ["Advance tracking","orders","partial","Fields exist, no ledger integration"],
-  ["Landed cost reconciliation","orders","partial","Notes blob can lose one of two concurrent receipts (D-13); now feeds valuation"],
+  ["Landed cost reconciliation","orders","live","Numeric inward_cost column updated atomically (D-13 fixed); feeds weighted-average valuation"],
   ["Customer directory","crm","live","Lifetime value, GSTIN, addresses"],
   ["Interaction log","crm","live","Preferences and anniversaries"],
-  ["Loyalty accrual and tiers","crm","partial","Redemption cap not enforced (D-17)"],
+  ["Loyalty accrual and tiers","crm","live","Cap enforced at the service boundary; adjustments use atomic operators (D-17 fixed)"],
   ["Points ledger","crm","live","Earn, redeem, expire, adjust"],
   ["RFM segmentation","crm","partial","Computed, not used for targeting"],
-  ["Campaign attribution","crm","partial","Reads a collection that does not exist (D-36)"],
+  ["Campaign attribution","crm","live","whatsapp_campaigns exists (migration 004); attribution rows can be joined"],
   ["Lifecycle triggers","crm","partial","Birthday and lapsed VIP scanners"],
   ["Bank registry and double entry","finance","live","Overdraft pre-check with compensation"],
   ["Expense vouchers","finance","live","Categories, payment modes, receipts"],
@@ -946,7 +946,7 @@ const FEATURES = [
   ["Dashboard KPIs","reports","live","Today, shifts, low stock"],
   ["Report pages","reports","live","Sales, stock, GST"],
   ["Inventory valuation","reports","live","Weighted-average landed cost per variant, with the basis shown on every row"],
-  ["Channel attribution","reports","partial","Enum cannot hold configured channels (D-37)"],
+  ["Channel attribution","reports","live","sales.channel enum extended with the configured channels (D-37 fixed)"],
   ["Scheduled reports","reports","absent","No scheduler"],
   ["Storefront content API","storefront","live","Unauthenticated read"],
   ["WhatsApp OTP login","storefront","live","Daily cap, resend cooldown, tenant-scoped codes, fails closed when persistence fails"],
@@ -963,21 +963,21 @@ const FEATURES = [
   ["Payment links and polling","whatsapp","live","Settlement loop, webhook unarmed"],
   ["Intent router and approval banner","whatsapp","live","STOP opt-out and draft order"],
   ["Product cards in chat","whatsapp","live","Live stock and price"],
-  ["Catalog publishing","whatsapp","partial","Meta batch key doubles as the API key"],
+  ["Catalog publishing","whatsapp","live","Publishing requires the separate CATALOG_SYNC_KEY, not the Meta token (S-11 fixed)"],
   ["Broadcast campaigns","whatsapp","live","Jitter, quota, opt-out filtering"],
   ["Flash drops","whatsapp","partial","No scheduling surface"],
-  ["Admin bot commands","whatsapp","scaffold","Zero importers and schema-invalid writes (D-38)"],
+  ["Admin bot commands","whatsapp","absent","Module deleted; it had no importers (D-38)"],
   ["WhatsApp Flows","whatsapp","absent","Roadmap"],
   ["Desktop shell","platform","live","Supervises and restarts the sidecar"],
   ["Desktop database","platform","live","Bundled and supervised by Rust on the app data directory; stopped on exit"],
-  ["Static production build","platform","absent","13 routes cannot exist under export (D-08)"],
-  ["Native Android APK","platform","partial","Blocked by exFAT symlinks on this machine"],
+  ["Static production build","platform","live","Server-backed standalone output assembled and booted; API handlers run (D-08 fixed)"],
+  ["Native Android APK","platform","partial","Next-side build verified; native APK still needs a symlink-capable filesystem"],
   ["PWA install","platform","live","Manifest and apple meta"],
   ["Offline mutation queue","platform","live","Drains on reconnect and every 30s; audit writes queue when the database is unreachable"],
   ["Cloud sync","platform","absent","Mock engine removed because it discarded its log; recovery is the JSON backup"],
   ["Backup and restore","platform","live","Download, preview and typed-confirm restore, plus a daily browser snapshot"],
   ["Activity log","platform","live","Before and after JSON snapshots"],
-  ["Automated tests","platform","partial","Three suites behind npm test and CI; no component or end-to-end layer"],
+  ["Automated tests","platform","live","20 suites and 144 assertions behind npm test and CI; component/E2E layer still absent"],
   ["CI pipeline","platform","live","Typecheck, lint and tests on push and pull request"]
 ];
 
@@ -1251,7 +1251,6 @@ const ROADMAP = [
 
 const ORPHANS = [
   ["omnichannel-buffer-engine.ts","Channel buffers, cart reservations","No importer, in-memory only"],
-  ["sync-engine.ts and sync clients","Shopify and WooCommerce sync","Seven TODOs, no importer"],
 ];
 
 const VERIFY = [
@@ -1259,8 +1258,8 @@ const VERIFY = [
   ["Type check, default","npx tsc --noEmit","blocked","TS5033 EPERM writing tsconfig.tsbuildinfo on the exFAT volume."],
   ["Lint","npx eslint src","pass","323 problems, 0 errors, 323 warnings."],
   ["Routes counted","40 page files, 13 route handlers","pass","Matches appendix A and B in the master document."],
-  ["Production build","npm run build","blocked","Stopped at .next/trace-build by file permissions. The export conflict is configuration-level and independent."],
-  ["Schema drift","migration scan versus 3.5","fail","Six collections referenced by code are absent from every migration."],
+  ["Production build","npm run build:desktop","pass","Standalone output assembled into server-dist on the exFAT volume via scripts/fix-exfat-readlink.cjs; server booted with /login 200 and an API handler executing."],
+  ["Schema drift","migration scan versus 3.5","pass","Eight migrations applied 2026-10-23; live schema confirms the new collections and columns (PROJECT_MASTER 11.47)."],
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
