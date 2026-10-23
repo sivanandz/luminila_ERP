@@ -19,6 +19,121 @@ static SIDECAR_RUNNING: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
 const PB_PORTS: [u16; 3] = [8090, 8091, 8092];
 
+/// Loopback port for the bundled Next server (server-backed release).
+#[cfg(desktop)]
+const NEXT_SERVER_PORT: u16 = 3210;
+
+/// Owns the Next server child process so the app can stop it on exit.
+#[cfg(desktop)]
+#[derive(Default)]
+struct NextServerProcess(Mutex<Option<Child>>);
+
+#[cfg(desktop)]
+async fn check_next_server() -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(900))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+
+    match client
+        .get(format!("http://127.0.0.1:{}/", NEXT_SERVER_PORT))
+        .send()
+        .await
+    {
+        Ok(response) => response.status().is_success() || response.status().is_redirection(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(desktop)]
+fn spawn_next_server(app: &tauri::AppHandle) -> Result<Child, String> {
+    use tauri::path::BaseDirectory;
+
+    let bundled = app
+        .path()
+        .resolve("server/server.js", BaseDirectory::Resource)
+        .ok()
+        .filter(|path| path.exists());
+    let entry = bundled.unwrap_or_else(|| std::path::PathBuf::from(".next/standalone/server.js"));
+
+    if !entry.exists() {
+        return Err(format!(
+            "Next server entry not found (looked for bundled server/server.js and {})",
+            entry.display()
+        ));
+    }
+
+    // A packaged install ships Node beside the app; a developer machine uses the
+    // node on PATH. NEXT_NODE_BIN overrides both.
+    let node = std::env::var("NEXT_NODE_BIN").unwrap_or_else(|_| "node".to_string());
+
+    let mut command = Command::new(node);
+    command
+        .arg(&entry)
+        .env("PORT", NEXT_SERVER_PORT.to_string())
+        .env("HOSTNAME", "127.0.0.1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command
+        .spawn()
+        .map_err(|e| format!("spawn Next server: {}", e))
+}
+
+#[cfg(desktop)]
+async fn ensure_next_server(app: tauri::AppHandle) -> bool {
+    if check_next_server().await {
+        log::info!("Next server already listening on {}", NEXT_SERVER_PORT);
+        return true;
+    }
+
+    match spawn_next_server(&app) {
+        Ok(mut child) => {
+            for _ in 0..60 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                if check_next_server().await {
+                    if let Some(state) = app.try_state::<NextServerProcess>() {
+                        if let Ok(mut slot) = state.0.lock() {
+                            *slot = Some(child);
+                        }
+                    }
+                    log::info!("Next server started on {}", NEXT_SERVER_PORT);
+                    return true;
+                }
+            }
+            log::error!("Next server did not become healthy on {}", NEXT_SERVER_PORT);
+            let _ = child.kill();
+            false
+        }
+        Err(e) => {
+            log::error!("{}", e);
+            false
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn stop_next_server(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<NextServerProcess>() {
+        if let Ok(mut slot) = state.0.lock() {
+            if let Some(mut child) = slot.take() {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
 /// Owns the PocketBase child process so the app can stop it on exit.
 #[cfg(desktop)]
 #[derive(Default)]
@@ -405,7 +520,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init());
 
     #[cfg(desktop)]
-    let builder = builder.manage(PocketBaseProcess::default());
+    let builder = builder
+        .manage(PocketBaseProcess::default())
+        .manage(NextServerProcess::default());
 
     let app = builder
         .setup(|app| {
@@ -452,6 +569,23 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     pocketbase_monitor_loop(pb_monitor_handle).await;
                 });
+
+                // Server-backed release: start the bundled Next server, then
+                // point the webview at it once it answers. In dev the window is
+                // already on the Next dev server, so this is a no-op.
+                let next_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let ready = ensure_next_server(next_handle.clone()).await;
+                    if ready {
+                        if let Some(window) = next_handle.get_webview_window("main") {
+                            let script = format!(
+                                "if (location.port !== '{}') {{ location.replace('http://127.0.0.1:{}/'); }}",
+                                NEXT_SERVER_PORT, NEXT_SERVER_PORT
+                            );
+                            let _ = window.eval(&script);
+                        }
+                    }
+                });
             }
 
             Ok(())
@@ -468,6 +602,7 @@ pub fn run() {
         #[cfg(desktop)]
         if let RunEvent::Exit = event {
             stop_pocketbase(app_handle);
+            stop_next_server(app_handle);
         }
         #[cfg(not(desktop))]
         let _ = (app_handle, event);

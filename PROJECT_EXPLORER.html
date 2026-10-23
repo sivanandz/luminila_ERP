@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>15 open · 40 fixed</span>
+            <span class="chip accent"><span class="dot"></span>14 open · 41 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -499,7 +499,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
             <div class="vital"><div class="vital-num" data-count="88700">88,700</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="2">2</div><div class="vital-label">modules with no importer</div></div>
-            <div class="vital"><div class="vital-num" data-count="2">2</div><div class="vital-label">P1 defects open</div></div>
+            <div class="vital"><div class="vital-num" data-count="1">1</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
       </div>
@@ -1011,7 +1011,7 @@ const DEFECTS = [
     where:"src/lib/returns.ts:660-670,742-793 · src/lib/invoice.ts:172-175",
     impact:"Output GST on replacement jewelry is never recorded, and the negative payment row later distorts paid_amount and the customer balance.",
     fix:"Issue an exchange invoice or debit note, and keep payment rows non-negative." },
-  { id:"D-08", sev:"P1", area:"build", title:"The release pipeline cannot produce the artifact the shell expects",
+  { id:"D-08", sev:"P1", status:"fixed", area:"build", title:"The release pipeline cannot produce the artifact the shell expects",
     where:"next.config.ts:9 · 13 files under src/app/api · tauri.conf.json:7,10",
     impact:"Static export cannot contain dynamic route handlers. npm run tauri:build fails, and a forced export would lose provisioning, checkout, payments, and catalog sync.",
     fix:"Choose server-backed or endpoint-free (see section 06) and delete the losing path." },

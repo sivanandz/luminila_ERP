@@ -1587,6 +1587,24 @@ Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 asse
 
 **Still open:** D-17, D-21, D-32, the Settings cards for D-34, plus the schema-bound and decision-bound items.
 
+### 11.36 Slice 35: server-backed release (2026-10-23)
+
+**Closed:** D-08, by decision and configuration.
+
+| Change | Files | Why |
+|---|---|---|
+| Static export removed; `output: "standalone"` in production | `next.config.ts` | The 13 API route handlers now exist at runtime instead of being impossible |
+| External `frontendDist` | `src-tauri/tauri.conf.json` | Tauri loads `http://127.0.0.1:3210`, which the schema explicitly supports for a server-backed app |
+| Next supervisor in Rust | `src-tauri/src/lib.rs` | Starts `server.js`, waits for health, re-points the webview, and kills the child on exit, reusing the PocketBase pattern |
+| Server assembly | `scripts/prepare-server-dist.mjs` (new), `server-dist/README.md`, `package.json` | Copies the standalone output plus static assets into the committed placeholder the bundle ships |
+| Build uses webpack | `package.json` | Matches the dev script; Turbopack cannot create the symlinks this volume needs |
+
+**Verified:** `cargo check` finished clean in 30s and validated the new config; `npm run typecheck` and `npm test` (144 assertions, 20 suites) pass.
+
+**Build status, stated precisely:** with the export removed, `next build` now gets past the former contradiction and compiles the application until this volume's filesystem refuses a symlink operation (`readlink … EISDIR`, the same exFAT limitation the dev script works around). The route-versus-export conflict is gone; producing the artifact still requires a filesystem that supports symlinks, which this one does not.
+
+**Remaining P1:** S-06 only.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

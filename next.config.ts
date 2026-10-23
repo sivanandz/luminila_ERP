@@ -4,11 +4,12 @@ const isProd = process.env.NODE_ENV === "production";
 
 
 const nextConfig: NextConfig = {
-  // Required for Tauri - static export (no Node.js server)
-  // Only enable in production to avoid dev server issues
-  ...(isProd && { output: "export" }),
+  // Server-backed desktop: the app runs a real Next server so the 13 API route
+  // handlers exist at runtime. `standalone` traces only the dependencies the
+  // server needs, which is what the Tauri bundle ships.
+  ...(isProd && { output: "standalone" }),
 
-  // Required for static export - disable image optimization
+  // Kept because the webview serves images from local PocketBase URLs.
   images: {
     unoptimized: true,
   },
