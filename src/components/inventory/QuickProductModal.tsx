@@ -27,7 +27,7 @@ import {
     Check,
     Loader2,
 } from "lucide-react";
-import { pb } from "@/lib/pocketbase";
+import { getCategories } from "@/lib/categories";
 import { quickCreateInventoryProductForPOItem, type QuickProductDetails } from "@/lib/purchase";
 import { toast } from "sonner";
 
@@ -129,8 +129,7 @@ export function QuickProductModal({
             if (initialData?.purity_karat) setPurity(initialData.purity_karat);
 
             // Fetch live categories from db
-            pb.collection("categories")
-                .getFullList({ sort: "name" })
+            getCategories()
                 .then((cats) => {
                     if (cats.length > 0) {
                         const names = Array.from(new Set([...cats.map((c: any) => c.name), ...DEFAULT_CATEGORIES]));

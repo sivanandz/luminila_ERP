@@ -25,7 +25,7 @@ import {
     Zap,
     ZapOff,
 } from "lucide-react";
-import { pb } from "@/lib/pocketbase";
+import { listStoredWhatsAppMessages } from "@/lib/whatsapp-message-store";
 import type { StoredMessage } from "@/lib/whatsapp-crm";
 import { whatsappManager } from "@/lib/whatsapp";
 import { toast } from "sonner";
@@ -164,10 +164,7 @@ export function ProductPhotoTaggingModal({
     const fetchWhatsAppImages = useCallback(async () => {
         setIsLoadingWaImages(true);
         try {
-            const records = await pb.collection("whatsapp_messages").getFullList<StoredMessage>({
-                sort: "-timestamp",
-                requestKey: null,
-            });
+            const records = (await listStoredWhatsAppMessages()) as StoredMessage[];
 
             const imageMessages: WhatsAppImageItem[] = records
                 .filter(

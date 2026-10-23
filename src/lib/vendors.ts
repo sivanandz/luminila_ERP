@@ -3,7 +3,7 @@
  * CRUD operations for vendor management using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -247,5 +247,16 @@ export async function getVendorStats(id: string): Promise<{
             totalPurchases: 0,
             lastPurchase: null
         };
+    }
+}
+
+/** Match a vendor by the last ten digits of a phone number. */
+export async function findVendorByPhone(digits: string) {
+    if (!digits) return null;
+    try {
+        const vendor = await pb.collection('vendors').getFirstListItem(`phone~"${sanitizeFilter(digits)}"`);
+        return { id: vendor.id, name: vendor.name || '' };
+    } catch {
+        return null;
     }
 }

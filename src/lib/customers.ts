@@ -451,3 +451,14 @@ export async function updateCustomerJewelryProfile(
         anniversary_date: profile.anniversary_date || null,
     });
 }
+
+/** Minimal customer identity for receipt and payment flows. */
+export async function getCustomerSummary(customerId: string): Promise<{ name: string; phone: string } | null> {
+    if (!customerId) return null;
+    try {
+        const customer = await pb.collection('customers').getOne(customerId);
+        return { name: customer.name || 'Customer', phone: (customer as { phone?: string }).phone || '' };
+    } catch {
+        return null;
+    }
+}

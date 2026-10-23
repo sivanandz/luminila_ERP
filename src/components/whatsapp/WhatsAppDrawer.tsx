@@ -14,7 +14,7 @@ import {
     queueLabelPrint,
     type ContactType,
 } from "@/lib/whatsapp-crm";
-import { pb } from "@/lib/pocketbase";
+import { findVendorByPhone } from "@/lib/vendors";
 import type { Vendor } from "@/types/database";
 import { MessageActionMenu } from "@/components/whatsapp/MessageActionMenu";
 import { VendorIngestionModal, AddExistingInventoryModal } from "@/components/whatsapp/VendorIngestionModal";
@@ -108,8 +108,8 @@ export function WhatsAppDrawer() {
         // Resolve vendor link if phone matches a registered vendor
         const digits = (chat.id || '').replace(/\D/g, '').slice(-10);
         if (digits) {
-            pb.collection('vendors').getFirstListItem<Vendor>(`phone~"${digits}"`).then((v) => {
-                setActiveVendor({ id: v.id, name: v.name });
+            findVendorByPhone(digits).then((v) => {
+                if (v) setActiveVendor({ id: v.id, name: v.name });
             }).catch(() => setActiveVendor(null));
         } else {
             setActiveVendor(null);

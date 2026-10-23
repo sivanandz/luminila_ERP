@@ -3,7 +3,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MessageCircle, Send, Loader2, BadgeCheck, CreditCard, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import { pb } from "@/lib/pocketbase";
+import { getCustomerSummary } from "@/lib/customers";
+import { createPaymentLinkLedger } from "@/lib/payment-links";
 import { whatsappManager, checkNumberStatus } from "@/lib/whatsapp";
 import { createPaymentLink, isRazorpayConfigured } from "@/lib/razorpay";
 import {
@@ -21,8 +22,7 @@ import { formatPrice } from "@/lib/utils";
 
 async function fetchCustomerPhone(customerId: string): Promise<{ name: string; phone: string } | null> {
     try {
-        const c = await pb.collection('customers').getOne(customerId);
-        return { name: c.name || 'Customer', phone: (c as { phone?: string }).phone || '' };
+        return await getCustomerSummary(customerId);
     } catch {
         return null;
     }
@@ -193,7 +193,7 @@ export function POSWhatsAppWidget({
 
             // Ledger the link in PocketBase (spec §12.1 payment_links)
             try {
-                await pb.collection('payment_links').create({
+                await createPaymentLinkLedger({
                     provider: 'razorpay',
                     link_id: result.data.id,
                     short_url: result.data.short_url,

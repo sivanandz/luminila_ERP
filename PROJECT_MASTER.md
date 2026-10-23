@@ -1909,6 +1909,20 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
 
+### 11.56 Slice 54: six more tail surfaces (2026-10-23)
+
+| Surface | Calls removed | Service used |
+|---|---|---|
+| `POSWhatsAppWidget` | 2 | `getCustomerSummary` (customers), `createPaymentLinkLedger` (new `payment-links.ts`) |
+| `QuickProductModal` | 1 | existing `getCategories()` instead of an inline collection chain |
+| `WhatsAppDrawer` | 1 | `findVendorByPhone` (vendors, sanitized digits) |
+| `RazorpayPaymentModal` | 1 | `createPaymentLinkLedger` |
+| `ProductPhotoTaggingModal` | 1 | new `whatsapp-message-store.ts` (`listStoredWhatsAppMessages`) |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
+
+**Census after this slice:** **9 direct calls remain in 8 client files** — `QuickBarcodeScanModal` (2), then one each in purchase create/detail, returns detail, users, vendors detail, FlashDrop and ProductBroadcast.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

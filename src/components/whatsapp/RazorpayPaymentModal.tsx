@@ -3,7 +3,7 @@
 import React, { useState, useMemo } from "react";
 import { CreditCard, X, ExternalLink, Copy, Check, Send, Loader2, Sparkles, ShieldCheck, Percent } from "lucide-react";
 import { createPaymentLink } from "@/lib/razorpay";
-import { pb } from "@/lib/pocketbase";
+import { createPaymentLinkLedger } from "@/lib/payment-links";
 import {
     calculateGatewayMarkup,
     calculateUpiSurchargeDiscount,
@@ -157,7 +157,7 @@ export function RazorpayPaymentModal({
                     if (defaultOrderId && !defaultOrderId.startsWith('WA-')) {
                         payload.order = defaultOrderId;
                     }
-                    await pb.collection('payment_links').create(payload);
+                    await createPaymentLinkLedger(payload);
                 } catch (ledgerErr) {
                     console.warn('[RazorpayPaymentModal] payment_links ledger failed:', ledgerErr);
                 }
