@@ -103,9 +103,9 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 245 |
-| Lines of TypeScript/TSX | ~87,500 |
-| Route pages (`src/app/**/page.tsx`) | 42 |
+| TypeScript/TSX files | 247 |
+| Lines of TypeScript/TSX | ~87,900 |
+| Route pages (`src/app/**/page.tsx`) | 43 |
 | Service modules (`src/lib/*.ts`) | 85 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
@@ -128,11 +128,12 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 60 assertions across 7 suites, exit 0 |
+| Test command | `npm test` | 66 assertions across 8 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
 | Cheque lifecycle tests | `npx tsx src/scripts/test-cheque-register.ts` | **9 passed, 0 failed** (2026-10-23) |
+| Export invoice tests | `npx tsx src/scripts/test-cross-border.ts` | **6 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -426,7 +427,7 @@ Status vocabulary, applied strictly:
 | Cash refunds | **Absent** | No code path writes cash refunds to the drawer or ledger (D-07) |
 | Cheque / PDC tracking | Live | `/cheques` registers post-dated cheques and drives the engine's lifecycle: deposit, clear, bounce, cancel, with maturity and stale warnings (section 11.11) |
 | Returns QC routing | Live | Approval records a grade that restocks, sends to karigar repair, or writes off through the quarantine ledger |
-| Cross-border LUT export | Scaffold | `cross-border-engine.ts` compiles zero-rated export invoices against a static FX table; no route |
+| Cross-border LUT export | Live | `/reports/export` compiles a statutory export invoice (LUT zero-rated or IGST-paid) with live FX and JSON download (section 11.12) |
 | Bank reconciliation import | Absent | Manual entry only |
 | Day book / trial balance | Partial | Reports exist; no formal accounting statements |
 
@@ -870,7 +871,6 @@ This is the most misleading category in the repository: substantial code exists,
 | Module | What it implements | Why it is unreachable |
 |---|---|---|
 | `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
-| `cross-border-engine.ts` | LUT export invoice with static FX | No route |
 | `omnichannel-buffer-engine.ts` | Channel buffers and cart reservations | No importer; in-memory state would not survive reload anyway |
 | `sync-engine.ts` + `sync/shopify.ts` + `sync/woocommerce.ts` | E-commerce sync orchestration | Zero importers; seven TODOs; Settings shows "Coming Soon" |
 | `backup.ts` | 31-collection backup, restore, scheduling | Zero importers; Settings has a 6-collection export and no restore |
@@ -1195,9 +1195,26 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Still open in this cluster:** cross-border, imitation taxonomy, and the six phantom collections (D-36).
 
+### 11.12 Slice 12: export invoice (2026-10-23)
+
+**Feature closed:** cross-border LUT export, previously scaffold with no route.
+
+| Change | Files | Why |
+|---|---|---|
+| Export invoice screen | `src/app/reports/export/page.tsx` (new) | Buyer, currency and FX, LUT/IGST switch, ARN, port and shipping bill, with editable line items |
+| Live statutory preview | same | Shows the declaration, both totals, the IGST row when not LUT, and downloads the compiled JSON |
+| Navigation | `Sidebar.tsx`, `MobileDrawer.tsx` | Export Invoice sits under Reports |
+| Engine tests | `src/scripts/test-cross-border.ts` (new) | Conversion both ways, LUT zero-rating, foreign line maths, 3% IGST, declaration and LUT details |
+
+**No persistence, by design:** the engine compiles a document; nothing is written. The FX rate defaults to the engine's table and is editable per shipment, which is the honest gap between a calculator and a booked export (a booked export still needs an invoice record and shipping-bill linkage).
+
+**Verified:** `npm run typecheck` clean; `npm test` 12 + 9 + 16 + 3 + 4 + 7 + 9 + 6 assertions; targeted ESLint clean.
+
+**Still open in this cluster:** imitation taxonomy, and the six phantom collections (D-36).
+
 ## Appendix A: Route inventory
 
-42 route pages, all client components.
+43 route pages, all client components.
 
 | Route | Purpose | Size |
 |---|---|---|
@@ -1229,6 +1246,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 | `/purchase/create` | PO authoring | 60 KB |
 | `/purchase/detail` | PO and GRN receiving | 69 KB |
 | `/reports` | Reports hub | 5 KB |
+| `/reports/export` | Export invoice with LUT and FX | 18 KB |
 | `/reports/gst` | GST summary | 18 KB |
 | `/reports/sales` | Sales analysis | 11 KB |
 | `/reports/stock` | Stock valuation | 11 KB |
@@ -1286,7 +1304,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `cross-border-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 8 modules, including whole sync and backup domains.
+**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 7 modules, including whole sync and backup domains.
 
 ## Appendix D: Glossary
 

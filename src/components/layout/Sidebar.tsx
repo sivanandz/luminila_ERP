@@ -116,6 +116,7 @@ const navGroups: NavItem[] = [
         label: "Reports",
         children: [
             { href: "/reports", icon: <BarChart3 size={18} />, label: "Business Reports" },
+            { href: "/reports/export", icon: <Globe size={18} />, label: "Export Invoice" },
             { href: "/activity", icon: <Activity size={18} />, label: "Activity Log" },
         ],
     },

@@ -76,6 +76,7 @@ const navSections = [
             { href: "/cheques", label: "Cheque Register", icon: CalendarClock },
             { href: "/expenses", label: "Expense Vouchers", icon: Wallet },
             { href: "/reports", label: "Reports & GST", icon: BarChart3 },
+            { href: "/reports/export", label: "Export Invoice", icon: Globe },
         ],
     },
     {
