@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>17 open · 38 fixed</span>
+            <span class="chip accent"><span class="dot"></span>16 open · 39 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1064,7 +1064,7 @@ const DEFECTS = [
     where:"src/lib/invoice.ts:1082 · src/lib/pos-sales.ts:114-133",
     impact:"Imitation jewelry at 18 percent and making charges at 5 percent are under-taxed on every sale.",
     fix:"Persist gst_rate on sale_items and use it at invoicing." },
-  { id:"D-15", sev:"P2", area:"tax", title:"Order to invoice emits 0 percent GST and a wrong HSN",
+  { id:"D-15", sev:"P2", status:"fixed", area:"tax", title:"Order to invoice emits 0 percent GST and a wrong HSN",
     where:"src/lib/orders.ts:156,250,256",
     impact:"A GST-registered store can issue a 0 percent invoice, and every line is stamped 7117 so the HSN summary disagrees with the invoice.",
     fix:"Default to the store rate and derive HSN from the product." },

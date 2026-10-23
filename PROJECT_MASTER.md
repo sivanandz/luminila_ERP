@@ -652,7 +652,7 @@ Severity definitions used here:
 - **P2**: produces wrong output in a normal workflow, or fails under concurrency, or creates a durable inconsistency. Fix before release.
 - **P3**: hygiene, dead code, maintainability, accessibility, or cosmetic correctness. Batch fix.
 
-> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-16, D-18, D-20, D-22, D-24, D-25, D-26, D-27, D-28, D-30, D-31, D-33, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
+> **Status update, 2026-10-23.** Closed: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-15, D-16, D-18, D-20, D-22, D-24, D-25, D-26, D-27, D-28, D-30, D-31, D-33, D-39, S-01, S-02, S-03, S-04, S-05, S-07, S-08, S-09, S-10, S-11, S-12, S-13, S-14, S-15, S-16. Partial: D-14 (needs the `products.gst_rate` migration, drafted in `docs/migrations-draft/003`), D-22 (redirect done, navigation still unfiltered), S-05 (per-request clients added on the control plane only), S-06 (fallback and network bind fixed, registry still holds passwords). Evidence and verification are in section 11. Entries below stay as written at audit time so the history remains readable.
 
 ### 7.1 P1 defects
 
@@ -1539,6 +1539,14 @@ D-39 had two halves. The first — unreachable backup and restore — closed in 
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; full ESLint 0 errors.
 
 **Note on D-30:** the two values are aligned but still written twice (the dev launcher is plain JS and cannot import the TS constant). A shared source is possible but would need a generated config or a JS module both can import; the practical inconsistency is gone.
+
+### 11.32 Slice 32: order invoice verification (2026-10-23)
+
+**Closed:** D-15, by verifying the already-shipped money slice rather than adding code.
+
+`generateInvoiceFromOrder` resolves the rate as `item.tax_rate ?? product.gst_rate ?? GST_RATES.JEWELRY` and the HSN from the product with `7113` as the fallback (`src/lib/orders.ts:276,283`), and the invoice is created idempotently per order (§11.1). The audit entry described the pre-slice state; the register has been corrected.
+
+**Still partially open:** D-14. The POS and order paths now consume a line rate, but `products.gst_rate` does not exist, so the fallback still applies. Migration `003_products_craft_and_gst_rate.js` supplies the column; until it is applied, behaviour is as documented.
 
 ## Appendix A: Route inventory
 
