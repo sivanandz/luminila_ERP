@@ -1849,6 +1849,23 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **D-23 stays open:** seven pages migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`, `invoices/create`, `customers/detail`); the largest remaining are the WhatsApp catalog editor (9) and WhatsApp page (8), then components/modals.
 
+### 11.52 Slice 50: WhatsApp catalog editor behind a service (2026-10-23)
+
+**D-23 progress:** `WhatsAppCatalogEditorModal.tsx` has **zero** direct PocketBase calls (was 9).
+
+| Change | Files |
+|---|---|
+| `getWhatsAppCatalogInventory(tenantEmail)` — tenant-scoped products and variants with the tenant filter built (and sanitized) once | `src/lib/whatsapp-catalog.ts` |
+| `setWhatsAppCatalogPrice(productId, price)` — merges the WhatsApp channel price and stamps the sync time | same |
+| `markWhatsAppCatalogSynced(productId)` — the two "touch timestamp" call sites | same |
+| `linkWhatsAppCatalogItem(productId, catalogItemId)` — link and publish paths | same |
+| `unlinkWhatsAppCatalogItem(productId)` — unlink and delete paths | same |
+| Modal composes those calls; the inline tenant filter and pb import are gone | `src/components/whatsapp/WhatsAppCatalogEditorModal.tsx` |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors; `grep` confirms no `pb.` reference remains in the editor.
+
+**D-23 stays open:** eight surfaces migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`, `invoices/create`, `customers/detail`, WhatsApp catalog editor). The WhatsApp chat page (8 calls, including sale creation from a chat) and the remaining modals are next.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

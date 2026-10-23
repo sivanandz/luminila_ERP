@@ -267,3 +267,68 @@ export async function fetchLiveWhatsAppCatalog(
     const resolvedSession = sessionId || getTenantWhatsAppSessionId(getCurrentTenantEmail()) || DEFAULT_SESSION_ID;
     return getCatalogProducts(resolvedSession);
 }
+
+// ============================================
+// CATALOG EDITOR LINKAGE (D-23: no pb in components)
+// ============================================
+
+export interface WhatsAppCatalogInventorySource {
+    products: Array<Record<string, unknown> & {
+        id: string;
+        channel_prices?: Record<string, number>;
+        account_email?: string;
+    }>;
+    variants: Array<Record<string, unknown> & { id: string }>;
+}
+
+/** Tenant-scoped inventory records used by the catalog editor. */
+export async function getWhatsAppCatalogInventory(
+    tenantEmail?: string
+): Promise<WhatsAppCatalogInventorySource> {
+    const tenantFilter = tenantEmail ? `account_email = "${sanitizeFilter(tenantEmail)}"` : undefined;
+    const [products, variants] = await Promise.all([
+        pb.collection('products').getFullList({ filter: tenantFilter, sort: '-created' }).catch((err) => {
+            console.error('Failed to fetch PocketBase products:', err);
+            return [] as Array<Record<string, unknown> & { id: string }>;
+        }),
+        pb.collection('product_variants').getFullList({ filter: tenantFilter }).catch(() => []),
+    ]);
+
+    return { products, variants };
+}
+
+/** Store a channel price on the product and record the sync timestamp. */
+export async function setWhatsAppCatalogPrice(productId: string, price: number): Promise<void> {
+    const product = await pb.collection('products').getOne<{ channel_prices?: Record<string, number> }>(productId);
+    await pb.collection('products').update(productId, {
+        channel_prices: {
+            ...(product.channel_prices || {}),
+            whatsapp: this_normalisePrice(price),
+        },
+        whatsapp_last_synced: new Date().toISOString(),
+    });
+}
+
+function this_normalisePrice(value: number): number {
+    return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+/** Touch the sync timestamp after pushing a price to WhatsApp. */
+export async function markWhatsAppCatalogSynced(productId: string): Promise<void> {
+    await pb.collection('products').update(productId, {
+        whatsapp_last_synced: new Date().toISOString(),
+    }).catch(() => {});
+}
+
+/** Link a WhatsApp catalog item to an inventory product. */
+export async function linkWhatsAppCatalogItem(productId: string, catalogItemId: string): Promise<void> {
+    await pb.collection('products').update(productId, {
+        whatsapp_catalog_id: catalogItemId,
+        whatsapp_last_synced: new Date().toISOString(),
+    });
+}
+
+/** Remove the catalog link, keeping the product record intact. */
+export async function unlinkWhatsAppCatalogItem(productId: string): Promise<void> {
+    await pb.collection('products').update(productId, { whatsapp_catalog_id: "" }).catch(() => {});
+}

@@ -31,7 +31,14 @@ import {
     ArrowUpRight
 } from "lucide-react";
 import { toast } from "sonner";
-import { pb, getCurrentTenantEmail, sanitizeFilter } from "@/lib/pocketbase";
+import { getCurrentTenantEmail } from "@/lib/pocketbase";
+import {
+    getWhatsAppCatalogInventory,
+    linkWhatsAppCatalogItem,
+    markWhatsAppCatalogSynced,
+    setWhatsAppCatalogPrice,
+    unlinkWhatsAppCatalogItem,
+} from "@/lib/whatsapp-catalog";
 import { Product, ProductVariant } from "@/types/database";
 import { getChannelPrice } from "@/lib/channel-pricing";
 import { resolveProductCatalogImage } from "@/lib/whatsapp-catalog";
@@ -127,27 +134,17 @@ export function WhatsAppCatalogEditorModal({
         setLoading(true);
         try {
             const tenantEmail = getCurrentTenantEmail();
-            const tenantFilter = tenantEmail
-                ? `account_email = "${sanitizeFilter(tenantEmail)}"`
-                : undefined;
 
             // 1. Fetch live catalog from WPPConnect + tenant-scoped inventory
-            const [waProducts, rawPbProducts, rawPbVariants] = await Promise.all([
+            const [waProducts, inventory] = await Promise.all([
                 getCatalogProducts(sessionId).catch((err) => {
                     console.error("Failed to fetch WhatsApp catalog products:", err);
                     return [] as CatalogProduct[];
                 }),
-                pb.collection("products").getFullList<Product & { whatsapp_catalog_id?: string; whatsapp_last_synced?: string; account_email?: string; image_data?: string }>({
-                    filter: tenantFilter,
-                    sort: "-created",
-                }).catch((err) => {
-                    console.error("Failed to fetch PocketBase products:", err);
-                    return [];
-                }),
-                pb.collection("product_variants").getFullList<ProductVariant & { account_email?: string }>({
-                    filter: tenantFilter,
-                }).catch(() => []),
+                getWhatsAppCatalogInventory(tenantEmail || undefined),
             ]);
+            const rawPbProducts = inventory.products as unknown as Array<Product & { whatsapp_catalog_id?: string; whatsapp_last_synced?: string; account_email?: string; image_data?: string }>;
+            const rawPbVariants = inventory.variants as unknown as Array<ProductVariant & { account_email?: string }>;
 
             // Layer 2 in-memory tenant ownership guard
             const pbProducts = tenantEmail
@@ -301,14 +298,7 @@ export function WhatsAppCatalogEditorModal({
 
             // If user checked "Also update PocketBase price", update PB record
             if (syncInventoryPriceToPB && selectedItem.linkedProduct) {
-                const currentChannelPrices = selectedItem.linkedProduct.channel_prices || {};
-                await pb.collection("products").update(selectedItem.linkedProduct.id, {
-                    channel_prices: {
-                        ...currentChannelPrices,
-                        whatsapp: Number(editForm.price),
-                    },
-                    whatsapp_last_synced: new Date().toISOString(),
-                });
+                await setWhatsAppCatalogPrice(selectedItem.linkedProduct.id, Number(editForm.price));
             }
 
             toast.success(`Catalog product "${editForm.name}" updated successfully!`);
@@ -338,9 +328,7 @@ export function WhatsAppCatalogEditorModal({
             }
 
             // Touch last synced timestamp in PocketBase
-            await pb.collection("products").update(item.linkedProduct.id, {
-                whatsapp_last_synced: new Date().toISOString(),
-            }).catch(() => {});
+            await markWhatsAppCatalogSynced(item.linkedProduct.id);
 
             toast.success(`Updated ${item.name} to ₹${item.inventoryPrice.toLocaleString("en-IN")}`, { id: "sync-price" });
             await loadCatalogAndInventory();
@@ -370,9 +358,7 @@ export function WhatsAppCatalogEditorModal({
                     if (res.success) {
                         updatedCount++;
                         if (item.linkedProduct) {
-                            await pb.collection("products").update(item.linkedProduct.id, {
-                                whatsapp_last_synced: new Date().toISOString(),
-                            }).catch(() => {});
+                            await markWhatsAppCatalogSynced(item.linkedProduct.id);
                         }
                     } else {
                         failCount++;
@@ -399,10 +385,7 @@ export function WhatsAppCatalogEditorModal({
         if (!selectedItem || !linkingProductId) return;
         setIsLinking(true);
         try {
-            await pb.collection("products").update(linkingProductId, {
-                whatsapp_catalog_id: selectedItem.id,
-                whatsapp_last_synced: new Date().toISOString(),
-            });
+            await linkWhatsAppCatalogItem(linkingProductId, selectedItem.id);
             toast.success("Successfully linked to inventory product!");
             await loadCatalogAndInventory();
         } catch (err) {
@@ -417,9 +400,7 @@ export function WhatsAppCatalogEditorModal({
         if (!selectedItem?.linkedProduct) return;
         setIsLinking(true);
         try {
-            await pb.collection("products").update(selectedItem.linkedProduct.id, {
-                whatsapp_catalog_id: "",
-            });
+            await unlinkWhatsAppCatalogItem(selectedItem.linkedProduct.id);
             toast.success("Product unlinked from inventory!");
             await loadCatalogAndInventory();
         } catch (err) {
@@ -444,9 +425,7 @@ export function WhatsAppCatalogEditorModal({
 
             // Clear whatsapp_catalog_id on PB product if matched
             if (item.linkedProduct) {
-                await pb.collection("products").update(item.linkedProduct.id, {
-                    whatsapp_catalog_id: "",
-                }).catch(() => {});
+                await unlinkWhatsAppCatalogItem(item.linkedProduct.id);
             }
 
             toast.success(`Deleted ${item.name} from WhatsApp Catalog`, { id: "delete-prod" });
@@ -480,10 +459,7 @@ export function WhatsAppCatalogEditorModal({
             }
 
             // Save new catalog ID to PocketBase
-            await pb.collection("products").update(pbProduct.id, {
-                whatsapp_catalog_id: res.productId,
-                whatsapp_last_synced: new Date().toISOString(),
-            });
+            await linkWhatsAppCatalogItem(pbProduct.id, res.productId);
 
             toast.success(`Published ${pbProduct.name} to WhatsApp Catalog!`, { id: "pub-item" });
             setSelectedId(res.productId);
