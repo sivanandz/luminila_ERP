@@ -33,6 +33,7 @@ interface StockReportSummary {
     totalProducts?: number;
     lowStock?: number;
     totalValue?: number;
+    landedCount?: number;
 }
 
 export default function StockReportPage() {
@@ -149,6 +150,9 @@ export default function StockReportPage() {
                                 <p className="text-2xl font-semibold text-primary">
                                     {formatINR(summary.totalValue || 0)}
                                 </p>
+                                <p className="text-[11px] text-muted-foreground">
+                                    {summary.landedCount || 0} of {summary.totalProducts || 0} variants at landed cost
+                                </p>
                             </div>
                         </CardContent>
                     </Card>
@@ -174,6 +178,8 @@ export default function StockReportPage() {
                                             <TableHead>Category</TableHead>
                                             <TableHead className="text-right">Stock</TableHead>
                                             <TableHead className="text-right">Reorder Level</TableHead>
+                                            <TableHead className="text-right">Unit cost</TableHead>
+                                            <TableHead>Basis</TableHead>
                                             <TableHead className="text-right">Value</TableHead>
                                             <TableHead>Status</TableHead>
                                         </TableRow>
@@ -193,6 +199,19 @@ export default function StockReportPage() {
                                                     </TableCell>
                                                     <TableCell className="text-right font-mono text-muted-foreground">
                                                         {row.reorderLevel}
+                                                    </TableCell>
+                                                    <TableCell className="text-right font-mono">
+                                                        {formatINR(row.unitCost)}
+                                                    </TableCell>
+                                                    <TableCell>
+                                                        <Badge
+                                                            variant="outline"
+                                                            className={row.costBasis === "landed"
+                                                                ? "border-emerald-600/40 text-emerald-400"
+                                                                : "text-muted-foreground"}
+                                                        >
+                                                            {row.costBasis === "landed" ? "landed" : "purchase"}
+                                                        </Badge>
                                                     </TableCell>
                                                     <TableCell className="text-right font-mono">
                                                         {formatINR(row.stockValue)}

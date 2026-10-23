@@ -103,10 +103,10 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 249 |
-| Lines of TypeScript/TSX | ~88,100 |
+| TypeScript/TSX files | 251 |
+| Lines of TypeScript/TSX | ~88,300 |
 | Route pages (`src/app/**/page.tsx`) | 44 |
-| Service modules (`src/lib/*.ts`) | 84 |
+| Service modules (`src/lib/*.ts`) | 85 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
 | Files starting with `"use client"` | 115 |
@@ -128,7 +128,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 78 assertions across 10 suites, exit 0 |
+| Test command | `npm test` | 85 assertions across 11 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
@@ -136,6 +136,7 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Export invoice tests | `npx tsx src/scripts/test-cross-border.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Backup tests | `npx tsx src/scripts/test-backup.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Offline queue tests | `npx tsx src/scripts/test-offline-queue.ts` | **6 passed, 0 failed** (2026-10-23) |
+| Landed-cost tests | `npx tsx src/scripts/test-valuation.ts` | **7 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -438,7 +439,7 @@ Status vocabulary, applied strictly:
 |---|---|---|
 | Executive KPI dashboard | Live | Today's sales, shift status, low stock |
 | Sales, stock, and GST report pages | Live | `/reports`, `/reports/sales`, `/reports/stock`, `/reports/gst` |
-| Inventory valuation | Partial | Cost-based; ignores landed cost accuracy issue |
+| Inventory valuation | Live | Stock report values each variant at the latest received landed cost (unit price plus freight minus discount), falling back to the purchase price and labelling the basis (section 11.16) |
 | Channel attribution (POS vs WhatsApp vs storefront) | Partial | Channel field exists; storefront writes its own channel |
 | Scheduled report delivery | Absent | |
 
@@ -1261,6 +1262,23 @@ The module was not a stub in the harmless sense. `connect()` flipped a localStor
 **What replaces it:** Backup & Restore downloads a full 31-collection JSON file, which can be copied to any cloud folder the user already trusts. That is a manual sync, and the documentation says so rather than implying continuous replication.
 
 **Verified:** `npm run typecheck` clean; `npm test` unchanged at 78 assertions; `npx eslint src` 0 errors.
+
+### 11.16 Slice 16: landed-cost valuation (2026-10-23)
+
+**Feature closed:** inventory valuation now uses landed cost.
+
+| Change | Files | Why |
+|---|---|---|
+| Allocation module | `src/lib/valuation.ts` (new) | Spreads a receipt's overhead (freight minus discount) across lines by value, in paise, with the remainder forced onto the last line |
+| Stock report | `src/lib/reports.ts` | Builds the latest landed unit cost per variant from received and partial purchase orders, values each row on that basis, and reports `costBasis` |
+| Report screen | `src/app/reports/stock/page.tsx` | Adds unit cost and basis columns and shows how many variants are valued at landed cost |
+| Allocation tests | `src/scripts/test-valuation.ts` (new) | Proportional split, zero and negative overhead, rounding to the paise, quantity division, zero-quantity and free-goods lines, summary reconciliation |
+
+**Limitations, stated plainly:** valuation uses the newest received purchase, not a weighted average cost; and the overhead is shipping minus discount only, because duties and other charges are not captured on the purchase order yet. D-13 remains open: landed cost is still written inside the PO notes blob, so two simultaneous receipts can lose one, and the report can only reflect what was stored.
+
+**Verified:** `npm run typecheck` clean; `npm test` 85 assertions across 11 suites; targeted ESLint clean.
+
+**Still open in this cluster:** weighted-average costing, channel enum, campaign attribution (the last two need the migration bundle).
 
 ## Appendix A: Route inventory
 

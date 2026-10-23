@@ -4,6 +4,7 @@
  */
 
 import { pb } from './pocketbase';
+import { allocateLandedCosts } from './valuation';
 import { format } from 'date-fns';
 import { normalizeDateRange, escapeHtml } from './utils';
 import type { Customer } from './customers';
@@ -55,6 +56,10 @@ export interface StockReportRow {
     currentStock: number;
     reorderLevel: number;
     lastUpdated: string;
+    /** Cost per unit used for valuation. */
+    unitCost: number;
+    /** `landed` when a received purchase contributed freight or duty. */
+    costBasis: 'landed' | 'purchase';
     stockValue: number;
 }
 
@@ -300,15 +305,90 @@ export async function getGSTR1Report(
 // STOCK REPORT
 // ===========================================
 
+interface LandedPurchaseOrder {
+    id: string;
+    order_date?: string;
+    shipping_cost?: number;
+    discount_amount?: number;
+}
+
+interface LandedPurchaseItem {
+    purchase_order?: string;
+    variant?: string;
+    quantity_ordered?: number;
+    quantity_received?: number;
+    unit_price?: number;
+}
+
+/**
+ * Latest received landed unit cost per variant.
+ *
+ * Overhead is shipping minus discount from the purchase order, spread over the
+ * received quantities by value. Later receipts overwrite earlier ones, so the
+ * newest landed cost wins; a variant with no received purchase keeps its bare
+ * purchase price and is reported as such.
+ */
+async function buildLandedCostMap(): Promise<Map<string, number>> {
+    const landed = new Map<string, number>();
+
+    try {
+        const orders = await pb.collection('purchase_orders').getFullList<LandedPurchaseOrder>({
+            filter: 'status="received" || status="partial"',
+            sort: 'order_date',
+        });
+        if (orders.length === 0) return landed;
+
+        const itemsByOrder = new Map<string, LandedPurchaseItem[]>();
+        for (let i = 0; i < orders.length; i += 30) {
+            const ids = orders.slice(i, i + 30).map((order) => order.id);
+            const filter = ids.map((id) => `purchase_order="${id}"`).join(' || ');
+            const items = await pb.collection('purchase_order_items').getFullList<LandedPurchaseItem>({
+                filter,
+                batch: 500,
+            }).catch(() => []);
+            for (const item of items) {
+                const orderId = item.purchase_order || '';
+                const list = itemsByOrder.get(orderId) || [];
+                list.push(item);
+                itemsByOrder.set(orderId, list);
+            }
+        }
+
+        for (const order of orders) {
+            const lines = (itemsByOrder.get(order.id) || [])
+                .filter((item) => item.variant && (item.quantity_received || item.quantity_ordered || 0) > 0)
+                .map((item) => ({
+                    key: item.variant as string,
+                    quantity: Number(item.quantity_received || item.quantity_ordered || 0),
+                    unitCost: Number(item.unit_price || 0),
+                }));
+
+            if (lines.length === 0) continue;
+
+            const overhead = Number(order.shipping_cost || 0) - Number(order.discount_amount || 0);
+            for (const line of allocateLandedCosts(lines, overhead)) {
+                landed.set(line.key, line.landedUnitCost);
+            }
+        }
+    } catch (error) {
+        console.warn('Landed cost valuation unavailable, falling back to purchase price:', error);
+    }
+
+    return landed;
+}
+
 export async function getStockReport(): Promise<{
     rows: StockReportRow[];
-    summary: { totalProducts: number; lowStock: number; totalValue: number };
+    summary: { totalProducts: number; lowStock: number; totalValue: number; landedCount: number };
 }> {
     try {
-        const data = await pb.collection('product_variants').getFullList<ProductVariant>({
-            sort: 'stock_level',
-            expand: 'product',
-        });
+        const [data, landedCostByVariant] = await Promise.all([
+            pb.collection('product_variants').getFullList<ProductVariant>({
+                sort: 'stock_level',
+                expand: 'product',
+            }),
+            buildLandedCostMap(),
+        ]);
 
         const rows: StockReportRow[] = data.map((v) => {
             const product = v.expand?.product;
@@ -316,6 +396,8 @@ export async function getStockReport(): Promise<{
                 ? product.cost_price
                 : (product?.base_price || 0);
             const stockLevel = v.stock_level || 0;
+            const landedCost = landedCostByVariant.get(v.id);
+
             return {
                 productId: product?.id || '',
                 productName: product?.name || 'Unknown',
@@ -325,7 +407,9 @@ export async function getStockReport(): Promise<{
                 currentStock: stockLevel,
                 reorderLevel: v.low_stock_threshold || 10,
                 lastUpdated: formatDateSafe(v.updated),
-                stockValue: stockLevel * costPrice,
+                unitCost: landedCost ?? costPrice,
+                costBasis: landedCost !== undefined ? 'landed' : 'purchase',
+                stockValue: stockLevel * (landedCost ?? costPrice),
             };
         });
 
@@ -333,12 +417,13 @@ export async function getStockReport(): Promise<{
             totalProducts: rows.length,
             lowStock: rows.filter((r) => r.currentStock < r.reorderLevel).length,
             totalValue: rows.reduce((sum, r) => sum + r.stockValue, 0),
+            landedCount: rows.filter((r) => r.costBasis === 'landed').length,
         };
 
         return { rows, summary };
     } catch (error) {
         console.error('Error fetching stock report:', error);
-        return { rows: [], summary: { totalProducts: 0, lowStock: 0, totalValue: 0 } };
+        return { rows: [], summary: { totalProducts: 0, lowStock: 0, totalValue: 0, landedCount: 0 } };
     }
 }
 

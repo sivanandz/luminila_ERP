@@ -496,7 +496,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <aside class="vitals" aria-label="Repository vitals">
           <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
           <div class="vitals-body">
-            <div class="vital"><div class="vital-num" data-count="88100">88,100</div><div class="vital-label">lines of TypeScript</div></div>
+            <div class="vital"><div class="vital-num" data-count="88300">88,300</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
             <div class="vital"><div class="vital-num" data-count="5">5</div><div class="vital-label">modules with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
@@ -930,7 +930,7 @@ const FEATURES = [
   ["GRN over-receipt guard","orders","partial","Racy across processes (D-12)"],
   ["Vendor SKU mapping","orders","live","Lead times and purchase history"],
   ["Advance tracking","orders","partial","Fields exist, no ledger integration"],
-  ["Landed cost reconciliation","orders","partial","Stored in a notes blob, lost on concurrency (D-13)"],
+  ["Landed cost reconciliation","orders","partial","Notes blob can lose one of two concurrent receipts (D-13); now feeds valuation"],
   ["Customer directory","crm","live","Lifetime value, GSTIN, addresses"],
   ["Interaction log","crm","live","Preferences and anniversaries"],
   ["Loyalty accrual and tiers","crm","partial","Redemption cap not enforced (D-17)"],
@@ -945,7 +945,7 @@ const FEATURES = [
   ["Bank reconciliation","finance","absent","Manual entry only"],
   ["Dashboard KPIs","reports","live","Today, shifts, low stock"],
   ["Report pages","reports","live","Sales, stock, GST"],
-  ["Inventory valuation","reports","partial","Inherits the landed cost gap"],
+  ["Inventory valuation","reports","live","Latest received landed cost per variant, with the basis shown on every row"],
   ["Channel attribution","reports","partial","Enum cannot hold configured channels (D-37)"],
   ["Scheduled reports","reports","absent","No scheduler"],
   ["Storefront content API","storefront","live","Unauthenticated read"],
@@ -1266,7 +1266,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","78 assertions across ten suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","85 assertions across eleven suites; non-zero exit on failure."],
+  ["Landed-cost tests","npx tsx src/scripts/test-valuation.ts","pass","7 assertions: proportional split, rounding, free goods, summary reconciliation."],
   ["Offline queue tests","npx tsx src/scripts/test-offline-queue.ts","pass","6 assertions: enqueue, remove, clear, corrupt store."],
   ["Backup tests","npx tsx src/scripts/test-backup.ts","pass","6 assertions: validation, summary counts, staleness."],
   ["Export invoice tests","npx tsx src/scripts/test-cross-border.ts","pass","6 assertions: FX both ways, LUT zero-rating, foreign lines, IGST, declaration."],
