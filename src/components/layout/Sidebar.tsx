@@ -18,6 +18,7 @@ import {
     Settings,
     BarChart3,
     Printer,
+    Hammer,
     Tags,
 
     Diamond,
@@ -88,6 +89,7 @@ const navGroups: NavItem[] = [
         label: "Inventory",
         children: [
             { href: "/inventory", icon: <Package size={18} />, label: "Stock Management" },
+            { href: "/manufacturing", icon: <Hammer size={18} />, label: "Karigar Jobs" },
             { href: "/labels", icon: <Printer size={18} />, label: "Print Labels" },
         ],
     },

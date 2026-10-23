@@ -13,6 +13,7 @@ import {
     Undo2,
     Users,
     Printer,
+    Hammer,
     Wallet,
     Landmark,
     BarChart3,
@@ -61,6 +62,7 @@ const navSections = [
         title: "Inventory & Catalog",
         items: [
             { href: "/inventory", label: "Products & Stock", icon: Package },
+            { href: "/manufacturing", label: "Karigar Jobs", icon: Hammer },
             { href: "/labels", label: "Barcode Labels", icon: Printer },
             { href: "/purchase", label: "Purchase Orders", icon: Package },
             { href: "/vendors", label: "Suppliers & Vendors", icon: Users },

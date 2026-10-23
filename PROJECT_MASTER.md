@@ -103,10 +103,10 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 238 |
-| Lines of TypeScript/TSX | ~86,100 |
-| Route pages (`src/app/**/page.tsx`) | 40 |
-| Service modules (`src/lib/*.ts`) | 83 |
+| TypeScript/TSX files | 242 |
+| Lines of TypeScript/TSX | ~86,900 |
+| Route pages (`src/app/**/page.tsx`) | 41 |
+| Service modules (`src/lib/*.ts`) | 84 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
 | Files starting with `"use client"` | 115 |
@@ -128,9 +128,10 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 44 assertions across 5 suites, exit 0 |
+| Test command | `npm test` | 51 assertions across 6 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
+| Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -347,8 +348,8 @@ Status vocabulary, applied strictly:
 | Excel bulk import | Live | `excel-import.ts` (36 KB) with template download route |
 | SKU generator with jewelry grammar | Live | `sku-generator.ts` encodes category, metal, purity, size |
 | Metal rate engine | Live | `jewelry-engine.ts` computes rate-based pricing |
-| Manufacturing BOM | Scaffold | `manufacturing-engine.ts` implements BOM cost, metal-loss reconciliation, and tolerance checks; zero importers and no route |
-| Karigar job-work tracker | Scaffold | Challan types support job work; `manufacturing-engine.ts` holds the reconciliation math but no artisan ledger screen exists |
+| Manufacturing BOM | Live | `/manufacturing` costs a job card: metal, five charge heads, scrap credit, per-gram cost and loss reconciliation (section 11.10) |
+| Karigar job-work tracker | Live | Job cards persist with status and karigar name; metal issued and loss variance are visible, though no running artisan balance yet |
 | Imitation jewelry taxonomy | Scaffold | `imitation-jewelry-engine.ts` models kundan/polki/CZ crafts and wholesale tier pricing; zero importers |
 | Anti-oversell cart reservations | Scaffold | `omnichannel-buffer-engine.ts` implements per-channel buffers and an in-memory reservation manager; zero importers, and in-memory state cannot survive a reload |
 | Multi-location stock | Partial | `multi-location.ts` is wired to three screens but reads phantom collections and falls back to localStorage, so transfers are device-local |
@@ -867,7 +868,6 @@ This is the most misleading category in the repository: substantial code exists,
 
 | Module | What it implements | Why it is unreachable |
 |---|---|---|
-| `manufacturing-engine.ts` | Karigar BOM cost, metal loss, tolerance | No route, no importer |
 | `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
 | `cross-border-engine.ts` | LUT export invoice with static FX | No route |
 | `cheque-engine.ts` | PDC lifecycle and maturity math | No route, no collection |
@@ -1161,9 +1161,26 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Still open in this cluster:** manufacturing/karigar, cheque/PDC, cross-border and imitation taxonomy wiring, plus the six phantom collections (D-36).
 
+### 11.10 Slice 10: karigar jobs (2026-10-23)
+
+**Feature closed:** manufacturing BOM and karigar job costing, previously scaffold with zero importers.
+
+| Change | Files | Why |
+|---|---|---|
+| Job costing module | `src/lib/manufacturing-jobs.ts` (new) | Runs the engine's raw-cost, charge-sum and metal-reconciliation functions over a job card and stores results |
+| Job cards | `src/app/manufacturing/page.tsx` (new) | Form, live cost panel, loss-tolerance badge, and a saved-job table with complete/reopen/delete |
+| Navigation | `Sidebar.tsx`, `MobileDrawer.tsx` | Karigar Jobs sits under Inventory on desktop and in the drawer |
+| Costing tests | `src/scripts/test-manufacturing.ts` (new) | Raw cost, charge sum, scrap credit, per-gram rate, tolerance pass and fail, zero-weight guard, daily numbering |
+
+**Storage, and why it is shaped this way:** there is no `manufacturing_jobs` collection, and creating one needs a migration you have not approved. Job cards are therefore stored as a JSON array in the existing `store_settings` key/value table under `manufacturing_jobs`, capped at 500 entries. This works today and needs no schema change, but it is not a relational ledger: it cannot be queried per karigar and will need the migration before it grows.
+
+**Verified:** `npm run typecheck` clean; `npm test` 12 + 9 + 16 + 3 + 4 + 7 assertions; targeted ESLint 0 errors.
+
+**Still open in this cluster:** cheque/PDC, cross-border, imitation taxonomy, and the six phantom collections (D-36).
+
 ## Appendix A: Route inventory
 
-40 route pages, all client components.
+41 route pages, all client components.
 
 | Route | Purpose | Size |
 |---|---|---|
@@ -1184,6 +1201,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 | `/invoices/create` | Invoice authoring | 45 KB |
 | `/invoices/detail` | Invoice print and payments | 42 KB |
 | `/labels` | Barcode label printing | 35 KB |
+| `/manufacturing` | Karigar job cards and metal-loss costing | 14 KB |
 | `/login` | Authentication | 7 KB |
 | `/orders` | Sales orders | 24 KB |
 | `/orders/create` | Order authoring | 33 KB |
@@ -1250,7 +1268,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `manufacturing-engine.ts`, `omnichannel-buffer-engine.ts`, `cross-border-engine.ts`, `cheque-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 10 modules, including whole manufacturing, payment and sync domains.
+**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `cross-border-engine.ts`, `cheque-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 9 modules, including whole payment and sync domains.
 
 ## Appendix D: Glossary
 

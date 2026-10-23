@@ -496,9 +496,9 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <aside class="vitals" aria-label="Repository vitals">
           <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
           <div class="vitals-body">
-            <div class="vital"><div class="vital-num" data-count="84411">84,411</div><div class="vital-label">lines of TypeScript</div></div>
+            <div class="vital"><div class="vital-num" data-count="86900">86,900</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
-            <div class="vital"><div class="vital-num" data-count="12">12</div><div class="vital-label">modules with no importer</div></div>
+            <div class="vital"><div class="vital-num" data-count="9">9</div><div class="vital-label">modules with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
@@ -716,10 +716,10 @@ const NODES = [
   { id:"webview", x:40, y:36, w:200, h:66, kind:"process",
     title:"Showroom webview", sub:"Next 16 static · React 19",
     role:"CLIENT",
-    detail:"The 40 route pages, all client components. Holds auth in localStorage, the cart, the offline queue key, and the WhatsApp drawer.",
+    detail:"The 41 route pages, all client components. Holds auth in localStorage, the cart, the offline queue key, and the WhatsApp drawer.",
     files:"src/app/**/page.tsx · src/components/**",
     ports:"served from out/ in production, dev server :3000",
-    risk:"No route guard: nothing redirects an unauthenticated visitor." },
+    risk:"AuthGate redirects unauthenticated visitors; admin pages are hidden from other roles." },
   { id:"service", x:40, y:150, w:200, h:60, kind:"process",
     title:"Service layer", sub:"79 modules · src/lib",
     role:"DOMAIN LOGIC",
@@ -888,8 +888,8 @@ const FEATURES = [
   ["Excel bulk import","catalog","live","36 KB import module plus template route"],
   ["SKU generator","catalog","live","Encodes category, metal, purity, size"],
   ["Metal rate engine","catalog","live","Rate-based pricing in jewelry-engine.ts"],
-  ["Manufacturing BOM","catalog","scaffold","Engine only, zero importers"],
-  ["Karigar job work","catalog","scaffold","Reconciliation math exists, no ledger screen"],
+  ["Manufacturing BOM","catalog","live","Job card costing with metal loss, five charge heads and scrap credit"],
+  ["Karigar job work","catalog","live","Job cards persist with karigar name and status; no running artisan balance yet"],
   ["Imitation jewelry taxonomy","catalog","scaffold","Kundan, polki, CZ, plating, tiers. Zero importers"],
   ["Anti-oversell reservations","catalog","scaffold","In-memory manager, no importer, not persistent"],
   ["Multi-location stock","catalog","partial","Reads phantom collections, falls back to localStorage"],
@@ -1248,7 +1248,6 @@ const ROADMAP = [
 ];
 
 const ORPHANS = [
-  ["manufacturing-engine.ts","Karigar BOM, metal loss, tolerance","No route, no importer"],
   ["imitation-jewelry-engine.ts","Craft taxonomy and wholesale tiers","No route, no importer"],
   ["cross-border-engine.ts","LUT export invoice, static FX","No route"],
   ["cheque-engine.ts","PDC lifecycle and maturity","No route, no collection"],
@@ -1270,7 +1269,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","44 assertions across five suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","51 assertions across six suites; non-zero exit on failure."],
+  ["Karigar costing tests","npx tsx src/scripts/test-manufacturing.ts","pass","7 assertions: raw cost, charges, scrap credit, tolerance pass and fail, numbering."],
   ["QC routing tests","npx tsx src/scripts/test-returns-qc.ts","pass","4 assertions: grade to action mapping, and deductions only on remorse."],
   ["GSTR-1 period tests","npx tsx src/scripts/test-gstr1-period.ts","pass","3 assertions: MMYYYY period and the 1 April financial-year boundary."],
   ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build excluded until D-08 is settled."]
