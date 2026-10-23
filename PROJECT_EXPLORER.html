@@ -496,9 +496,9 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <aside class="vitals" aria-label="Repository vitals">
           <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
           <div class="vitals-body">
-            <div class="vital"><div class="vital-num" data-count="86900">86,900</div><div class="vital-label">lines of TypeScript</div></div>
+            <div class="vital"><div class="vital-num" data-count="87500">87,500</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
-            <div class="vital"><div class="vital-num" data-count="9">9</div><div class="vital-label">modules with no importer</div></div>
+            <div class="vital"><div class="vital-num" data-count="8">8</div><div class="vital-label">modules with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
@@ -716,7 +716,7 @@ const NODES = [
   { id:"webview", x:40, y:36, w:200, h:66, kind:"process",
     title:"Showroom webview", sub:"Next 16 static · React 19",
     role:"CLIENT",
-    detail:"The 41 route pages, all client components. Holds auth in localStorage, the cart, the offline queue key, and the WhatsApp drawer.",
+    detail:"The 42 route pages, all client components. Holds auth in localStorage, the cart, the offline queue key, and the WhatsApp drawer.",
     files:"src/app/**/page.tsx · src/components/**",
     ports:"served from out/ in production, dev server :3000",
     risk:"AuthGate redirects unauthenticated visitors; admin pages are hidden from other roles." },
@@ -940,7 +940,7 @@ const FEATURES = [
   ["Bank registry and double entry","finance","live","Overdraft pre-check with compensation"],
   ["Expense vouchers","finance","live","Categories, payment modes, receipts"],
   ["Cash refunds","finance","live","Cash refunds write a drawer operation and reduce the shift total"],
-  ["Cheque and PDC tracking","finance","scaffold","State machine only, no screen"],
+  ["Cheque and PDC tracking","finance","live","Register drives deposit, clear, bounce and maturity warnings"],
   ["Bank reconciliation","finance","absent","Manual entry only"],
   ["Dashboard KPIs","reports","live","Today, shifts, low stock"],
   ["Report pages","reports","live","Sales, stock, GST"],
@@ -1250,7 +1250,6 @@ const ROADMAP = [
 const ORPHANS = [
   ["imitation-jewelry-engine.ts","Craft taxonomy and wholesale tiers","No route, no importer"],
   ["cross-border-engine.ts","LUT export invoice, static FX","No route"],
-  ["cheque-engine.ts","PDC lifecycle and maturity","No route, no collection"],
   ["omnichannel-buffer-engine.ts","Channel buffers, cart reservations","No importer, in-memory only"],
   ["sync-engine.ts and sync clients","Shopify and WooCommerce sync","Seven TODOs, no importer"],
   ["backup.ts","31-collection backup and restore","No UI, settings exports six collections"],
@@ -1269,7 +1268,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","51 assertions across six suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","60 assertions across seven suites; non-zero exit on failure."],
+  ["Cheque lifecycle tests","npx tsx src/scripts/test-cheque-register.ts","pass","9 assertions: validation, maturity, stale rule, illegal transitions, portfolio totals."],
   ["Karigar costing tests","npx tsx src/scripts/test-manufacturing.ts","pass","7 assertions: raw cost, charges, scrap credit, tolerance pass and fail, numbering."],
   ["QC routing tests","npx tsx src/scripts/test-returns-qc.ts","pass","4 assertions: grade to action mapping, and deductions only on remorse."],
   ["GSTR-1 period tests","npx tsx src/scripts/test-gstr1-period.ts","pass","3 assertions: MMYYYY period and the 1 April financial-year boundary."],

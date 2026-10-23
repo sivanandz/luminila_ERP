@@ -14,6 +14,7 @@ import {
     Users,
     Printer,
     Hammer,
+    CalendarClock,
     Wallet,
     Landmark,
     BarChart3,
@@ -72,6 +73,7 @@ const navSections = [
         title: "Finance & Accounts",
         items: [
             { href: "/banking", label: "Banking & Ledger", icon: Landmark },
+            { href: "/cheques", label: "Cheque Register", icon: CalendarClock },
             { href: "/expenses", label: "Expense Vouchers", icon: Wallet },
             { href: "/reports", label: "Reports & GST", icon: BarChart3 },
         ],

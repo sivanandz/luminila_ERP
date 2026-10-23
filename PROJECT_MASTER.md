@@ -103,10 +103,10 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 242 |
-| Lines of TypeScript/TSX | ~86,900 |
-| Route pages (`src/app/**/page.tsx`) | 41 |
-| Service modules (`src/lib/*.ts`) | 84 |
+| TypeScript/TSX files | 245 |
+| Lines of TypeScript/TSX | ~87,500 |
+| Route pages (`src/app/**/page.tsx`) | 42 |
+| Service modules (`src/lib/*.ts`) | 85 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
 | PocketBase collections in schema | 55 (49 business + 6 system) |
 | Files starting with `"use client"` | 115 |
@@ -128,10 +128,11 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 51 assertions across 6 suites, exit 0 |
+| Test command | `npm test` | 60 assertions across 7 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
+| Cheque lifecycle tests | `npx tsx src/scripts/test-cheque-register.ts` | **9 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -423,7 +424,7 @@ Status vocabulary, applied strictly:
 | Bank account registry and double-entry transactions | Live | Overdraft pre-check, transfer compensation |
 | Expense vouchers and categories | Live | Filter injection fixed in some modules, still open in expenses (D-20) |
 | Cash refunds | **Absent** | No code path writes cash refunds to the drawer or ledger (D-07) |
-| Cheque / PDC tracking | Scaffold | `cheque-engine.ts` models the clearing lifecycle; zero importers, no screen, no collection |
+| Cheque / PDC tracking | Live | `/cheques` registers post-dated cheques and drives the engine's lifecycle: deposit, clear, bounce, cancel, with maturity and stale warnings (section 11.11) |
 | Returns QC routing | Live | Approval records a grade that restocks, sends to karigar repair, or writes off through the quarantine ledger |
 | Cross-border LUT export | Scaffold | `cross-border-engine.ts` compiles zero-rated export invoices against a static FX table; no route |
 | Bank reconciliation import | Absent | Manual entry only |
@@ -870,7 +871,6 @@ This is the most misleading category in the repository: substantial code exists,
 |---|---|---|
 | `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
 | `cross-border-engine.ts` | LUT export invoice with static FX | No route |
-| `cheque-engine.ts` | PDC lifecycle and maturity math | No route, no collection |
 | `omnichannel-buffer-engine.ts` | Channel buffers and cart reservations | No importer; in-memory state would not survive reload anyway |
 | `sync-engine.ts` + `sync/shopify.ts` + `sync/woocommerce.ts` | E-commerce sync orchestration | Zero importers; seven TODOs; Settings shows "Coming Soon" |
 | `backup.ts` | 31-collection backup, restore, scheduling | Zero importers; Settings has a 6-collection export and no restore |
@@ -1178,9 +1178,26 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Still open in this cluster:** cheque/PDC, cross-border, imitation taxonomy, and the six phantom collections (D-36).
 
+### 11.11 Slice 11: cheque register (2026-10-23)
+
+**Feature closed:** cheque/PDC tracking, previously scaffold with no importer and no collection.
+
+| Change | Files | Why |
+|---|---|---|
+| Register module | `src/lib/cheque-register.ts` (new) | Validates CTS numbers, stores cheques, and delegates every status change to `transitionChequeStatus`, so illegal jumps are refused with the engine's own message |
+| Register screen | `src/app/cheques/page.tsx` (new) | Portfolio summary, registration form, and per-row deposit/clear/bounce/cancel/delete |
+| Navigation | `Sidebar.tsx`, `MobileDrawer.tsx` | Cheque Register sits under Finance |
+| Lifecycle tests | `src/scripts/test-cheque-register.ts` (new) | Validation, maturity, stale rule, illegal transitions, bank-account requirement, deposit-then-clear, portfolio totals |
+
+**Storage:** same pattern as karigar jobs, for the same reason. Cheques live as JSON in `store_settings` under `cheque_register` (max 500) because a `cheques` collection needs an unapproved migration. Cleared cheques are protected from deletion because they are the bank audit trail; the JSON store cannot enforce that at the database level.
+
+**Verified:** `npm run typecheck` clean; `npm test` 12 + 9 + 16 + 3 + 4 + 7 + 9 assertions; targeted ESLint clean.
+
+**Still open in this cluster:** cross-border, imitation taxonomy, and the six phantom collections (D-36).
+
 ## Appendix A: Route inventory
 
-41 route pages, all client components.
+42 route pages, all client components.
 
 | Route | Purpose | Size |
 |---|---|---|
@@ -1189,6 +1206,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 | `/banking` | Accounts and balances | 14 KB |
 | `/banking/transactions` | Transaction ledger | 17 KB |
 | `/challan` | Delivery challans | 12 KB |
+| `/cheques` | Cheque and PDC register | 15 KB |
 | `/challan/create` | New challan | 37 KB |
 | `/challan/detail` | Challan detail | 25 KB |
 | `/checkout/whatsapp` | WhatsApp checkout surface | 24 KB |
@@ -1268,7 +1286,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `cross-border-engine.ts`, `cheque-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 9 modules, including whole payment and sync domains.
+**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `cross-border-engine.ts`, `sync-engine.ts`, `hooks.ts`, `backup.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 8 modules, including whole sync and backup domains.
 
 ## Appendix D: Glossary
 

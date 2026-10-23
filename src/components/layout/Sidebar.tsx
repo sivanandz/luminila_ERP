@@ -19,6 +19,7 @@ import {
     BarChart3,
     Printer,
     Hammer,
+    CalendarClock,
     Tags,
 
     Diamond,
@@ -98,6 +99,7 @@ const navGroups: NavItem[] = [
         label: "Finance",
         children: [
             { href: "/banking", icon: <Landmark size={18} />, label: "Banking & Ledger" },
+            { href: "/cheques", icon: <CalendarClock size={18} />, label: "Cheque Register" },
             { href: "/expenses", icon: <CreditCard size={18} />, label: "Expenses" },
             { href: "/expenses/categories", icon: <Tag size={18} />, label: "Expense Categories" },
         ],

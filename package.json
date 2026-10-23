@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "tsx src/scripts/test-invoice-math.ts && tsx src/scripts/test-returns-policy.ts && tsx src/scripts/test-tenant-auth.ts && tsx src/scripts/test-gstr1-period.ts && tsx src/scripts/test-returns-qc.ts && tsx src/scripts/test-manufacturing.ts",
+    "test": "tsx src/scripts/test-invoice-math.ts && tsx src/scripts/test-returns-policy.ts && tsx src/scripts/test-tenant-auth.ts && tsx src/scripts/test-gstr1-period.ts && tsx src/scripts/test-returns-qc.ts && tsx src/scripts/test-manufacturing.ts && tsx src/scripts/test-cheque-register.ts",
     "lint": "eslint",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
