@@ -3,7 +3,7 @@
  * CRUD operations for POs and GRNs using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
 import type { PBRecord, Product, Vendor } from '@/types/database';
@@ -1281,7 +1281,10 @@ export async function reconcilePOWithInwardBatch(
     try {
         poRecord = await pb.collection('purchase_orders').getOne(poRefOrId, { expand: 'vendor' });
     } catch {
-        poRecord = await pb.collection('purchase_orders').getFirstListItem(`po_number="${poRefOrId.trim()}"`, { expand: 'vendor' }).catch(() => null);
+        poRecord = await pb.collection('purchase_orders').getFirstListItem(
+            `po_number="${sanitizeFilter(poRefOrId.trim())}"`,
+            { expand: 'vendor' }
+        ).catch(() => null);
     }
 
     if (!poRecord) {
@@ -1289,8 +1292,19 @@ export async function reconcilePOWithInwardBatch(
     }
 
     const { cleanNotes, meta } = decodePOMetadata(poRecord.notes);
-    const existingInward = Number(meta.inward_goods_cost || 0);
-    const newInwardCost = Math.round((existingInward + batchTotalCost) * 100) / 100;
+
+    // Accumulate in a numeric column with an atomic increment. Reading the blob,
+    // adding, and writing it back lost one of two concurrent reconciliations and
+    // understated inventory valuation.
+    const reserved = await pb.collection('purchase_orders').update(poRecord.id, {
+        'inward_cost+': batchTotalCost,
+    });
+    const newInwardCost = Math.round(Number(
+        reserved.inward_cost ?? (Number(meta.inward_goods_cost || 0) + batchTotalCost)
+    ) * 100) / 100;
+    if (!Number.isFinite(newInwardCost) || newInwardCost < 0) {
+        throw new Error('Inward cost reconciliation produced an invalid total');
+    }
 
     const budgetedAmount = Number(meta.budget_amount ?? poRecord.subtotal ?? 0);
     const discrepancy = Math.round((newInwardCost - budgetedAmount) * 100) / 100;
@@ -1324,6 +1338,8 @@ export async function reconcilePOWithInwardBatch(
 
     const updatedMeta = {
         ...meta,
+        // The accumulating cost lives in the column now; keeping it in the blob
+        // would reintroduce the lost update this fix removes.
         inward_goods_cost: newInwardCost,
         discrepancy_amount: discrepancy,
         discrepancy_status: discrepancyStatus,

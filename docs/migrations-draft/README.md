@@ -1,11 +1,6 @@
-# Proposed migration bundle (draft, not applied)
+# Migration bundle (applied 2026-10-23)
 
-These files are a **review draft**. They are deliberately outside
-`pocketbase/pb_migrations` so that starting PocketBase does not apply them
-before you approve.
-
-Nothing here has been run. `pocketbase/pb_data` and
-`pb_tenants/registry.json` are untouched.
+**These files were applied to `pocketbase/pb_data` on 2026-10-23** after sandbox and rollback tests, with a backup taken first. Copies now live in `pocketbase/pb_migrations/` under timestamps `1792774201`–`1792774208`; this directory keeps the reviewed source. `pb_tenants/registry.json` was not touched.
 
 ## What is proposed
 
@@ -16,6 +11,8 @@ Nothing here has been run. `pocketbase/pb_data` and
 | `003_products_craft_and_gst_rate.js` | `products.craft`, `plating`, `occasion`, `base_metal`, `gst_rate` | Imitation taxonomy persists; D-14 can read a real product rate |
 | `004_landed_cost_and_channels.js` | `purchase_orders.overhead_amount`, `purchase_order_items.landed_unit_cost`, `sales.channel`, `whatsapp_campaigns`, `sales.campaign` | D-13 concurrency fix, channel enum, campaign attribution |
 | `005_indexes.js` | Unique index on `invoices.order`; reporting indexes | D-20 hardening and faster report queries |
+| `007_purchase_inward_cost.js` | `purchase_orders.inward_cost` column | D-13 atomic inward-cost accumulation |
+| `008_phantom_collections.js` | The five remaining phantom collections | D-36 |
 | `006_store_settings_rules.js` | Tenant-scoped collection rules on `store_settings` (audit 2026-10-22, #8) | Authenticated users can no longer read or write another tenant's settings rows in a shared instance; legacy rows with an empty `account_email` stay readable |
 
 ## How to apply, when you approve

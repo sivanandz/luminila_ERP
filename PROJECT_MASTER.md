@@ -313,11 +313,11 @@ Column and enum drift adds four more:
 - `types/database.ts` declares nine interfaces with no backing collection: `ManufacturingTransaction`, `Cheque`, `ChannelBufferRule`, `ShipmentRecord`, `DispatchManifest`, `ReturnQcInspection`, `CrossBorderExportInvoice`, `LocationRecord`, `StockTransferRecord`.
 - `docs/WHATSAPP_ERP_CRM_SPECIFICATION.md:457` still points at the non-existent `init-pocketbase.ts`.
 
-#### 3.5.1 Proposed migration bundle (draft, not applied)
+#### 3.5.1 Applied migration bundle (2026-10-23)
 
 Five migrations are drafted under `docs/migrations-draft/` and **have not been run**. They are kept outside `pocketbase/pb_migrations` so a PocketBase restart cannot apply them before review. The README in that folder carries the apply steps, the duplicate-invoice pre-check, the rollback per migration, and the risk notes.
 
-| Draft | Changes | Would unblock |
+| Migration | Changes | Unblocks |
 |---|---|---|
 | `001_manufacturing_jobs.js` | New collection replacing the `store_settings` JSON | Karigar jobs as a queryable ledger |
 | `002_cheques.js` | New `cheques` collection with a unique tenant cheque index | Cheque register out of JSON |
@@ -325,6 +325,8 @@ Five migrations are drafted under `docs/migrations-draft/` and **have not been r
 | `004_landed_cost_and_channels.js` | PO overhead column, item landed cost, `sales.channel`, `whatsapp_campaigns`, `sales.campaign` | D-13, channel enum, campaign attribution |
 | `005_indexes.js` | Unique `invoices.order` index and reporting indexes | D-20 hardening |
 | `006_store_settings_rules.js` | Tenant-scoped collection rules on `store_settings`; legacy empty-`account_email` rows stay readable | Audit #8: rule-level tenant isolation in a shared instance |
+| `007_purchase_inward_cost.js` | `purchase_orders.inward_cost` numeric column | D-13: atomic inward-cost accumulation |
+| `008_phantom_collections.js` | `inventory_locations`, `inventory_transfers`, `catalog_sync_logs`, `shipments`, `cash_registers` | D-36: the five remaining phantom collections |
 
 Each file was syntax-checked with `node --check`. None was executed, and no schema was inspected against a live database.
 
@@ -1657,20 +1659,16 @@ Every gate re-run after slice 38, from the repository as committed:
 | Rust | `cargo check` in `src-tauri` | finished clean, including the server-backed config |
 | Explorer | extracted script + `node --check` | exit 0 |
 
-**Register: 49 fixed, 6 open, 1 P1 (S-06).**
+**Register: 53 fixed, 2 open, 1 P1 (S-06).**
 
-Remaining, for the next session:
+Remaining, after the applied bundle (§11.47):
 
 | Item | What it needs |
 |---|---|
-| S-06 | Approval plus a `TENANT_REGISTRY_KEY` to run `scripts/rekey-tenant-registry.ts --apply` |
-| D-13, D-14, D-36, D-37 | Apply `docs/migrations-draft/` and restart PocketBase |
-| D-12 | Serialize the GRN receipt path in `purchase.ts` |
-| D-19 | Cross-process document numbering |
-| D-23 | Move page-level `pb.collection` calls behind services, starting with setup and inventory |
-| D-32 | One theme strategy and token replacement for the 145 hex literals |
+| S-06 | Approval plus a `TENANT_REGISTRY_KEY` to run `scripts/rekey-tenant-registry.ts --apply` (no registry exists on this machine, so there is nothing to re-key locally) |
+| D-23 | Move page-level `pb.collection` calls behind services; `challan/create` is migrated, `setup` and `inventory` are next |
 
-**What is proven and what is not:** the code-level conflict behind D-08 is gone and the server-backed config compiles; an installer was **not** produced, because this volume refuses the symlinks the build requires. No migration was applied and neither `pb_data` nor the tenant registry was modified.
+**What is proven and what is not:** the code-level conflict behind D-08 is gone and the server-backed config compiles; an installer was **not** produced, because this volume refuses the symlinks the build requires. Migrations **were applied on 2026-10-23** (§11.47) after sandbox and rollback tests; the tenant registry was not modified.
 
 ### 11.41 Slice 40: two findings verified closed (2026-10-23)
 
@@ -1696,7 +1694,7 @@ The 16-item audit is a subset of the 55-item register with its own numbering. St
 | 5 | Any 400 clamps stock to zero | Fixed | Only `validation_min_number_constraint` matches (`pos-sales.ts:195-196`) |
 | 6 | POS rollback skips shift totals and invoice | Fixed | Negative `updateShiftTotals` at `pos-sales.ts:304`; atomic invoice item loop |
 | 7 | OTP no daily cap; fake-customer token | Fixed | Cap at `otp-store.ts:111`; fail-closed 503 at `verify-otp/route.ts:79-87` |
-| 8 | `store_settings` rules unscoped; dead writer | **Fixed (code) + drafted rules** | Dead writer deleted (`invoice.ts`); `docs/migrations-draft/006_store_settings_rules.js` tenant-scopes list/view/update/delete, not applied |
+| 8 | `store_settings` rules unscoped; dead writer | **Fixed** | Dead writer deleted (`invoice.ts`); `006_store_settings_rules.js` applied on 2026-10-23, live rules are tenant-scoped (§11.47) |
 | 9 | Build broken two ways | Fixed (with caveat) | Server-backed config and webpack build; an installer was not produced because this volume refuses symlinks (§11.36) |
 | 10 | Expense search injection | Fixed | `sanitizeFilter` in `expenses.ts` |
 | 11 | `opening_float` violates enum | Fixed | Writes `operation_type: 'add'` with a reason (`register.ts:107-112`) |
@@ -1764,6 +1762,36 @@ The 16-item audit is a subset of the 55-item register with its own numbering. St
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors (unused type imports remain warnings).
 
 **D-23 stays open** by design: the audit counts 135 direct calls outside `src/lib` across 26 files, with `setup` (17) and `inventory` (13) as the named next targets. The pattern is established; each remaining page is a mechanical pass.
+
+### 11.47 Slice 45: migrations applied and verified (2026-10-23)
+
+**Closed:** D-13, D-14, D-36, D-37.
+
+The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stopped, after a full backup at `C:\Users\sivan\AppData\Local\Temp\luminila_pb_backup_20261023-221832` and a duplicate-invoice check (8 invoices, zero duplicate `order` values).
+
+| Step | Result |
+|---|---|
+| Sandbox run from the pre-migration backup | all eight applied (`migrate up` exit 0) |
+| Sandbox rollback (`migrate down 6`, then `down 2`) | every file reverted: tables dropped, columns removed, channel enum and rules restored |
+| Live apply | `1792774201_…` through `1792774208_…` applied, exit 0 |
+| Live schema | all eight collections present; `products.gst_rate`, `purchase_orders.overhead_amount`, `inward_cost`, `purchase_order_items.landed_unit_cost`, `sales.campaign` present |
+| Live data | invoices 8, products 5, sales 5, channel rows `pos` 3 / `whatsapp` 2 — unchanged |
+| Capture and sync | PocketBase restarted once for the health check: `/api/health` 200 |
+
+**Two defects found by testing that the draft would otherwise have shipped:**
+
+1. **Destructive enum replacement.** `004` replaced the live `sales.channel` select (`pos, shopify, wholesale, exhibition, marketplace, woocommerce, other`, required) with a narrower enum and `required: false`. Existing rows used `pos`, which the replacement dropped. The migration now merges the current values with the app's additions (`counter`, `storefront`, `phone`, `export`), keeps `required`, and its down restores the original list.
+2. **JSVM field mutation does not persist.** Setting `field.values` on a fetched field silently did nothing, and `field.type` is a function proxy rather than the string `"select"`. The migration re-adds a `SelectField` with the carried-over flags, which persists correctly.
+
+**Code changes that make the schema real:**
+
+| Item | Change |
+|---|---|
+| D-13 | `reconcilePOWithInwardBatch` now accumulates with `'inward_cost+': batchTotalCost` (atomic) and reads the returned total, instead of read-blob → add → write-blob; the PO-number fallback filter is sanitized. |
+| D-36 | The five missing collections are created in `008_phantom_collections.js` with the fields their call sites write. |
+| D-14, D-37 | Closed by the columns/enum now existing; the code paths that read `products.gst_rate` and write `sales.channel` no longer fall back or drop values. |
+
+**Register: 53 fixed, 2 open (D-23, S-06).**
 
 ## Appendix A: Route inventory
 

@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>6 open · 49 fixed</span>
+            <span class="chip accent"><span class="dot"></span>2 open · 53 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1056,11 +1056,11 @@ const DEFECTS = [
     where:"src/lib/purchase.ts:678-685,720-738",
     impact:"Two concurrent GRNs both pass the cap. A failed stock or PO write only logs, so received quantity and physical stock diverge permanently.",
     fix:"Serialize per PO item and fail the GRN on any write error." },
-  { id:"D-13", sev:"P2", area:"money", title:"Landed cost is stored inside a notes blob and lost on concurrency",
+  { id:"D-13", sev:"P2", status:"fixed", area:"money", title:"Landed cost is stored inside a notes blob and lost on concurrency",
     where:"src/lib/purchase.ts:1244-1300",
     impact:"Read, add, write the whole blob: two reconciliations lose one cost, understating inventory value. The filter at 1246 is also unsanitized.",
     fix:"Add a numeric column and use atomic increments." },
-  { id:"D-14", sev:"P2", area:"tax", title:"POS hardcodes 3 percent jewelry GST and ignores the line rate",
+  { id:"D-14", sev:"P2", status:"fixed", area:"tax", title:"POS hardcodes 3 percent jewelry GST and ignores the line rate",
     where:"src/lib/invoice.ts:1082 · src/lib/pos-sales.ts:114-133",
     impact:"Imitation jewelry at 18 percent and making charges at 5 percent are under-taxed on every sale.",
     fix:"Persist gst_rate on sale_items and use it at invoicing." },
@@ -1104,7 +1104,7 @@ const DEFECTS = [
     where:"package.json · src/scripts/test-*.ts",
     impact:"Every regression in this register was findable by a test that does not exist. Hand-run scripts do not protect changes.",
     fix:"Adopt Vitest for services and Playwright for POS, returns, and drawer flows, then wire CI." },
-  { id:"D-36", sev:"P2", area:"data", title:"Six collections the code uses do not exist",
+  { id:"D-36", sev:"P2", status:"fixed", area:"data", title:"Six collections the code uses do not exist",
     where:"campaign-attribution.ts · multi-location.ts · catalog-sync.ts · backup.ts",
     impact:"Campaign attribution, locations, transfers, sync logs, shipments, and part of backup silently produce nothing. Multi-location degrades to localStorage.",
     fix:"Create the collections in a migration or delete the features and their entry points." },
@@ -1181,7 +1181,7 @@ const DEFECTS = [
     where:"src/app/api/catalog/batch/route.ts:70-72 · whatsapp.ts:1504-1505",
     impact:"The integration only works for one business and leaks identity into the bundle.",
     fix:"Move both into store settings." },
-  { id:"D-37", sev:"P3", area:"data", title:"The channel enum cannot represent the pricing engine",
+  { id:"D-37", sev:"P3", status:"fixed", area:"data", title:"The channel enum cannot represent the pricing engine",
     where:"schema select on sales.channel · channel-pricing.ts · pos-sales.ts:92",
     impact:"Website, wholesale, exhibition, and custom channels cannot be stored, so channel pricing cannot be reported.",
     fix:"Extend the enum or store a validated text value." },
@@ -1222,7 +1222,7 @@ const BLOCKERS = [
   ["P1","Static export versus route handlers","next.config.ts:9 enables output export in production. Three handlers declare force-dynamic. The export step cannot emit them, so the build stops.","D-08"],
   ["P2","exFAT volume blocks native Android","Tauri and Gradle need symlinks for libapp_lib.so. exFAT cannot store them, so the APK build aborts on this machine.","D-33"],
   ["P2","No webpack fallback for release builds","The dev script passes --webpack to avoid the Turbopack symlink panic. next build passes no flag.","D-08"],
-  ["P2","Schema debt behind working screens","Job cards and cheques live in a settings JSON blob, product GST rate and channel have no columns, and the invoice order index is missing. A six-file migration draft exists in docs/migrations-draft but is deliberately unapplied.","D-36"]
+  ["P2","Schema debt behind working screens","Job cards and cheques live in a settings JSON blob, product GST rate and channel have no columns, and the invoice order index is missing. The eight-file bundle was applied and verified on 2026-10-23; see PROJECT_MASTER section 11.47.","D-36"]
 ];
 
 const ROADMAP = [

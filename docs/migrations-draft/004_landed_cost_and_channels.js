@@ -44,11 +44,39 @@ migrate((app) => {
   const savedCampaigns = app.findCollectionByNameOrId("whatsapp_campaigns");
 
   const sales = app.findCollectionByNameOrId("sales");
-  sales.fields.add(new SelectField({
-    name: "channel",
-    maxSelect: 1,
-    values: ["counter", "whatsapp", "storefront", "phone", "export"],
-  }));
+
+  // The live database already has a `sales.channel` select with legacy values
+  // (pos, shopify, wholesale, exhibition, marketplace, woocommerce, other).
+  // Replace it and existing rows become invalid, so extend the enum instead.
+  const LEGACY_CHANNELS = ["pos", "shopify", "whatsapp", "wholesale", "exhibition", "marketplace", "woocommerce", "other"];
+  const APP_CHANNELS = ["counter", "storefront", "phone", "export"];
+  const channelExists = sales.fields.fieldNames().includes("channel");
+
+  if (channelExists) {
+    const channelField = sales.fields.getByName("channel");
+    const current = channelField.values || [];
+    const merged = [];
+    for (const value of [...current, ...LEGACY_CHANNELS, ...APP_CHANNELS]) {
+      if (value && merged.indexOf(value) === -1) merged.push(value);
+    }
+    // Mutating .values on the existing field does not persist, and in the JSVM
+    // `field.type` is a function rather than the string "select". The schema is
+    // known to be a select, so replace the definition and carry its flags over.
+    sales.fields.add(new SelectField({
+      name: "channel",
+      maxSelect: channelField.maxSelect || 1,
+      required: channelField.required === true,
+      values: merged,
+    }));
+  } else {
+    sales.fields.add(new SelectField({
+      name: "channel",
+      maxSelect: 1,
+      required: true,
+      values: [...LEGACY_CHANNELS, ...APP_CHANNELS],
+    }));
+  }
+
   sales.fields.add(new RelationField({
     name: "campaign",
     collectionId: savedCampaigns.id,
@@ -58,8 +86,19 @@ migrate((app) => {
   app.save(sales);
 }, (app) => {
   const sales = app.findCollectionByNameOrId("sales");
-  sales.fields.removeByName("channel");
   sales.fields.removeByName("campaign");
+
+  // Restore the channel values that existed before this migration rather than
+  // deleting a field that predates it.
+  if (sales.fields.fieldNames().includes("channel")) {
+    const channelField = sales.fields.getByName("channel");
+    sales.fields.add(new SelectField({
+      name: "channel",
+      maxSelect: channelField.maxSelect || 1,
+      required: channelField.required === true,
+      values: ["pos", "shopify", "whatsapp", "wholesale", "exhibition", "marketplace", "woocommerce", "other"],
+    }));
+  }
   app.save(sales);
 
   const campaignCollection = app.findCollectionByNameOrId("whatsapp_campaigns");
