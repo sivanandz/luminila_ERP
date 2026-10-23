@@ -22,7 +22,7 @@ import { toast } from "sonner";
 import { formatPrice } from "@/lib/utils";
 import { createOrder, OrderType, OrderStatus, OrderItemInput } from "@/lib/orders";
 import { searchCustomers, Customer } from "@/lib/customers";
-import { pb } from "@/lib/pocketbase";
+import { resolveBarcodeProduct, searchProductsForDocuments } from "@/lib/products";
 import { type Product, type ProductVariant } from "@/lib/products";
 
 // Product search dropdown result: Product/ProductVariant records narrowed
@@ -115,20 +115,12 @@ export default function CreateOrderPage() {
         const timeoutId = setTimeout(async () => {
             if (productSearch.length > 2) {
                 try {
-                    const products = await pb.collection('products').getFullList<Product>({
-                        filter: `name~"${productSearch}"`,
-                    });
-                    const productIds = products.map((p) => p.id);
-                    let variants: ProductVariant[] = [];
-                    if (productIds.length > 0) {
-                        const variantFilter = productIds.map(id => `product="${id}"`).join(' || ');
-                        variants = await pb.collection('product_variants').getFullList<ProductVariant>({ filter: variantFilter });
-                    }
+                    const products = await searchProductsForDocuments(productSearch);
                     const data = products.map((p) => ({
                         id: p.id,
                         name: p.name,
                         base_price: p.base_price,
-                        variants: variants.filter((v) => v.product === p.id).map((v) => ({
+                        variants: p.variants.map((v) => ({
                             id: v.id,
                             sku_suffix: v.sku_suffix,
                             size: v.size,
@@ -206,12 +198,9 @@ export default function CreateOrderPage() {
     useEffect(() => {
         const unregister = MobileScanner.registerContext("orders_entry", async (result) => {
             try {
-                const prod = await pb.collection("products").getFirstListItem(`sku="${result.barcode}" || barcode="${result.barcode}"`);
-                if (prod) {
-                    const variants = await pb.collection("product_variants").getList(1, 1, {
-                        filter: `product="${prod.id}"`,
-                    });
-                    const v = variants.items[0];
+                const resolved = await resolveBarcodeProduct(result.barcode);
+                if (resolved) {
+                    const { product: prod, variant: v } = resolved;
                     handleScannedItem({
                         barcode: result.barcode,
                         product: {

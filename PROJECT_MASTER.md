@@ -1823,6 +1823,19 @@ The eight-file bundle was applied to `pocketbase/pb_data` with PocketBase stoppe
 
 **D-23 stays open:** three pages migrated (`challan/create`, `setup`, `inventory`); the remaining ~22 files still call PocketBase directly.
 
+### 11.50 Slice 48: settings export and order builder behind services (2026-10-23)
+
+**D-23 progress:** two more pages now hold **zero** direct PocketBase calls.
+
+| Page | Before | After |
+|---|---|---|
+| `settings/page.tsx` | 6 inline collection fetches assembling the export snapshot | `collectDatabaseSnapshot(exportedBy)` in `src/lib/database-snapshot.ts` (new); page only triggers the download |
+| `orders/create/page.tsx` | 4 direct calls (product search, variant filter, barcode lookup ×2) | reuses `searchProductsForDocuments` and `resolveBarcodeProduct`; the search term is now sanitized in the service |
+
+**Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
+
+**D-23 stays open:** five pages migrated (`challan/create`, `setup`, `inventory`, `settings`, `orders/create`); the remaining ~20 files still call PocketBase directly, largest of which are the WhatsApp catalog editor (9) and WhatsApp page (8).
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

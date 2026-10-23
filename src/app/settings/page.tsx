@@ -56,7 +56,8 @@ import { EwayBillSettings } from "@/components/settings/EwayBillSettings";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { getStoreSettings, saveStoreSettings, getDefaultStoreSettings, type StoreSettings } from "@/lib/settings";
-import { pb, getPocketBaseUrl } from "@/lib/pocketbase";
+import { getPocketBaseUrl } from "@/lib/pocketbase";
+import { collectDatabaseSnapshot } from "@/lib/database-snapshot";
 import { getDetailedSessionStatus, getBusinessProfile, type DetailedSessionStatus, type BusinessProfile } from "@/lib/whatsapp";
 
 interface SettingSection {
@@ -105,36 +106,7 @@ export default function SettingsPage() {
         setIsExportingSnapshot(true);
         try {
             toast.info("Compiling full database snapshot from PocketBase...");
-            const [products, variants, customers, invoices, invoiceItems, settingsList] = await Promise.all([
-                pb.collection('products').getFullList({ sort: '-created' }).catch(() => []),
-                pb.collection('product_variants').getFullList().catch(() => []),
-                pb.collection('customers').getFullList().catch(() => []),
-                pb.collection('invoices').getFullList().catch(() => []),
-                pb.collection('invoice_items').getFullList().catch(() => []),
-                pb.collection('store_settings').getFullList().catch(() => []),
-            ]);
-
-            const snapshot = {
-                app: "Luminila Jewelry ERP",
-                version: "2.1.0",
-                exported_at: new Date().toISOString(),
-                exported_by: user?.email || "admin",
-                summary: {
-                    products_count: products.length,
-                    variants_count: variants.length,
-                    customers_count: customers.length,
-                    invoices_count: invoices.length,
-                    invoice_items_count: invoiceItems.length,
-                },
-                data: {
-                    products,
-                    product_variants: variants,
-                    customers,
-                    invoices,
-                    invoice_items: invoiceItems,
-                    store_settings: settingsList,
-                }
-            };
+            const snapshot = await collectDatabaseSnapshot(user?.email || "admin");
 
             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(snapshot, null, 2));
             const downloadAnchor = document.createElement("a");
@@ -145,7 +117,7 @@ export default function SettingsPage() {
             downloadAnchor.click();
             downloadAnchor.remove();
 
-            toast.success(`Exported complete snapshot with ${products.length} products & ${invoices.length} invoices!`);
+            toast.success(`Exported complete snapshot with ${snapshot.summary.products_count} products & ${snapshot.summary.invoices_count} invoices!`);
         } catch (err) {
             console.error("Snapshot export failed:", err);
             toast.error("Failed to generate database snapshot: " + ((err instanceof Error ? err.message : String(err)) || "Unknown error"));
