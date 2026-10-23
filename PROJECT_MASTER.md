@@ -2022,6 +2022,43 @@ With the code objective exhausted, both documents were checked against the tree.
 
 Still accurately non-live: absence-category features (PIN/QR cashier switch, old-gold trade-in, HUID vault, savings scheme, split tender, held carts, e-invoice/IRN, bank reconciliation, scheduled reports, WhatsApp Flows), the unwired anti-oversell buffer, the still-blocked native Android APK, and cloud sync (removed mock). Those are product scope or environment, not regressions.
 
+### 11.62 Hosting profile: private ERP, public storefront (2026-10-24)
+
+Requested deployment model: only the storefront is publicly reachable; the ERP and the WhatsApp sidecar are owner-only.
+
+**Code added**
+
+| File | Purpose |
+|---|---|
+| `src/lib/host-guard.ts` | Pure policy: normalize hosts, parse `ADMIN_HOSTS`/`STOREFRONT_HOSTS`, classify admin vs storefront (unknown hosts get the public-safe view, loopback is admin), and decide whether a path may be served |
+| `src/proxy.ts` | Next 16 proxy convention (middleware is deprecated in 16.1): storefront hosts get only `/checkout`, `/tracking`, `/api/storefront/*`, `/api/tracking/*` and static assets; everything else is a 404. Guard is a no-op when the env lists are unset, so desktop/dev/CI are unchanged |
+| `src/lib/public-surfaces.ts` | Shared public-path list used by both the auth gate and the chrome split |
+| `src/components/layout/AppChrome.tsx` | Public pages no longer render the operations sidebar, WhatsApp drawer or realtime sync providers |
+| `src/components/auth/AuthGate.tsx` | `/checkout` added to the public paths (the storefront checkout previously redirected customers to /login) |
+| `src/lib/pocketbase-url.ts` + `src/lib/pocketbase.ts` | Browser PocketBase URL resolver: explicit `NEXT_PUBLIC_POCKETBASE_URL` wins; stored override second; https without configuration uses same-origin `/pb` instead of an unreachable `http://<host>:8090`; Tauri/Android/LAN behaviour preserved |
+
+**Deployment kit (`deploy/`)**
+
+- `README.md` — topology, install, systemd, Cloudflare Tunnel (storefront host only), Tailscale, first run, S-06 re-key, backups, security checklist.
+- `env.example` — every required variable, with `NEXT_PUBLIC_*` marked build-time.
+- `cloudflared/config.yml` — one public ingress (storefront); no ERP/PB/sidecar entry.
+- `tailscale.md` — tailnet HTTPS on 443 (ERP), 10000 (PocketBase), 8443 (sidecar), plus firewall rules.
+- `systemd/{luminila-pocketbase,luminila-next,luminila-whatsapp}.service` — loopback-bound services with hardening.
+- `backup/backup.sh` + cron — online SQLite snapshots of primary and tenant DBs, storage and encrypted registry, with retention.
+
+**Behaviour**
+
+| Request | Public storefront host | Private tailnet host |
+|---|---|---|
+| `/checkout/whatsapp`, `/tracking/*` | served (no login) | served |
+| `/api/storefront/*`, `/api/tracking/*` | served | served |
+| `/inventory`, `/settings`, `/login`, `/api/system/*`, `/api/pos/*`, `/backup` | **404** | served (auth gate applies) |
+| Unknown host (e.g. direct IP) | public-safe view only | — |
+
+**Verified:** host-guard tests 7/7 and PocketBase-URL tests 6/6 pass; my six changed/new source files pass ESLint with the Next page-linking rule disabled (that rule currently crashes on a half-deleted directory); the pure modules compile under an isolated strict tsc; repository-wide typecheck was clean after these edits (exit 0) but **became red later due to the parallel agent's in-flight refactor** (deleted `imitation/page.tsx`, inventory/rbac edits), and repo-wide ESLint currently crashes on `src/app/imitation` permissions. Both are workspace-state issues, not this change; re-run gates once the other agent's refactor settles.
+
+**Not wired yet:** the two new test scripts are run manually because `package.json` is under the other agent's active edit; add them to the `npm test` chain once ownership is clear.
+
 ## Appendix A: Route inventory
 
 45 route pages, all client components.

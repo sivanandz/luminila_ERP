@@ -1,0 +1,27 @@
+[Unit]
+Description=Luminila Next server (ERP + storefront APIs)
+After=network-online.target luminila-pocketbase.service
+Wants=network-online.target luminila-pocketbase.service
+
+[Service]
+Type=simple
+User=luminila
+Group=luminila
+WorkingDirectory=/opt/luminila/app
+EnvironmentFile=/etc/luminila/env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/node /opt/luminila/app/server-dist/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/luminila/app
+
+[Install]
+WantedBy=multi-user.target

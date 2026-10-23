@@ -1,0 +1,23 @@
+# Cloudflare Tunnel ingress for the PUBLIC storefront only.
+#
+# There is deliberately no ingress entry for the ERP, PocketBase or the
+# WhatsApp sidecar. Those live on the tailnet (see deploy/tailscale.md).
+#
+# Install:
+#   cloudflared tunnel login
+#   cloudflared tunnel create luminila
+#   cloudflared tunnel route dns luminila shop.<domain>
+#   sudo cp deploy/cloudflared/config.yml /etc/cloudflared/config.yml
+#   sudo systemctl enable --now cloudflared
+
+tunnel: REPLACE-TUNNEL-UUID
+credentials-file: /etc/cloudflared/REPLACE-TUNNEL-UUID.json
+
+ingress:
+  - hostname: shop.REPLACE-DOMAIN
+    service: http://127.0.0.1:3000
+    originRequest:
+      # Realtime/SSE must not be buffered through the edge.
+      disableChunkedEncoding: false
+      connectTimeout: 30s
+  - service: http_status:404

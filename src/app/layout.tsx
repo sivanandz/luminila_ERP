@@ -2,13 +2,9 @@ import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono, Manrope } from "next/font/google";
 import { Toaster } from "sonner";
 import "./globals.css";
-import { Sidebar, MobileBottomNav } from "@/components/layout";
+import { AppChrome } from "@/components/layout/AppChrome";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { AuthGate } from "@/components/auth/AuthGate";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { WhatsAppEventSyncProvider } from "@/components/whatsapp/WhatsAppEventSyncProvider";
-import { WhatsAppDrawer } from "@/components/whatsapp/WhatsAppDrawer";
-import { OfflineSync } from "@/components/system/OfflineSync";
 
 // The CSS variables here are the ones globals.css consumes: `--font-inter` for
 // body text and `--font-manrope` for display headings. Naming them after the
@@ -63,16 +59,9 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <AuthProvider>
           <AuthGate>
-            <WhatsAppEventSyncProvider />
-            <OfflineSync />
-            <Sidebar />
-            <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-[calc(4rem+env(safe-area-inset-bottom,0px))] md:pb-0">
-              <ErrorBoundary>
-                {children}
-              </ErrorBoundary>
-            </main>
-            <MobileBottomNav />
-            <WhatsAppDrawer />
+            <AppChrome>
+              {children}
+            </AppChrome>
             <Toaster position="top-right" richColors closeButton />
           </AuthGate>
         </AuthProvider>

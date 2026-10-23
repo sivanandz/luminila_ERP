@@ -872,6 +872,7 @@ const DRIFT = [
 ];
 
 const FEATURES = [
+  ["Private ERP / public storefront","platform","live","src/proxy.ts + src/lib/host-guard.ts: the public host serves only checkout, tracking, storefront/tracking APIs and assets; ERP, PocketBase and the WhatsApp sidecar are tailnet-only (deploy/ kit)"],
   ["Setup wizard","onboarding","live","Provisions a tenant database and seeds the schema"],
   ["Email and password login","onboarding","live","Tenant resolved by email before auth"],
   ["Session restore","onboarding","live","Auth store hydrated from localStorage"],
@@ -1254,6 +1255,8 @@ const ORPHANS = [
 ];
 
 const VERIFY = [
+  ["Host guard tests","npx tsx src/scripts/test-host-guard.ts","pass","7 assertions: host normalization, admin/storefront/unknown classification, exact ERP blocking, static assets."],
+  ["PocketBase URL tests","npx tsx src/scripts/test-pocketbase-url.ts","pass","6 assertions: env override, stored override, HTTPS /pb fallback, Tauri/Android/LAN behaviour."],
   ["Type check","npx tsc --noEmit --incremental false","pass","Exit 0, clean at f0e96b4. No defect in this page is a type error."],
   ["Type check, default","npx tsc --noEmit","blocked","TS5033 EPERM writing tsconfig.tsbuildinfo on the exFAT volume."],
   ["Lint","npx eslint src","pass","323 problems, 0 errors, 323 warnings."],

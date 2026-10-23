@@ -1,0 +1,4 @@
+# Luminila nightly backup (installed as /etc/cron.d/luminila-backup)
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+15 2 * * * luminila /usr/local/bin/luminila-backup >> /var/log/luminila-backup.log 2>&1

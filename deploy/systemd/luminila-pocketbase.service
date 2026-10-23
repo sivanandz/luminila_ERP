@@ -1,0 +1,26 @@
+[Unit]
+Description=Luminila PocketBase
+Documentation=file:///opt/luminila/app/docs/registry-rekey-plan.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luminila
+Group=luminila
+WorkingDirectory=/opt/luminila/pocketbase
+EnvironmentFile=/etc/luminila/env
+ExecStart=/opt/luminila/pocketbase/pocketbase serve --http=127.0.0.1:8090 --dir=/opt/luminila/pocketbase/pb_data
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+# Hardening: PocketBase only writes its data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/luminila/pocketbase/pb_data
+
+[Install]
+WantedBy=multi-user.target

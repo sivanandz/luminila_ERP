@@ -1,30 +1,27 @@
 import PocketBase from 'pocketbase';
 import { readRegistrySecret } from './tenant-secrets';
+import { resolvePocketBaseBaseUrl } from './pocketbase-url';
 
 // Determine default URL
 const DEFAULT_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090';
 
 /**
- * Get active PocketBase base URL
- * Reads from localStorage if in client browser, else falls back to default
+ * Get active PocketBase base URL.
+ *
+ * The browser resolution lives in `pocketbase-url.ts` so it can be tested and
+ * so hosted deployments (HTTPS, private Tailscale URL, same-origin /pb) never
+ * fall back to an unreachable localhost origin.
  */
 export function getPocketBaseUrl(): string {
     if (typeof window !== "undefined") {
-        const customUrl = localStorage.getItem("PB_CUSTOM_URL");
-        if (customUrl && customUrl.trim()) {
-            return customUrl.trim().replace(/\/+$/, "");
-        }
-        // Auto-detect host when accessed from Android emulator (10.0.2.2) or LAN (192.168.x.x)
-        // If accessed via a Cloudflare Tunnel (trycloudflare.com), do NOT append :8090 (ports not proxied)
-        const host = window.location.hostname;
-        const isTunnelHost = host.includes("trycloudflare.com") || host.includes("cloudflare");
-        if (host === "tauri.localhost") {
-            const isAndroid = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("android");
-            return isAndroid ? "http://10.0.2.2:8090" : "http://127.0.0.1:8090";
-        }
-        if (host && host !== "localhost" && host !== "127.0.0.1" && !isTunnelHost) {
-            return `http://${host}:8090`;
-        }
+        return resolvePocketBaseBaseUrl({
+            envUrl: process.env.NEXT_PUBLIC_POCKETBASE_URL,
+            storedUrl: localStorage.getItem("PB_CUSTOM_URL") || undefined,
+            protocol: window.location.protocol,
+            hostname: window.location.hostname,
+            origin: window.location.origin,
+            userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+        });
     }
     return DEFAULT_URL.replace(/\/+$/, "");
 }
