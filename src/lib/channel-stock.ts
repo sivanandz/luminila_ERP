@@ -93,6 +93,7 @@ interface MovementRecord {
     variant: string;
     quantity: number;
     movement_type: string;
+    source?: string;
 }
 
 interface StockCollection {
@@ -377,18 +378,18 @@ export async function applyChannelStock(
  */
 export async function restoreChannelStockForReference(
     db: StockDb,
-    options: { referenceId: string; channel: ChannelStockChannel; notes?: string }
+    options: { referenceId: string; channel?: ChannelStockChannel; notes?: string }
 ): Promise<StockRestoreResult> {
     const reference = escapeFilter(options.referenceId);
-    const source = escapeFilter(options.channel);
+    const sourceFilter = options.channel ? ` && source="${escapeFilter(options.channel)}"` : '';
 
     const movements = await db.collection('stock_movements').getFullList<MovementRecord>({
-        filter: `reference_id="${reference}" && source="${source}" && movement_type="sale"`,
+        filter: `reference_id="${reference}"${sourceFilter} && movement_type="sale"`,
     });
     if (movements.length === 0) return { restored: 0, alreadyRestored: false };
 
     const reversals = await db.collection('stock_movements').getFullList<MovementRecord>({
-        filter: `reference_id="${reference}" && source="${source}" && movement_type="return"`,
+        filter: `reference_id="${reference}"${sourceFilter} && movement_type="return"`,
     });
     if (reversals.length > 0) return { restored: 0, alreadyRestored: true };
 
@@ -404,8 +405,10 @@ export async function restoreChannelStockForReference(
             movement_type: 'return',
             quantity,
             reference_id: options.referenceId,
-            source: options.channel,
-            notes: options.notes || `Stock restored for cancelled ${options.channel} order ${options.referenceId}`,
+            source: options.channel || movement.source || 'storefront',
+            notes:
+                options.notes ||
+                `Stock restored for cancelled ${options.channel || movement.source || 'channel'} order ${options.referenceId}`,
         });
         restored += 1;
     }

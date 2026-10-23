@@ -16,6 +16,7 @@ import type {
 import { createInvoice, getStoreSettings } from '@/lib/invoice';
 import { calculateGST, getStateCode, GST_RATES } from '@/lib/gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from '@/lib/sequence-generator';
+import { restoreChannelStockForReference, toStockDb } from '@/lib/channel-stock';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
 export type OrderType = 'estimate' | 'sales_order';
@@ -445,4 +446,59 @@ export async function getDispatchableOrders(): Promise<DispatchableOrder[]> {
 
 export async function markSalesOrderShipped(orderId: string): Promise<void> {
     await pb.collection('sales_orders').update(orderId, { status: 'shipped' });
+}
+/**
+ * Orders that may still be cancelled. Once shipped or invoiced the reversal is a
+ * return/credit-note flow, not a cancellation.
+ */
+export function canCancelSalesOrder(status: OrderStatus): boolean {
+    return status === 'draft' || status === 'sent' || status === 'confirmed';
+}
+
+export interface CancelOrderResult {
+    success: boolean;
+    orderId: string;
+    restored: number;
+    alreadyRestored: boolean;
+    alreadyCancelled: boolean;
+}
+
+/**
+ * Cancel a sales order and put its channel stock back.
+ *
+ * The restore is ledger-driven and idempotent: it reverses whichever channel
+ * deducted the stock (WhatsApp, storefront, POS) for this order reference.
+ * Cancelling is refused for shipped/invoiced orders, whose reversal must go
+ * through returns with a credit note.
+ */
+export async function cancelSalesOrder(
+    orderId: string,
+    options: { reason?: string; cancelledBy?: string } = {}
+): Promise<CancelOrderResult> {
+    const order = await pb
+        .collection('sales_orders')
+        .getOne<{ status?: OrderStatus; internal_notes?: string; order_type?: OrderType }>(orderId);
+
+    if (order.status === 'cancelled') {
+        return { success: true, orderId, restored: 0, alreadyRestored: true, alreadyCancelled: true };
+    }
+    if (order.status && !canCancelSalesOrder(order.status)) {
+        throw new Error(
+            `Cannot cancel an order with status "${order.status}". Shipped or invoiced orders are reversed through returns.`
+        );
+    }
+
+    const restore = await restoreChannelStockForReference(toStockDb(pb), {
+        referenceId: orderId,
+        notes: options.reason ? `Cancelled: ${options.reason}` : undefined,
+    });
+
+    const stamp = new Date().toISOString();
+    const auditLine = `[cancelled ${stamp}${options.cancelledBy ? ` by ${options.cancelledBy}` : ''}${options.reason ? ` — ${options.reason}` : ''}]`;
+    await pb.collection('sales_orders').update(orderId, {
+        status: 'cancelled',
+        internal_notes: [order.internal_notes, auditLine].filter(Boolean).join('\n'),
+    });
+
+    return { success: true, orderId, restored: restore.restored, alreadyRestored: restore.alreadyRestored, alreadyCancelled: false };
 }

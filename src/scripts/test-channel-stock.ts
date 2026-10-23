@@ -302,6 +302,24 @@ async function main() {
         assert.equal(target.stockLevel, 3);
     });
 
+    await test('cancellation without a channel restores every source for the order', async () => {
+        const db = new FakeDb()
+            .addProduct('prod00000000001', 0).addVariant('var000000000001', 'prod00000000001', 5)
+            .addProduct('prod00000000002', 0).addVariant('var000000000002', 'prod00000000002', 5);
+        await applyChannelStock(db, [{ productId: 'prod00000000001', variantId: 'var000000000001', quantity: 2 }], {
+            accountEmail: TENANT, channel: 'storefront', referenceId: 'ord123456789019',
+        });
+        await applyChannelStock(db, [{ productId: 'prod00000000002', variantId: 'var000000000002', quantity: 1 }], {
+            accountEmail: TENANT, channel: 'whatsapp', referenceId: 'ord123456789019',
+        });
+        const result = await restoreChannelStockForReference(db, { referenceId: 'ord123456789019' });
+        assert.deepEqual(result, { restored: 2, alreadyRestored: false });
+        assert.equal(db.variants.get('var000000000001')?.stock_level, 5);
+        assert.equal(db.variants.get('var000000000002')?.stock_level, 5);
+        const second = await restoreChannelStockForReference(db, { referenceId: 'ord123456789019' });
+        assert.equal(second.alreadyRestored, true);
+    });
+
     console.log(`\n${passed} passed, ${failed} failed`);
     if (failed > 0) process.exit(1);
 }

@@ -872,7 +872,7 @@ const DRIFT = [
 ];
 
 const FEATURES = [
-  ["Unified channel inventory","inventory","partial","POS, WhatsApp, the web and the paid Razorpay webhook all dedupe inventory through one service: variant-accurate atomic decrement, stock_movements ledger, 409 shortage checks, clamp policy for POS and captured payments, rollback and oversell audit rows; only cancellation restore lacks a UI caller (PROJECT_MASTER 11.65-11.67)"],
+  ["Unified channel inventory","inventory","partial","POS, WhatsApp, the web and the paid Razorpay webhook all dedupe inventory through one service: variant-accurate atomic decrement, stock_movements ledger, 409 shortage checks, clamp policy for POS and captured payments, rollback, oversell audit rows, and ledger-driven cancellation restore with an order-detail control (PROJECT_MASTER 11.65-11.68)"],
   ["Private ERP / public storefront","platform","live","src/proxy.ts + src/lib/host-guard.ts: the public host serves only checkout, tracking, storefront/tracking APIs and assets; ERP, PocketBase and the WhatsApp sidecar are tailnet-only (deploy/ kit)"],
   ["Setup wizard","onboarding","live","Provisions a tenant database and seeds the schema"],
   ["Email and password login","onboarding","live","Tenant resolved by email before auth"],
@@ -1256,7 +1256,7 @@ const ORPHANS = [
 ];
 
 const VERIFY = [
-  ["Channel stock tests","npx tsx src/scripts/test-channel-stock.ts","pass","16 assertions: variant resolution, ambiguity, tenant gating (including the desktop empty-email path), availability, ledger writes, multi-line rollback, clamp settlement and rejection, idempotent cancellation restore."],
+  ["Channel stock tests","npx tsx src/scripts/test-channel-stock.ts","pass","17 assertions: variant resolution, ambiguity, tenant gating (including the desktop empty-email path), availability, ledger writes, multi-line rollback, clamp settlement and rejection, idempotent cross-channel cancellation restore."],
   ["Committed HEAD build","npx next build --webpack (detached worktree at HEAD)","pass","Compiled and prerendered every route including the proxy bundle; standalone server booted on NTFS."],
   ["Host split, end to end","curl with Host headers against the built server","pass","shop: 404 on /inventory, /settings, /; 200 on /checkout/whatsapp and /tracking/st-courier. admin: 200 with DENY and noindex. guard disabled: 200 everywhere."],
   ["Proxy guard tests","npx tsx src/scripts/test-proxy.ts","pass","8 assertions: executes the proxy with synthetic requests, proves ERP 404s on the public host, admin headers, unknown-host default and disabled mode."],

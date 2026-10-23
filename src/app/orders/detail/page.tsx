@@ -9,6 +9,7 @@ import {
     Mail,
     FileText,
     CheckCircle,
+    XCircle,
     User,
     Calendar,
     MapPin,
@@ -16,7 +17,14 @@ import {
 } from "lucide-react";
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getOrderDetails, convertEstimateToOrder, generateInvoiceFromOrder, type OrderDetail } from "@/lib/orders";
+import {
+    getOrderDetails,
+    convertEstimateToOrder,
+    generateInvoiceFromOrder,
+    cancelSalesOrder,
+    canCancelSalesOrder,
+    type OrderDetail,
+} from "@/lib/orders";
 import { getStoreSettings, type StoreSettings } from "@/lib/settings";
 import { toast } from "sonner";
 import { OrderMilestoneBar } from "@/components/orders/OrderMilestoneBar";
@@ -80,6 +88,31 @@ function OrderDetailContent() {
         setActionLoading(false);
     };
 
+    const handleCancel = async () => {
+        if (!order) return;
+        const confirmed = window.confirm(
+            `Cancel ${order.order_type === 'estimate' ? 'estimate' : 'order'} #${order.order_number}? Any stock deducted by this order will be restored.`
+        );
+        if (!confirmed) return;
+        const reason = window.prompt("Reason (optional):") || undefined;
+        setActionLoading(true);
+        try {
+            const result = await cancelSalesOrder(order.id, { reason });
+            if (result.alreadyCancelled) {
+                toast.info("This order is already cancelled");
+            } else if (result.restored > 0) {
+                toast.success(`Order cancelled — ${result.restored} stock line${result.restored === 1 ? "" : "s"} restored`);
+            } else {
+                toast.success("Order cancelled");
+            }
+            fetchOrder();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Could not cancel this order");
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
     if (loading) {
         return <div className="p-12 text-center text-moonstone">Loading order details...</div>;
     }
@@ -138,6 +171,18 @@ function OrderDetailContent() {
                             >
                                 <FileText size={18} className="mr-2" />
                                 Generate Invoice
+                            </Button>
+                        )}
+
+                        {canCancelSalesOrder(order.status) && (
+                            <Button
+                                variant="outline"
+                                onClick={handleCancel}
+                                disabled={actionLoading}
+                                className="border-red-500/40 text-red-400 hover:bg-red-500/10 font-bold"
+                            >
+                                <XCircle size={18} className="mr-2" />
+                                {isEstimate ? 'Cancel Estimate' : 'Cancel Order'}
                             </Button>
                         )}
                     </div>
