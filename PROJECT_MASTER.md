@@ -103,8 +103,8 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 |---|---|
 | Branch / commit | `feat/finish-partial-features`, based on `fix/security-audit-remediation` @ `f0e96b4` |
 | Last slice | Money and tax, 2026-10-23 (section 11) |
-| TypeScript/TSX files | 249 |
-| Lines of TypeScript/TSX | ~88,300 |
+| TypeScript/TSX files | 251 |
+| Lines of TypeScript/TSX | ~88,400 |
 | Route pages (`src/app/**/page.tsx`) | 44 |
 | Service modules (`src/lib/*.ts`) | 85 |
 | API route handlers (`src/app/api/**/route.ts`) | 13 |
@@ -128,13 +128,14 @@ It is not a cloud SaaS. The design premise is that a showroom with unreliable in
 | Tax math tests | `npx tsx src/scripts/test-invoice-math.ts` | **12 passed, 0 failed** (2026-10-23) |
 | Return policy tests | `npx tsx src/scripts/test-returns-policy.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Tenant auth tests | `npx tsx src/scripts/test-tenant-auth.ts` | **16 passed, 0 failed** (2026-10-23) |
-| Test command | `npm test` | 72 assertions across 9 suites, exit 0 |
+| Test command | `npm test` | 78 assertions across 10 suites, exit 0 |
 | GSTR-1 builder tests | `npx tsx src/scripts/test-gstr1-period.ts` | **3 passed, 0 failed** (2026-10-23) |
 | QC routing tests | `npx tsx src/scripts/test-returns-qc.ts` | **4 passed, 0 failed** (2026-10-23) |
 | Karigar costing tests | `npx tsx src/scripts/test-manufacturing.ts` | **7 passed, 0 failed** (2026-10-23) |
 | Cheque lifecycle tests | `npx tsx src/scripts/test-cheque-register.ts` | **9 passed, 0 failed** (2026-10-23) |
 | Export invoice tests | `npx tsx src/scripts/test-cross-border.ts` | **6 passed, 0 failed** (2026-10-23) |
 | Backup tests | `npx tsx src/scripts/test-backup.ts` | **6 passed, 0 failed** (2026-10-23) |
+| Offline queue tests | `npx tsx src/scripts/test-offline-queue.ts` | **6 passed, 0 failed** (2026-10-23) |
 | CI | `.github/workflows/ci.yml` | typecheck, lint, tests on push and pull request |
 | Production build | `npm run build` | **Could not complete on this workstation**; blocked at `.next/trace-build` by file permissions. The static-export conflict in 5.1 is structural and independent of this. |
 | Migration file check | `pocketbase/pb_migrations` | 1 generated migration file (~88 KB) containing the full schema plus rule revisions |
@@ -481,7 +482,7 @@ Status vocabulary, applied strictly:
 | Static export production build | **Broken** | 13 API routes cannot exist under `output: "export"` (D-25) |
 | Android APK build | Blocked on this workstation | exFAT volume cannot host the required symlinks (5.3) |
 | PWA install | Live | Manifest plus apple meta |
-| Offline mutation queue | Scaffold | `offline-queue.ts` has a `flush()` replay but zero importers and no online/offline listener, so nothing is ever queued |
+| Offline mutation queue | Live | `OfflineSync` drains the queue on reconnect and every 30 seconds; audit writes queue themselves when the database is unreachable (section 11.14) |
 | Google Drive sync | Scaffold (mock) | `google-drive-sync.ts:169-182` is a 1.2 s timeout that clears the changelog; `connect()` only flips a localStorage flag |
 | Backup and restore | Live | `/backup` downloads a 31-collection backup, previews a file before restoring, requires typed confirmation, and offers a daily browser snapshot (section 11.13) |
 | Activity log / audit trail | Live | Before/after JSON snapshots |
@@ -874,7 +875,6 @@ This is the most misleading category in the repository: substantial code exists,
 | `imitation-jewelry-engine.ts` | Craft taxonomy, plating, wholesale tiers | No route, no importer |
 | `omnichannel-buffer-engine.ts` | Channel buffers and cart reservations | No importer; in-memory state would not survive reload anyway |
 | `sync-engine.ts` + `sync/shopify.ts` + `sync/woocommerce.ts` | E-commerce sync orchestration | Zero importers; seven TODOs; Settings shows "Coming Soon" |
-| `offline-queue.ts` | Queued mutation replay | Zero importers; no connectivity listener |
 | `hooks.ts`, `alerts.ts` | Client data hooks, low-stock alerts | Zero importers; dashboard and inventory recompute inline |
 | `whatsapp-commander.ts` | Admin commands in chat | Zero importers, and its writes are schema-invalid |
 
@@ -1229,6 +1229,23 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Still open in this cluster:** offline queue activation, Drive sync (real or removed), and the unused hooks and alerts.
 
+### 11.14 Slice 14: offline queue activation (2026-10-23)
+
+**Feature closed:** the offline mutation queue, previously scaffold with zero importers.
+
+| Change | Where | Why |
+|---|---|---|
+| Queue drain and status | `src/components/system/OfflineSync.tsx` (new) | Drains on mount, on the `online` event and every 30 seconds; shows a pill while offline or while mutations wait; "Sync now" retries |
+| First real producer | `src/lib/activity.ts` | When the audit write fails, the entry is enqueued instead of logged and lost; the queue replays it when the database is reachable |
+| Mounted once | `src/app/layout.tsx` | Sits beside the WhatsApp sync provider, inside the auth gate |
+| Queue mechanics tests | `src/scripts/test-offline-queue.ts` (new) | Enqueue create/update/delete, remove, clear, and a corrupt store safely yields an empty queue |
+
+**Scope, stated plainly:** only audit entries queue themselves today. Sales, invoices and payments still require the server because they allocate document numbers; queueing them needs client-generated identity and conflict rules, which is a design decision, not a wiring task. The queue is last-write-wins on replay, so it must not be pointed at financial writes without that design.
+
+**Verified:** `npm run typecheck` clean; `npm test` 78 assertions across 10 suites; targeted ESLint clean. Replay against PocketBase itself is not exercised by the tests.
+
+**Still open in this cluster:** Drive sync (real or removed), the unused hooks and alerts, and the rest of D-39.
+
 ## Appendix A: Route inventory
 
 44 route pages, all client components.
@@ -1322,7 +1339,7 @@ Chronological record of work done after the audit. Each entry lists what changed
 
 **Reporting**: `analytics.ts`, `reports.ts`, `alerts.ts`, `sync-engine.ts`, `hooks.ts`, `utils.ts`, `csv.ts`
 
-**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `offline-queue.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 6 modules, including the whole sync domain.
+**Modules with zero importers outside their own test scripts**: `imitation-jewelry-engine.ts`, `omnichannel-buffer-engine.ts`, `sync-engine.ts`, `hooks.ts`, `whatsapp-commander.ts`. `alerts.ts` duplicates `useLowStockAlerts` and is also unused. These are the gap between "code exists" and "the product does it": 5 modules, including the whole sync domain.
 
 ## Appendix D: Glossary
 

@@ -496,9 +496,9 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
         <aside class="vitals" aria-label="Repository vitals">
           <div class="vitals-head"><span>Vitals</span><span>commit f0e96b4</span></div>
           <div class="vitals-body">
-            <div class="vital"><div class="vital-num" data-count="88300">88,300</div><div class="vital-label">lines of TypeScript</div></div>
+            <div class="vital"><div class="vital-num" data-count="88400">88,400</div><div class="vital-label">lines of TypeScript</div></div>
             <div class="vital"><div class="vital-num" data-count="13">13</div><div class="vital-label">API routes that cannot ship</div></div>
-            <div class="vital"><div class="vital-num" data-count="6">6</div><div class="vital-label">modules with no importer</div></div>
+            <div class="vital"><div class="vital-num" data-count="5">5</div><div class="vital-label">modules with no importer</div></div>
             <div class="vital"><div class="vital-num" data-count="3">3</div><div class="vital-label">P1 defects open</div></div>
           </div>
         </aside>
@@ -973,7 +973,7 @@ const FEATURES = [
   ["Static production build","platform","absent","13 routes cannot exist under export (D-08)"],
   ["Native Android APK","platform","partial","Blocked by exFAT symlinks on this machine"],
   ["PWA install","platform","live","Manifest and apple meta"],
-  ["Offline mutation queue","platform","scaffold","No importer, no connectivity listener"],
+  ["Offline mutation queue","platform","live","Drains on reconnect and every 30s; audit writes queue when the database is unreachable"],
   ["Google Drive sync","platform","scaffold","Simulated with a timeout"],
   ["Backup and restore","platform","live","Download, preview and typed-confirm restore, plus a daily browser snapshot"],
   ["Activity log","platform","live","Before and after JSON snapshots"],
@@ -1252,7 +1252,6 @@ const ORPHANS = [
   ["imitation-jewelry-engine.ts","Craft taxonomy and wholesale tiers","No route, no importer"],
   ["omnichannel-buffer-engine.ts","Channel buffers, cart reservations","No importer, in-memory only"],
   ["sync-engine.ts and sync clients","Shopify and WooCommerce sync","Seven TODOs, no importer"],
-  ["offline-queue.ts","Queued mutation replay","No importer, no connectivity listener"],
   ["hooks.ts and alerts.ts","Client data hooks and alerts","No importer, dashboard recomputes inline"],
   ["whatsapp-commander.ts","Admin commands in chat","No importer, schema-invalid writes"]
 ];
@@ -1267,7 +1266,8 @@ const VERIFY = [
   ["Tax math tests","npx tsx src/scripts/test-invoice-math.ts","pass","12 assertions: inclusive split, discount allocation, zero-total invoices, rate resolution."],
   ["Return policy tests","npx tsx src/scripts/test-returns-policy.ts","pass","9 assertions: cumulative over-return, unknown lines, fractional and zero quantities."],
   ["Tenant auth tests","npx tsx src/scripts/test-tenant-auth.ts","pass","16 assertions: tenant access, order binding, injection rejection and the role capability rule."],
-  ["Test command","npm test","pass","72 assertions across nine suites; non-zero exit on failure."],
+  ["Test command","npm test","pass","78 assertions across ten suites; non-zero exit on failure."],
+  ["Offline queue tests","npx tsx src/scripts/test-offline-queue.ts","pass","6 assertions: enqueue, remove, clear, corrupt store."],
   ["Backup tests","npx tsx src/scripts/test-backup.ts","pass","6 assertions: validation, summary counts, staleness."],
   ["Export invoice tests","npx tsx src/scripts/test-cross-border.ts","pass","6 assertions: FX both ways, LUT zero-rating, foreign lines, IGST, declaration."],
   ["Cheque lifecycle tests","npx tsx src/scripts/test-cheque-register.ts","pass","9 assertions: validation, maturity, stale rule, illegal transitions, portfolio totals."],

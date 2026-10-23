@@ -5,6 +5,7 @@
 
 import { pb } from './pocketbase';
 import { normalizeDateBounds } from './utils';
+import { OfflineQueue } from './offline-queue';
 
 // ===========================================
 // TYPES
@@ -150,18 +151,27 @@ export async function logActivity(
         userName?: string;
     }
 ): Promise<void> {
+    const payload = {
+        action,
+        entity_type: entityType,
+        entity_id: options?.entityId || '',
+        description,
+        old_values: options?.oldValues,
+        new_values: options?.newValues,
+        user_name: options?.userName || '',
+    };
+
     try {
-        await pb.collection('activity_logs').create({
-            action,
-            entity_type: entityType,
-            entity_id: options?.entityId || '',
-            description,
-            old_values: options?.oldValues,
-            new_values: options?.newValues,
-            user_name: options?.userName || '',
-        });
+        await pb.collection('activity_logs').create(payload);
     } catch (error) {
-        console.error('Error logging activity:', error);
+        // Keep the audit entry when the database is unreachable; the offline
+        // queue replays it when connectivity returns.
+        console.warn('Activity log queued for replay:', error);
+        try {
+            OfflineQueue.enqueue('activity_logs', 'create', payload);
+        } catch {
+            /* storage unavailable: the entry is lost, never silently swallowed */
+        }
     }
 }
 

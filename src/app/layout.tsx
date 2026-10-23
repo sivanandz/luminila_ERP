@@ -8,6 +8,7 @@ import { AuthGate } from "@/components/auth/AuthGate";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { WhatsAppEventSyncProvider } from "@/components/whatsapp/WhatsAppEventSyncProvider";
 import { WhatsAppDrawer } from "@/components/whatsapp/WhatsAppDrawer";
+import { OfflineSync } from "@/components/system/OfflineSync";
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
@@ -50,6 +51,7 @@ export default function RootLayout({
         <AuthProvider>
           <AuthGate>
             <WhatsAppEventSyncProvider />
+            <OfflineSync />
             <Sidebar />
             <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-16 md:pb-0">
               <ErrorBoundary>
