@@ -129,7 +129,6 @@ const systemItems: NavItem[] = [
     { href: "/users", icon: <UserCog size={20} />, label: "User Management", adminOnly: true },
     { href: "/backup", icon: <Database size={20} />, label: "Backup & Restore", adminOnly: true },
     { href: "/settings", icon: <Settings size={20} />, label: "Settings", adminOnly: true },
-    { href: "/support", icon: <Headphones size={20} />, label: "Support" },
 ];
 
 function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {

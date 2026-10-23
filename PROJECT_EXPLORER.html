@@ -486,7 +486,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 55%, transpare
           <h1>The Luminila system, <em>as it actually is</em>.</h1>
           <p class="hero-note">A jewelry ERP and point of sale that runs on a local database, a Rust shell, and a WhatsApp sidecar. This page maps what is built, what is broken, and what is only a file on disk.</p>
           <div class="meta-row">
-            <span class="chip accent"><span class="dot"></span>20 open · 35 fixed</span>
+            <span class="chip accent"><span class="dot"></span>17 open · 38 fixed</span>
             <span class="chip"><span class="mono">40</span> routes</span>
             <span class="chip"><span class="mono">55</span> collections</span>
             <span class="chip"><span class="mono">79</span> service modules</span>
@@ -1157,11 +1157,11 @@ const DEFECTS = [
     where:"src/lib/invoice.ts:390-408",
     impact:"Rows are written without account_email while the reader filters on it. The writer has no callers, so it is dead code waiting to be reused.",
     fix:"Delete it and use the settings service." },
-  { id:"D-30", sev:"P3", area:"platform", title:"Client default port disagrees with the dev script",
+  { id:"D-30", sev:"P3", status:"fixed", area:"platform", title:"Client default port disagrees with the dev script",
     where:"src/lib/pocketbase.ts:4 · scripts/dev-all.js:106-123",
     impact:"The client targets 8091 while the script serves 8090. It works only because of a fallback probe, and new callers inherit the inconsistency.",
     fix:"Derive both from one source." },
-  { id:"D-31", sev:"P3", area:"ui", title:"Navigation points at a route that does not exist and omits others",
+  { id:"D-31", sev:"P3", status:"fixed", area:"ui", title:"Navigation points at a route that does not exist and omits others",
     where:"src/components/layout/Sidebar.tsx:121 · MobileDrawer",
     impact:"The support link 404s, several real routes are reachable only from inside pages, and the drawer omits expense categories.",
     fix:"Align both navigation surfaces with the route table." },
@@ -1169,7 +1169,7 @@ const DEFECTS = [
     where:"src/app/layout.tsx:45 · src/app/globals.css:172-174 · 145 hex literals",
     impact:"Dark mode is hardcoded, the light palette is dead, 74 dark utilities never fire, the sans token references itself, and the display font is never loaded.",
     fix:"Pick one theme strategy, fix the token block, and replace literals with tokens." },
-  { id:"D-33", sev:"P3", area:"ui", title:"Pinch zoom is disabled and content can sit under the mobile nav",
+  { id:"D-33", sev:"P3", status:"fixed", area:"ui", title:"Pinch zoom is disabled and content can sit under the mobile nav",
     where:"src/app/layout.tsx:21-22 · fixed pb-16",
     impact:"Accessibility regression, and on notched devices the last row of content hides behind the navigation.",
     fix:"Allow scaling and reserve the safe area." },

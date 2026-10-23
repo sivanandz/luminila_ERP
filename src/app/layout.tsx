@@ -20,8 +20,6 @@ const jetbrainsMono = JetBrains_Mono({
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
   viewportFit: "cover",
   themeColor: "#001F3F",
 };
@@ -53,7 +51,7 @@ export default function RootLayout({
             <WhatsAppEventSyncProvider />
             <OfflineSync />
             <Sidebar />
-            <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-16 md:pb-0">
+            <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-[calc(4rem+env(safe-area-inset-bottom,0px))] md:pb-0">
               <ErrorBoundary>
                 {children}
               </ErrorBoundary>
