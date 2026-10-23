@@ -1604,7 +1604,7 @@ Verified commands at this point: `npm run typecheck` exit 0; `npm test` 144 asse
 
 **Verified:** `cargo check` finished clean in 30s and validated the new config; `npm run typecheck` and `npm test` (144 assertions, 20 suites) pass.
 
-**Build status, stated precisely:** with the export removed, `next build` now gets past the former contradiction and compiles the application until this volume's filesystem refuses a symlink operation (`readlink … EISDIR`, the same exFAT limitation the dev script works around). The route-versus-export conflict is gone; producing the artifact still requires a filesystem that supports symlinks, which this one does not.
+**Build status, stated precisely (updated 2026-10-24):** the route-versus-export conflict was removed here. The remaining exFAT `readlink … EISDIR` blocker was then solved by a parallel agent with `scripts/fix-exfat-readlink.cjs` (normalizes the spurious error to `EINVAL`, loaded via `NODE_OPTIONS` in the build scripts). I verified the result independently: `server-dist/server.js` and its traced `node_modules`/static output exist, the standalone server boots on the loopback port, `/login` returns 200, and an API handler executes (400 validation rather than 404). The Tauri installer itself was still not produced.
 
 **Remaining P1:** S-06 only.
 
@@ -1667,7 +1667,7 @@ Remaining, after the applied bundle (§11.47):
 |---|---|
 | S-06 | Approval plus a `TENANT_REGISTRY_KEY` to run `scripts/rekey-tenant-registry.ts --apply` (no registry exists on this machine, so there is nothing to re-key locally). D-23 is closed (§11.57). |
 
-**What is proven and what is not:** the code-level conflict behind D-08 is gone and the server-backed config compiles; an installer was **not** produced, because this volume refuses the symlinks the build requires. Migrations **were applied on 2026-10-23** (§11.47) after sandbox and rollback tests; the tenant registry was not modified.
+**What is proven and what is not:** the server-backed build is now verified end-to-end for the Next side (§11.58) — standalone output assembled, server booted, pages and API handlers responding. A Tauri installer was still **not** produced. Migrations **were applied on 2026-10-23** (§11.47) after sandbox and rollback tests; the tenant registry was not modified.
 
 ### 11.41 Slice 40: two findings verified closed (2026-10-23)
 
@@ -1940,6 +1940,23 @@ Final pass removed the last nine direct calls across eight files:
 **Verified:** `npm run typecheck` clean; `npm test` 144 assertions across 20 suites; targeted ESLint 0 errors.
 
 **Register: 54 fixed, 1 open — S-06 only.**
+
+### 11.58 Shared-workspace verification and build unblock (2026-10-24)
+
+**Coordination.** A second agent works in this checkout. Its changes were present as uncommitted work when this round ran; this round did not stage, modify or revert any of them. My edits stay in this document.
+
+| Parallel work (uncommitted at the time of writing) | Effect |
+|---|---|
+| `scripts/fix-exfat-readlink.cjs` + `NODE_OPTIONS` wiring in `package.json` | Normalizes libuv's exFAT `EISDIR` to `EINVAL`, removing the last build blocker |
+| `next.config.ts` comment, `.gitignore` ignores for `server-dist/` | Documentation and generated-output hygiene |
+| Header comment on `pb_migrations/1792774206_store_settings_rules.js` | Removes the stale "DRAFT — not applied" banner; comment-only change to an applied migration. The same stale banner remains on the other seven applied migration files and should be cleaned by their owner |
+| Re-verification appendix in `BUG_AUDIT_REPORT_2026-10-22.md` | Independently re-checked all 16 findings; conclusions match §11.42 |
+
+**Verified by me (not taken on trust):** standalone output exists and is complete (`server-dist/server.js`, traced `node_modules`, `.next/static`); booting it on loopback returned **200** for `/login` and **400** from `/api/tracking/st-courier`, proving a route handler executed. Before this, all repository gates were green: typecheck exit 0, 144 assertions across 20 suites, 0 lint errors, explorer script parses, `cargo check` clean, re-key tooling dry-run and `--verify` exit cleanly with no registry present.
+
+**Residual risk carried forward (from the parallel re-verification):** first-run provisioning of a *brand-new* tenant remains anonymous and uncapped. Authenticated tenant control covers existing tenants (S-01/S-02); a provision allow-list or cap is recommended before hosting beyond the desktop/tunnel model. This is recorded, not silently accepted.
+
+**Still open:** S-06 only (deployment-time registry re-key; no registry exists on this machine).
 
 ## Appendix A: Route inventory
 

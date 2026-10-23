@@ -1219,9 +1219,9 @@ const BUILD_OPTIONS = [
 ];
 
 const BLOCKERS = [
-  ["P1","Static export versus route handlers","next.config.ts:9 enables output export in production. Three handlers declare force-dynamic. The export step cannot emit them, so the build stops.","D-08"],
+  ["Resolved","Static export versus route handlers","Resolved by the server-backed architecture: production now emits standalone output and the server is supervised.","D-08 (fixed)"],
   ["P2","exFAT volume blocks native Android","Tauri and Gradle need symlinks for libapp_lib.so. exFAT cannot store them, so the APK build aborts on this machine.","D-33"],
-  ["P2","No webpack fallback for release builds","The dev script passes --webpack to avoid the Turbopack symlink panic. next build passes no flag.","D-08"],
+  ["Resolved","exFAT readlink blocks release builds","Resolved by scripts/fix-exfat-readlink.cjs loaded through NODE_OPTIONS; build:desktop assembles server-dist and the standalone server was booted and verified.","D-08 (fixed)"],
   ["P2","Schema debt behind working screens","Job cards and cheques live in a settings JSON blob, product GST rate and channel have no columns, and the invoice order index is missing. The eight-file bundle was applied and verified on 2026-10-23; see PROJECT_MASTER section 11.47.","D-36"]
 ];
 
@@ -1282,7 +1282,8 @@ const VERIFY = [
   ["Karigar costing tests","npx tsx src/scripts/test-manufacturing.ts","pass","7 assertions: raw cost, charges, scrap credit, tolerance pass and fail, numbering."],
   ["QC routing tests","npx tsx src/scripts/test-returns-qc.ts","pass","4 assertions: grade to action mapping, and deductions only on remorse."],
   ["GSTR-1 period tests","npx tsx src/scripts/test-gstr1-period.ts","pass","3 assertions: MMYYYY period and the 1 April financial-year boundary."],
-  ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build now uses webpack with the server-backed config."]
+  ["CI","GitHub Actions, push and pull request","pass","typecheck, lint and tests; next build now uses webpack with the server-backed config."],
+  ["Desktop build","npm run build:desktop","pass","standalone server-dist assembled and booted; /login 200 and an API handler executed."]
 ];
 
 /* =====================================================================
