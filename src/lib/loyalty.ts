@@ -3,6 +3,7 @@
  * Customer loyalty program with points earning, redemption, and tier management using PocketBase
  */
 
+import type PocketBase from 'pocketbase';
 import { pb } from './pocketbase';
 import { enqueueTask } from './concurrency';
 
@@ -91,15 +92,16 @@ const DEFAULT_LOYALTY_SETTINGS: LoyaltySettings = {
     is_active: true,
 };
 
-let cachedSettings: LoyaltySettings | null = null;
-
-export async function getLoyaltySettings(): Promise<LoyaltySettings> {
-    if (cachedSettings) return cachedSettings;
-
+/**
+ * Read loyalty settings through an explicit client.
+ *
+ * CO-08: the capture path runs against a per-tenant client. The previous
+ * module-level cache also leaked one tenant's settings into another tenant's
+ * request, so settings are read per call through the caller's client.
+ */
+export async function getLoyaltySettings(db: PocketBase = pb): Promise<LoyaltySettings> {
     try {
-        const record = await pb.collection('loyalty_settings').getFirstListItem<LoyaltySettings>('is_active=true');
-        cachedSettings = record;
-        return record;
+        return await db.collection('loyalty_settings').getFirstListItem<LoyaltySettings>('is_active=true');
     } catch {
         return DEFAULT_LOYALTY_SETTINGS;
     }
@@ -109,9 +111,9 @@ export async function getLoyaltySettings(): Promise<LoyaltySettings> {
 // Tiers
 // =============================================
 
-export async function getLoyaltyTiers(): Promise<LoyaltyTier[]> {
+export async function getLoyaltyTiers(db: PocketBase = pb): Promise<LoyaltyTier[]> {
     try {
-        const records = await pb.collection('loyalty_tiers').getFullList<LoyaltyTier>({
+        const records = await db.collection('loyalty_tiers').getFullList<LoyaltyTier>({
             sort: 'min_points',
         });
         return records;
@@ -121,9 +123,9 @@ export async function getLoyaltyTiers(): Promise<LoyaltyTier[]> {
     }
 }
 
-export async function getTierByPoints(points: number): Promise<LoyaltyTier | null> {
+export async function getTierByPoints(points: number, db: PocketBase = pb): Promise<LoyaltyTier | null> {
     try {
-        const record = await pb.collection('loyalty_tiers').getFirstListItem<LoyaltyTier>(
+        const record = await db.collection('loyalty_tiers').getFirstListItem<LoyaltyTier>(
             `min_points <= ${points} && (max_points = 0 || max_points >= ${points})`,
             { sort: '-min_points' }
         );
@@ -138,9 +140,9 @@ export async function getTierByPoints(points: number): Promise<LoyaltyTier | nul
 // Accounts
 // =============================================
 
-export async function getLoyaltyAccount(customerId: string): Promise<LoyaltyAccount | null> {
+export async function getLoyaltyAccount(customerId: string, db: PocketBase = pb): Promise<LoyaltyAccount | null> {
     try {
-        const record = await pb.collection('loyalty_accounts').getFirstListItem<LoyaltyAccount>(
+        const record = await db.collection('loyalty_accounts').getFirstListItem<LoyaltyAccount>(
             `customer="${customerId}"`,
             {
                 expand: 'tier,customer'
@@ -152,14 +154,14 @@ export async function getLoyaltyAccount(customerId: string): Promise<LoyaltyAcco
     }
 }
 
-export async function createLoyaltyAccount(customerId: string): Promise<LoyaltyAccount | null> {
-    const settings = await getLoyaltySettings();
-    const tiers = await getLoyaltyTiers();
+export async function createLoyaltyAccount(customerId: string, db: PocketBase = pb): Promise<LoyaltyAccount | null> {
+    const settings = await getLoyaltySettings(db);
+    const tiers = await getLoyaltyTiers(db);
     const bronzeTier = tiers.find(t => t.name === 'Bronze') || tiers[0];
     const signupBonus = settings?.signup_bonus || 0;
 
     try {
-        const record = await pb.collection('loyalty_accounts').create({
+        const record = await db.collection('loyalty_accounts').create({
             customer: customerId,
             tier: bronzeTier?.id,
             total_points_earned: signupBonus,
@@ -170,7 +172,7 @@ export async function createLoyaltyAccount(customerId: string): Promise<LoyaltyA
 
         // Record signup bonus transaction
         if (signupBonus > 0) {
-            await recordTransaction(record.id, 'bonus', signupBonus, signupBonus, 'Welcome bonus');
+            await recordTransaction(record.id, 'bonus', signupBonus, signupBonus, 'Welcome bonus', undefined, undefined, db);
         }
 
         return record as unknown as LoyaltyAccount;
@@ -180,10 +182,10 @@ export async function createLoyaltyAccount(customerId: string): Promise<LoyaltyA
     }
 }
 
-export async function getOrCreateLoyaltyAccount(customerId: string): Promise<LoyaltyAccount | null> {
-    let account = await getLoyaltyAccount(customerId);
+export async function getOrCreateLoyaltyAccount(customerId: string, db: PocketBase = pb): Promise<LoyaltyAccount | null> {
+    let account = await getLoyaltyAccount(customerId, db);
     if (!account) {
-        account = await createLoyaltyAccount(customerId);
+        account = await createLoyaltyAccount(customerId, db);
     }
     return account;
 }
@@ -192,8 +194,8 @@ export async function getOrCreateLoyaltyAccount(customerId: string): Promise<Loy
 // Points Calculation
 // =============================================
 
-export async function calculatePointsToEarn(purchaseAmount: number, tierId?: string): Promise<number> {
-    const settings = await getLoyaltySettings();
+export async function calculatePointsToEarn(purchaseAmount: number, tierId?: string, db: PocketBase = pb): Promise<number> {
+    const settings = await getLoyaltySettings(db);
     if (!settings) return 0;
 
     // Base points: amount / 100 * points_per_rupee
@@ -202,7 +204,7 @@ export async function calculatePointsToEarn(purchaseAmount: number, tierId?: str
     // Apply tier multiplier
     if (tierId) {
         try {
-            const tier = await pb.collection('loyalty_tiers').getOne<LoyaltyTier>(tierId);
+            const tier = await db.collection('loyalty_tiers').getOne<LoyaltyTier>(tierId);
             if (tier?.multiplier) {
                 points = Math.floor(points * tier.multiplier);
             }
@@ -247,10 +249,11 @@ async function recordTransaction(
     balanceAfter: number,
     description?: string,
     referenceType?: string,
-    referenceId?: string
+    referenceId?: string,
+    db: PocketBase = pb
 ): Promise<LoyaltyTransaction | null> {
     try {
-        const record = await pb.collection('loyalty_transactions').create({
+        const record = await db.collection('loyalty_transactions').create({
             account: accountId,
             type,
             points,
@@ -270,19 +273,20 @@ export async function earnPoints(
     customerId: string,
     purchaseAmount: number,
     referenceType: string,
-    referenceId: string
+    referenceId: string,
+    db: PocketBase = pb
 ): Promise<{ pointsEarned: number; newBalance: number } | null> {
     return enqueueTask(`loyalty_${customerId}`, async () => {
-        const account = await getOrCreateLoyaltyAccount(customerId);
+        const account = await getOrCreateLoyaltyAccount(customerId, db);
         if (!account) return null;
 
-        const pointsToEarn = await calculatePointsToEarn(purchaseAmount, account.tier);
+        const pointsToEarn = await calculatePointsToEarn(purchaseAmount, account.tier, db);
 
         if (pointsToEarn <= 0) return { pointsEarned: 0, newBalance: account.current_balance };
 
         try {
             // Update account atomically
-            const updated = await pb.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
+            const updated = await db.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
                 'current_balance+': pointsToEarn,
                 'total_points_earned+': pointsToEarn,
                 'lifetime_value+': purchaseAmount,
@@ -299,7 +303,8 @@ export async function earnPoints(
                 newBalance,
                 `Earned from ${referenceType}`,
                 referenceType,
-                referenceId
+                referenceId,
+                db
             );
 
             return { pointsEarned: pointsToEarn, newBalance };
@@ -380,19 +385,20 @@ export async function adjustPoints(
     customerId: string,
     pointsAdjustment: number,
     reason: string,
-    _performedBy?: string
+    _performedBy?: string,
+    db: PocketBase = pb
 ): Promise<{ newBalance: number } | null> {
     if (!Number.isFinite(pointsAdjustment) || pointsAdjustment === 0) {
         throw new Error('Adjustment must be a non-zero number');
     }
 
-    const account = await getLoyaltyAccount(customerId);
+    const account = await getLoyaltyAccount(customerId, db);
     if (!account) return null;
 
     try {
         // Operators, not a value read a moment ago: a concurrent earn or redeem
         // between the read and the write would otherwise be overwritten.
-        const updated = await pb.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
+        const updated = await db.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
             'current_balance+': pointsAdjustment,
             ...(pointsAdjustment > 0 && { 'total_points_earned+': pointsAdjustment }),
             last_activity: new Date().toISOString(),
@@ -401,7 +407,7 @@ export async function adjustPoints(
         const newBalance = updated.current_balance;
         if (newBalance < 0) {
             // Compensate and refuse; the pre-read cannot prove the balance.
-            await pb.collection('loyalty_accounts').update(account.id, {
+            await db.collection('loyalty_accounts').update(account.id, {
                 'current_balance+': -pointsAdjustment,
             }).catch(() => {});
             throw new Error('Adjustment would result in negative balance');
@@ -414,7 +420,9 @@ export async function adjustPoints(
             pointsAdjustment,
             newBalance,
             reason,
-            'manual'
+            'manual',
+            undefined,
+            db
         );
 
         return { newBalance };

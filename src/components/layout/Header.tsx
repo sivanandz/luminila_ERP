@@ -22,9 +22,11 @@ interface HeaderProps {
     subtitle?: string;
     action?: React.ReactNode;
     children?: React.ReactNode;
+    /** Hide the global search on pages that render their own search field. */
+    hideSearch?: boolean;
 }
 
-export function Header({ title, subtitle, action, children }: HeaderProps) {
+export function Header({ title, subtitle, action, children, hideSearch }: HeaderProps) {
     const [searchQuery, setSearchQuery] = useState("");
     const [hasNotifications] = useState(false);
     const [isServerModalOpen, setIsServerModalOpen] = useState(false);
@@ -64,6 +66,7 @@ export function Header({ title, subtitle, action, children }: HeaderProps) {
                     </div>
 
                     {/* Search Bar - hidden on very small phones, visible on sm+ */}
+                    {!hideSearch && (
                     <div className="relative group flex-1 max-w-xs md:max-w-md hidden sm:block">
                         <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-muted-foreground group-focus-within:text-primary">
                             <Search size={18} />
@@ -77,6 +80,7 @@ export function Header({ title, subtitle, action, children }: HeaderProps) {
                             onChange={(e) => setSearchQuery(e.target.value)}
                         />
                     </div>
+                    )}
                 </div>
 
                 <div className="flex items-center gap-1.5 md:gap-3 shrink-0">

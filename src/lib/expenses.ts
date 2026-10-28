@@ -295,26 +295,47 @@ export async function getCategories(): Promise<ExpenseCategory[]> {
         });
 
         if (records.length === 0) {
-            const defaultCategories = [
-                { name: 'Packaging & Boxes', description: 'Jewelry boxes, velvet pouches, carry bags' },
-                { name: 'Courier & Shipping', description: 'Logistics, delivery and freight' },
-                { name: 'Shop Utilities', description: 'Electricity, internet, water, maintenance' },
-                { name: 'Staff Welfare & Tea', description: 'Refreshments and staff amenities' },
-                { name: 'Miscellaneous', description: 'General retail and office overheads' },
-            ];
-            for (const cat of defaultCategories) {
-                try {
-                    await pb.collection('expense_categories').create({
-                        name: cat.name,
-                        description: cat.description,
-                        is_active: true,
-                    });
-                } catch { }
+            // Seed only when the collection is truly empty (any status), not
+            // merely when no ACTIVE rows exist — otherwise disabling every
+            // category would re-seed the defaults on top of the disabled ones.
+            const anyRows = await pb.collection('expense_categories').getList(1, 1);
+            if (anyRows.totalItems === 0) {
+                // Deterministic per-tenant record ids make the seed idempotent:
+                // React dev StrictMode double-mounts this fetch, and two
+                // concurrent seeds used to each see "empty" and insert the
+                // defaults twice (the duplicate rows reported on this page).
+                // With ids derived from the signed-in tenant + name, a second
+                // concurrent seed collides on the same ids and is swallowed by
+                // the catch below, while different tenants get their own rows.
+                const seedId = (name: string): string => {
+                    const tenant = String((pb.authStore.model as { email?: string } | null)?.email || 'default').toLowerCase();
+                    let h = 5381;
+                    const input = `${tenant}:${name}`;
+                    for (let i = 0; i < input.length; i++) h = ((h * 33) ^ input.charCodeAt(i)) >>> 0;
+                    return ('ec' + h.toString(36)).padEnd(15, '0').slice(0, 15);
+                };
+                const defaultCategories = [
+                    { name: 'Packaging & Boxes', description: 'Jewelry boxes, velvet pouches, carry bags' },
+                    { name: 'Courier & Shipping', description: 'Logistics, delivery and freight' },
+                    { name: 'Shop Utilities', description: 'Electricity, internet, water, maintenance' },
+                    { name: 'Staff Welfare & Tea', description: 'Refreshments and staff amenities' },
+                    { name: 'Miscellaneous', description: 'General retail and office overheads' },
+                ];
+                for (const cat of defaultCategories) {
+                    try {
+                        await pb.collection('expense_categories').create({
+                            id: seedId(cat.name),
+                            name: cat.name,
+                            description: cat.description,
+                            is_active: true,
+                        });
+                    } catch { }
+                }
+                records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
+                    filter: 'is_active=true',
+                    sort: 'name',
+                });
             }
-            records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
-                filter: 'is_active=true',
-                sort: 'name',
-            });
         }
 
         return records.map((c) => ({

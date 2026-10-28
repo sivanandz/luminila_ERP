@@ -43,8 +43,9 @@ export function generateBarcodeSVG(sku: string): string {
 }
 
 /**
- * Generate 54x11mm Dumbbell Label HTML for jewelry thermal printers
- * Left Wing A (19x10mm) + Adhesive-free Bridge (16x2mm) + Right Wing B (19x10mm)
+ * Legacy 54x11mm two-wing dumbbell label HTML.
+ * Production labels now use the Seznik 14.3x100mm 3-up fold-in-half stock,
+ * rendered in src/app/labels/page.tsx; keep this for existing old-stock tags.
  */
 export function generateDumbbellLabelHTML(product: {
     sku: string;

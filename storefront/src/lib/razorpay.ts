@@ -32,6 +32,7 @@ export function loadRazorpayScript(): Promise<boolean> {
 
 export interface RazorpayPaymentOptions {
     amount: number; // in INR rupees
+    /** Razorpay order id created server-side (CO-05); carries the ERP order reference. */
     orderId?: string;
     customerName: string;
     customerPhone: string;
@@ -40,7 +41,7 @@ export interface RazorpayPaymentOptions {
     brandName?: string;
     razorpayKey?: string;
     themeColor?: string;
-    onSuccess: (paymentId: string) => void;
+    onSuccess: (paymentId: string, signature?: string) => void;
     onFailure: (error: any) => void;
 }
 
@@ -59,6 +60,7 @@ export async function openRazorpayCheckout(options: RazorpayPaymentOptions) {
         key: razorpayKey,
         amount: options.amount * 100, // Amount in paise
         currency: "INR",
+        ...(options.orderId ? { order_id: options.orderId } : {}),
         name: options.brandName || "Fashion Atelier",
         description: options.description || "Online Jewellery Order",
         image: "https://cdn-icons-png.flaticon.com/512/751/751508.png",
@@ -75,8 +77,8 @@ export async function openRazorpayCheckout(options: RazorpayPaymentOptions) {
                 options.onFailure({ message: "Payment cancelled by user" });
             },
         },
-        handler: function (response: { razorpay_payment_id: string }) {
-            options.onSuccess(response.razorpay_payment_id);
+        handler: function (response: { razorpay_payment_id: string; razorpay_signature?: string }) {
+            options.onSuccess(response.razorpay_payment_id, response.razorpay_signature);
         },
     };
 

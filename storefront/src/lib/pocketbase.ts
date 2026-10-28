@@ -25,6 +25,8 @@ export interface StorefrontProduct {
     image_url?: string;
     total_stock: number;
     stock_status: "in_stock" | "low_stock" | "out_of_stock";
+    /** Sellable units for this product. Checkout must send a variant id when there is more than one. */
+    variants: StorefrontVariant[];
     base_metal: string; // e.g., "Skin-Safe Brass & Copper Alloy"
     plating_type: string; // e.g., "22K Micro Gold Plated", "Antique Matte", "Rhodium"
     stone_type?: string; // e.g., "Kemp Stones", "AAA Zircon", "Uncut Kundan"
@@ -32,19 +34,44 @@ export interface StorefrontProduct {
     care_instructions?: string;
 }
 
+export interface StorefrontVariant {
+    id: string;
+    label: string;
+    stock_level: number;
+}
+
 export interface StorefrontCartItem {
     product: StorefrontProduct;
     quantity: number;
+    /** Chosen sellable variant. Required by the order API for multi-variant products. */
+    variantId?: string;
+    variantLabel?: string;
+}
+
+/** Stable identity for a cart line: one product can appear once per variant. */
+export function cartLineKey(item: Pick<StorefrontCartItem, "product" | "variantId">): string {
+    return `${item.product.id}:${item.variantId || "base"}`;
+}
+
+function variantLabel(v: any): string {
+    const label = [v.variant_name, v.size, v.color, v.purity_karat ? `${v.purity_karat}K` : ""]
+        .filter(Boolean)
+        .join(" · ");
+    return label || v.sku_suffix || `Variant ${String(v.id || "").slice(-4)}`;
 }
 
 export interface StorefrontOrderInput {
     customerName: string;
     customerPhone: string;
+    customerEmail?: string;
     shippingAddress: string;
     city: string;
+    state?: string;
     pincode: string;
     items: {
         productId: string;
+        /** Required when the product has more than one variant. */
+        variantId?: string;
         sku: string;
         name: string;
         price: number;
@@ -56,6 +83,22 @@ export interface StorefrontOrderInput {
     paymentMethod: "razorpay_online" | "whatsapp_concierge" | "cod";
     razorpayPaymentId?: string;
     assignedCourier?: string; // e.g., "BlueDart Express via Shiprocket"
+    /** Shipping (+ COD handling) charged at checkout, in rupees. */
+    shippingCharges?: number;
+    /** UTM attribution captured from the landing URL. */
+    campaign?: string;
+    /** Marketing consent captured at checkout (DPDP). */
+    marketingConsent?: boolean;
+    /** B2B billing identity (A3/A4). */
+    companyName?: string;
+    gstin?: string;
+    billingSameAsShipping?: boolean;
+    billingAddress?: string;
+    billingCity?: string;
+    billingState?: string;
+    billingPincode?: string;
+    /** Stable per-checkout key so a retried submit cannot double-order. */
+    idempotencyKey?: string;
 }
 
 /**
@@ -63,6 +106,26 @@ export interface StorefrontOrderInput {
  */
 export async function getStorefrontCatalog(adminEmail?: string): Promise<StorefrontProduct[]> {
     try {
+        // Primary: the ERP's public catalog route. `products` is tenant-locked,
+        // so an anonymous storefront visitor cannot read it directly — the ERP
+        // serves the bound tenant's active listings server-side.
+        try {
+            const url = adminEmail
+                ? getStorefrontApiUrl(`/api/storefront/catalog?account_email=${encodeURIComponent(adminEmail)}`)
+                : getStorefrontApiUrl("/api/storefront/catalog");
+            const res = await fetch(url);
+            if (res.ok) {
+                const data = await res.json();
+                if (data?.success && Array.isArray(data.products) && data.products.length > 0) {
+                    return data.products as StorefrontProduct[];
+                }
+            }
+        } catch (routeErr) {
+            console.warn("[Storefront] Catalog route unreachable, falling back to direct PB:", routeErr);
+        }
+
+        // Secondary: direct PocketBase read — only works for sessions whose
+        // auth email matches the tenant (operator previews).
         const filter = adminEmail && adminEmail.trim()
             ? `is_active = true && account_email = "${adminEmail.trim()}"`
             : "is_active = true";
@@ -89,14 +152,17 @@ export async function getStorefrontCatalog(adminEmail?: string): Promise<Storefr
             // Channel pricing: check if website custom rate exists
             const channelPrices = rec.channel_prices || {};
             const websitePrice = Number(channelPrices.website) || Number(rec.base_price) || 0;
-            const mrp = Math.round(websitePrice * 1.35); // 35% festive markup for strikethrough
+            const mrp = websitePrice;
 
             let stock_status: "in_stock" | "low_stock" | "out_of_stock" = "in_stock";
             if (totalStock <= 0) stock_status = "out_of_stock";
             else if (totalStock <= 3) stock_status = "low_stock";
 
             const rawCat = rec.expand?.category?.name || rec.category;
-            const cleanCategory = (rawCat && !rawCat.startsWith("iq") && rawCat.length < 50) ? rawCat : "Necklace Sets";
+            const cleanCategory =
+                rawCat && !rawCat.startsWith("iq") && rawCat.length < 50
+                    ? rawCat
+                    : "Jewellery";
 
             // Gracefully handle images: prefer base64 image_data or clean web URLs, avoiding broken WhatsApp CDN tokens
             const resolvedImage = (rec.image_data && rec.image_data.length > 20)
@@ -108,7 +174,7 @@ export async function getStorefrontCatalog(adminEmail?: string): Promise<Storefr
                 sku: rec.sku,
                 name: rec.name,
                 category: cleanCategory,
-                sub_style: (rec.sub_style as any) || "Temple",
+                sub_style: (rec.sub_style as any) || rec.craft || "",
                 description: rec.description,
                 base_price: rec.base_price,
                 website_price: websitePrice,
@@ -116,11 +182,16 @@ export async function getStorefrontCatalog(adminEmail?: string): Promise<Storefr
                 image_url: resolvedImage,
                 total_stock: totalStock,
                 stock_status,
-                base_metal: rec.base_metal || "Lead & Nickel-Free Copper Alloy",
-                plating_type: rec.plating_type || "22K Micro Gold Plated",
-                stone_type: rec.stone_type || "Kemp / Uncut Kundan",
-                occasion: rec.occasion || "Festive & Wedding",
-                care_instructions: "Wipe with soft cloth. Avoid perfumes and direct moisture.",
+                variants: productVariants.map((v: any) => ({
+                    id: v.id,
+                    label: variantLabel(v),
+                    stock_level: Math.max(0, Number(v.stock_level) || 0),
+                })),
+                base_metal: rec.base_metal || "",
+                plating_type: rec.plating_type || rec.plating || "",
+                stone_type: rec.stone_type || "",
+                occasion: rec.occasion || "",
+                care_instructions: rec.care_instructions || "",
             };
         });
     } catch (err) {
@@ -186,66 +257,180 @@ export function extractInventoryCategories(products: StorefrontProduct[]): Inven
 
 
 /**
- * Submit online order securely via ERP backend API route, falling back to PocketBase client
+ * Submit the order to the ERP intake route.
+ *
+ * The route is the only writer: it authenticates the customer session, re-prices
+ * every line, re-computes discounts and tax, and owns stock and idempotency.
+ * There is deliberately no direct-PocketBase fallback: a client-trusted write
+ * would bypass all of those guards (capture analysis §12.4.2 A41/A49).
+ *
+ * Throws an `OrderSubmissionError` carrying the HTTP status and any stock
+ * shortages the route reported, so the checkout UI can tell the customer what
+ * to do next.
  */
-export async function submitStorefrontOrder(order: StorefrontOrderInput) {
-    const txnId = `ORD-${Date.now().toString(36).toUpperCase()}`;
-
-    // 1. Primary: Secure Server-Side Order Intake via ERP API
-    try {
-        const res = await fetch(getStorefrontApiUrl("/api/storefront/order"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(order),
-        });
-
-        if (res.ok) {
-            const data = await res.json();
-            if (data.success) {
-                return { success: true, orderId: data.orderId, txnId: data.txnId };
-            }
-        }
-    } catch (apiErr) {
-        console.warn("[Storefront] Server order endpoint unreachable, trying PocketBase direct:", apiErr);
+export class OrderSubmissionError extends Error {
+    readonly status: number;
+    readonly shortages?: unknown;
+    constructor(message: string, status: number, shortages?: unknown) {
+        super(message);
+        this.name = "OrderSubmissionError";
+        this.status = status;
+        this.shortages = shortages;
     }
+}
 
-    // 2. Secondary: Direct PocketBase creation if reachable
+function customerSessionToken(): string | null {
+    if (typeof window === "undefined") return null;
     try {
-        const sale = await pb.collection("sales").create({
-            channel: "website",
-            channel_order_id: txnId,
-            customer_name: order.customerName,
-            customer_phone: order.customerPhone,
-            customer_address: `${order.shippingAddress}, ${order.city} - ${order.pincode}`,
-            subtotal: order.total,
-            discount: order.discountAmount || 0,
-            total: order.total,
-            payment_method: order.paymentMethod,
-            payment_id: order.razorpayPaymentId || "",
-            status: order.paymentMethod === "razorpay_online" ? "paid" : "pending",
-            notes: `Storefront Web Order [${order.paymentMethod.toUpperCase()}]. Courier: ${
-                order.assignedCourier || "Smart Routing"
-            }. Coupon: ${order.couponCode || "None"}.`,
-        });
+        return localStorage.getItem("luminila_storefront_token");
+    } catch {
+        return null;
+    }
+}
 
-        // Deduct inventory
-        for (const it of order.items) {
-            await pb.collection("stock_movements").create({
-                movement_type: "sale",
-                quantity: -it.quantity,
-                reference_id: sale.id,
-                source: "website",
-                notes: `Online order ${txnId}`,
-            }).catch(() => {});
-        }
-
-        return { success: true, orderId: sale.id, txnId };
-    } catch (err: any) {
-        console.error("[Storefront] Direct order submission error:", err);
-        throw new Error(
-            "Could not finalize your order automatically. Please verify your internet connection or use 1-Click WhatsApp Concierge for instant confirmation."
+export async function submitStorefrontOrder(order: StorefrontOrderInput) {
+    const token = customerSessionToken();
+    if (!token) {
+        throw new OrderSubmissionError(
+            "Please verify your WhatsApp number before placing the order.",
+            401
         );
     }
+
+    let res: Response;
+    try {
+        res = await fetch(getStorefrontApiUrl("/api/storefront/order"), {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(order),
+        });
+    } catch {
+        throw new OrderSubmissionError(
+            "Could not reach the order service. Check your connection and retry — if you already paid, retrying is safe.",
+            0
+        );
+    }
+
+    let data: any = null;
+    try {
+        data = await res.json();
+    } catch {
+        data = null;
+    }
+
+    if (!res.ok || !data?.success) {
+        const fallback =
+            res.status === 401
+                ? "Your session expired. Verify your WhatsApp number again, then retry."
+                : res.status === 409
+                  ? "One of the items just went out of stock. Refresh your bag and retry."
+                  : "The order could not be recorded. Please retry.";
+        throw new OrderSubmissionError(data?.error || fallback, res.status, data?.shortages);
+    }
+
+    return {
+        success: true as const,
+        orderId: String(data.orderId || ""),
+        txnId: String(data.txnId || ""),
+        duplicate: Boolean(data.duplicate),
+    };
+}
+
+export interface StorefrontGatewayOrder {
+    orderId: string;
+    amountPaise?: number;
+    currency?: string;
+    keyId?: string;
+}
+
+async function postStorefrontOrder<T>(
+    payload: Record<string, unknown>,
+    failure: string
+): Promise<T> {
+    const token = customerSessionToken();
+    if (!token) {
+        throw new OrderSubmissionError(
+            "Please verify your WhatsApp number before placing the order.",
+            401
+        );
+    }
+    let res: Response;
+    try {
+        res = await fetch(getStorefrontApiUrl("/api/storefront/order"), {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(payload),
+        });
+    } catch {
+        throw new OrderSubmissionError(
+            "Could not reach the order service. Check your connection and retry — a retry is safe.",
+            0
+        );
+    }
+    let data: any = null;
+    try {
+        data = await res.json();
+    } catch {
+        data = null;
+    }
+    if (!res.ok || !data?.success) {
+        throw new OrderSubmissionError(data?.error || failure, res.status, data?.shortages);
+    }
+    return data as T;
+}
+
+/**
+ * CO-05 prepare phase: create the ERP order (draft) and the Razorpay order whose
+ * notes carry the ERP order id. The customer is charged only after this exists,
+ * so a captured payment can always be mapped back and settled exactly once.
+ */
+export async function prepareStorefrontOrder(order: StorefrontOrderInput): Promise<{
+    orderId: string;
+    txnId: string;
+    duplicate?: boolean;
+    gateway: StorefrontGatewayOrder;
+}> {
+    const data = await postStorefrontOrder<any>(
+        { ...order, paymentMethod: "razorpay_online", prepareGateway: true },
+        "The order could not be prepared for payment. Please retry or use Cash on Delivery."
+    );
+    if (!data.gateway?.orderId) {
+        throw new OrderSubmissionError(
+            "Online payment is not configured on this store. Please choose Cash on Delivery or WhatsApp Concierge.",
+            503
+        );
+    }
+    return {
+        orderId: String(data.orderId || ""),
+        txnId: String(data.txnId || ""),
+        duplicate: Boolean(data.duplicate),
+        gateway: data.gateway as StorefrontGatewayOrder,
+    };
+}
+
+/** CO-05 confirm phase: verify the checkout payment and settle the order once. */
+export async function confirmStorefrontPayment(params: {
+    orderId: string;
+    paymentId: string;
+    razorpayOrderId?: string;
+    signature?: string;
+}): Promise<{ orderId: string; txnId: string; settled: boolean; duplicate?: boolean }> {
+    const data = await postStorefrontOrder<any>(
+        { confirmPayment: params },
+        "The payment could not be confirmed. Contact support with your payment id."
+    );
+    return {
+        orderId: String(data.orderId || params.orderId),
+        txnId: String(data.txnId || ""),
+        settled: Boolean(data.settled),
+        duplicate: Boolean(data.duplicate),
+    };
 }
 
 /**

@@ -5,6 +5,7 @@ import "./globals.css";
 import { AppChrome } from "@/components/layout/AppChrome";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { AuthGate } from "@/components/auth/AuthGate";
+import { PricingRulesBootstrap } from "@/components/pricing/PricingRulesBootstrap";
 
 // The CSS variables here are the ones globals.css consumes: `--font-inter` for
 // body text and `--font-manrope` for display headings. Naming them after the
@@ -59,6 +60,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <AuthProvider>
           <AuthGate>
+            <PricingRulesBootstrap />
             <AppChrome>
               {children}
             </AppChrome>

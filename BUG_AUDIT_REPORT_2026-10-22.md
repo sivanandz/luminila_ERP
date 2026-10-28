@@ -1,5 +1,11 @@
 # Bug Audit Report — 2026-10-22
 
+> **RE-VERIFICATION 2026-10-23 (late):** All 16 findings from this report were re-checked
+> against the tree after 49 remediation commits. **14 are fully fixed, 1 mostly fixed, 1
+> fixed-in-config but blocked by an exFAT drive quirk** (now also resolved — details in the
+> "Re-verification" section at the bottom). Line references below are historical (from the
+> audit baseline `f0e96b4`) and may not match the current tree.
+
 **Branch:** `fix/security-audit-remediation` @ `f0e96b4`
 **Scope:** Fresh audit of existing features before new feature work. Re-verification of all findings in `APP_LOGIC_AUDIT_REPORT_2026-03-07.md` against the current tree, plus new findings.
 **Method:** `tsc --noEmit` (clean), ESLint on `src/`, targeted production build test, line-level manual trace of money/stock/auth paths and all 13 API routes.
@@ -141,3 +147,41 @@ The March 2026 audit's critical logic findings have been **largely fixed** (shif
 4. **#4 hooks crash** — 5-line fix.
 5. **#5 clamp catch-all, #6 rollback gaps, #7 OTP caps** — small, contained.
 6. **#8 rules + #10-16** — batch hardening pass.
+---
+
+## Re-verification — 2026-10-23 (49 commits after the audit)
+
+Every finding was re-checked against current code, not against commit messages.
+
+### Fixed and verified
+
+| # | Original finding | How it is fixed now |
+|---|---|---|
+| P1-1 | POS invoice paid_amount < grand_total | Rewritten around new `src/lib/invoice-math.ts`: POS totals treated as tax-INCLUSIVE, tax back-computed in integer paise after discount allocation (largest-remainder); `paid_amount = grand_total` (`invoice.ts:1199-1205`) |
+| P1-2 | GST computed on pre-discount base | Discount is allocated across lines BEFORE the tax split (`invoice-math.ts:68-91,182-211`); POS and order paths share the module, so the two paths can no longer disagree |
+| P1-4 | Conditional hooks crashed WhatsApp chat | Hooks hoisted above the early return (`src/app/whatsapp/page.tsx:296-324`); ESLint reports zero error-severity hooks findings in `src/` |
+| P2-5 | Any 400 clamped stock to 0 | Only `validation_min_number_constraint` triggers the oversell path; all other errors throw into rollback; movement ledger reconciled to actual available qty (`pos-sales.ts:188-231`) |
+| P2-6 | Rollback skipped shift totals & orphan invoice | Rollback now deletes the invoice (and its items) and compensates shift totals (`pos-sales.ts:289-305`); `createInvoice` items loop has its own try/catch that removes header+items on failure (`invoice.ts:519-581`) |
+| P2-7 | OTP: no daily cap; token for unpersisted customer | Daily per-phone cap with day-keyed counters (`otp-store.ts`); verify-otp fails closed 503 instead of minting temp-customer tokens and refuses to sign without a configured secret (`verify-otp/route.ts:79-104`) |
+| P2-8 | store_settings rules without tenant scope | Migration `pb_migrations/1792774206_store_settings_rules.js` applied to the live DB (tenant-scoped list/view/update/delete). The file header still says "DRAFT — not applied"; only that comment is stale. The dead `updateStoreSettings` writer was deleted (`invoice.ts:396`) |
+| P3-10 | expenses.ts unsanitized search | `sanitizeFilter` applied (`expenses.ts:116-121`) |
+| P3-11 | opening_float not in schema enum | Float now written as `add` with an explicit reason (`register.ts:105-117`) |
+| P3-12 | Order invoice: '27' default, empty buyer_gstin, duplicate on retry | Seller state derived from settings then store GSTIN ('27' only as documented last resort); `buyer_gstin` populated from the customer (`orders.ts:248-261,332`); idempotent already-invoiced guard (`orders.ts:222-234`) plus unique index `idx_invoices_order` (`pb_migrations/1792774205_indexes.js`) |
+| P3-13 | Banking read-then-write overdraft race | Transaction + balance update serialized per account via `enqueueTask('bank_...')` (`banking.ts:160`) |
+| P3-14 | Document numbering cross-process race | Atomic server-side increment `current_value+` with the post-increment value read from the response (`sequence-generator.ts:75-85`); unique indexes exist on document numbers |
+| P3-15 | Client-supplied accountEmail steers tenant binding | Storefront writes require a verified customer session token; tenant resolved from the session with explicit fallback rules (`storefront/order/route.ts:80-88`) |
+| P3-16 | Unauthenticated ST Courier proxy | `FixedWindowRateLimiter` with per-client keys (`st-courier/route.ts:3-16`) |
+
+### Mostly fixed
+
+- **P1-3 tenant control plane**: GET no longer switches the global active tenant (`activate: false`), unauthenticated responses expose only the connect URL, and re-provisioning an EXISTING tenant requires a valid operator session for that tenant (`api/system/tenant-db/route.ts`). Residual: provisioning a brand-NEW tenant remains anonymous (deliberate, for first-run setup) with no cap — an attacker on a network-exposed host could still create arbitrary tenant DBs. Acceptable for the desktop/tunnel model; add a provision allow-list or cap before wide hosting.
+
+### Fixed, with an environment caveat (resolved 2026-10-23/24)
+
+- **P2-9 build**: the architecture decision landed (`output: 'standalone'`, webpack build, PocketBase + Next server bundled and supervised by the Tauri shell — `src-tauri/tauri.conf.json`, `lib.rs`). The build still failed ON THIS MACHINE because the repo sits on an **exFAT drive, where libuv's `readlink()` returns EISDIR for regular files**; webpack treats that as fatal. Fixed via new `scripts/fix-exfat-readlink.cjs`, loaded through `NODE_OPTIONS` in the `build` script (normalizes EISDIR→EINVAL across the callback, sync, and promise readlink APIs, in parent and child processes). **Final state 2026-10-24: `npm run build:desktop` passes end-to-end** — all routes generate, `server-dist/` is prepared (server.js + traced node_modules + static, ~140 MB), and the standalone server was booted with `PORT=3210` and verified serving the login page (HTTP 200) with API route handlers executing. The interim type error at `whatsapp/page.tsx:1245` was a parallel agent's mid-edit state, resolved by their committed refactor.
+
+Also verified as fixed beyond the original list (spotted during re-checks): POS quantity validation (`pos-sales.ts:91-100`), GRN atomic reservation (`purchase.ts:678+`), landed cost moved from a notes blob to an atomic numeric column (`purchase.ts:1296`, migration 1792774207), GSTIN check-digit validation, webhook dedupe/amount-match, and a 21-suite test gate wired into `npm test`.
+
+## Addendum 2026-10-24 — users-collection tenant leak (closed)
+
+Reported from the /users page: "ananya@heritagejewels.com leaked into niththigal". Root cause: `users` and `user_roles` were the only two of 63 collections without account_email scoping (their rules were `@request.auth.id != ""`), so any authenticated tenant could list every account in the system. `roles` stays global by design (shared RBAC catalog, no PII). Fixed by migration `1792800000_users_tenant_scoping` (applied to the live DB 2026-10-24): `account_email` added and backfilled on both collections; list/view scoped to tenant + self; create/update/delete gated to same-tenant Admin. Client writers (`app-users.ts createAppUser`, `rbac.ts setUserRoles`, `setup.ts ensureSetupAdminUser/linkUserToAdminRole`) now stamp `account_email`. Verified: a tenant token lists only its own record (API check) and `/users` renders one record (UI check). This closes the gap this report flagged under "Not covered this round" (PocketBase API-rule audit beyond store_settings).

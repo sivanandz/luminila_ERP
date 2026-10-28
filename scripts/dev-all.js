@@ -6,7 +6,7 @@
  * 3. Next.js Frontend (:3000)
  */
 
-const { spawn, exec } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -75,7 +75,9 @@ function killProc(proc) {
     if (!proc || !proc.pid) return;
     if (process.platform === 'win32') {
         try {
-            exec(`taskkill /pid ${proc.pid} /T /F`, () => {});
+            // Argument list, never a shell string: pid comes from our own spawn
+            // calls, but keep it non-injectable regardless.
+            execFile('taskkill', ['/pid', String(proc.pid), '/T', '/F'], () => {});
         } catch { /* ignore */ }
     } else {
         try {
@@ -84,7 +86,141 @@ function killProc(proc) {
     }
 }
 
+// ---------------------------------------------------------------
+// Crash hardening: the WhatsApp sidecar dies on an unhandled
+// http2 stream reset when WhatsApp drops a reconnecting session
+// (observed twice: ECONNRESET on ClientHttp2Stream right after a
+// CONNECTED transition). A piped child error must not kill this
+// orchestrator, and a crashed service should come back on its own.
+// ---------------------------------------------------------------
+let shuttingDown = false;
+const restartCounts = new Map();
+const MAX_RESTARTS = 5;
+
+process.on('uncaughtException', (err) => {
+    console.error(`${RED}[SUPERVISOR]${RESET} uncaught exception suppressed:`, err?.message || err);
+});
+process.on('unhandledRejection', (err) => {
+    console.error(`${RED}[SUPERVISOR]${RESET} unhandled rejection suppressed:`, err?.message || err);
+});
+
+/**
+ * Restart `name` via `spawnFn` when it exits unexpectedly (backoff, capped).
+ * Manual shutdowns are exempt: cleanup() sets `shuttingDown` first.
+ */
+function supervise(name, spawnFn) {
+    const attempt = () => {
+        if (shuttingDown) return;
+        const count = restartCounts.get(name) || 0;
+        if (count >= MAX_RESTARTS) {
+            console.error(`${RED}[SUPERVISOR]${RESET} ${name} exceeded its restart budget (${MAX_RESTARTS}); leaving it down.`);
+            return;
+        }
+        const proc = spawnFn();
+        proc.on('exit', (code, signal) => {
+            if (shuttingDown) return;
+            restartCounts.set(name, count + 1);
+            const delay = Math.min(30000, 2000 * Math.pow(2, count));
+            console.warn(`${YELLOW}[SUPERVISOR]${RESET} ${name} exited (code=${code} signal=${signal}). Restarting in ${delay}ms (attempt ${count + 1}/${MAX_RESTARTS})...`);
+            setTimeout(attempt, delay);
+        });
+        return proc;
+    };
+    return attempt();
+}
+
+
+// ---------------------------------------------------------------
+// Startup warmup: Next dev compiles routes lazily on first visit,
+// which made every page pay a multi-second webpack compile the
+// first time it was opened. Enumerate every static route under
+// src/app (pages and API handlers) and request each one right
+// after the dev server boots so all routes are compiled and
+// cached before anyone opens the app.
+// ---------------------------------------------------------------
+const WARMUP_PAGE_FILES = new Set(['page.tsx', 'page.ts', 'page.jsx', 'page.js']);
+
+function enumerateNextRoutes() {
+    const pages = [];
+    const apis = [];
+    const walk = (dir, prefix) => {
+        let entries;
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                // Dynamic segments ([id] etc.) need a real id to compile; none
+                // exist today, so skip rather than guess placeholder values.
+                if (entry.name.startsWith('[')) continue;
+                // Route groups like (dashboard) organise code but are not URL segments.
+                if (entry.name.startsWith('(') && entry.name.endsWith(')')) {
+                    walk(full, prefix);
+                } else {
+                    walk(full, `${prefix}/${entry.name}`);
+                }
+            } else if (WARMUP_PAGE_FILES.has(entry.name)) {
+                pages.push(prefix || '/');
+            } else if (entry.name === 'route.ts') {
+                apis.push(prefix);
+            }
+        }
+    };
+    walk(path.join(ROOT_DIR, 'src', 'app'), '');
+    return { pages: [...new Set(pages)], apis: [...new Set(apis)] };
+}
+
+async function warmupNextRoutes(baseUrl) {
+    if (String(process.env.WARMUP_DISABLED || '') === '1') {
+        console.log(`${YELLOW}[WARMUP]${RESET} Disabled via WARMUP_DISABLED=1 — routes will compile on first visit.`);
+        return;
+    }
+
+    // Wait for the dev server to accept connections (it may still be booting).
+    for (let i = 0; i < 120; i++) {
+        if (await isServerListening(baseUrl)) break;
+        await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    const { pages, apis } = enumerateNextRoutes();
+    const routes = [...pages, ...apis];
+    if (routes.length === 0) return;
+
+    console.log(`\n${CYAN}[WARMUP]${RESET} Precompiling ${pages.length} pages + ${apis.length} API routes...`);
+    const startedAt = Date.now();
+    let done = 0;
+    let failed = 0;
+    const queue = [...routes];
+
+    // Limited concurrency: enough to keep webpack busy, not enough to thrash
+    // the machine (this repo lives on a slow external drive).
+    const worker = async () => {
+        while (queue.length > 0) {
+            const route = queue.shift();
+            const t0 = Date.now();
+            try {
+                // Any HTTP response proves the route module compiled — 405 on a
+                // POST-only API route or a 400 from input validation is success.
+                await fetch(baseUrl + route, { signal: AbortSignal.timeout(300_000) });
+                done++;
+                console.log(`${CYAN}[WARMUP]${RESET} ✓ ${route} ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+            } catch (err) {
+                failed++;
+                console.log(`${YELLOW}[WARMUP]${RESET} ✗ ${route} after ${((Date.now() - t0) / 1000).toFixed(1)}s: ${err?.name || err?.message || err}`);
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: 4 }, worker));
+
+    const total = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(`${GREEN}[WARMUP]${RESET} Done: ${done}/${routes.length} routes compiled in ${total}s${failed ? ` (${failed} failed)` : ''} — pages now render immediately.\n`);
+}
+
 async function cleanup() {
+    shuttingDown = true; // stop the supervisor from resurrecting services
     console.log(`\n${YELLOW}Shutting down Luminila services...${RESET}`);
     for (const proc of children) {
         killProc(proc);
@@ -216,41 +352,54 @@ async function main() {
         fs.writeFileSync(envPath, envContent, 'utf8');
     } catch { /* ignore */ }
 
-    // 2. WhatsApp Sidecar
+    // 2. WhatsApp Sidecar — supervised: its http2 connection to WhatsApp can
+    // reset unhandled (ECONNRESET on ClientHttp2Stream) and kill the process;
+    // session auto-restore makes a restart clean, so bring it back.
     const wppRunning = await isServerListening('http://127.0.0.1:21465/health');
     if (wppRunning) {
         console.log(`${MAGENTA}[WPP]${RESET} WhatsApp Sidecar is already running on http://127.0.0.1:21465`);
     } else {
         console.log(`${MAGENTA}[WPP]${RESET} Starting WhatsApp Sidecar server...`);
-        const wppProc = spawn('node', ['server.js'], {
-            cwd: WPP_DIR,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env, WPPCONNECT_PORT: '21465', WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
+        supervise('[WPP]', () => {
+            const wppProc = spawn('node', ['server.js'], {
+                cwd: WPP_DIR,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                env: { ...process.env, WPPCONNECT_PORT: '21465', WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
+            });
+            children.push(wppProc);
+            pipeOutput(wppProc, '[WPP]', MAGENTA);
+            return wppProc;
         });
-        children.push(wppProc);
-        pipeOutput(wppProc, '[WPP]', MAGENTA);
     }
 
-    // 3. Next.js Frontend
+    // 3. Next.js Frontend — supervised with the same policy as the sidecar.
     console.log(`${CYAN}[NEXT]${RESET} Starting Next.js frontend on http://localhost:3000...`);
     const nextBin = path.join(ROOT_DIR, 'node_modules', 'next', 'dist', 'bin', 'next');
     const isWin = process.platform === 'win32';
-    const nextProc = fs.existsSync(nextBin)
-        ? spawn(process.execPath, [nextBin, 'dev', '--webpack'], {
-            cwd: ROOT_DIR,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env, NEXT_PUBLIC_WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
-        })
-        : spawn(isWin ? 'npx.cmd' : 'npx', ['next', 'dev', '--webpack'], {
-            cwd: ROOT_DIR,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            shell: isWin,
-            env: { ...process.env }
-        });
-    children.push(nextProc);
-    pipeOutput(nextProc, '[NEXT]', CYAN);
+    supervise('[NEXT]', () => {
+        const nextProc = fs.existsSync(nextBin)
+            ? spawn(process.execPath, [nextBin, 'dev', '--webpack'], {
+                cwd: ROOT_DIR,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                env: { ...process.env, NEXT_PUBLIC_WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
+            })
+            : spawn(isWin ? 'npx.cmd' : 'npx', ['next', 'dev', '--webpack'], {
+                cwd: ROOT_DIR,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                shell: isWin,
+                env: { ...process.env }
+            });
+        children.push(nextProc);
+        pipeOutput(nextProc, '[NEXT]', CYAN);
+        return nextProc;
+    });
 
     console.log(`\n${GREEN}✓ All services triggered. Press Ctrl+C to stop all.${RESET}\n`);
+
+    // Precompile every route now so the app is fully warm once the user opens it.
+    warmupNextRoutes('http://localhost:3000').catch((err) => {
+        console.warn(`${YELLOW}[WARMUP]${RESET} Warmup aborted: ${err?.message || err}`);
+    });
 }
 
 main().catch(err => {

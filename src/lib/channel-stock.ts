@@ -94,6 +94,8 @@ interface MovementRecord {
     quantity: number;
     movement_type: string;
     source?: string;
+    notes?: string;
+    account_email?: string;
 }
 
 interface StockCollection {
@@ -349,6 +351,10 @@ export async function applyChannelStock(
                         quantity: -quantity,
                         reference_id: options.referenceId,
                         source: options.channel,
+                        // Tenant stamp (CO-07): tenant rules on stock_movements
+                        // filter by account_email, so an unstamped channel row is
+                        // invisible in the ERP's stock history.
+                        account_email: options.accountEmail || '',
                         notes:
                             quantity < target.quantity
                                 ? `${options.notes || `${options.channel} order ${options.referenceId}`} [OVERSELL: requested ${target.quantity}, only ${quantity} in stock]`
@@ -373,12 +379,22 @@ export async function applyChannelStock(
 }
 
 /**
- * Put stock back for an order that is being cancelled. Idempotent: a second call
- * sees the reversal movements and does nothing.
+ * Put stock back for an order that is being cancelled. Idempotent per movement:
+ * a retry after a partial failure completes only the lines that were not yet
+ * reversed (CO-18). Each reversal row names the original movement in its notes,
+ * so the ledger itself is the source of truth for what remains.
  */
+const REVERSAL_MARKER = /\[reversal-of:([a-z0-9]+)\]/;
+
 export async function restoreChannelStockForReference(
     db: StockDb,
-    options: { referenceId: string; channel?: ChannelStockChannel; notes?: string }
+    options: {
+        referenceId: string;
+        channel?: ChannelStockChannel;
+        notes?: string;
+        /** Tenant stamp for the reversal rows; falls back to the sale row's stamp. */
+        accountEmail?: string;
+    }
 ): Promise<StockRestoreResult> {
     const reference = escapeFilter(options.referenceId);
     const sourceFilter = options.channel ? ` && source="${escapeFilter(options.channel)}"` : '';
@@ -391,10 +407,15 @@ export async function restoreChannelStockForReference(
     const reversals = await db.collection('stock_movements').getFullList<MovementRecord>({
         filter: `reference_id="${reference}"${sourceFilter} && movement_type="return"`,
     });
-    if (reversals.length > 0) return { restored: 0, alreadyRestored: true };
+    const reversedMovementIds = new Set<string>();
+    for (const reversal of reversals) {
+        const match = REVERSAL_MARKER.exec(String(reversal.notes || ''));
+        if (match) reversedMovementIds.add(match[1]);
+    }
 
     let restored = 0;
     for (const movement of movements) {
+        if (reversedMovementIds.has(movement.id)) continue;
         const quantity = Math.abs(Number(movement.quantity) || 0);
         if (quantity === 0) continue;
         await db
@@ -406,14 +427,14 @@ export async function restoreChannelStockForReference(
             quantity,
             reference_id: options.referenceId,
             source: options.channel || movement.source || 'storefront',
-            notes:
-                options.notes ||
-                `Stock restored for cancelled ${options.channel || movement.source || 'channel'} order ${options.referenceId}`,
+            // Carry the tenant stamp across the reversal (CO-07).
+            account_email: options.accountEmail || movement.account_email || '',
+            notes: `${options.notes || `Stock restored for cancelled ${options.channel || movement.source || 'channel'} order ${options.referenceId}`} [reversal-of:${movement.id}]`,
         });
         restored += 1;
     }
 
-    return { restored, alreadyRestored: false };
+    return { restored, alreadyRestored: restored === 0 };
 }
 
 /** Convenience cast so call sites can pass the PocketBase client directly. */

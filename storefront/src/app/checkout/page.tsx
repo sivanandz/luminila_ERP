@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useCart } from "@/context/CartContext";
-import { submitStorefrontOrder, formatWhatsAppCartMessage } from "@/lib/pocketbase";
+import { submitStorefrontOrder, formatWhatsAppCartMessage, OrderSubmissionError, cartLineKey, prepareStorefrontOrder, confirmStorefrontPayment } from "@/lib/pocketbase";
 import { checkShiprocketPincode, CourierServiceability } from "@/lib/shiprocket";
 import { openRazorpayCheckout } from "@/lib/razorpay";
 import {
@@ -26,7 +26,7 @@ import { getStorefrontApiUrl } from "@/lib/api";
 import { useCustomerAuth } from "@/context/CustomerAuthContext";
 
 export default function CheckoutPage() {
-    const { cart, cartSubtotal, cartCount, clearCart } = useCart();
+    const { cart, cartSubtotal, cartCount, clearCart, setIsCartOpen } = useCart();
     const { customer, isAuthenticated, openAuthModal } = useCustomerAuth();
 
     const [customerName, setCustomerName] = useState("");
@@ -34,8 +34,18 @@ export default function CheckoutPage() {
     const [customerEmail, setCustomerEmail] = useState("");
     const [shippingAddress, setShippingAddress] = useState("");
     const [city, setCity] = useState("");
-    const [stateVal, setStateVal] = useState("Tamil Nadu");
+    const [stateVal, setStateVal] = useState("");
     const [pincode, setPincode] = useState("");
+    // B2B billing (A3/A4): a business buyer may need a GST invoice, optionally
+    // billed to a different address than the delivery address.
+    const [isBusiness, setIsBusiness] = useState(false);
+    const [companyName, setCompanyName] = useState("");
+    const [gstin, setGstin] = useState("");
+    const [billingSameAsShipping, setBillingSameAsShipping] = useState(true);
+    const [billingAddress, setBillingAddress] = useState("");
+    const [billingCity, setBillingCity] = useState("");
+    const [billingState, setBillingState] = useState("");
+    const [billingPincode, setBillingPincode] = useState("");
 
     // Auto-fill customer details if logged in via WhatsApp OTP
     useEffect(() => {
@@ -62,6 +72,25 @@ export default function CheckoutPage() {
     const [paymentMethod, setPaymentMethod] = useState<"razorpay_online" | "whatsapp_concierge" | "cod">("razorpay_online");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [completedOrder, setCompletedOrder] = useState<{ txnId: string; courier: string } | null>(null);
+
+    // Marketing consent (DPDP): captured with the order, stored on the customer.
+    const [marketingConsent, setMarketingConsent] = useState(false);
+
+    // Attribution + idempotency: one campaign tag and one order key per
+    // checkout session, so a retried submit cannot create a second order.
+    const [campaign] = useState(() => {
+        if (typeof window === "undefined") return "";
+        const params = new URLSearchParams(window.location.search);
+        const utm = params.get("utm_campaign") || "";
+        const source = params.get("utm_source") || "";
+        return [source, utm].filter(Boolean).join("/");
+    });
+    const idempotencyKeyRef = useRef(
+        `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
+    );
+    const rotateIdempotencyKey = () => {
+        idempotencyKeyRef.current = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    };
 
     // Dynamic CMS Branding & Config
     const [cmsConfig, setCmsConfig] = useState<{
@@ -143,8 +172,44 @@ export default function CheckoutPage() {
     const handleSubmitOrder = async (e: React.FormEvent) => {
         e.preventDefault();
 
-        if (!customerName.trim() || !customerPhone.trim() || !shippingAddress.trim() || !pincode.trim()) {
-            toast.error("Please fill in all required delivery details.");
+        if (!customerName.trim() || !customerPhone.trim() || !shippingAddress.trim() || !pincode.trim() || !stateVal.trim()) {
+            toast.error("Please fill in all required delivery details, including your state.");
+            return;
+        }
+
+        if (isBusiness && gstin.replace(/\s/g, "").length !== 15) {
+            toast.error("Enter your 15-character GSTIN for a business invoice.");
+            return;
+        }
+        if (isBusiness && !billingSameAsShipping && (!billingAddress.trim() || !billingCity.trim() || !billingState.trim() || !billingPincode.trim())) {
+            toast.error("Fill in the complete billing address or tick 'same as delivery address'.");
+            return;
+        }
+
+        const b2bFields = isBusiness
+            ? {
+                  companyName: companyName.trim(),
+                  gstin: gstin.trim().toUpperCase(),
+                  billingSameAsShipping,
+                  billingAddress: billingAddress.trim(),
+                  billingCity: billingCity.trim(),
+                  billingState: billingState.trim(),
+                  billingPincode: billingPincode.trim(),
+              }
+            : {};
+
+        // The order API requires a verified customer session and a variant for
+        // every multi-variant line; both are capture requirements, not UX polish.
+        if (!isAuthenticated) {
+            toast.error("Verify your WhatsApp number before placing the order.");
+            openAuthModal();
+            return;
+        }
+        const missingVariant = cart.find(
+            (c) => (Array.isArray(c.product.variants) ? c.product.variants.length : 0) > 1 && !c.variantId
+        );
+        if (missingVariant) {
+            toast.error(`Choose a size for "${missingVariant.product.name}" in your bag first.`);
             return;
         }
 
@@ -152,45 +217,87 @@ export default function CheckoutPage() {
             ? `${shiprocketInfo.primaryCourier} (Shiprocket Express)`
             : "Shiprocket Express Multi-Courier";
 
-        // Case 1: Razorpay Online Payment
+        // Case 1: Razorpay Online Payment — CO-05 two-phase checkout. The ERP
+        // order and the Razorpay order are created first, so the captured payment
+        // always maps back to an order and is settled exactly once.
         if (paymentMethod === "razorpay_online") {
             setIsSubmitting(true);
             try {
+                const orderInput = {
+                    customerName,
+                    customerPhone,
+                    customerEmail,
+                    shippingAddress,
+                    city,
+                    state: stateVal,
+                    pincode,
+                    items: cart.map((c) => ({
+                        productId: c.product.id,
+                        variantId: c.variantId,
+                        sku: c.product.sku,
+                        name: c.product.name,
+                        price: c.product.website_price,
+                        quantity: c.quantity,
+                    })),
+                    total: finalTotal,
+                    discountAmount,
+                    couponCode: appliedCoupon?.code,
+                    paymentMethod: "razorpay_online" as const,
+                    assignedCourier,
+                    shippingCharges: shippingFee,
+                    campaign,
+                    marketingConsent,
+                    ...b2bFields,
+                    idempotencyKey: idempotencyKeyRef.current,
+                };
+
+                // Phase 1: ERP draft order + gateway order carrying its id.
+                const prepared = await prepareStorefrontOrder(orderInput);
+                const gatewayAmount =
+                    (prepared.gateway.amountPaise ?? Math.round(finalTotal * 100)) / 100;
+
+                // Phase 2: charge against that gateway order, then confirm.
                 await openRazorpayCheckout({
-                    amount: finalTotal,
+                    amount: gatewayAmount,
+                    orderId: prepared.gateway.orderId,
                     customerName,
                     customerPhone,
                     customerEmail,
                     brandName: cmsConfig.brandName,
-                    razorpayKey: cmsConfig.razorpayKey,
+                    razorpayKey: prepared.gateway.keyId || cmsConfig.razorpayKey,
                     themeColor: cmsConfig.themeColor,
                     description: `${cmsConfig.brandName} Order (${cartCount} items)`,
-                    onSuccess: async (paymentId: string) => {
-                        const result = await submitStorefrontOrder({
-                            customerName,
-                            customerPhone,
-                            shippingAddress,
-                            city: `${city}, ${stateVal}`,
-                            pincode,
-                            items: cart.map((c) => ({
-                                productId: c.product.id,
-                                sku: c.product.sku,
-                                name: c.product.name,
-                                price: c.product.website_price,
-                                quantity: c.quantity,
-                            })),
-                            total: finalTotal,
-                            discountAmount,
-                            couponCode: appliedCoupon?.code,
-                            paymentMethod: "razorpay_online",
-                            razorpayPaymentId: paymentId,
-                            assignedCourier,
-                        });
-
-                        setCompletedOrder({ txnId: result.txnId, courier: assignedCourier });
-                        clearCart();
-                        toast.success(`Payment verified! Order Reference: ${result.txnId}`);
-                        setIsSubmitting(false);
+                    onSuccess: async (paymentId: string, signature?: string) => {
+                        try {
+                            const result = await confirmStorefrontPayment({
+                                orderId: prepared.orderId,
+                                paymentId,
+                                razorpayOrderId: prepared.gateway.orderId,
+                                signature,
+                            });
+                            setCompletedOrder({
+                                txnId: result.txnId || prepared.txnId,
+                                courier: assignedCourier,
+                            });
+                            rotateIdempotencyKey();
+                            clearCart();
+                            toast.success(
+                                `Payment verified! Order Reference: ${result.txnId || prepared.txnId}`
+                            );
+                        } catch (err) {
+                            // The customer has already paid. Keep the cart and the
+                            // idempotency key so a retry resolves to the same order.
+                            const reason =
+                                err instanceof OrderSubmissionError
+                                    ? err.message
+                                    : "The payment could not be confirmed.";
+                            toast.error(
+                                `Payment ${paymentId} was received, but the order could not be confirmed. Please contact us on WhatsApp with this payment reference. ${reason}`,
+                                { duration: 15000 }
+                            );
+                        } finally {
+                            setIsSubmitting(false);
+                        }
                     },
                     onFailure: (err: any) => {
                         setIsSubmitting(false);
@@ -199,7 +306,12 @@ export default function CheckoutPage() {
                 });
             } catch (err: any) {
                 setIsSubmitting(false);
-                toast.error(err.message || "Failed to initialize Razorpay.");
+                toast.error(
+                    err instanceof OrderSubmissionError
+                        ? err.message
+                        : err.message || "Failed to initialize Razorpay.",
+                    { duration: 10000 }
+                );
             }
             return;
         }
@@ -210,11 +322,14 @@ export default function CheckoutPage() {
             const result = await submitStorefrontOrder({
                 customerName,
                 customerPhone,
+                customerEmail,
                 shippingAddress,
-                city: `${city}, ${stateVal}`,
+                city,
+                state: stateVal,
                 pincode,
                 items: cart.map((c) => ({
                     productId: c.product.id,
+                    variantId: c.variantId,
                     sku: c.product.sku,
                     name: c.product.name,
                     price: c.product.website_price,
@@ -225,10 +340,16 @@ export default function CheckoutPage() {
                 couponCode: appliedCoupon?.code,
                 paymentMethod,
                 assignedCourier,
+                shippingCharges: shippingFee + codFee,
+                campaign,
+                marketingConsent,
+                ...b2bFields,
+                idempotencyKey: idempotencyKeyRef.current,
             });
 
             if (result.success) {
                 setCompletedOrder({ txnId: result.txnId, courier: assignedCourier });
+                rotateIdempotencyKey();
 
                 if (paymentMethod === "whatsapp_concierge") {
                     const text = formatWhatsAppCartMessage(
@@ -498,6 +619,94 @@ export default function CheckoutPage() {
                             </div>
                         </div>
 
+                        {/* B2B billing / GSTIN (A3/A4) */}
+                        <div className="rounded-xl border border-[#eae5de] bg-[#fbf9f6] p-3 space-y-3">
+                            <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                                <input
+                                    type="checkbox"
+                                    checked={isBusiness}
+                                    onChange={(e) => setIsBusiness(e.target.checked)}
+                                    className="rounded border-slate-300 text-[#524a2c] focus:ring-0"
+                                />
+                                Business purchase (GST invoice with GSTIN)
+                            </label>
+                            {isBusiness && (
+                                <div className="space-y-3">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                                                Company / Legal Name
+                                            </label>
+                                            <input
+                                                type="text"
+                                                placeholder="Luminila Traders Pvt Ltd"
+                                                value={companyName}
+                                                onChange={(e) => setCompanyName(e.target.value)}
+                                                className="w-full bg-white border border-[#d1c7bc] rounded-xl px-3 py-2 text-xs text-[#292a2f] focus:outline-none focus:border-[#524a2c]"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                                                GSTIN *
+                                            </label>
+                                            <input
+                                                type="text"
+                                                maxLength={15}
+                                                placeholder="33ABCDE1234F1Z5"
+                                                value={gstin}
+                                                onChange={(e) => setGstin(e.target.value.toUpperCase())}
+                                                className="w-full bg-white border border-[#d1c7bc] rounded-xl px-3 py-2 text-xs text-[#292a2f] focus:outline-none focus:border-[#524a2c] font-mono"
+                                            />
+                                        </div>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-[11px] text-slate-600">
+                                        <input
+                                            type="checkbox"
+                                            checked={billingSameAsShipping}
+                                            onChange={(e) => setBillingSameAsShipping(e.target.checked)}
+                                            className="rounded border-slate-300 text-[#524a2c] focus:ring-0"
+                                        />
+                                        Billing address is the same as the delivery address
+                                    </label>
+                                    {!billingSameAsShipping && (
+                                        <div className="space-y-3">
+                                            <input
+                                                type="text"
+                                                placeholder="Billing address (door no, street, area)"
+                                                value={billingAddress}
+                                                onChange={(e) => setBillingAddress(e.target.value)}
+                                                className="w-full bg-white border border-[#d1c7bc] rounded-xl px-3 py-2 text-xs text-[#292a2f] focus:outline-none focus:border-[#524a2c]"
+                                            />
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                                <input
+                                                    type="text"
+                                                    maxLength={6}
+                                                    placeholder="Billing pincode"
+                                                    value={billingPincode}
+                                                    onChange={(e) => setBillingPincode(e.target.value)}
+                                                    className="w-full bg-white border border-[#d1c7bc] rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#524a2c]"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    placeholder="Billing city"
+                                                    value={billingCity}
+                                                    onChange={(e) => setBillingCity(e.target.value)}
+                                                    className="w-full bg-white border border-[#d1c7bc] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#524a2c]"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    placeholder="Billing state"
+                                                    value={billingState}
+                                                    onChange={(e) => setBillingState(e.target.value)}
+                                                    className="w-full bg-white border border-[#d1c7bc] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#524a2c]"
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
                         {/* Shiprocket Live Detection Indicator */}
                         {shiprocketInfo && (
                             <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-900 flex items-center justify-between">
@@ -614,6 +823,20 @@ export default function CheckoutPage() {
                         </div>
                     </div>
 
+                    {/* Marketing consent (DPDP) — optional, stored on the customer profile */}
+                    <label className="flex items-start gap-2.5 text-[11px] text-slate-600 cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            checked={marketingConsent}
+                            onChange={(e) => setMarketingConsent(e.target.checked)}
+                            className="mt-0.5 text-[#524a2c] focus:ring-0"
+                        />
+                        <span>
+                            Keep me posted about new collections, festive drops and private sales on WhatsApp
+                            (optional — you can opt out anytime).
+                        </span>
+                    </label>
+
                     <button
                         type="submit"
                         disabled={isSubmitting}
@@ -657,29 +880,47 @@ export default function CheckoutPage() {
 
                     {/* Items List */}
                     <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
-                        {cart.map((item) => (
-                            <div key={item.product.id} className="flex gap-3 text-xs border-b border-slate-50 pb-2.5">
-                                <div className="w-12 h-12 rounded-lg bg-[#efeae4] border border-[#d1c7bc] flex items-center justify-center shrink-0 overflow-hidden text-lg">
-                                    {item.product.image_url ? (
-                                        <img src={item.product.image_url} alt={item.product.name} className="w-full h-full object-cover" />
-                                    ) : (
-                                        "✨"
-                                    )}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="font-semibold text-[#1f2649] truncate">{item.product.name}</div>
-                                    <div className="text-[10px] text-slate-500 font-mono">
-                                        Qty: {item.quantity} × ₹{item.product.website_price.toLocaleString("en-IN")}
+                        {cart.map((item) => {
+                            const multiVariant = (item.product.variants?.length ?? 0) > 1;
+                            return (
+                                <div key={cartLineKey(item)} className="flex gap-3 text-xs border-b border-slate-50 pb-2.5">
+                                    <div className="w-12 h-12 rounded-lg bg-[#efeae4] border border-[#d1c7bc] flex items-center justify-center shrink-0 overflow-hidden text-lg">
+                                        {item.product.image_url ? (
+                                            <img src={item.product.image_url} alt={item.product.name} className="w-full h-full object-cover" />
+                                        ) : (
+                                            "✨"
+                                        )}
                                     </div>
-                                    <div className="text-[10px] text-[#524a2c] font-semibold">
-                                        {item.product.plating_type}
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-semibold text-[#1f2649] truncate">{item.product.name}</div>
+                                        <div className="text-[10px] text-slate-500 font-mono">
+                                            Qty: {item.quantity} × ₹{item.product.website_price.toLocaleString("en-IN")}
+                                        </div>
+                                        {multiVariant && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setIsCartOpen(true)}
+                                                className={`text-[10px] font-semibold text-left ${
+                                                    item.variantId
+                                                        ? "text-[#524a2c]"
+                                                        : "text-amber-700 underline underline-offset-2"
+                                                }`}
+                                            >
+                                                {item.variantId
+                                                    ? `Size: ${item.variantLabel || item.variantId}`
+                                                    : "Choose size in bag →"}
+                                            </button>
+                                        )}
+                                        <div className="text-[10px] text-[#524a2c] font-semibold">
+                                            {item.product.plating_type}
+                                        </div>
+                                    </div>
+                                    <div className="font-mono font-bold text-[#1f2649]">
+                                        ₹{(item.product.website_price * item.quantity).toLocaleString("en-IN")}
                                     </div>
                                 </div>
-                                <div className="font-mono font-bold text-[#1f2649]">
-                                    ₹{(item.product.website_price * item.quantity).toLocaleString("en-IN")}
-                                </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
 
                     {/* Coupon Input Box */}

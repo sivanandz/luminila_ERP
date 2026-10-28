@@ -11,6 +11,7 @@
  */
 
 import { pb } from './pocketbase';
+import { recordConsentEvent } from './consent-ledger';
 import {
     phoneFromChatId,
     findCustomerByPhone,
@@ -986,7 +987,13 @@ export async function sendProductCard(opts: {
 // ===========================================
 
 /** Register an opt-out (STOP) for a phone number. Idempotent across both whatsapp_opt_outs and customers table. */
-export async function setWhatsAppOptOut(phoneOrChatId: string, customerId?: string, reason: 'stop' | 'manual' = 'stop'): Promise<void> {
+export async function setWhatsAppOptOut(
+    phoneOrChatId: string,
+    customerId?: string,
+    reason: 'stop' | 'manual' = 'stop',
+    db: typeof pb = pb
+): Promise<void> {
+    const pb = db;
     const digits = phoneOrChatId.replace(/\D/g, '').slice(-10);
     if (!digits || digits.length < 10) return;
     try {
@@ -996,10 +1003,20 @@ export async function setWhatsAppOptOut(phoneOrChatId: string, customerId?: stri
             if (matched) custId = matched.id;
         }
 
-        // Update customer profile opt-out flag if customer found
+        // Update customer profile opt-out flag if customer found, and append the
+        // decision to the consent ledger (A30) so the opt-out is auditable.
         if (custId) {
             await pb.collection('customers').update(custId, { whatsapp_opt_out: true }).catch(() => {});
         }
+        const consentBase = {
+            customerId: custId,
+            phone: digits,
+            channel: 'whatsapp' as const,
+            granted: false,
+            source: `opt_out:${reason}`,
+        };
+        await recordConsentEvent(db, { ...consentBase, purpose: 'whatsapp_service' });
+        await recordConsentEvent(db, { ...consentBase, purpose: 'marketing' });
 
         const existing = await pb.collection('whatsapp_opt_outs').getFirstListItem(
             `phone~"${digits}"`
@@ -1016,7 +1033,8 @@ export async function setWhatsAppOptOut(phoneOrChatId: string, customerId?: stri
     }
 }
 
-export async function isWhatsAppOptedOut(phone: string): Promise<boolean> {
+export async function isWhatsAppOptedOut(phone: string, db: typeof pb = pb): Promise<boolean> {
+    const pb = db;
     const digits = phone.replace(/\D/g, '').slice(-10);
     if (!digits || digits.length < 10) return false;
     try {

@@ -33,7 +33,7 @@ export function MobileBottomNav({
 
     return (
         <>
-            <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-card/95 backdrop-blur-md border-t border-border shadow-[0_-4px_20px_rgba(0,0,0,0.15)] pb-[env(safe-area-inset-bottom,0px)]">
+            <nav className="no-print md:hidden fixed bottom-0 left-0 right-0 z-40 bg-card/95 backdrop-blur-md border-t border-border shadow-[0_-4px_20px_rgba(0,0,0,0.15)] pb-[env(safe-area-inset-bottom,0px)]">
                 <div className="flex items-center justify-around h-16 px-2 relative">
                     {/* Home Tab */}
                     <Link

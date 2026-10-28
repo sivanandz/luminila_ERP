@@ -54,7 +54,8 @@ function enqueueSequenceTask<T>(seqKey: string, task: () => Promise<T>): Promise
 /**
  * Generates the next sequential number with concurrency guards.
  */
-export async function getNextSequenceNumber(options: SequenceOptions): Promise<string> {
+export async function getNextSequenceNumber(options: SequenceOptions, db: typeof pb = pb): Promise<string> {
+    const pb = db;
     const { seqName, prefix, padding = 5, formatFn, maxRetries = 5 } = options;
 
     return enqueueSequenceTask(seqName, async () => {

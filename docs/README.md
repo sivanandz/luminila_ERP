@@ -21,6 +21,7 @@ This documentation suite provides complete technical, operational, and architect
 | **[Operational Workflows & Working Guide](APP_WORKING.md)** | Step-by-step business workflows, service orchestration (`scripts/dev-all.js`), daily cashier routines, and database maintenance. | Store Operators, Cashiers, DevOps |
 | **[User Guide](USER_GUIDE.md)** | End-user showroom manual for store staff, cashiers, and retail owners. | Store Staff, Cashiers |
 | **[Documentation Verification Report](DOC_VERIFICATION_2026-09-22.md)** | Point-in-time audit (2026-09-22) verifying the documentation suite against the codebase, with corrections and follow-ups. | Tech Leads, Auditors |
+| **[AI Harness Architecture](AI_HARNESS_ARCHITECTURE_2026-10-24.md)** | In-app LLM assistant: OpenAI-compatible provider adapter, turn/step agent loop, append-only event log, RBAC-gated ERP tools, approval-gated writes, security model, extension guide, and the independent-review fix log. | Developers, Architects, Store Admins |
 
 ---
 
@@ -34,6 +35,11 @@ This documentation suite provides complete technical, operational, and architect
 
 - **If you are assessing the health and known logic defects of the application:**
   Read **[State of the Project](PROJECT_STATE.md)** and the accompanying [APP_LOGIC_AUDIT_REPORT_2026-03-07.md](../APP_LOGIC_AUDIT_REPORT_2026-03-07.md).
+
+- **If you want to connect an LLM provider or extend the AI assistant:**
+  Read **[AI Harness Architecture](AI_HARNESS_ARCHITECTURE_2026-10-24.md)** (providers are managed in **Settings → AI Providers**; providers, tools,
+  guardrails, approvals, verification commands), then the coordination note
+  **[AI Harness Collab](AI_HARNESS_COLLAB_2026-10-24.md)**.
 
 - **If you are exploring business capabilities or preparing a release:**
   Read **[Features Specification](FEATURES.md)**.

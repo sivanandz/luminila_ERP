@@ -1,13 +1,14 @@
 /// <reference path="../pb_data/types.d.ts" />
 
 /**
- * DRAFT — not applied. Review before running.
- *
  * Tenant-scopes `store_settings` collection rules (audit 2026-10-22, finding #8).
- * The live rules are `@request.auth.id != ""`, so any authenticated user can read
- * or write every row when a single PocketBase instance serves more than one
- * tenant. Today each tenant normally has its own SQLite file, which is why this
- * has not caused a breach; the rules should still match the code's assumption.
+ *
+ * APPLIED (2026-10-23, commit "apply and verify the migration bundle"); the
+ * earlier DRAFT banner was left behind by mistake. The live rules were
+ * `@request.auth.id != ""`, so any authenticated user could read or write every
+ * row when a single PocketBase instance serves more than one tenant. Today each
+ * tenant normally has its own SQLite file, which is why this never caused a
+ * breach; the rules should still match the code's assumption.
  *
  * Legacy rows written before tenancy have an empty `account_email`. They stay
  * readable by any authenticated operator so an upgrade does not hide existing

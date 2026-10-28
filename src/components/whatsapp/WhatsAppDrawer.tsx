@@ -170,7 +170,7 @@ export function WhatsAppDrawer() {
                 sku: best.full_sku,
                 name: best.name,
                 variant: best.variant_name,
-                price: getChannelPrice({ base_price: best.base_price, channel_prices: best.channel_prices }, 'whatsapp', best.price_adjustment),
+                price: getChannelPrice({ base_price: best.base_price, cost_price: best.cost_price, channel_prices: best.channel_prices }, 'whatsapp', best.price_adjustment),
                 quantity: 1,
                 productId: best.id,
                 variantId: best.variant_id,
@@ -237,7 +237,7 @@ export function WhatsAppDrawer() {
             {!isOpen && (
                 <button
                     onClick={() => setIsOpen(true)}
-                    className="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-[90] size-12 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white shadow-[0_6px_20px_rgba(16,185,129,0.45)] flex items-center justify-center transition-transform hover:scale-105"
+                    className="no-print fixed bottom-20 md:bottom-6 right-4 md:right-6 z-[90] size-12 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white shadow-[0_6px_20px_rgba(16,185,129,0.45)] flex items-center justify-center transition-transform hover:scale-105"
                     title="WhatsApp Chats"
                 >
                     <MessageCircle size={22} />
@@ -251,7 +251,7 @@ export function WhatsAppDrawer() {
 
             {/* Slide-over panel */}
             {isOpen && (
-                <div className="fixed inset-0 z-[95] flex justify-end">
+                <div className="no-print fixed inset-0 z-[95] flex justify-end">
                     <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => { setIsOpen(false); setActiveChat(null); }} />
                     <div className="relative ml-auto h-full w-full max-w-sm bg-card border-l border-border shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
                         {/* Header */}

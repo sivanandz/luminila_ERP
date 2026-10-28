@@ -1,0 +1,942 @@
+/* ============================================================================
+   Niththigal additions — promo, Instagram, retail price story, commerce chrome.
+   These sit on top of the example stylesheet so the original sections stay
+   pixel-faithful while the extra CMS sections feel native to it.
+   ========================================================================== */
+
+/* A custom CMS palette derives the glass/surface tints from the core tokens
+   instead of keeping the original lime values. The default palette is left
+   untouched so the example stays pixel-faithful. */
+.nt-custom-theme .header {
+    background: linear-gradient(
+        125deg,
+        color-mix(in srgb, var(--cream) 86%, white),
+        color-mix(in srgb, var(--cream) 70%, var(--paper))
+    );
+    border-color: color-mix(in srgb, var(--cream) 55%, white);
+}
+.nt-custom-theme .header.scrolled {
+    background: linear-gradient(
+        120deg,
+        color-mix(in srgb, var(--cream) 92%, white),
+        color-mix(in srgb, var(--cream) 78%, var(--paper))
+    );
+}
+.nt-custom-theme .mobile-nav,
+.nt-custom-theme .hero-note,
+.nt-custom-theme .promise-strip,
+.nt-custom-theme .filters,
+.nt-custom-theme .product-card,
+.nt-custom-theme .benefit,
+.nt-custom-theme .quote-card,
+.nt-custom-theme .faq-list details,
+.nt-custom-theme .faq-list details:first-child,
+.nt-custom-theme .price-board,
+.nt-custom-theme .price-anchor {
+    background: linear-gradient(
+        140deg,
+        color-mix(in srgb, var(--cream) 84%, white),
+        color-mix(in srgb, var(--paper) 68%, var(--cream))
+    );
+    border-color: color-mix(in srgb, var(--cream) 60%, white);
+}
+.nt-custom-theme .product-image,
+.nt-custom-theme .detail-image,
+.nt-custom-theme .story-image {
+    background: linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--paper) 80%, white),
+        color-mix(in srgb, var(--paper) 92%, var(--gold))
+    );
+}
+.nt-custom-theme .benefit-icon,
+.nt-custom-theme .avatar {
+    background: radial-gradient(
+        ellipse at 30% 25%,
+        color-mix(in srgb, var(--cream) 80%, white),
+        color-mix(in srgb, var(--paper) 82%, var(--gold))
+    );
+    border-color: color-mix(in srgb, var(--cream) 60%, white);
+}
+.nt-custom-theme .story,
+.nt-custom-theme .promo-card,
+.nt-custom-theme .final-cta {
+    background:
+        radial-gradient(ellipse at 90% 110%, color-mix(in srgb, var(--gold) 18%, transparent), transparent 70%),
+        linear-gradient(
+            135deg,
+            color-mix(in srgb, var(--green) 82%, white),
+            var(--green) 55%,
+            color-mix(in srgb, var(--green) 88%, var(--paper))
+        );
+}
+.nt-custom-theme .love {
+    background:
+        radial-gradient(ellipse at 5% 15%, color-mix(in srgb, var(--paper) 70%, white), transparent 55%),
+        radial-gradient(ellipse at 100% 90%, color-mix(in srgb, var(--gold) 14%, transparent), transparent 55%),
+        linear-gradient(140deg, var(--cream), color-mix(in srgb, var(--paper) 70%, var(--cream)));
+}
+.nt-custom-theme .button-green,
+.nt-custom-theme .filter.active,
+.nt-custom-theme .filter.active:hover {
+    background: linear-gradient(
+        120deg,
+        color-mix(in srgb, var(--green) 82%, white),
+        var(--green)
+    );
+    border-color: color-mix(in srgb, var(--green) 70%, var(--line));
+}
+.nt-custom-theme .button-cream {
+    background: linear-gradient(120deg, var(--cream), var(--paper));
+    color: var(--green);
+}
+.nt-custom-theme .hero-copy:before {
+    background: radial-gradient(ellipse, color-mix(in srgb, var(--green) 12%, transparent), transparent 71%);
+}
+.nt-custom-theme .hero-copy:after {
+    background: radial-gradient(ellipse, color-mix(in srgb, var(--gold) 16%, transparent), transparent 73%);
+}
+.nt-custom-theme .search-field {
+    background: color-mix(in srgb, var(--cream) 90%, white);
+    border-color: var(--line);
+}
+.nt-custom-theme dialog {
+    background: linear-gradient(135deg, var(--cream), color-mix(in srgb, var(--paper) 74%, var(--cream)));
+    border-color: color-mix(in srgb, var(--cream) 60%, white);
+}
+
+/* Theme cascade root: the CMS tokens land here and every section inherits. */
+.nt-site {
+    min-height: 100dvh;
+    color: var(--ink);
+    font-family: var(--sans);
+    background:
+        radial-gradient(ellipse at 4% 8%, #e4ebcb52, transparent 28%),
+        radial-gradient(ellipse at 94% 32%, #ebe4c640, transparent 25%),
+        var(--cream);
+}
+
+/* The example owns its own press states; the app-wide tactile rule in
+   globals.css must not flatten them. */
+.button:active { transform: translateY(0) scale(0.98) !important; }
+.icon-button:active,
+.heart-button:active,
+.add-button:active,
+.filter:active,
+.quick-view:active,
+.promo-code:active,
+.motion-toggle:active { transform: scale(0.97) !important; }
+
+/* ---------- account action ---------- */
+.account-button { color: var(--green); }
+#cart-count { animation: count-pop .5s var(--soft-ease); }
+@keyframes count-pop {
+    0% { transform: scale(.6); }
+    60% { transform: scale(1.18); }
+    100% { transform: scale(1); }
+}
+@media (max-width: 600px) {
+    .account-button { display: none; }
+}
+.account-initial {
+    display: grid;
+    place-items: center;
+    width: 27px;
+    height: 27px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #2f5140, var(--green));
+    color: var(--cream);
+    font: 600 10px/1 var(--sans);
+    letter-spacing: 0.02em;
+    box-shadow: inset 0 1px 0 #ffffff1f;
+}
+
+/* ---------- CMS section spacing ---------- */
+.nt-section-slot {
+    display: block;
+}
+
+/* ============================================================================
+   Unified mild glass card treatment
+   Matches the frosted title/header banner without turning every surface into
+   an opaque white block. Custom palettes derive the tint from their own tokens.
+   ========================================================================== */
+.nt-site {
+    --glass-card-bg: linear-gradient(135deg, #f2f5e2c9, #e9efd5a8);
+    --glass-card-border: #eef2dbb8;
+    --glass-card-shadow: 0 10px 30px -24px #193d3226, inset 0 1px 0 #fffef3;
+    --glass-dialog-bg: linear-gradient(135deg, rgba(242, 245, 226, 0.58), rgba(233, 239, 213, 0.42));
+    --glass-drawer-bg: linear-gradient(140deg, rgba(242, 245, 226, 0.66), rgba(233, 239, 213, 0.48));
+}
+.nt-site.nt-custom-theme {
+    --glass-card-bg: linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--cream) 82%, white),
+        color-mix(in srgb, var(--paper) 62%, transparent)
+    );
+    --glass-card-border: color-mix(in srgb, var(--cream) 65%, white);
+    --glass-card-shadow:
+        0 10px 30px -24px color-mix(in srgb, var(--green) 20%, transparent),
+        inset 0 1px 0 color-mix(in srgb, var(--cream) 70%, white);
+    --glass-dialog-bg: linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--cream) 62%, transparent),
+        color-mix(in srgb, var(--paper) 46%, transparent)
+    );
+    --glass-drawer-bg: linear-gradient(
+        140deg,
+        color-mix(in srgb, var(--cream) 70%, transparent),
+        color-mix(in srgb, var(--paper) 54%, transparent)
+    );
+}
+
+/* The dark glass overlays stay dark so their cream text keeps contrast. */
+.image-tag,
+.promo-coupon {
+    -webkit-backdrop-filter: blur(16px) saturate(115%);
+    backdrop-filter: blur(16px) saturate(115%);
+}
+.story-stamp,
+.motion-toggle {
+    -webkit-backdrop-filter: blur(14px) saturate(112%);
+    backdrop-filter: blur(14px) saturate(112%);
+}
+
+/* ---------- hero slideshow ---------- */
+.hero-visual > img.hero-ghost {
+    position: absolute;
+    inset: 0;
+    top: 0;
+    height: 100%;
+    width: 100%;
+    object-fit: cover;
+    object-position: center 39%;
+    transform: none;
+    animation: hero-ghost-out 0.7s var(--soft-ease) forwards;
+    pointer-events: none;
+}
+.hero-slide-controls {
+    position: absolute;
+    top: 22px;
+    left: 24px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 99px;
+    border: 1px solid #fff5d951;
+    background: linear-gradient(125deg, #eeeed12e, #ecebd315);
+    -webkit-backdrop-filter: blur(18px) saturate(120%);
+    backdrop-filter: blur(18px) saturate(120%);
+    color: #fff7e3;
+    box-shadow: 0 6px 20px #1021191f, inset 0 1px 0 #fff7df1a;
+}
+.hero-slide-dot {
+    width: 7px;
+    height: 7px;
+    padding: 0;
+    border-radius: 99px;
+    background: #fff7e366;
+    transition: width 0.35s var(--soft-ease), background 0.35s;
+}
+.hero-slide-dot:hover { background: #fff7e3cc; }
+.hero-slide-dot[aria-current="true"] {
+    width: 18px;
+    background: #f5e4b3;
+}
+.hero-slide-count {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: #f5e4b3;
+    white-space: nowrap;
+}
+.hero-slide-pause {
+    display: grid;
+    place-items: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 50%;
+    background: #fff7e314;
+    color: #fff7e3;
+    font-size: 8px;
+    line-height: 1;
+    transition: background 0.3s;
+}
+.hero-slide-pause:hover { background: #fff7e328; }
+.hero-slide-pause:disabled { opacity: 0.5; cursor: default; }
+
+@keyframes hero-ghost-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+@media (max-width: 600px) {
+    .hero-slide-controls {
+        top: 14px;
+        left: 14px;
+        gap: 6px;
+        padding: 7px 10px;
+    }
+    .hero-slide-count { font-size: 8px; }
+}
+
+/* ---------- uploaded brand lockups ---------- */
+.brand > .brand-logo {
+    width: auto;
+    height: 40px;
+    max-width: 120px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+.brand > .brand-wordmark-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    min-width: 0;
+    font: inherit;
+    letter-spacing: normal;
+    line-height: 1;
+}
+.brand .brand-wordmark {
+    display: block;
+    width: auto;
+    height: 38px;
+    max-width: 180px;
+    object-fit: contain;
+}
+.brand > .brand-wordmark-wrap small {
+    padding-top: 4px;
+    text-align: left;
+}
+.brand > .brand-lockup {
+    width: auto;
+    height: 54px;
+    max-width: 220px;
+    object-fit: contain;
+}
+.footer-brand .brand > .brand-logo {
+    height: 48px;
+    max-width: 140px;
+}
+.footer-brand .brand > .brand-wordmark-wrap {
+    font: inherit;
+}
+.footer-brand .brand .brand-wordmark {
+    height: 44px;
+    max-width: 200px;
+}
+.footer-brand .brand > .brand-wordmark-wrap small {
+    padding-top: 4px;
+    font-size: 6px;
+    text-align: left;
+}
+.footer-brand .brand > .brand-lockup {
+    height: 60px;
+    max-width: 240px;
+}
+
+/* ---------- promo band ---------- */
+.promo-band {
+    max-width: 1472px;
+    margin: 0 auto;
+    padding: 18px 4% 0;
+}
+.promo-card {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 36px;
+    align-items: center;
+    padding: 38px 44px;
+    border-radius: 34px;
+    border: 1px solid #fff4cf4d;
+    color: #f7f0df;
+    background:
+        radial-gradient(ellipse at 90% 110%, #5f6f454d, transparent 70%),
+        radial-gradient(ellipse at 4% 0%, #a9b88924, transparent 55%),
+        linear-gradient(135deg, #254a3c, var(--green) 55%, #2b4935);
+    box-shadow: 0 24px 70px -40px #193d3270;
+}
+.promo-card:before,
+.promo-card:after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    border-radius: 50%;
+    filter: blur(46px);
+    pointer-events: none;
+    animation: soft-drift 17s ease-in-out infinite alternate;
+}
+.promo-card:before {
+    width: 34%;
+    height: 80%;
+    left: -8%;
+    top: -20%;
+    background: radial-gradient(ellipse, #a9b88924, transparent 70%);
+}
+.promo-card:after {
+    width: 40%;
+    height: 90%;
+    right: -6%;
+    bottom: -40%;
+    background: radial-gradient(ellipse, #d3b4711f, transparent 70%);
+    animation-delay: -8s;
+}
+.promo-copy .eyebrow { color: #c9b887; font-size: 8px; }
+.promo-copy h2 {
+    font-size: 46px;
+    line-height: 1.04;
+    margin: 14px 0 10px;
+    letter-spacing: -1.2px;
+}
+.promo-copy h2 em { color: #d8c7a0; }
+.promo-copy p {
+    font-size: 12px;
+    line-height: 1.8;
+    color: #c7cfc0;
+    max-width: 420px;
+}
+.promo-coupon {
+    justify-self: end;
+    width: min(100%, 360px);
+    padding: 20px;
+    border-radius: 24px;
+    border: 1px dashed #e2d4a766;
+    background: linear-gradient(125deg, #eeeed12e, #ecebd315);
+    -webkit-backdrop-filter: blur(22px) saturate(120%);
+    backdrop-filter: blur(22px) saturate(120%);
+    box-shadow: 0 10px 30px #1021191f, inset 0 1px 0 #fff7df1a;
+}
+.promo-discount {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 9px;
+    letter-spacing: 1.6px;
+    color: #dcc48d;
+}
+.promo-discount:before {
+    content: "✧";
+    font-size: 15px;
+    line-height: 1;
+}
+.promo-code-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 10px;
+}
+.promo-code {
+    font: 30px/1.1 var(--serif);
+    letter-spacing: 0.08em;
+    color: #fff7e3;
+    padding: 4px 0;
+    transition: color .3s;
+}
+.promo-code:hover { color: #fff; }
+.promo-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 15px;
+    border-radius: 99px;
+    border: 1px solid #f5efdf4d;
+    background: #f5efdf14;
+    color: #f7f0df;
+    font-size: 10px;
+    font-weight: 600;
+    transition: background .4s, border-color .4s, transform .5s var(--soft-ease);
+}
+.promo-copy-btn:hover { background: #f5efdf26; border-color: #f5efdf80; }
+.promo-copy-btn svg { width: 14px; height: 14px; }
+.promo-note {
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid #f5efdf1f;
+    font-size: 9px;
+    line-height: 1.6;
+    color: #b9c4b1;
+}
+
+/* ---------- Instagram diary ---------- */
+.instagram { position: relative; isolation: isolate; }
+.instagram:before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    left: -4%;
+    top: 30%;
+    width: 30%;
+    height: 50%;
+    border-radius: 50%;
+    filter: blur(44px);
+    background: radial-gradient(ellipse, #e7dfbd42, transparent 70%);
+    pointer-events: none;
+}
+.instagram-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 28px;
+    margin-bottom: 30px;
+}
+.instagram-head .eyebrow { margin-bottom: 15px; }
+.instagram-head h2 { font-size: 50px; }
+.instagram-head h2 em { color: #6c785c; }
+.instagram-handle {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--muted);
+}
+.instagram-handle strong {
+    font: 24px/1.2 var(--serif);
+    font-weight: 400;
+    color: var(--green);
+    letter-spacing: -0.3px;
+}
+.instagram-follow {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid #aeb4a4;
+    padding: 4px 0;
+    font-size: 10px;
+    transition: gap .25s;
+}
+.instagram-follow:hover { gap: 16px; }
+.instagram-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+}
+.insta-card {
+    position: relative;
+    display: block;
+    overflow: hidden;
+    aspect-ratio: 4 / 5;
+    border-radius: 30px;
+    border: 1px solid #edf2dbde;
+    background: linear-gradient(135deg, #eeeed9, #e7ebcf);
+    box-shadow: 0 14px 38px -26px #3d50392e;
+    transform: translateZ(0);
+}
+.insta-card img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 1.1s var(--soft-ease), filter 1.1s;
+}
+.insta-card:hover img { transform: scale(1.055); filter: brightness(1.03); }
+.insta-overlay {
+    position: absolute;
+    inset: auto 0 0;
+    padding: 54px 22px 20px;
+    color: #fff7e5;
+    background: linear-gradient(transparent, #13241bcc);
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+.insta-overlay small {
+    font-size: 8px;
+    letter-spacing: 1.8px;
+    color: #e3d2a8;
+}
+.insta-overlay p {
+    font: 20px/1.3 var(--serif);
+    letter-spacing: -0.2px;
+    max-width: 300px;
+}
+.insta-badge {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 99px;
+    border: 1px solid #fffdf08f;
+    background: #fffdf1bf;
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    color: var(--green);
+    font-size: 8px;
+    letter-spacing: 0.8px;
+}
+.insta-badge svg { width: 12px; height: 12px; }
+
+/* ---------- retail price story ---------- */
+.price-story {
+    position: relative;
+    isolation: isolate;
+    display: grid;
+    grid-template-columns: 0.9fr 1.1fr;
+    gap: 64px;
+    align-items: center;
+}
+.price-story:before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    right: 4%;
+    top: 10%;
+    width: 34%;
+    height: 65%;
+    border-radius: 50%;
+    filter: blur(48px);
+    background: radial-gradient(ellipse, #e7dfbd4d, transparent 70%);
+    pointer-events: none;
+}
+.price-story-copy .eyebrow { margin-bottom: 17px; }
+.price-story-copy h2 { font-size: 52px; }
+.price-story-copy h2 em { color: #6c785c; }
+.price-story-copy > p {
+    margin-top: 22px;
+    font-size: 13px;
+    line-height: 1.9;
+    color: var(--muted);
+    max-width: 400px;
+}
+.price-anchor {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 28px;
+    padding: 20px 26px 18px;
+    border-radius: 26px;
+    border: 1px solid #fffdf2;
+    background: linear-gradient(140deg, #f2f5e2cf, #e7edcf7a);
+    box-shadow: 0 14px 34px -24px #3d50392e;
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+}
+.price-anchor > span {
+    font-size: 9px;
+    letter-spacing: 1.7px;
+    color: var(--muted);
+}
+.price-anchor strong {
+    font: 58px/1 var(--serif);
+    font-weight: 400;
+    letter-spacing: -2.4px;
+    color: var(--green);
+}
+.price-anchor small {
+    font-size: 9px;
+    color: var(--muted);
+    letter-spacing: 0.02em;
+}
+.price-story-copy .button { margin-top: 26px; }
+.price-board {
+    padding: 8px 30px;
+    border-radius: 32px;
+    border: 1px solid #fffdf2;
+    background: linear-gradient(145deg, #f2f5e2c4, #eaeed575);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    box-shadow: 0 16px 44px -28px #3d50392e;
+}
+.price-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 17px;
+    padding: 23px 0;
+    border-bottom: 1px solid #d7dfc49e;
+}
+.price-item:last-child { border-bottom: 0; }
+.price-icon {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    border: 1px solid #edf2db;
+    background: radial-gradient(ellipse at 30% 25%, #f2f5e2e6, #e0e9cbbf);
+    color: #89734b;
+}
+.price-icon svg { width: 21px; height: 21px; }
+.price-item h3 { font: 26px/1.15 var(--serif); letter-spacing: -0.3px; }
+.price-item p {
+    margin-top: 7px;
+    font-size: 12px;
+    line-height: 1.8;
+    color: var(--muted);
+}
+.price-foot {
+    grid-column: 1 / -1;
+    text-align: center;
+    margin-top: -18px;
+    font-size: 11px;
+    color: var(--muted);
+}
+.price-foot strong { color: var(--green); font-weight: 600; }
+
+/* ---------- commerce + dynamic states ---------- */
+.collection-status {
+    grid-column: 1 / -1;
+    padding: 44px 0;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+}
+.cart-variant {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 9px;
+    font-size: 9px;
+    color: var(--muted);
+}
+.cart-variant select {
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fffdf28c;
+    font-size: 11px;
+}
+.cart-disabled {
+    justify-content: center;
+    opacity: 0.5;
+    pointer-events: none;
+}
+.mobile-nav button {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    font: 26px var(--serif);
+}
+.mobile-nav button span { font-size: 18px; }
+@media (max-width: 600px) {
+    .mobile-nav {
+        max-height: calc(100dvh - 90px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+}
+
+/* ---------- small commerce refinements ---------- */
+.product-info h3 a { color: inherit; }
+.product-card .quick-view { border: 0; }
+.product-dialog .detail-copy .button { border: 0; }
+.drawer .drawer-header h2 { max-width: 330px; }
+.drawer .cart-row-info { min-width: 0; }
+.drawer .quantity { border-radius: 99px; }
+.drawer .cart-footer .button { border: 0; }
+.info-dialog .info-body p { font-size: 12px; color: var(--muted); line-height: 1.9; margin-top: 16px; }
+.info-dialog .info-body p:first-child { margin-top: 20px; }
+.info-dialog .info-cta { margin-top: 24px; }
+.search-results .result-row { border: 0; }
+.search-results .no-results { text-align: left; }
+
+/* ---------- responsive additions ---------- */
+@media (max-width: 1100px) {
+    .promo-card { padding: 32px 30px; gap: 24px; }
+    .promo-copy h2 { font-size: 40px; }
+    .price-story { gap: 40px; }
+    .price-story-copy h2 { font-size: 45px; }
+    .price-anchor strong { font-size: 50px; }
+    .instagram-head h2 { font-size: 45px; }
+}
+
+@media (max-width: 800px) {
+    .promo-card { grid-template-columns: 1fr; }
+    .promo-coupon { justify-self: stretch; width: 100%; }
+    .price-story { grid-template-columns: 1fr; gap: 30px; }
+    .price-board { padding: 6px 24px; }
+    .price-foot { margin-top: 0; }
+    .instagram-grid { gap: 13px; }
+    .insta-overlay p { font-size: 17px; }
+}
+
+@media (max-width: 600px) {
+    .brand > .brand-logo { height: 34px; max-width: 90px; }
+    .brand .brand-wordmark { height: 30px; max-width: 125px; }
+    .brand > .brand-wordmark-wrap small { padding-top: 3px; font-size: 5.5px; }
+    .brand > .brand-lockup { height: 42px; max-width: 175px; }
+    .footer-brand .brand > .brand-logo { height: 40px; max-width: 110px; }
+    .footer-brand .brand .brand-wordmark { height: 36px; max-width: 160px; }
+    .footer-brand .brand > .brand-lockup { height: 48px; max-width: 190px; }
+
+    .promo-band { padding: 12px 4% 0; }
+    .promo-card { padding: 27px 22px; border-radius: 28px; }
+    .promo-copy .eyebrow { font-size: 7px; }
+    .promo-copy h2 { font-size: 37px; }
+    .promo-copy p { font-size: 11px; }
+    .promo-coupon { padding: 16px; border-radius: 20px; }
+    .promo-code { font-size: 26px; }
+    .promo-copy-btn { padding: 9px 13px; font-size: 9px; }
+    .instagram-head { flex-direction: column; align-items: flex-start; gap: 16px; }
+    .instagram-head h2 { font-size: 40px; }
+    .instagram-handle { align-items: flex-start; }
+    .instagram-grid {
+        display: flex;
+        gap: 12px;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        padding: 2px 1px 12px;
+        scrollbar-width: none;
+    }
+    .instagram-grid::-webkit-scrollbar { display: none; }
+    .insta-card {
+        flex: 0 0 78%;
+        min-width: 78%;
+        scroll-snap-align: start;
+        border-radius: 25px;
+    }
+    .insta-overlay { padding: 44px 18px 17px; }
+    .price-story-copy h2 { font-size: 40px; }
+    .price-story-copy > p { font-size: 12px; }
+    .price-anchor { padding: 18px 22px 16px; }
+    .price-anchor strong { font-size: 52px; }
+    .price-board { padding: 4px 19px; border-radius: 26px; }
+    .price-item { gap: 14px; padding: 20px 0; }
+    .price-icon { width: 41px; height: 41px; }
+    .price-icon svg { width: 19px; height: 19px; }
+    .price-item h3 { font-size: 24px; }
+    .price-item p { font-size: 12px; }
+}
+
+@media (max-width: 350px) {
+    .brand > .brand-logo { height: 30px; max-width: 76px; }
+    .brand .brand-wordmark { height: 27px; max-width: 108px; }
+    .brand > .brand-lockup { height: 38px; max-width: 155px; }
+    .promo-code { font-size: 23px; }
+    .promo-copy-btn { padding: 8px 11px; }
+    .instagram-head h2 { font-size: 36px; }
+}
+
+/* Applied last so the glass treatment wins over the per-section surfaces. */
+.product-card,
+.benefit,
+.nt-site .benefit,
+.quote-card,
+.faq-list details,
+.faq-list details:first-child,
+.price-board,
+.price-anchor,
+.hero-note,
+.promise-strip,
+.filters {
+    background: var(--glass-card-bg);
+    border-color: var(--glass-card-border);
+    -webkit-backdrop-filter: blur(16px) saturate(115%);
+    backdrop-filter: blur(16px) saturate(115%);
+    box-shadow: var(--glass-card-shadow);
+}
+
+@media (max-width: 600px) {
+    .product-card,
+    .benefit,
+    .quote-card,
+    .faq-list details,
+    .faq-list details:first-child,
+    .price-board,
+    .price-anchor,
+    .hero-note,
+    .promise-strip,
+    .filters {
+        -webkit-backdrop-filter: blur(11px) saturate(112%);
+        backdrop-filter: blur(11px) saturate(112%);
+    }
+}
+
+/* Dialogs and the bag drawer: visibly frosted, not a solid panel. */
+dialog {
+    background:
+        linear-gradient(115deg, #ffffff21, transparent 30%, transparent 72%, #ffffff0a),
+        var(--glass-dialog-bg);
+    border: 1px solid #ffffffb8;
+    -webkit-backdrop-filter: blur(20px) saturate(130%);
+    backdrop-filter: blur(20px) saturate(130%);
+    box-shadow:
+        0 30px 90px -32px #0f302b61,
+        inset 0 1px 0 #ffffffa6;
+}
+.drawer {
+    background:
+        linear-gradient(115deg, #ffffff29, transparent 32%, transparent 70%, #ffffff0d),
+        var(--glass-drawer-bg);
+}
+dialog::backdrop {
+    background: #0f2a238f;
+    -webkit-backdrop-filter: blur(12px) saturate(100%);
+    backdrop-filter: blur(12px) saturate(100%);
+}
+.modal-close {
+    background: color-mix(in srgb, var(--cream) 58%, transparent);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+}
+
+@media (max-width: 600px) {
+    dialog {
+        -webkit-backdrop-filter: blur(18px) saturate(125%);
+        backdrop-filter: blur(18px) saturate(125%);
+    }
+}
+
+/* Stable product hover: the card no longer moves out from under the pointer,
+   and the quick-view animates on the compositor without a live backdrop blur. */
+@media (hover: hover) and (pointer: fine) {
+    .product-card:hover,
+    .product-card:focus-within {
+        translate: 0 var(--drift-y, 0px);
+    }
+}
+
+.quick-view {
+    pointer-events: none;
+    opacity: 0;
+    transform: translate3d(0, 65px, 0);
+    transition:
+        transform 0.42s var(--soft-ease),
+        opacity 0.28s ease,
+        background 0.5s ease;
+    will-change: transform, opacity;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: linear-gradient(120deg, #f2f5e2f2, #eaeed5ec);
+}
+.product-card:hover .quick-view,
+.product-card:focus-within .quick-view {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    pointer-events: auto;
+}
+
+@media (hover: none), (pointer: coarse), (max-width: 600px) {
+    .quick-view {
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
+    }
+}
+
+html[data-motion="off"] .quick-view {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .quick-view {
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
+    }
+}

@@ -19,7 +19,6 @@ import {
     Wallet,
     Tag,
     Landmark,
-    Gem,
     BarChart3,
     MessageCircle,
     Settings,
@@ -32,6 +31,7 @@ import {
     Wifi,
     Smartphone,
     Globe,
+    Sparkles,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -58,6 +58,7 @@ const navSections = [
             { href: "/returns", label: "Returns & Credit", icon: Undo2 },
             { href: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
             { href: "/storefront-control", label: "Storefront CMS", icon: Globe },
+            { href: "/assistant", label: "AI Assistant", icon: Sparkles },
         ],
     },
     {
@@ -65,7 +66,6 @@ const navSections = [
         items: [
             { href: "/inventory", label: "Products & Stock", icon: Package },
             { href: "/manufacturing", label: "Karigar Jobs", icon: Hammer },
-            { href: "/imitation", label: "Fashion Jewellery", icon: Gem },
             { href: "/labels", label: "Barcode Labels", icon: Printer },
             { href: "/purchase", label: "Purchase Orders", icon: Package },
             { href: "/vendors", label: "Suppliers & Vendors", icon: Users },

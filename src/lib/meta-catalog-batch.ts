@@ -11,6 +11,11 @@
 import fs from 'fs';
 import path from 'path';
 import type { NextRequest } from 'next/server';
+import {
+    DEFAULT_SALES_CHANNELS,
+    getChannelPriceFromList,
+    type SalesChannelDefinition,
+} from './pricing-rules';
 
 export interface MetaBatchItemData {
     id: string; // Retailer SKU
@@ -95,6 +100,8 @@ export function buildMetaBatchRequests(
         sku?: string;
         description?: string;
         base_price?: number;
+        cost_price?: number;
+        channel_prices?: Record<string, number>;
         stock_quantity?: number;
         image_url?: string;
         is_active?: boolean;
@@ -112,7 +119,8 @@ export function buildMetaBatchRequests(
     origin: string,
     phone: string = '917092122334',
     action: 'CREATE' | 'UPDATE' | 'DELETE' = 'UPDATE',
-    brandName: string = 'Niththigal Jewellery'
+    brandName: string = 'Niththigal Jewellery',
+    channels: SalesChannelDefinition[] = DEFAULT_SALES_CHANNELS
 ): MetaBatchRequest[] {
     const variantsByProduct = new Map<string, typeof variants>();
     for (const v of variants) {
@@ -126,7 +134,15 @@ export function buildMetaBatchRequests(
 
     for (const p of products) {
         const pVariants = variantsByProduct.get(p.id) || [];
-        const basePrice = Number(p.base_price) || 0;
+        const whatsappPrice = getChannelPriceFromList(
+            {
+                base_price: Number(p.base_price) || 0,
+                cost_price: Number(p.cost_price) || 0,
+                channel_prices: p.channel_prices,
+            },
+            'whatsapp',
+            channels
+        );
         const brand = brandName || 'Niththigal Jewellery';
         const cleanDesc = (p.description || p.name || 'Fine Jewelry').replace(/[\r\n]+/g, ' ').slice(0, 5000);
         const imageLink = (p.image_url && p.image_url.startsWith('http'))
@@ -145,7 +161,7 @@ export function buildMetaBatchRequests(
                         description: cleanDesc,
                         availability: 'out of stock',
                         condition: 'new',
-                        price: `${basePrice.toFixed(2)} INR`,
+                        price: `${whatsappPrice.toFixed(2)} INR`,
                         link: `https://wa.me/${phone}?text=${encodeURIComponent(`Inquire about ${p.name}`)}`,
                         image_link: imageLink,
                         brand,
@@ -163,7 +179,7 @@ export function buildMetaBatchRequests(
                             description: cleanDesc,
                             availability: 'out of stock',
                             condition: 'new',
-                            price: `${basePrice.toFixed(2)} INR`,
+                            price: `${whatsappPrice.toFixed(2)} INR`,
                             link: `https://wa.me/${phone}?text=${encodeURIComponent(`Inquire about ${p.name}`)}`,
                             image_link: imageLink,
                             brand,
@@ -188,7 +204,7 @@ export function buildMetaBatchRequests(
                     description: cleanDesc,
                     availability: stock > 0 ? 'in stock' : 'out of stock',
                     condition: 'new',
-                    price: `${basePrice.toFixed(2)} INR`,
+                    price: `${whatsappPrice.toFixed(2)} INR`,
                     link: chatLink,
                     image_link: imageLink,
                     brand,
@@ -198,7 +214,7 @@ export function buildMetaBatchRequests(
         } else {
             for (const v of pVariants) {
                 const variantSku = p.sku ? `${p.sku}-${v.sku_suffix || v.id.slice(-4)}` : `VAR-${v.id}`;
-                const variantPrice = Math.max(0, basePrice + (Number(v.price_adjustment) || 0));
+                const variantPrice = Math.max(0, whatsappPrice + (Number(v.price_adjustment) || 0));
                 const variantStock = Number(v.stock_level) || 0;
                 const title = `${p.name} - ${v.variant_name || 'Standard'}`;
                 const chatLink = `https://wa.me/${phone}?text=${encodeURIComponent(`Hello, I want to order ${title} (SKU: ${variantSku})`)}`;

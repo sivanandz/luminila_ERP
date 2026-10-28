@@ -26,9 +26,11 @@ import {
     Truck,
     Download,
     Barcode,
+    Bot,
 } from "lucide-react";
 import { SKUTaxonomySettings } from "@/components/settings/SKUTaxonomySettings";
 import { SalesChannelsSettings } from "@/components/settings/SalesChannelsSettings";
+import { AiProvidersSettings } from "@/components/settings/AiProvidersSettings";
 import { LogoUpload } from "@/components/settings/LogoUpload";
 import { isUpiDiscountEnabled, setUpiDiscountEnabled } from "@/lib/channel-pricing";
 import { Button } from "@/components/ui/button";
@@ -75,6 +77,7 @@ const sections: SettingSection[] = [
     { id: "categories", title: "Categories", icon: <FolderTree size={20} /> },
     { id: "attributes", title: "Product Attributes", icon: <Tags size={20} /> },
     { id: "integrations", title: "Integrations", icon: <Database size={20} /> },
+    { id: "ai", title: "AI Providers", icon: <Bot size={20} /> },
     { id: "whatsapp", title: "WhatsApp", icon: <MessageCircle size={20} /> },
     { id: "notifications", title: "Notifications", icon: <Bell size={20} /> },
     { id: "security", title: "Security", icon: <Shield size={20} /> },
@@ -1206,6 +1209,22 @@ export default function SettingsPage() {
                                             <span className="text-emerald-400 font-semibold">● Isolated Tenant PocketBase Live ({getPocketBaseUrl().replace(/^https?:\/\//, "")})</span>
                                         </div>
                                     </div>
+                                </div>
+                            )}
+
+                            {activeSection === "ai" && (
+                                <div className="space-y-8 animate-fade-in">
+                                    <div className="border-b border-border pb-4">
+                                        <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
+                                            <Bot className="text-primary" size={24} />
+                                            AI Providers
+                                        </h2>
+                                        <p className="text-muted-foreground text-sm mt-1">
+                                            Connect OpenAI-compatible LLM providers, manage their model catalogs and choose
+                                            the default used by the AI Assistant.
+                                        </p>
+                                    </div>
+                                    <AiProvidersSettings />
                                 </div>
                             )}
 

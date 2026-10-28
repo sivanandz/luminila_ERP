@@ -3,6 +3,8 @@ import { createTenantClient, sanitizeFilter } from '@/lib/pocketbase';
 import { getStorefrontBinding, normalizeBindingEmail } from '@/lib/storefront';
 import { resolvePublicCatalogOrigin } from '@/lib/meta-catalog-batch';
 import { authenticateOperator, constantTimeEqual, tenantAccessAllowed, extractBearer } from '@/lib/api-auth';
+import { getChannelPriceFromList } from '@/lib/pricing-rules';
+import { loadTenantChannelDefinitions } from '@/lib/server-pricing';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,6 +56,7 @@ export async function GET(req: NextRequest) {
         // A client per request, scoped to this tenant; the shared one could hold
         // another tenant's session under concurrency.
         const client = await createTenantClient(accountEmail);
+        const channelDefinitions = await loadTenantChannelDefinitions(client, accountEmail);
 
         const safeEmail = sanitizeFilter(accountEmail);
 
@@ -127,7 +130,15 @@ export async function GET(req: NextRequest) {
             const cleanDescription = (p.description || p.name || '')
                 .replace(/[\r\n]+/g, ' ')
                 .replace(/"/g, '""');
-            const basePrice = Number(p.base_price) || 0;
+            const channelPrice = getChannelPriceFromList(
+                {
+                    base_price: Number(p.base_price) || 0,
+                    cost_price: Number(p.cost_price) || 0,
+                    channel_prices: p.channel_prices,
+                },
+                'whatsapp',
+                channelDefinitions
+            );
             const imageLink = (p.image_url && p.image_url.startsWith('http'))
                 ? p.image_url
                 : `${origin}/api/catalog/image?id=${p.id}${accountEmail ? `&account_email=${encodeURIComponent(accountEmail)}` : ''}`;
@@ -137,7 +148,7 @@ export async function GET(req: NextRequest) {
                 const sku = p.sku || `PROD-${p.id}`;
                 const stock = Number(p.stock_quantity) || 0;
                 const availability = stock > 0 ? 'in stock' : 'out of stock';
-                const priceFormatted = `${basePrice.toFixed(2)} INR`;
+                const priceFormatted = `${channelPrice.toFixed(2)} INR`;
                 const chatLink = `https://wa.me/${phone}?text=${encodeURIComponent(`Hello, I want to order ${p.name} (SKU: ${sku})`)}`;
 
                 rows.push([
@@ -158,7 +169,7 @@ export async function GET(req: NextRequest) {
                 // Product with variants
                 for (const v of pVariants) {
                     const variantSku = p.sku ? `${p.sku}-${v.sku_suffix || v.id.slice(-4)}` : `VAR-${v.id}`;
-                    const variantPrice = Math.max(0, basePrice + (Number(v.price_adjustment) || 0));
+                    const variantPrice = Math.max(0, channelPrice + (Number(v.price_adjustment) || 0));
                     const variantStock = Number(v.stock_level) || 0;
                     const availability = variantStock > 0 ? 'in stock' : 'out of stock';
                     const priceFormatted = `${variantPrice.toFixed(2)} INR`;

@@ -14,7 +14,7 @@ import type { WPPMessage } from "@/lib/whatsapp";
 import { toast } from "sonner";
 import { listActiveChatProducts, listChatProducts, findProductByImageHash, createChatProduct } from "@/lib/chat-inventory";
 import { createSaleFromChat } from "@/lib/chat-sales";
-import { getCurrentTenantEmail } from "@/lib/pocketbase";
+import { pb, getCurrentTenantEmail } from "@/lib/pocketbase";
 import { findMatchingProducts, generateImageHash } from "@/lib/image-matcher";
 import {
     MessageCircle,
@@ -1239,27 +1239,101 @@ export default function WhatsAppPage() {
             const customerName = chats.find(c => c.id === selectedChat)?.name || "WhatsApp Customer";
             const customerPhone = phoneFromChatId(selectedChat);
 
-            // 1-2. Create the sale and its lines through the channel-sale service.
+            // Capture the sellable variant for every line (A33/A59): the server
+            // refuses an ambiguous multi-variant line, so the operator chooses.
+            const resolvedCart: { id: string; variantId?: string; quantity: number; name?: string }[] = [];
+            for (const item of cart) {
+                let variantId = (item as { variantId?: string }).variantId;
+                if (!variantId) {
+                    const variants = await pb
+                        .collection("product_variants")
+                        .getFullList<{ id: string; variant_name?: string; size?: string; color?: string; stock_level?: number }>({
+                            filter: pb.filter("product = {:p}", { p: item.id }),
+                        })
+                        .catch(() => []);
+                    if (variants.length === 0) {
+                        throw new Error(`"${item.name}" has no variant configured and cannot be ordered.`);
+                    }
+                    if (variants.length === 1) {
+                        variantId = variants[0].id;
+                    } else {
+                        const labels = variants.map(
+                            (v, i) =>
+                                `${i + 1}. ${[v.variant_name, v.size, v.color].filter(Boolean).join(" / ") || v.id.slice(-4)} (stock ${Number(v.stock_level) || 0})`
+                        );
+                        const choice = window.prompt(
+                            `Choose the size/variant for "${item.name}":\n\n${labels.join("\n")}\n\nEnter a number:`
+                        );
+                        const idx = Number(choice) - 1;
+                        if (!Number.isInteger(idx) || idx < 0 || idx >= variants.length) {
+                            throw new Error(`No valid variant chosen for "${item.name}".`);
+                        }
+                        variantId = variants[idx].id;
+                    }
+                }
+                resolvedCart.push({ id: item.id, variantId, quantity: item.quantity, name: item.name });
+            }
+
+            // Capture the delivery address when the profile has none (A60). The
+            // service refuses an order that cannot be fulfilled.
+            let shippingAddress = (customer?.address || "").trim();
+            let city = (customer?.city || "").trim();
+            let state = (customer?.state || "").trim();
+            let pincode = (customer?.pincode || "").trim();
+            if (!shippingAddress) {
+                const entered = window.prompt("Delivery address (house/street):");
+                if (!entered || !entered.trim()) {
+                    throw new Error("A delivery address is required for the order.");
+                }
+                shippingAddress = entered.trim();
+                city = (window.prompt("City:") || city).trim();
+                state = (window.prompt("State:") || state).trim();
+                pincode = (window.prompt("Pincode:") || pincode).trim();
+            }
+
+            // One stable key per chat+cart so a double-click or retry resolves to
+            // the same order instead of creating a duplicate (CO-12).
+            let hash = 5381;
+            const seed =
+                resolvedCart
+                    .map((l) => `${l.id}x${l.quantity}x${l.variantId}`)
+                    .sort()
+                    .join("|") + (customerPhone || "");
+            for (let i = 0; i < seed.length; i++) hash = ((hash * 33) ^ seed.charCodeAt(i)) >>> 0;
+            const idempotencyKey = `CHAT-${String(selectedChat).replace(/[^A-Za-z0-9]/g, "").slice(-12)}-${hash
+                .toString(16)
+                .padStart(8, "0")}`;
+
+            // 1-2. Create the sale, fulfilment order and payment trail through the channel-sale service.
             const sale = await createSaleFromChat({
                 customerName,
                 customerPhone: customerPhone || '',
                 customerId: customer?.id || undefined,
-                cart: cart.map((item) => ({ id: item.id, base_price: item.base_price, quantity: item.quantity })),
+                chatId: selectedChat,
+                cart: resolvedCart,
+                shippingAddress,
+                city,
+                state,
+                pincode,
                 total: cartTotal,
+                idempotencyKey,
             });
 
-            // 3. Notify via WhatsApp
-            const confirmMsg = `✅ *Order #${sale?.id.slice(0, 8).toUpperCase()} Created*\nTotal: ₹${cartTotal.toLocaleString('en-IN')}\n\nThank you for your order! We are generating your payment link now.`;
+            // 3. Notify via WhatsApp with the server-computed total.
+            const confirmMsg = `✅ *Order ${sale.orderNumber} Created*\nTotal: ₹${sale.total.toLocaleString('en-IN')}\nPayment ref: ${sale.paymentRef}\n\nThank you for your order! ${sale.paymentUrl ? `Pay here: ${sale.paymentUrl}` : "Your payment link is on its way — or pay via the UPI details our team shares next."}`;
             await whatsappManager.sendMessage(selectedChat, confirmMsg);
 
             // 4. Reset & toast
             setCart([]);
-            setAddedToast(`Order #${sale?.id.slice(0, 8).toUpperCase()} created successfully!`);
+            setAddedToast(`Order ${sale.orderNumber} created successfully!`);
             setTimeout(() => setAddedToast(null), 3500);
 
-            // 5. Open payment link modal for immediate completion
-            setRazorpayModalAmount(cartTotal);
-            setRazorpayModalOrderId(sale.id);
+            // 5. Open payment link modal for immediate completion. Use the
+            // sales_orders id, not the POS `sales` id: the payment_links.order
+            // relation and the webhook's order_id note both point at
+            // sales_orders (CO-06).
+            setRazorpayModalAmount(sale.total);
+            setRazorpayModalOrderId(sale.orderId);
             setShowRazorpayModal(true);
 
         } catch (err) {
@@ -1575,7 +1649,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 sku: best.full_sku,
                 name: best.name,
                 variant: best.variant_name,
-                price: getChannelPrice({ base_price: best.base_price, channel_prices: best.channel_prices }, 'whatsapp', best.price_adjustment),
+                price: getChannelPrice({ base_price: best.base_price, cost_price: best.cost_price, channel_prices: best.channel_prices }, 'whatsapp', best.price_adjustment),
                 quantity: 1,
                 productId: best.id,
                 variantId: best.variant_id,

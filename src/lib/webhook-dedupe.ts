@@ -42,7 +42,8 @@ export function amountMatchesRupees(expectedRupees: number, amountPaise: number)
     return expectedPaise === Math.round(amountPaise);
 }
 
-export async function loadProcessedEvents(): Promise<string[]> {
+export async function loadProcessedEvents(db: typeof pb = pb): Promise<string[]> {
+    const pb = db;
     const row = await pb
         .collection('store_settings')
         .getFirstListItem(`key="${SETTINGS_KEY}"`)
@@ -57,7 +58,8 @@ export async function loadProcessedEvents(): Promise<string[]> {
     }
 }
 
-export async function saveProcessedEvents(events: string[]): Promise<void> {
+export async function saveProcessedEvents(events: string[], db: typeof pb = pb): Promise<void> {
+    const pb = db;
     const value = JSON.stringify(events);
     const row = await pb
         .collection('store_settings')

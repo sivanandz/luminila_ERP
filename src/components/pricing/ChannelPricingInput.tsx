@@ -8,6 +8,8 @@ import {
     addCustomChannel,
     removeCustomChannel,
     calculateGatewayMarkup,
+    computeRulePrice,
+    describePricingRule,
     type SalesChannelDefinition,
 } from "@/lib/channel-pricing";
 import { Input } from "@/components/ui/input";
@@ -45,6 +47,7 @@ import { toast } from "sonner";
 
 interface ChannelPricingInputProps {
     basePrice: number;
+    costPrice?: number;
     channelPrices: Record<string, number>;
     onChange: (channelPrices: Record<string, number>) => void;
     onBasePriceChange?: (basePrice: number) => void;
@@ -52,6 +55,7 @@ interface ChannelPricingInputProps {
 
 export function ChannelPricingInput({
     basePrice,
+    costPrice = 0,
     channelPrices,
     onChange,
     onBasePriceChange,
@@ -191,7 +195,7 @@ export function ChannelPricingInput({
         delete updated[channelId];
         if (channelId === "website") delete updated.shopify;
         onChange(updated);
-        toast.info(`Reset ${channelId.toUpperCase()} to match Shop Base Price`);
+        toast.info(`Cleared override for ${channelId.toUpperCase()}; its rule or base price now applies.`);
     };
 
     const handleResetAll = () => {
@@ -227,6 +231,10 @@ export function ChannelPricingInput({
                 description: newChannelDesc.trim() || `Custom sales channel for ${newChannelName.trim()}`,
                 badgeColor: newChannelColor,
                 discountPreset: presetNum,
+                pricingRule:
+                    presetNum !== 0
+                        ? { mode: "percent", percent: presetNum }
+                        : undefined,
             });
             toast.success(`Created sales channel: ${newChannelName}`);
             setIsAddChannelOpen(false);
@@ -259,6 +267,7 @@ export function ChannelPricingInput({
     const customOverridesCount = Object.keys(channelPrices).filter(
         (k) => Number(channelPrices[k]) > 0
     ).length;
+    const ruleCount = channels.filter((channel) => channel.pricingRule).length;
 
     return (
         <div className="space-y-3 border border-surface-hover/70 rounded-2xl p-3.5 bg-bg-navy/40">
@@ -273,16 +282,20 @@ export function ChannelPricingInput({
                             Multi-Channel Sales Pricing
                             {customOverridesCount > 0 ? (
                                 <Badge className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[9px] px-1.5 py-0">
-                                    {customOverridesCount} Custom Override{customOverridesCount > 1 ? "s" : ""}
+                                    {customOverridesCount} Override{customOverridesCount > 1 ? "s" : ""}
+                                </Badge>
+                            ) : ruleCount > 0 ? (
+                                <Badge className="bg-primary/15 text-primary border border-primary/30 text-[9px] px-1.5 py-0">
+                                    {ruleCount} Rule{ruleCount > 1 ? "s" : ""} Applied
                                 </Badge>
                             ) : (
                                 <span className="text-[10px] text-moonstone font-normal">
-                                    All Channels Synced
+                                    No rules configured
                                 </span>
                             )}
                         </div>
                         <div className="text-[10px] text-moonstone">
-                            Set different retail prices for Shop, WhatsApp chat, and Website store.
+                            Prices are derived from cost by each channel's rule. Type a value only to override.
                         </div>
                     </div>
                 </div>
@@ -306,9 +319,8 @@ export function ChannelPricingInput({
                 {primaryChannels.map((chan) => {
                     const hasCustom =
                         channelPrices[chan.id] !== undefined && Number(channelPrices[chan.id]) > 0;
-                    const currentValue = hasCustom
-                        ? String(channelPrices[chan.id])
-                        : (chan.id === "pos" && basePrice > 0 ? String(basePrice) : "");
+                    const rulePrice = computeRulePrice(costPrice, chan.pricingRule);
+                    const currentValue = hasCustom ? String(channelPrices[chan.id]) : "";
 
                     return (
                         <div
@@ -322,13 +334,20 @@ export function ChannelPricingInput({
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-1.5 min-w-0">
                                     {getChannelIcon(chan.id)}
-                                    <span className="text-xs font-bold text-white truncate">
+                                    <span
+                                        className="text-xs font-bold text-white truncate"
+                                        title={describePricingRule(chan.pricingRule)}
+                                    >
                                         {chan.label}
                                     </span>
                                 </div>
                                 {hasCustom ? (
                                     <span className="text-[9px] font-mono uppercase bg-primary/25 text-primary px-1.5 py-0.2 rounded font-bold shrink-0">
                                         Custom
+                                    </span>
+                                ) : chan.pricingRule ? (
+                                    <span className="text-[9px] font-mono uppercase bg-emerald-500/15 text-emerald-300 px-1.5 py-0.2 rounded shrink-0">
+                                        Rule
                                     </span>
                                 ) : (
                                     <span className="text-[9px] font-mono uppercase bg-white/5 text-moonstone px-1.5 py-0.2 rounded shrink-0">
@@ -346,81 +365,109 @@ export function ChannelPricingInput({
                                     type="number"
                                     min="0"
                                     step="1"
-                                    placeholder={basePrice > 0 ? `Default: ₹${basePrice}` : "0"}
+                                    placeholder={
+                                        rulePrice !== null
+                                            ? `Rule: ₹${rulePrice}`
+                                            : basePrice > 0
+                                              ? `Base: ₹${basePrice}`
+                                              : "Override"
+                                    }
                                     value={currentValue}
                                     onChange={(e) => handlePriceChange(chan.id, e.target.value)}
                                     className="pl-6 h-8 bg-bg-navy border-surface-hover text-white text-xs font-mono font-bold focus:border-primary"
                                 />
                             </div>
 
-                            {/* Quick Presets / Actions */}
+                            {/* Rule summary / manual presets */}
                             <div className="flex items-center justify-between text-[10px] pt-0.5">
-                                {chan.id === "whatsapp" && (
+                                {chan.pricingRule ? (
                                     <>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => handleApplyGatewayMarkup("whatsapp")}
-                                                title="Add 2.2% Razorpay markup to protect imitation jewelry margin"
-                                                className="text-amber-400 hover:text-amber-300 hover:underline font-mono"
-                                            >
-                                                +2.2% PG
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => handleApplyPreset("whatsapp", -5)}
-                                                className="text-emerald-400 hover:text-emerald-300 hover:underline font-mono"
-                                            >
-                                                -5% Promo
-                                            </button>
-                                        </div>
+                                        <span
+                                            className="text-moonstone truncate font-mono"
+                                            title={describePricingRule(chan.pricingRule)}
+                                        >
+                                            {describePricingRule(chan.pricingRule)}
+                                        </span>
                                         {hasCustom && (
                                             <button
                                                 type="button"
-                                                onClick={() => handleMatchShop("whatsapp")}
-                                                className="text-moonstone hover:text-white"
+                                                onClick={() => handleMatchShop(chan.id)}
+                                                className="text-primary hover:text-primary/80 shrink-0"
                                             >
-                                                Match Shop
+                                                Use rule
                                             </button>
                                         )}
                                     </>
-                                )}
-
-                                {chan.id === "website" && (
+                                ) : (
                                     <>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => handleApplyGatewayMarkup("website")}
-                                                title="Add 2.2% Razorpay markup to protect imitation jewelry margin"
-                                                className="text-amber-400 hover:text-amber-300 hover:underline font-mono"
-                                            >
-                                                +2.2% PG
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => handleApplyPreset("website", 10)}
-                                                className="text-purple-400 hover:text-purple-300 hover:underline font-mono"
-                                            >
-                                                +10% Buffer
-                                            </button>
-                                        </div>
-                                        {hasCustom && (
-                                            <button
-                                                type="button"
-                                                onClick={() => handleMatchShop("website")}
-                                                className="text-moonstone hover:text-white"
-                                            >
-                                                Match Shop
-                                            </button>
+                                        {chan.id === "whatsapp" && (
+                                            <>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleApplyGatewayMarkup("whatsapp")}
+                                                        title="Add 2.2% Razorpay markup to protect imitation jewelry margin"
+                                                        className="text-amber-400 hover:text-amber-300 hover:underline font-mono"
+                                                    >
+                                                        +2.2% PG
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleApplyPreset("whatsapp", -5)}
+                                                        className="text-emerald-400 hover:text-emerald-300 hover:underline font-mono"
+                                                    >
+                                                        -5% Promo
+                                                    </button>
+                                                </div>
+                                                {hasCustom && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleMatchShop("whatsapp")}
+                                                        className="text-moonstone hover:text-white"
+                                                    >
+                                                        Clear
+                                                    </button>
+                                                )}
+                                            </>
+                                        )}
+
+                                        {chan.id === "website" && (
+                                            <>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleApplyGatewayMarkup("website")}
+                                                        title="Add 2.2% Razorpay markup to protect imitation jewelry margin"
+                                                        className="text-amber-400 hover:text-amber-300 hover:underline font-mono"
+                                                    >
+                                                        +2.2% PG
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleApplyPreset("website", 10)}
+                                                        className="text-purple-400 hover:text-purple-300 hover:underline font-mono"
+                                                    >
+                                                        +10% Buffer
+                                                    </button>
+                                                </div>
+                                                {hasCustom && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleMatchShop("website")}
+                                                        className="text-moonstone hover:text-white"
+                                                    >
+                                                        Clear
+                                                    </button>
+                                                )}
+                                            </>
+                                        )}
+
+                                        {chan.id === "pos" && (
+                                            <span className="text-moonstone truncate text-[10px]">
+                                                Counter retail price
+                                            </span>
                                         )}
                                     </>
-                                )}
-
-                                {chan.id === "pos" && (
-                                    <span className="text-moonstone truncate text-[10px]">
-                                        Counter Retail Price
-                                    </span>
                                 )}
                             </div>
                         </div>
@@ -460,6 +507,7 @@ export function ChannelPricingInput({
                             const hasCustom =
                                 channelPrices[chan.id] !== undefined && Number(channelPrices[chan.id]) > 0;
                             const currentVal = hasCustom ? String(channelPrices[chan.id]) : "";
+                            const rulePrice = computeRulePrice(costPrice, chan.pricingRule);
 
                             return (
                                 <div
@@ -502,15 +550,23 @@ export function ChannelPricingInput({
                                             type="number"
                                             min="0"
                                             step="1"
-                                            placeholder={`Default: ₹${basePrice || 0}`}
+                                            placeholder={
+                                            rulePrice !== null
+                                                ? `Rule: ₹${rulePrice}`
+                                                : `Base: ₹${basePrice || 0}`
+                                        }
                                             value={currentVal}
                                             onChange={(e) => handlePriceChange(chan.id, e.target.value)}
                                             className="pl-6 h-8 bg-bg-navy border-surface-hover text-white text-xs font-mono font-bold focus:border-primary"
                                         />
                                     </div>
 
-                                    <div className="flex items-center justify-between text-[10px] text-moonstone">
-                                        {chan.discountPreset ? (
+                                    <div className="flex items-center justify-between text-[10px] text-moonstone gap-2">
+                                        {chan.pricingRule ? (
+                                            <span className="truncate font-mono" title={describePricingRule(chan.pricingRule)}>
+                                                {describePricingRule(chan.pricingRule)}
+                                            </span>
+                                        ) : chan.discountPreset ? (
                                             <button
                                                 type="button"
                                                 onClick={() => handleApplyPreset(chan.id, chan.discountPreset || 0)}
@@ -525,9 +581,9 @@ export function ChannelPricingInput({
                                             <button
                                                 type="button"
                                                 onClick={() => handleMatchShop(chan.id)}
-                                                className="text-moonstone hover:text-white"
+                                                className="shrink-0 text-moonstone hover:text-white"
                                             >
-                                                Clear
+                                                {chan.pricingRule ? "Use rule" : "Clear"}
                                             </button>
                                         )}
                                     </div>
@@ -621,7 +677,7 @@ export function ChannelPricingInput({
                             </div>
 
                             <div className="space-y-1">
-                                <Label className="text-xs font-semibold text-muted-foreground">Preset % (+Markup / -Discount)</Label>
+                                <Label className="text-xs font-semibold text-muted-foreground">Cost preset % (+Markup / -Discount)</Label>
                                 <div className="relative">
                                     <Input
                                         type="number"
@@ -632,6 +688,9 @@ export function ChannelPricingInput({
                                     />
                                     <span className="absolute right-2.5 top-2 text-xs text-muted-foreground font-mono">%</span>
                                 </div>
+                                <p className="text-[10px] text-muted-foreground">
+                                    Applied to cost price. Fine-tune it in Settings → Sales channels.
+                                </p>
                             </div>
                         </div>
                     </div>

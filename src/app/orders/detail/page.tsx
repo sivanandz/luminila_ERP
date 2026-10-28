@@ -29,6 +29,15 @@ import { getStoreSettings, type StoreSettings } from "@/lib/settings";
 import { toast } from "sonner";
 import { OrderMilestoneBar } from "@/components/orders/OrderMilestoneBar";
 import { ShippingLabelPrintModal, type ShippingLabelData } from "@/components/shipping/ShippingLabelPrintModal";
+import { pb, getCurrentTenantEmail } from "@/lib/pocketbase";
+import {
+    listShipmentsForOrder,
+    createShipmentForOrder,
+    updateShipmentStatus,
+    settleCodOrder,
+    setExpectedDelivery,
+    type ShipmentRow,
+} from "@/lib/shipments";
 
 function OrderDetailContent() {
     const router = useRouter();
@@ -40,6 +49,8 @@ function OrderDetailContent() {
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
     const [showShippingLabel, setShowShippingLabel] = useState(false);
+    const [shipments, setShipments] = useState<ShipmentRow[]>([]);
+    const [expectedDelivery, setEtaDraft] = useState("");
 
     useEffect(() => {
         getStoreSettings().then(setSettings).catch(() => {});
@@ -58,12 +69,19 @@ function OrderDetailContent() {
         setLoading(false);
     }, [id, router]);
 
+    const fetchShipments = useCallback(async () => {
+        if (!id) return;
+        setShipments(await listShipmentsForOrder(pb, id));
+    }, [id]);
+
     useEffect(() => {
         if (id) {
             // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchOrder flips `loading` synchronously before its first await so the spinner shows on every refetch, including those triggered by the Convert/Invoice handlers; deferring it past the await would change which screen renders
             fetchOrder();
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- same synchronous-refresh rationale as fetchOrder
+            fetchShipments();
         }
-    }, [id, fetchOrder]);
+    }, [id, fetchOrder, fetchShipments]);
 
     const handleConvert = async () => {
         if (!order) return;
@@ -88,16 +106,103 @@ function OrderDetailContent() {
         setActionLoading(false);
     };
 
+    const handleExpectedDelivery = async () => {
+        if (!order || !expectedDelivery) return;
+        setActionLoading(true);
+        const result = await setExpectedDelivery(pb, order.id, expectedDelivery);
+        if (result.success) {
+            toast.success("Expected delivery updated");
+            fetchOrder();
+        } else {
+            toast.error(result.error || "Could not update the expected delivery date");
+        }
+        setActionLoading(false);
+    };
+
+    const handleCreateShipment = async () => {
+        if (!order) return;
+        const carrier = window.prompt("Courier / carrier name (e.g. ST Courier, Delhivery):");
+        if (!carrier?.trim()) return;
+        const awbNumber = window.prompt("AWB / tracking number:");
+        if (!awbNumber?.trim()) return;
+        const trackingUrl = window.prompt("Tracking URL (optional):") || "";
+        setActionLoading(true);
+        const result = await createShipmentForOrder(pb, getCurrentTenantEmail(), {
+            orderId: order.id,
+            carrier: carrier.trim(),
+            awbNumber: awbNumber.trim(),
+            trackingUrl: trackingUrl.trim(),
+            expectedDeliveryDate: expectedDelivery || undefined,
+            codAmount:
+                String((order as { payment_method?: string }).payment_method || "").toLowerCase() === "cod"
+                    ? Number(order.total || 0)
+                    : 0,
+        });
+        if (result.success) {
+            toast.success("Shipment recorded and customer notified");
+            fetchOrder();
+            fetchShipments();
+        } else {
+            toast.error(result.error || "Could not record the shipment");
+        }
+        setActionLoading(false);
+    };
+
+    const handleMarkDelivered = async (shipmentId: string) => {
+        const result = await updateShipmentStatus(pb, shipmentId, "delivered");
+        if (result.success) {
+            toast.success("Shipment marked delivered");
+            fetchOrder();
+            fetchShipments();
+        } else {
+            toast.error(result.error || "Could not update the shipment");
+        }
+    };
+
+    const handleCodCollected = async () => {
+        if (!order) return;
+        const reference = window.prompt("COD collection reference (cash receipt / UTR):");
+        if (!reference?.trim()) {
+            toast.error("A collection reference is required to settle COD.");
+            return;
+        }
+        setActionLoading(true);
+        const result = await settleCodOrder(pb, getCurrentTenantEmail(), order.id, {
+            reference: reference.trim(),
+            collectedBy: getCurrentTenantEmail(),
+        });
+        if (result.success) {
+            toast.success("COD settled — order marked PAID and delivered");
+            fetchOrder();
+        } else {
+            toast.error(result.error || "Could not settle the COD order");
+        }
+        setActionLoading(false);
+    };
+
     const handleCancel = async () => {
         if (!order) return;
+        // CO-15: a paid order can only be cancelled together with a refund
+        // reference; otherwise stock would be restored while the CRM still
+        // reports paid revenue for a cancelled order.
+        const isPaid = String((order as { payment_status?: string }).payment_status || '').toUpperCase() === 'PAID';
         const confirmed = window.confirm(
-            `Cancel ${order.order_type === 'estimate' ? 'estimate' : 'order'} #${order.order_number}? Any stock deducted by this order will be restored.`
+            `Cancel ${order.order_type === 'estimate' ? 'estimate' : 'order'} #${order.order_number}? Any stock deducted by this order will be restored.${isPaid ? ' This order is PAID — the refund reference is required.' : ''}`
         );
         if (!confirmed) return;
         const reason = window.prompt("Reason (optional):") || undefined;
+        let refundReference: string | undefined;
+        if (isPaid) {
+            const supplied = window.prompt("Refund reference (Razorpay refund id / UTR). Required for a paid order:");
+            if (!supplied || !supplied.trim()) {
+                toast.error("Cancellation aborted: a refund reference is required for a paid order.");
+                return;
+            }
+            refundReference = supplied.trim();
+        }
         setActionLoading(true);
         try {
-            const result = await cancelSalesOrder(order.id, { reason });
+            const result = await cancelSalesOrder(order.id, { reason, refundReference });
             if (result.alreadyCancelled) {
                 toast.info("This order is already cancelled");
             } else if (result.restored > 0) {
@@ -296,6 +401,84 @@ function OrderDetailContent() {
                             </div>
                         </div>
 
+                        {/* Dispatch & Delivery (C2/C3/D2) */}
+                        {!isEstimate && (
+                            <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover space-y-3">
+                                <h3 className="text-white font-bold flex items-center gap-2">
+                                    <Truck size={18} className="text-primary" />
+                                    Dispatch &amp; Delivery
+                                </h3>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="date"
+                                        value={expectedDelivery || String((order as { expected_delivery_date?: string }).expected_delivery_date || "").slice(0, 10)}
+                                        onChange={(e) => setEtaDraft(e.target.value)}
+                                        className="bg-bg-navy border border-surface-hover rounded-lg px-2 py-1.5 text-xs text-white"
+                                    />
+                                    <Button variant="outline" onClick={handleExpectedDelivery} disabled={actionLoading}>
+                                        Save ETA
+                                    </Button>
+                                </div>
+                                {shipments.length === 0 && (
+                                    <p className="text-moonstone text-xs">No shipment recorded yet.</p>
+                                )}
+                                {shipments.map((shipment) => (
+                                    <div key={shipment.id} className="text-xs border-t border-surface-hover pt-2 space-y-1">
+                                        <p className="text-white font-medium">
+                                            {shipment.carrier || "Carrier"} · {shipment.awb_number || "no AWB"}
+                                        </p>
+                                        <p className="text-moonstone uppercase tracking-wide">
+                                            {shipment.shipping_status || "unknown"}
+                                        </p>
+                                        {shipment.tracking_url && (
+                                            <a
+                                                href={shipment.tracking_url}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="text-primary underline"
+                                            >
+                                                Tracking link
+                                            </a>
+                                        )}
+                                        {shipment.shipping_status !== "delivered" && (
+                                            <button
+                                                type="button"
+                                                onClick={() => handleMarkDelivered(shipment.id)}
+                                                className="text-emerald-400 underline"
+                                            >
+                                                Mark delivered
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
+                                <div className="flex flex-wrap gap-2 pt-2">
+                                    <Button variant="outline" onClick={handleCreateShipment} disabled={actionLoading}>
+                                        <Truck size={16} className="mr-1.5" />
+                                        Record Dispatch
+                                    </Button>
+                                    {String((order as { payment_method?: string }).payment_method || "").toLowerCase() === "cod" &&
+                                        String((order as { payment_status?: string }).payment_status || "").toUpperCase() !== "PAID" &&
+                                        order.status !== "cancelled" && (
+                                            <Button
+                                                variant="outline"
+                                                onClick={handleCodCollected}
+                                                disabled={actionLoading}
+                                                className="border-emerald-500/40 text-emerald-400"
+                                            >
+                                                Mark COD Collected
+                                            </Button>
+                                        )}
+                                </div>
+                                {Boolean((order as { cod_settled_at?: string }).cod_settled_at) && (
+                                    <p className="text-xs text-emerald-400">
+                                        COD settled {formatDate((order as { cod_settled_at?: string }).cod_settled_at || "")}
+                                        {Boolean((order as { cod_reference?: string }).cod_reference) &&
+                                            ` · ref ${(order as { cod_reference?: string }).cod_reference}`}
+                                    </p>
+                                )}
+                            </div>
+                        )}
+
                         {/* Customer Card */}
                         <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover">
                             <h3 className="text-white font-bold mb-4 flex items-center gap-2">
@@ -318,6 +501,25 @@ function OrderDetailContent() {
                                                 <p className="text-white text-sm">{order.billing_address}</p>
                                             </div>
                                         </div>
+                                    </div>
+                                )}
+
+                                {Boolean((order as { buyer_gstin?: string }).buyer_gstin) && (
+                                    <div className="pt-4 border-t border-surface-hover">
+                                        <p className="text-xs font-bold text-moonstone uppercase mb-1">GST Invoice</p>
+                                        <p className="text-white text-sm">
+                                            {(order as { buyer_company?: string }).buyer_company || order.customer_name}
+                                        </p>
+                                        <p className="text-moonstone text-xs font-mono">
+                                            {(order as { buyer_gstin?: string }).buyer_gstin}
+                                        </p>
+                                    </div>
+                                )}
+
+                                {Boolean((order as { campaign?: string }).campaign) && (
+                                    <div className="pt-4 border-t border-surface-hover">
+                                        <p className="text-xs font-bold text-moonstone uppercase mb-1">Campaign</p>
+                                        <p className="text-white text-sm">{(order as { campaign?: string }).campaign}</p>
                                     </div>
                                 )}
                             </div>
@@ -344,7 +546,7 @@ function OrderDetailContent() {
                 labelData={{
                     orderNumber: order.order_number || order.id,
                     carrier: 'st_courier',
-                    awbNumber: (order as any).tracking_id || (order as any).awb_number || '',
+                    awbNumber: shipments[0]?.awb_number || (order as any).tracking_id || (order as any).awb_number || '',
                     isCod: order.payment_method === 'cod',
                     codAmount: order.payment_method === 'cod' ? order.total : 0,
                     weightGrams: 250,

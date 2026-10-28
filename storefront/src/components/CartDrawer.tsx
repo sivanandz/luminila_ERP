@@ -1,143 +1,203 @@
 "use client";
 
-import React, { useState } from "react";
-import { useCart } from "@/context/CartContext";
-import { X, Trash2, Plus, Minus, ShoppingBag, ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { useCart } from "@/context/CartContext";
+import { cartLineKey } from "@/lib/pocketbase";
+import { useNiththigalContent } from "@/lib/niththigal-content";
+import { NtModal } from "./niththigal/NtModal";
+import { CloseIcon } from "./niththigal/NtIcons";
 
+function money(value: number): string {
+    return new Intl.NumberFormat("en-IN", {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    }).format(value);
+}
+
+/**
+ * Slide-over shopping bag, matching the Niththigal example's drawer markup.
+ * Variant selection stays inside the line so the order API never receives an
+ * ambiguous multi-variant line.
+ */
 export function CartDrawer() {
-    const { cart, isCartOpen, setIsCartOpen, removeFromCart, updateQuantity, cartSubtotal, cartCount } = useCart();
+    const { content } = useNiththigalContent();
+    const {
+        cart,
+        isCartOpen,
+        setIsCartOpen,
+        removeFromCart,
+        updateQuantity,
+        chooseVariant,
+        cartSubtotal,
+        needsVariantSelection,
+    } = useCart();
 
-    if (!isCartOpen) return null;
+    const close = () => setIsCartOpen(false);
 
     return (
-        <div className="fixed inset-0 z-50 flex justify-end animate-in fade-in duration-200">
-            {/* Backdrop */}
-            <div
-                onClick={() => setIsCartOpen(false)}
-                className="fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity duration-200"
-            />
-
-            {/* Slide-over Drawer (Emil Kowalski: iOS drawer curve 300ms) */}
-            <div className="relative w-full max-w-md bg-white text-black flex flex-col h-full z-10 shadow-2xl animate-in slide-in-from-right duration-300 ease-emil-drawer">
-                {/* Header */}
-                <div className="p-5 border-b border-neutral-100 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <ShoppingBag className="w-4 h-4 text-black stroke-[1.75]" />
-                        <h2 className="text-xs font-bold uppercase tracking-widest text-black">
-                            Bag ({cartCount})
-                        </h2>
-                    </div>
-                    <button
-                        onClick={() => setIsCartOpen(false)}
-                        className="p-1 text-neutral-400 hover:text-black transition cursor-pointer"
-                        aria-label="Close cart"
-                    >
-                        <X className="w-5 h-5 stroke-[1.5]" />
-                    </button>
+        <NtModal
+            open={isCartOpen}
+            onClose={close}
+            className="drawer"
+            labelledBy="cart-title"
+        >
+            <div className="drawer-header">
+                <div>
+                    <span className="eyebrow">{content.ui.cartEyebrow}</span>
+                    <h2 id="cart-title">{content.ui.cartTitle}</h2>
                 </div>
+                <button
+                    className="icon-button close-dialog"
+                    aria-label={content.ui.closeLabel}
+                    onClick={close}
+                >
+                    <CloseIcon />
+                </button>
+            </div>
 
-                {/* Cart Items List */}
-                <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                    {cart.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-center text-neutral-400 space-y-3">
-                            <ShoppingBag className="w-10 h-10 text-neutral-300 stroke-[1.25]" />
-                            <p className="text-xs uppercase tracking-widest text-neutral-500">Your bag is empty.</p>
-                            <button
-                                onClick={() => setIsCartOpen(false)}
-                                className="px-5 py-2.5 bg-black text-xs font-semibold uppercase tracking-widest text-white transition hover:bg-neutral-800"
-                            >
-                                Continue Shopping
-                            </button>
-                        </div>
-                    ) : (
-                        cart.map((item) => (
-                            <div
-                                key={item.product.id}
-                                className="flex gap-4 border-b border-neutral-100 pb-4 items-center"
-                            >
-                                <div className="w-16 h-20 bg-neutral-100 rounded-xs overflow-hidden shrink-0">
-                                    {item.product.image_url ? (
-                                        <img
-                                            src={item.product.image_url}
-                                            alt={item.product.name}
-                                            className="w-full h-full object-cover"
-                                        />
-                                    ) : (
-                                        <div className="w-full h-full flex items-center justify-center text-neutral-300 text-xs">
-                                            No img
-                                        </div>
-                                    )}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <h3 className="text-xs font-medium text-black truncate">
-                                        {item.product.name}
-                                    </h3>
-                                    <div className="text-xs font-bold text-black mt-1">
-                                        Rs. {item.product.website_price.toLocaleString("en-IN")}
+            <div id="cart-items" className="cart-items">
+                {cart.length === 0 ? (
+                    <div className="empty-state">
+                        <span aria-hidden>✧</span>
+                        <h3>{content.ui.cartEmptyTitle}</h3>
+                        <p>{content.ui.cartEmptyText}</p>
+                        <button
+                            className="button button-green"
+                            onClick={() => {
+                                close();
+                                window.setTimeout(
+                                    () =>
+                                        document
+                                            .getElementById("collection")
+                                            ?.scrollIntoView({ behavior: "smooth" }),
+                                    60
+                                );
+                            }}
+                        >
+                            {content.ui.cartEmptyCta} <span aria-hidden>↗</span>
+                        </button>
+                    </div>
+                ) : (
+                    cart.map((item) => {
+                        const key = cartLineKey(item);
+                        const variants = Array.isArray(item.product.variants)
+                            ? item.product.variants
+                            : [];
+                        const multiVariant = variants.length > 1;
+                        return (
+                            <div className="cart-row" key={key}>
+                                <img
+                                    src={item.product.image_url || "/niththigal/necklace.webp"}
+                                    alt={item.product.name}
+                                    width={90}
+                                    height={105}
+                                />
+                                <div className="cart-row-info">
+                                    <div className="cart-row-top">
+                                        <h3>{item.product.name}</h3>
+                                        <button
+                                            className="remove-item"
+                                            data-remove
+                                            onClick={() => removeFromCart(key)}
+                                            aria-label={`Remove ${item.product.name}`}
+                                        >
+                                            Remove
+                                        </button>
                                     </div>
+                                    <p>
+                                        {item.variantLabel &&
+                                        !/^(standard|one size)$/i.test(item.variantLabel)
+                                            ? `Size ${item.variantLabel}`
+                                            : item.product.category || "Jewellery"}{" "}
+                                        · {money(item.product.website_price)} each
+                                    </p>
 
-                                    {/* Quantity Stepper */}
-                                    <div className="flex items-center justify-between mt-3">
-                                        <div className="flex items-center border border-neutral-200">
-                                            <button
-                                                onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
-                                                className="px-2 py-0.5 text-xs text-neutral-500 hover:text-black cursor-pointer"
+                                    {multiVariant ? (
+                                        <label className="cart-variant">
+                                            <span>Choose a size</span>
+                                            <select
+                                                value={item.variantId || ""}
+                                                onChange={(event) =>
+                                                    chooseVariant(key, event.target.value)
+                                                }
+                                                aria-label={`Choose a size for ${item.product.name}`}
                                             >
-                                                <Minus className="w-3 h-3" />
+                                                <option value="" disabled>
+                                                    Select size
+                                                </option>
+                                                {variants.map((variant) => (
+                                                    <option
+                                                        key={variant.id}
+                                                        value={variant.id}
+                                                        disabled={variant.stock_level <= 0}
+                                                    >
+                                                        {variant.label}
+                                                        {variant.stock_level <= 0
+                                                            ? " — sold out"
+                                                            : ""}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </label>
+                                    ) : null}
+
+                                    <div className="cart-row-bottom">
+                                        <div className="quantity">
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    updateQuantity(key, item.quantity - 1)
+                                                }
+                                                aria-label={`Decrease ${item.product.name} quantity`}
+                                            >
+                                                −
                                             </button>
-                                            <span className="px-2 text-xs font-mono font-medium">
+                                            <span aria-label={`Quantity ${item.quantity}`}>
                                                 {item.quantity}
                                             </span>
                                             <button
-                                                onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
-                                                className="px-2 py-0.5 text-xs text-neutral-500 hover:text-black cursor-pointer"
+                                                type="button"
+                                                onClick={() =>
+                                                    updateQuantity(key, item.quantity + 1)
+                                                }
+                                                aria-label={`Increase ${item.product.name} quantity`}
                                             >
-                                                <Plus className="w-3 h-3" />
+                                                +
                                             </button>
                                         </div>
-
-                                        <button
-                                            onClick={() => removeFromCart(item.product.id)}
-                                            className="text-neutral-400 hover:text-black p-1 transition cursor-pointer"
-                                            title="Remove item"
-                                        >
-                                            <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
+                                        <strong>{money(item.product.website_price * item.quantity)}</strong>
                                     </div>
                                 </div>
                             </div>
-                        ))
-                    )}
-                </div>
-
-                {/* Footer Checkout Actions */}
-                {cart.length > 0 && (
-                    <div className="p-5 border-t border-neutral-100 space-y-4 bg-white">
-                        <div className="flex justify-between items-center text-xs">
-                            <span className="uppercase tracking-widest text-neutral-500">Subtotal</span>
-                            <span className="text-base font-bold text-black">
-                                Rs. {cartSubtotal.toLocaleString("en-IN")}
-                            </span>
-                        </div>
-
-                        <div className="space-y-2">
-                            <Link
-                                href="/checkout"
-                                onClick={() => setIsCartOpen(false)}
-                                className="w-full bg-black hover:bg-neutral-800 text-white font-medium py-3 px-4 text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-[background-color,transform] duration-140 ease-emil-out active:scale-97 cursor-pointer"
-                            >
-                                <span>Proceed to Checkout</span>
-                                <ArrowRight className="w-4 h-4" />
-                            </Link>
-                        </div>
-
-                        <p className="text-[10px] text-neutral-400 uppercase tracking-widest text-center">
-                            Pan India Shipping • Dispatched in 24-48 hrs
-                        </p>
-                    </div>
+                        );
+                    })
                 )}
             </div>
-        </div>
+
+            {cart.length > 0 ? (
+                <div id="cart-footer" className="cart-footer">
+                    <div className="cart-total">
+                        <span>{content.ui.cartSubtotal}</span>
+                        <strong>{money(cartSubtotal)}</strong>
+                    </div>
+                    <p>{content.ui.cartNote}</p>
+                    {needsVariantSelection ? (
+                        <span className="button button-green cart-disabled" aria-disabled="true">
+                            Select a size to continue <span aria-hidden>→</span>
+                        </span>
+                    ) : (
+                        <Link
+                            href="/checkout"
+                            className="button button-green"
+                            onClick={close}
+                        >
+                            {content.ui.cartCheckout} <span aria-hidden>→</span>
+                        </Link>
+                    )}
+                    <p>Secure payments · Insured express delivery</p>
+                </div>
+            ) : null}
+        </NtModal>
     );
 }

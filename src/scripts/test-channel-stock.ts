@@ -320,6 +320,38 @@ async function main() {
         assert.equal(second.alreadyRestored, true);
     });
 
+    await test('a partial restore can be completed by retrying (CO-18)', async () => {
+        const db = new FakeDb()
+            .addProduct('prod00000000001', 0).addVariant('var000000000001', 'prod00000000001', 5)
+            .addProduct('prod00000000002', 0).addVariant('var000000000002', 'prod00000000002', 5);
+        await applyChannelStock(db, [{ productId: 'prod00000000001', variantId: 'var000000000001', quantity: 2 }], {
+            accountEmail: TENANT, channel: 'storefront', referenceId: 'ord123456789020',
+        });
+        await applyChannelStock(db, [{ productId: 'prod00000000002', variantId: 'var000000000002', quantity: 1 }], {
+            accountEmail: TENANT, channel: 'storefront', referenceId: 'ord123456789020',
+        });
+        // Simulate a restore that failed after reversing only the first line:
+        // the first reversal row exists and its stock was credited.
+        const firstSale = db.movements.find((m) => m.movement_type === 'sale' && m.variant === 'var000000000001');
+        assert.ok(firstSale);
+        db.variants.get('var000000000001')!.stock_level = 5;
+        db.movements.push({
+            id: 'move-partial-1',
+            variant: 'var000000000001',
+            movement_type: 'return',
+            quantity: 2,
+            reference_id: 'ord123456789020',
+            source: 'storefront',
+            notes: `[reversal-of:${firstSale!.id}]`,
+        });
+        const retry = await restoreChannelStockForReference(db, { referenceId: 'ord123456789020' });
+        assert.deepEqual(retry, { restored: 1, alreadyRestored: false });
+        assert.equal(db.variants.get('var000000000001')?.stock_level, 5, 'already-reversed line must not be credited twice');
+        assert.equal(db.variants.get('var000000000002')?.stock_level, 5, 'remaining line must be restored');
+        const again = await restoreChannelStockForReference(db, { referenceId: 'ord123456789020' });
+        assert.equal(again.alreadyRestored, true);
+    });
+
     console.log(`\n${passed} passed, ${failed} failed`);
     if (failed > 0) process.exit(1);
 }

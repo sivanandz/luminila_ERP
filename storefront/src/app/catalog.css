@@ -1,0 +1,263 @@
+/* Product and collection pages — uses the existing Niththigal palette. */
+
+.product-breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 22px 0 0;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.product-breadcrumb a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.product-breadcrumb a:hover {
+    color: var(--green);
+}
+
+.product-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    gap: clamp(32px, 6vw, 96px);
+    align-items: start;
+    padding-top: 28px;
+}
+
+.product-detail-media {
+    position: sticky;
+    top: 96px;
+}
+
+.product-detail-media img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 2px;
+    background: var(--paper);
+}
+
+.product-detail-copy h1 {
+    font-family: var(--font-cormorant), "Cormorant Garamond", serif;
+    font-size: clamp(36px, 5vw, 64px);
+    font-weight: 400;
+    line-height: 1.02;
+    margin: 10px 0 18px;
+    color: var(--ink);
+}
+
+.product-detail-price {
+    font-size: 22px;
+    margin: 0 0 18px;
+    color: var(--ink);
+}
+
+.product-detail-price small {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-left: 8px;
+}
+
+.product-detail-description {
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--ink);
+    max-width: 56ch;
+}
+
+.product-specs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px 28px;
+    margin: 28px 0;
+    padding: 22px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+}
+
+.product-specs dt {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.product-specs dd {
+    margin: 4px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+}
+
+.product-purchase {
+    margin-top: 6px;
+}
+
+.product-purchase-label {
+    display: block;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 16px 0 6px;
+}
+
+.product-purchase-select,
+.product-purchase-qty {
+    border: 1px solid var(--line);
+    background: #fffaf0;
+    color: var(--ink);
+    padding: 10px 12px;
+    border-radius: 2px;
+    font: inherit;
+    min-width: 120px;
+}
+
+.product-purchase-row {
+    display: flex;
+    align-items: end;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.product-purchase-stock {
+    font-size: 11px;
+    color: var(--muted);
+    padding-bottom: 12px;
+}
+
+.product-purchase-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 18px;
+}
+
+.product-purchase-save {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 99px;
+    padding: 12px 18px;
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--green);
+    cursor: pointer;
+}
+
+.product-purchase-note {
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--muted);
+    margin-top: 14px;
+}
+
+.product-purchase-note a {
+    color: var(--green);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.collection-hero {
+    max-width: 860px;
+}
+
+.collection-hero h1 {
+    font-family: var(--font-cormorant), "Cormorant Garamond", serif;
+    font-size: clamp(40px, 6vw, 76px);
+    font-weight: 400;
+    line-height: 1;
+    margin: 10px 0 18px;
+    color: var(--ink);
+}
+
+.collection-hero p {
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--ink);
+    max-width: 62ch;
+}
+
+.collection-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin: 20px 0 0;
+}
+
+.collection-nav a {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--green);
+    text-decoration: none;
+}
+
+.collection-nav a[aria-current="page"] {
+    color: var(--gold);
+}
+
+.seo-intro-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 18px;
+    margin-top: 28px;
+}
+
+.seo-intro-card {
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+}
+
+.seo-intro-card h3 {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin: 0 0 6px;
+    color: var(--ink);
+}
+
+.seo-intro-card p {
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0;
+    color: var(--muted);
+}
+
+.seo-intro-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 22px;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.seo-intro-links a {
+    color: var(--green);
+    text-decoration: none;
+}
+
+@media (max-width: 860px) {
+    .product-detail {
+        grid-template-columns: 1fr;
+    }
+
+    .product-detail-media {
+        position: static;
+    }
+
+    .product-specs {
+        grid-template-columns: 1fr;
+    }
+}

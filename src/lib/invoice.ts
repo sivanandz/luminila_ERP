@@ -267,10 +267,11 @@ interface StoreSettingsAccumulator extends Omit<StoreSettings, 'is_gst_registere
     isGstRegistered?: boolean | string;
 }
 
-export async function getStoreSettings(): Promise<StoreSettings> {
+export async function getStoreSettings(db: typeof pb = pb): Promise<StoreSettings> {
+    const pb = db;
     try {
         const settings: StoreSettingsAccumulator = { ...REAL_STORE_DEFAULTS };
-        const tenantEmail = getCurrentTenantEmail();
+        const tenantEmail = db.authStore.record?.email?.trim().toLowerCase() || getCurrentTenantEmail();
         const currentUserId = pb.authStore.record?.id;
 
         // 1. Check localStorage first (fast client-side reactive store scoped to tenant)
@@ -400,7 +401,8 @@ export async function getStoreSettings(): Promise<StoreSettings> {
 // ===========================================
 // NUMBER GENERATION (PocketBase sequence)
 // ===========================================
-export async function generateInvoiceNumber(): Promise<string> {
+export async function generateInvoiceNumber(db: typeof pb = pb): Promise<string> {
+    const pb = db;
     const today = new Date();
     const month = today.getMonth() + 1;
     const year = today.getFullYear();
@@ -418,14 +420,15 @@ export async function generateInvoiceNumber(): Promise<string> {
         prefix: 'INV',
         padding: 5,
         formatFn: (nextValue) => `INV/${fyPrefix.slice(0, 2)}-${fyPrefix.slice(2)}/${nextValue.toString().padStart(5, '0')}`,
-    });
+    }, db);
 }
 
 // ===========================================
 // INVOICE CRUD
 // ===========================================
 
-export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' | 'updated_at'>): Promise<Invoice> {
+export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' | 'updated_at'>, db: typeof pb = pb): Promise<Invoice> {
+    const pb = db;
     // Honor a caller-supplied number (e.g. from cloneInvoice) verbatim without consuming an
     // extra sequence value; otherwise createWithUniqueRetry below allocates exactly one number.
     const explicitNumber = invoice.invoice_number;
@@ -512,7 +515,7 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
     const invoiceData = explicitNumber
         ? await pb.collection('invoices').create({ ...invoicePayload, invoice_number: explicitNumber })
         : await createWithUniqueRetry(
-            generateInvoiceNumber,
+            () => generateInvoiceNumber(db),
             (allocatedNumber) => pb.collection('invoices').create({ ...invoicePayload, invoice_number: allocatedNumber })
         );
 

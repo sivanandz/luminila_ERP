@@ -72,26 +72,24 @@ In wholesale operations, managing bulk transactions requires supporting multi-pa
 
 ## **Barcode Symbologies, Physical Tagging, and Administrative Mode-Switching Architecture**
 
-Physical tracking of non-precious jewellery occurs under strict geometric and optical constraints. The universal industry media standard for tagging necklaces, earrings, bangles, and rings is the synthetic polyester or polypropylene dumbbell (barbell) label. These labels feature two printable wings separated by an adhesive-free central bridge that loops around delicate chain links or earring posts without transferring adhesive residue onto base metals or decorative lacquers.  
-The physical footprint of an individual dumbbell tag is typically 54 \\times 11\\text{ mm} overall, with an adhesive-free bridge spanning roughly 14\\text{ to }16\\text{ mm} in width. This leaves two printable wings measuring approximately 18\\text{ to }20\\text{ mm} wide by 10\\text{ to }11\\text{ mm} high. Within this compact surface area, the tag must host the machine-scannable symbol, human-readable SKU, Maximum Retail Price (MRP), HSN code, and size indicator.  
-\+------------------+     \+------------------+  
-|                  |     |                  |  
-|   PRINTABLE      |=====|   PRINTABLE      |  
-|   WING A         |     |   WING B         |  
-|  (\~19 x 10 mm)   |     |  (\~19 x 10 mm)   |  
-|                  |     |                  |  
-\+------------------+     \+------------------+  
-  Left Symbology           Right Text Area  
-  Zone (1D / 2D)           (SKU / MRP / HSN)
+Physical tracking of non-precious jewellery occurs under strict geometric and optical constraints. The production media in use is a 14.3 \times 100\text{ mm} direct-thermal jewellery label supplied **3-up on a 45\text{ mm} web**. Each 100\text{ mm} feed pitch is a **64\text{ mm} body with a fold at 32\text{ mm}**, followed by a **36\text{ mm} narrow tail**. The body folds back-to-back into a **32 \times 14.3\text{ mm} two-sided tag**: one 32\text{ mm} face carries the symbology and human-readable SKU, the other carries the brand, SKU, MRP and HSN. The tail loops through the chain or earring post and adheres back onto the tag; it carries no print. The three lanes are pitched at 15\text{ mm} across the web (a 14.3\text{ mm} label plus die-cut gap), and the 100\text{ mm} dimension always runs through the printer feed. At the production resolution of 203\text{ dpi} (8 dots/mm) each 32\text{ mm} face is 256 \times 114 dots, enough for a Data Matrix symbol plus four human-readable lines.  
+\+----------------+----------------+---+  
+|  FACE 1        |  FACE 2        | T |  
+|  32 x 14.3 mm  |  32 x 14.3 mm  | A |  
+|  SKU/MRP/HSN   |  Code + SKU    | I |  
+\+----------------+----------------+---+  
+                  ^ fold at 32 mm  
+
+The legacy 54 \times 11\text{ mm} two-wing dumbbell stock remains available in the label screen for inventory already tagged with it, but it is not the production stock.
 
 ### **Optical Physics of Mobile Camera and Handheld 2D Scanning on Micro Tags**
 
 When selecting between 1D linear barcodes (Code 128\) and 2D matrix symbologies (Data Matrix ECC 200, QR Code), system designers must evaluate the optical mechanics of smartphone cameras and dedicated 2D imagers:
 
-> 1. **Linear Barcode Horizontal Sprawl (Code 128\)**: In linear barcodes, each character requires a set number of modules. For Code 128, total width is W \= \[(11C \+ 35\) \+ 2Q\] \\times X\[span\_179\](start\_span)\[span\_179\](end\_span)\[span\_180\](start\_span)\[span\_180\](end\_span). Encoding a full 21-character Child SKU at a readable narrow-bar width (X \= 0.17\\text{ mm}) yields a physical width of 46.75\\text{ mm}\[span\_181\](start\_span)\[span\_181\](end\_span)\[span\_182\](start\_span)\[span\_182\](end\_span). This is more than double the width of a 19\\text{ mm} dumbbell wing, making full alphanumeric 1D codes impossible to fit without wrapping or truncation. If 1D barcodes are used, the system must encode an abbreviated 8-digit numeric pointer ID (e.g., 90482101), which compacts down to 14.5\\text{ mm} via Code 128 Subset C.  
+> 1. **Linear Barcode Horizontal Sprawl (Code 128\)**: In linear barcodes, each character requires a set number of modules. For Code 128, total width is W \= \[(11C \+ 35\) \+ 2Q\] \\times X\[span\_179\](start\_span)\[span\_179\](end\_span)\[span\_180\](start\_span)\[span\_180\](end\_span). Encoding a full 21-character Child SKU at a readable narrow-bar width (X \= 0.17\\text{ mm}) yields a physical width of 46.75\\text{ mm}\[span\_181\](start\_span)\[span\_181\](end\_span)\[span\_182\](start\_span)\[span\_182\](end\_span). That does not fit a 32\\text{ mm} face even on paper, and the 203\\text{ dpi} production printer cannot hold a 0.17\\text{ mm} module: at the minimum reliable two-dot module (0.25\\text{ mm}) the same code grows to roughly 66\\text{ mm}. Full alphanumeric 1D codes therefore do not fit either face. If 1D barcodes are used, the system must encode an abbreviated 8-digit numeric pointer ID (e.g., 90482101), which compacts down to 14.5\\text{ mm} via Code 128 Subset C.  
 > 2. **2D Data Matrix ECC 200 (Compact Matrix)**: Data Matrix encodes data along both axes using an L-shaped finder pattern and requires only a 1-module quiet zone margin. It encodes a full 21-character alphanumeric SKU within a 14 \\times 14 or 16 \\times 16 grid, occupying a physical area of only 6 \\times 6\\text{ mm} to 7 \\times 7\\text{ mm} at 300\\text{ DPI}\[span\_188\](start\_span)\[span\_188\](end\_span)\[span\_190\](start\_span)\[span\_190\](end\_span). With built-in Reed-Solomon ECC 200 error correction, it decodes even if up to 30% of the symbol is obscured by polishing residue or surface scuffs.  
-> 3. **2D QR Code (ISO/IEC 18004\)**: While QR codes are ubiquitous and scan natively via mobile operating system camera viewfinders without specialized decoder SDKs, they require three bulky corner position-detection squares and a 4-module quiet zone margin. For a 21-character string, a QR code requires a Version 2 (25 \\times 25\) or Version 3 (29 \\times 29\) grid, requiring a footprint of at least 9 \\times 9\\text{ mm} to 10 \\times 10\\text{ mm} to remain legible. On an 18 \\times 10\\text{ mm} tag wing, this consumes almost all vertical clearance, leaving minimal margin for price and regulatory text.  
-> 4. **The Mobile Camera Macro and Focal Distance Limitation**: Smartphone cameras possess fixed minimum focal lengths (typically 8\\text{ to }10\\text{ cm}). When a user brings a phone closer than 8\\text{ cm} to capture a tiny 6\\text{ mm} code, the lens enters optical blur and focus hunts continuously. Furthermore, showroom LED spotlights induce specular glare on glossy polyester dumbbell tag laminates. Keeping the SKU concise (14\\text{--}16\\text{ characters}) keeps the Data Matrix or QR grid coarse, ensuring that smartphone camera sensors capture sufficient pixels per module (\>3\\text{ pixels/module}) from a stable distance of 12\\text{--}15\\text{ cm}.
+> 3. **2D QR Code (ISO/IEC 18004\)**: While QR codes are ubiquitous and scan natively via mobile operating system camera viewfinders without specialized decoder SDKs, they require three bulky corner position-detection squares and a 4-module quiet zone margin. For a 21-character string, a QR code requires a Version 2 (25 \\times 25\) or Version 3 (29 \\times 29\) grid, requiring a footprint of at least 9 \\times 9\\text{ mm} to 10 \\times 10\\text{ mm} to remain legible. On the 32 \\times 14.3\\text{ mm} face, a 9\\text{ mm} QR occupies most of the strip width but only about a quarter of the face length, leaving room for the human-readable SKU beside it.  
+> 4. **The Mobile Camera Macro and Focal Distance Limitation**: Smartphone cameras possess fixed minimum focal lengths (typically 8\\text{ to }10\\text{ cm}). When a user brings a phone closer than 8\\text{ cm} to capture a tiny 6\\text{ mm} code, the lens enters optical blur and focus hunts continuously. Furthermore, showroom LED spotlights induce specular glare on the direct-thermal paper tag surface. Keeping the SKU concise (14\\text{--}16\\text{ characters}) keeps the Data Matrix or QR grid coarse, ensuring that smartphone camera sensors capture sufficient pixels per module (\>3\\text{ pixels/module}) from a stable distance of 12\\text{--}15\\text{ cm}.
 
 | Engineering Metric | 1D Code 128 (Pointer Mode) | 2D Data Matrix ECC 200 | 2D QR Code (ISO/IEC 18004\) |
 | :---- | :---- | :---- | :---- |
@@ -101,7 +99,7 @@ When selecting between 1D linear barcodes (Code 128\) and 2D matrix symbologies 
 | **Mobile Camera Scan Ease** | Moderate (requires steady framing) | High (via ML Kit / camera SDK) | Highest (native OS camera support) |
 | **Dedicated 2D Handheld Reader** | Supported across all laser/imagers | Supported on all 2D CMOS imagers | Supported on all 2D CMOS imagers |
 | **Physical Damage Recovery** | 0% (check digit only detects errors) | Up to 30% via Reed-Solomon ECC 200 | Up to 25%–30% (Level M / H) |
-| **Tag Space Utilization** | Consumes horizontal width of Wing A | Minimal footprint; maximizes label space | Tight fit; risks clipping text elements |
+| **Tag Space Utilization** | Consumes most of a 32\\text{ mm} face | Minimal footprint; maximizes label space | Fits a 32\\text{ mm} face beside the SKU |
 
 ### **Administrative Mode-Switching Architecture**
 
@@ -115,7 +113,7 @@ system\_symbology\_config
 \- active\_symbology\_mode   : ENUM('1D\_CODE128\_POINTER',   
                                  '2D\_DATAMATRIX\_ECC200',   
                                  '2D\_QRCODE')  
-\- tag\_form\_factor         : VARCHAR(16) (e.g., 'DUMBBELL\_54X11')  
+\- tag\_form\_factor         : VARCHAR(16) (e.g., 'STRIP\_14X100\_3UP')  
 \- printer\_dpi             : INT (e.g., 203, 300, 600\)  
 \- mobile\_camera\_engine    : ENUM('ML\_KIT', 'ZXING', 'SCANDIT')  
 \- updated\_by\_admin\_id     : VARCHAR(16)  
@@ -124,9 +122,10 @@ system\_symbology\_config
 When an administrator alters the symbology toggle in the software console, the platform dynamically reconfigures three runtime pipelines:
 
 > 1. **Dynamic Thermal Transfer Print Dispatch (ZPL/TSPL Engine)**:  
-   * **If Mode \= 1D\_CODE128\_POINTER**: The template compiler binds the print job using the 1D barcode command (^BC in Zebra ZPL or BARCODE in TSPL). It fetches the unique auto-incremented surrogate numeric pointer ID (pointer\_id), prints the barcode across the full width of Wing A, and prints the human-readable alphanumeric SKU, MRP, and size on Wing B.  
-   * **If Mode \= 2D\_DATAMATRIX\_ECC200**: The compiler switches to the 2D matrix command (^BX in ZPL: ^BXN,4,200 for ECC 200 Data Matrix). It directly encodes the full 21-character alphanumeric Child Variant SKU (TMPNECCHK04821-MGRBSTD) within a centered 6.5 \\times 6.5\\text{ mm} square on Wing A. Wing B prints the SKU, MRP, and HSN code.  
-   * **If Mode \= 2D\_QRCODE**: The compiler invokes the QR command (^BQN,2,4 in ZPL). It encodes the full child SKU string with Level M error correction, placing the 9 \\times 9\\text{ mm} code on Wing A.  
+   * **Page geometry**: The job page is 45 \\times 100\\text{ mm} for the 3-up roll, holding three 14.3\\text{ mm} lanes at 15\\text{ mm} pitch. The 64\\text{ mm} body is printed at the leading edge of each lane and folds at 32\\text{ mm}; the trailing 36\\text{ mm} tail is never printed. A 1-up roll uses a 14.3 \\times 100\\text{ mm} page with the same body.  
+   * **If Mode \= 1D\_CODE128\_POINTER**: The template compiler binds the print job using the 1D barcode command (^BC in Zebra ZPL or BARCODE in TSPL). It fetches the unique auto-incremented surrogate numeric pointer ID (pointer\_id), prints the barcode on the 32\\text{ mm} code face, and prints the human-readable alphanumeric SKU, MRP, and size on the opposite 32\\text{ mm} face.  
+   * **If Mode \= 2D\_DATAMATRIX\_ECC200**: The compiler switches to the 2D matrix command (^BX in ZPL: ^BXN,4,200 for ECC 200 Data Matrix). It directly encodes the full 21-character alphanumeric Child Variant SKU (TMPNECCHK04821-MGRBSTD) within a 6.5 \\times 6.5\\text{ mm} square on the 32\\text{ mm} code face; the opposite face prints the SKU, MRP, and HSN code.  
+   * **If Mode \= 2D\_QRCODE**: The compiler invokes the QR command (^BQN,2,4 in ZPL). It encodes the full child SKU string with Level M error correction, placing the 9 \\times 9\\text{ mm} code on the 32\\text{ mm} code face.  
 > 2. **Scanner Input Resolution Pipeline**:  
    * The backend Point of Sale (POS) and inventory inwarding listener inspects the incoming scanned string length and structure:  
      * If the payload is a purely numeric 8-to-10 digit string, the parser routes it through the indexed surrogate key lookup (SELECT \* FROM product\_variants WHERE pointer\_id \= ?).  
@@ -216,7 +215,7 @@ Automating HSN derivation within the SKU master schema prevents manual tax class
 The operational lifecycle connects inventory registration, automated barcoding, physical warehouse management, and sales invoicing through an integrated technical process:
 
 > 1. **Intake and Master Style Registration**: Sourcing teams log new shipments by selecting taxonomic attributes (style\_genre\_code, category\_code, subcategory\_code). The software increments the centralized partition counter to generate the Parent Style SKU (TMPNECCHK04821). At the mobile inwarding station, high-resolution photographs are captured on smartphone cameras, renamed via deterministic scripts, and linked to the parent record.  
-> 2. **Variant Generation and Tag Printing**: The intake coordinator selects active platings, colorways, and sizes from the attribute matrix. The engine generates child variants and queues barcode print jobs for thermal transfer printers loaded with 54 \\times 11\\text{ mm} synthetic dumbbell tags. Based on the active **Admin Symbology Setting**, the printer automatically outputs the selected format: a high-density 2D Data Matrix ECC 200, a 2D QR Code, or a compressed 1D Code 128 numeric pointer.  
+> 2. **Variant Generation and Tag Printing**: The intake coordinator selects active platings, colorways, and sizes from the attribute matrix. The engine generates child variants and queues barcode print jobs for the direct-thermal 203 dpi printer loaded with the 14.3 \\times 100\\text{ mm} 3-up fold-in-half jewellery roll. Based on the active **Admin Symbology Setting**, the printer automatically outputs the selected format: a high-density 2D Data Matrix ECC 200, a 2D QR Code, or a compressed 1D Code 128 numeric pointer.  
 > 3. **Storage and Fulfillment Routing**: Labeled items are moved to designated warehouse bins or showroom trays. Wholesale multi-packs receive parent-linked pack-tier labels (-C12, \-B06, \-G01) that map directly to wholesale volume pricing tables.  
 > 4. **Point of Sale and Wholesale Invoicing**: Scanning an item tag at a retail counter—via either a smartphone camera running the mobile POS app or a wireless 2D handheld scanner—decodes the SKU, renders the canonical product thumbnail for anti-fraud verification, decrements inventory by one unit, and applies the 3% GST calculation. In wholesale operations, scanning a multi-pack code decrements the base variant inventory balance by the corresponding multiplier (e.g., 12 units for \-C12) while applying wholesale contract terms. Live stock levels synchronize instantly across both retail counters and wholesale order-management portals.
 

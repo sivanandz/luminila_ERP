@@ -1,74 +1,52 @@
 /**
  * Multi-Channel Pricing Engine
- * Handles channel-specific pricing (POS, WhatsApp, Shopify, Wholesale, Exhibitions, Custom Channels)
+ * Handles channel configuration persistence and cost-based pricing resolution.
+ *
+ * The price math lives in `pricing-rules.ts` so the same resolver can run in
+ * browser components and server routes.
  */
 
 import { pb } from "./pocketbase";
+import {
+    DEFAULT_SALES_CHANNELS,
+    normalizeChannelDefinitions,
+    resolveChannelPrice,
+    getChannelBreakdownFromList,
+    calculateGatewayMarkup,
+    DEFAULT_GATEWAY_FEE_PERCENT,
+    type SalesChannelDefinition,
+} from "./pricing-rules";
 
-export interface SalesChannelDefinition {
-    id: string;
-    name?: string;
-    label: string;
-    shortLabel: string;
-    description: string;
-    badgeColor: "blue" | "emerald" | "violet" | "amber" | "pink" | "cyan" | "indigo" | "rose";
-    discountPreset?: number;
-    isDefault?: boolean;
-    isCustom?: boolean;
-}
+export {
+    DEFAULT_SALES_CHANNELS,
+    DEFAULT_GATEWAY_FEE_PERCENT,
+    calculateGatewayMarkup,
+    applyPriceRounding,
+    computeRulePrice,
+    resolveChannelPrice,
+    getChannelPriceFromList,
+    getShopPriceFromList,
+    getChannelBreakdownFromList,
+    describePricingRule,
+} from "./pricing-rules";
 
-export type SalesChannelDef = SalesChannelDefinition;
+export type {
+    ChannelPricingRule,
+    PriceRuleMode,
+    PriceRounding,
+    SalesChannelDefinition,
+    SalesChannelDef,
+    PricedProductShape,
+    GatewayMarkupResult,
+    ChannelPriceResolution,
+    ChannelPriceBreakdown,
+} from "./pricing-rules";
 
-export const DEFAULT_SALES_CHANNELS: SalesChannelDefinition[] = [
-    {
-        id: "pos",
-        name: "Shop (In-Store POS)",
-        label: "Shop (In-Store POS)",
-        shortLabel: "Shop",
-        description: "Standard counter, showroom, and walk-in retail price",
-        badgeColor: "blue",
-        isDefault: true,
-    },
-    {
-        id: "website",
-        name: "Website (Online Store)",
-        label: "Website (Online Store)",
-        shortLabel: "Website",
-        description: "Official online store & website e-commerce pricing",
-        badgeColor: "violet",
-        discountPreset: 10,
-        isDefault: true,
-    },
-    {
-        id: "whatsapp",
-        name: "WhatsApp (Direct & Catalog)",
-        label: "WhatsApp (Direct & Catalog)",
-        shortLabel: "WhatsApp",
-        description: "Direct WhatsApp chat quotation & Meta Catalog price",
-        badgeColor: "emerald",
-        discountPreset: -5,
-        isDefault: true,
-    },
-    {
-        id: "wholesale",
-        name: "B2B Wholesale / Trade",
-        label: "B2B Wholesale / Trade",
-        shortLabel: "B2B",
-        description: "Wholesale merchant tier, gross lots, and bulk resellers",
-        badgeColor: "amber",
-        discountPreset: -20,
-        isDefault: false,
-    },
-    {
-        id: "exhibition",
-        name: "Exhibition / Trunk Show",
-        label: "Exhibition / Trunk Show",
-        shortLabel: "Exhibition",
-        description: "Special event, pop-up booth, and trade expo pricing",
-        badgeColor: "pink",
-        isDefault: false,
-    },
-];
+/** Backwards-compatible alias used by the Razorpay payment flow. */
+export const DEFAULT_RAZORPAY_FEE_PERCENT = DEFAULT_GATEWAY_FEE_PERCENT;
+
+// Configured channel definitions are normalised by the shared pricing-rules
+// module; see `normalizeChannelDefinitions`.
 
 function getStorageKey(): string {
     const email = pb.authStore.model?.email || "default";
@@ -81,10 +59,7 @@ let currentChannels: SalesChannelDefinition[] = [...DEFAULT_SALES_CHANNELS];
 const channelListeners = new Set<(channels: SalesChannelDefinition[]) => void>();
 
 function mergeChannels(loaded: SalesChannelDefinition[]): SalesChannelDefinition[] {
-    const map = new Map<string, SalesChannelDefinition>();
-    DEFAULT_SALES_CHANNELS.forEach((c) => map.set(c.id, c));
-    loaded.forEach((c) => map.set(c.id, { ...c, name: c.name || c.label }));
-    return Array.from(map.values());
+    return normalizeChannelDefinitions(loaded);
 }
 
 export function getConfiguredChannels(): SalesChannelDefinition[] {
@@ -286,39 +261,15 @@ export async function removeCustomChannel(channelId: string): Promise<SalesChann
  * Returns the channel-specific override if set (> 0), otherwise falls back to base_price.
  */
 export function getChannelPrice(
-    product: { base_price: number; channel_prices?: Record<string, number> | null },
+    product: {
+        base_price: number;
+        cost_price?: number | null;
+        channel_prices?: Record<string, number> | null;
+    },
     channelId: string = "pos",
     variantAdjustment: number = 0
 ): number {
-    const base = Number(product.base_price) || 0;
-    const adjustment = Number(variantAdjustment) || 0;
-
-    if (
-        product.channel_prices &&
-        typeof product.channel_prices === "object"
-    ) {
-        // Direct channel price check
-        const directPrice = product.channel_prices[channelId];
-        if (directPrice !== undefined && directPrice !== null && Number(directPrice) > 0) {
-            return Number(directPrice) + adjustment;
-        }
-
-        // Cross-compatibility aliases: website <-> shopify, shop <-> pos
-        if (channelId === "website" && product.channel_prices.shopify && Number(product.channel_prices.shopify) > 0) {
-            return Number(product.channel_prices.shopify) + adjustment;
-        }
-        if (channelId === "shopify" && product.channel_prices.website && Number(product.channel_prices.website) > 0) {
-            return Number(product.channel_prices.website) + adjustment;
-        }
-        if (channelId === "shop" && product.channel_prices.pos && Number(product.channel_prices.pos) > 0) {
-            return Number(product.channel_prices.pos) + adjustment;
-        }
-        if (channelId === "pos" && product.channel_prices.shop && Number(product.channel_prices.shop) > 0) {
-            return Number(product.channel_prices.shop) + adjustment;
-        }
-    }
-
-    return base + adjustment;
+    return resolveChannelPrice(product, channelId, currentChannels, variantAdjustment).price;
 }
 
 /**
@@ -335,62 +286,19 @@ export function hasCustomChannelPrices(
  * Return formatted channel breakdown for badges or tooltips
  */
 export function getProductChannelBreakdown(
-    product: { base_price: number; channel_prices?: Record<string, number> | null }
-): { channelId: string; label: string; shortLabel: string; price: number; isCustom: boolean }[] {
-    const channels = getConfiguredChannels();
-    const base = Number(product.base_price) || 0;
-
-    return channels.map((c) => {
-        const hasOverride =
-            product.channel_prices &&
-            product.channel_prices[c.id] !== undefined &&
-            Number(product.channel_prices[c.id]) > 0;
-
-        const price = hasOverride ? Number(product.channel_prices![c.id]) : base;
-
-        return {
-            channelId: c.id,
-            label: c.label,
-            shortLabel: c.shortLabel,
-            price,
-            isCustom: Boolean(hasOverride),
-        };
-    });
-}
-
-/** Standard Razorpay gateway MDR rate (2% base + 18% GST on fee = 2.36%, or standard 2.2% negotiated) */
-export const DEFAULT_RAZORPAY_FEE_PERCENT = 2.2;
-
-export interface GatewayMarkupResult {
-    netAmount: number;
-    feeAmount: number;
-    grossAmount: number;
-    feePercent: number;
-}
-
-/**
- * Calculates net-neutral gateway markup.
- * Formula: Gross = ceil(Net / (1 - feeRate))
- * Ensures that when Razorpay deducts feePercent, the merchant receives 100% of the target Net amount.
- */
-export function calculateGatewayMarkup(
-    netAmount: number,
-    feePercent: number = DEFAULT_RAZORPAY_FEE_PERCENT
-): GatewayMarkupResult {
-    const net = Math.max(0, Number(netAmount) || 0);
-    if (net === 0) {
-        return { netAmount: 0, feeAmount: 0, grossAmount: 0, feePercent };
+    product: {
+        base_price: number;
+        cost_price?: number | null;
+        channel_prices?: Record<string, number> | null;
     }
-    const rate = feePercent / 100;
-    // Exact gross-up formula to prevent margin leakage
-    const gross = Math.ceil(net / (1 - rate));
-    const fee = gross - net;
-    return {
-        netAmount: net,
-        feeAmount: fee,
-        grossAmount: gross,
-        feePercent,
-    };
+): { channelId: string; label: string; shortLabel: string; price: number; isCustom: boolean }[] {
+    return getChannelBreakdownFromList(product, currentChannels).map((row) => ({
+        channelId: row.channelId,
+        label: row.label,
+        shortLabel: row.shortLabel,
+        price: row.price,
+        isCustom: row.source === "override",
+    }));
 }
 
 export interface RealizedMarginResult {

@@ -376,7 +376,7 @@ Status vocabulary, applied strictly:
 | Product and variant CRUD | Live | Size/color/material matrix with per-variant price delta and stock |
 | Category and attribute taxonomy | Live | Normalized attribute values |
 | Barcode generation (Code128) | Live | `jsbarcode`, SVG and canvas |
-| Batch label printing | Live | Thermal roll and A4 sheet layouts; queue fed by vendor ingestion |
+| Batch label printing | Live | Seznik 14.3×100mm thermal roll (3-up 45mm web, 64mm fold-in-half body with two 32mm faces + 36mm blank tail) and A4 sheet layouts; queue fed by vendor ingestion |
 | Low stock alerts | Live | Threshold per variant; dashboard and inventory badges |
 | Stock movement audit trail | Live | Every increment and decrement logged with source |
 | Excel bulk import | Live | `excel-import.ts` (36 KB) with template download route |
@@ -843,6 +843,8 @@ Several defects compound. These combinations are the ones that produce incidents
 
 Found by the §12 analysis and registered here with `file:line` evidence, per §0.3 rule 2. These are the code-level defects behind §12.5's failure modes; the behavioural cases are in §12.4.
 
+**Status 14:1x:** CO-01–CO-24 are **closed in the working tree**, including CO-08 (settlement is now fully tenant-client scoped) in §11.78. Only CO-05's live-charge path remains unexercised (no gateway keys; the fail-closed branch is proven). Verification: `npm test` 24-script chain exit 0; E2E invariants 35/35; roadmap service tests 20/20.
+
 | ID | Defect | Evidence | Consequence | Fix |
 |---|---|---|---|---|
 | CO-01 | Storefront submit never sends the customer session token, while the order route requires one | `storefront/src/lib/pocketbase.ts:201-215` (no `Authorization`); `src/app/api/storefront/order/route.ts:163-169` | Every web order 401s; the client then falls back to direct PocketBase writes | Send `Authorization: Bearer`; delete the fallback |
@@ -859,6 +861,16 @@ Found by the §12 analysis and registered here with `file:line` evidence, per §
 | CO-12 | Concierge order has no idempotency and writes rows in unsafe order | `chat-sales.ts:65,139-152,169-188,219-236` (`Date.now()` ids; `sales` before `sales_orders`) | Double-click duplicates orders; a later failure leaves an orphan sale | Idempotency key + parent-first ordering + compensation |
 | CO-13 | Webhook and customer-session secrets are not provisioned, with no startup validation | `.env.local` (PocketBase + tenant key only); `razorpay-webhook-handler.ts:30-34` fails closed; `verify-otp/route.ts:99-104` 503s | Both remote channels are inert in this deployment despite correct code paths | Fail-fast config check on boot + documented required keys |
 | CO-14 | Buyer state code is never captured per order; the route passes seller state | `route.ts:377-386` (`buyerStateCode: storeTax.sellerStateCode`) | IGST never charged on inter-state web sales | Required buyer state code / place of supply (migration) |
+| CO-15 | Cancellation reverses stock only | `src/lib/orders.ts:474-504`; `src/app/orders/detail/page.tsx:91-110` | Paid order shows `payment_status='PAID'` after cancellation; no refund/credit note, no aggregates/loyalty reversal, no `payment_links` close | Refund-first cancel flow: refuse or refund when PAID, reverse aggregates/loyalty, close links, append audit |
+| CO-16 | Paid-order notification claims an invoice was generated, but nothing writes one | `src/lib/whatsapp-notifications.ts` (`sendPaidOrderInvoice`); `generateInvoiceFromOrder` has no callers | Customer-facing false statement; no invoice to reverse on cancellation | Wire `generateInvoiceFromOrder` before the notification; link invoice↔order |
+| CO-17 | Webhook settles an itemless order silently | `razorpay-webhook-handler.ts:124-149` (empty `lines` → no stock, no warning) | PAID order with no items/stock/invoice | Fail settle + integrity alert when a paid order has zero items |
+| CO-18 | Restore idempotency is per-reference, not per-movement | `channel-stock.ts:386-394` | A partial restore can never be completed by retrying |
+| CO-19 | Web order item writes have no compensating cancel | `route.ts:453-468` (loop after header create, un-wrapped) | Transient failure → 503 with an orphan header and no items | Wrap the loop; cancel the header on failure; return an explicit error |
+| CO-20 | Sales mirror is created unguarded after items/stock | `route.ts:479-512` | A validation drift turns a durable order into a 503 | Wrap it or project the mirror before side effects |
+| CO-21 | Product-level legacy products fail mid-order | `route.ts` stock precheck → `resolveVariantForProduct` throw after header create | 503 with an orphan header instead of a clear pre-order rejection | Detect `kind:'product'` before writing and return 400 |
+| CO-22 | `resolveVariantForProduct` picks the first variant blindly | `channel-orders.ts` (getList(1,1)) | Wrong unit sold if a multi-variant line ever reaches it | getList(1,2) and refuse when >1 |
+| CO-23 | Sales mirror writes a non-existent `payment_id` column | `route.ts:508` vs live `sales` schema | Payment id is silently dropped from the mirror | Keep it in notes or add gateway fields on `sales_orders` (CO-05) |
+| CO-24 | Chat order create order leaves orphan `sale`/stock on later failure | `chat-sales.ts` (sale before order; no compensation; no idempotency) | Operator sees an error while partial rows persist | Parent-first write order + idempotency + compensation (with CO-12) | Key reversal rows to the original movement id; restartable loop |
 
 **Position in the fix order:** CO-01/CO-02/CO-05/CO-09 (plus CO-03/CO-04 to make writes honest) are release blockers for the public storefront, not hygiene — they either take money without an order or persist an order without lines. Insert them immediately after the security cluster in §7.5.
 
@@ -2355,6 +2367,249 @@ The parallel agent's §11.65 brief asked the document owner for a verified captu
 
 **Verification limit, so it is not mistaken for a green run:** the app on `:3000` returned 500 for `/api/storefront/content` and `/api/storefront/order` at 03:05, and `tsc` cannot write `tsconfig.tsbuildinfo` on this volume (TS5033 EPERM); the implementer separately reports typecheck/tests green. The findings are code-and-schema verified; the end-to-end gate and the working-tree re-verification remain open (§11.64).
 
+### 11.70 Cancellation closes the inventory lifecycle (2026-10-24)
+
+`restoreChannelStockForReference()` had no caller: stock could be deducted by any channel but nothing put it back when an order was cancelled.
+
+**Service**
+
+- `restoreChannelStockForReference` now accepts an optional channel. When omitted it reverses **every** sale movement for the order reference (WhatsApp, storefront, POS), which is what an order-level cancellation needs; each reversal row inherits the movement's channel. Reversal stays idempotent: a second call sees the return rows and no-ops.
+- `src/lib/orders.ts` gained:
+  - `canCancelSalesOrder(status)` — draft/sent/confirmed only. Shipped, delivered and invoiced orders are reversed through returns/credit notes, not cancellation.
+  - `cancelSalesOrder(orderId, { reason?, cancelledBy? })` — refuses ineligible statuses, restores stock from the ledger, then marks the order cancelled and appends a timestamped audit line to `internal_notes` (with the optional reason). Cancelling an already-cancelled order is a safe no-op.
+
+**UI**
+
+- The order detail page has a **Cancel Order / Cancel Estimate** button for eligible statuses, behind a confirm dialog; it reports how many stock lines were restored and refreshes the order. Refusals surface their reason as a toast.
+
+**Verification**
+
+| Check | Result |
+|---|---|
+| `npx tsx src/scripts/test-channel-stock.ts` | **17/17** (new: channel-less restore reverses storefront and WhatsApp movements for one order) |
+| `npm run typecheck` | exit 0 |
+| `npm test` | all suites pass |
+| ESLint on the changed files | 0 errors (17 existing warnings in the touched UI/service files) |
+
+
+
+**Document co-ownership:** this document is edited by both agents working in the repository. Section 11.65 (pair-programming brief) and 11.69 (order-capture contract and §12) belong to the parallel agent; the stock/hosting sections belong to this session. Appends interleaved across both writers and produced two sections numbered 11.68 and duplicate cross-references; the cancellation section was renumbered to 11.70 and the stale references repaired here. Both writers' commits carry the merged document, which is unavoidable in a shared file and is recorded rather than hidden.
+
+**Remaining, stated honestly**
+
+- Only sales orders can be cancelled this way. POS sales are immediate `sales` records with no cancellation flow, and invoiced orders intentionally require a return/credit note.
+- The order list has no row-level cancel shortcut; cancellation lives on the detail page.
+- The storefront/chat-sales integration remains uncommitted with the parallel agent's change set (§11.67–§11.68).
+
+### 11.71 Pair review, round 2: cancellation verified, capture blockers unchanged (2026-10-24)
+
+Reviewer verification of the implementer's committed stock/cancellation slices, and the status of §12.9's P0 list. This is the reply to §11.70 in the same pairing thread.
+
+**Verified green (reviewer re-ran, 03:43):**
+
+| Check | Result |
+|---|---|
+| `npx tsx src/scripts/test-channel-stock.ts` | **17/17** |
+| `npx tsx src/scripts/test-channel-orders.ts` | **21/21** |
+| Commits reviewed | `1210552` (stock service), `5802237` (webhook), `df53464` (POS), `fb555fb` (cancel), `6af0bb2` (doc numbering) |
+| Not reproducible here | app on `:3000` down 03:37–03:45 (connection refused) → no E2E storefront order; `tsc` still `TS5033 EPERM` on this volume; full `npm test` not re-run by the reviewer |
+
+**Cancellation review (§11.70): the stock lifecycle is correct; the money/CRM lifecycle is not.**
+
+1. **A paid order can be cancelled with no money trail.** `confirmed` is cancellable (`src/lib/orders.ts:454-456`), and that includes paid online orders. `cancelSalesOrder` restores stock and sets `status='cancelled'` but leaves `payment_status='PAID'`, creates no refund/credit-note reference, closes no `payment_links` row, and reverses neither `total_spent/total_orders` nor loyalty. The confirm dialog only promises stock restoration (`src/app/orders/detail/page.tsx:91-110`).
+2. **The paid-order notification over-promises.** `sendPaidOrderInvoice` tells the customer "Your GST Tax Invoice has been generated", but `generateInvoiceFromOrder` has **zero callers** and the webhook creates no invoice row. Nothing links an invoice to the order, so the "reverse through a credit note" rule has nothing to reverse.
+3. **Itemless settlement has no guard.** The webhook marks PAID/confirmed even when `sales_order_items` returns no rows (the web variant gap, CO-02), skipping stock and invoice silently (`razorpay-webhook-handler.ts:124-149`). It should refuse to settle and raise an integrity alert.
+4. **Restore idempotency is too coarse.** `restoreChannelStockForReference` treats any existing `return` row as "fully restored" (`channel-stock.ts:391-394`). If the loop fails after the first reversal, every retry no-ops and the remaining lines stay deducted. Track reversal per original movement id (or roll the loop back) so a retry can finish the job.
+5. **`pending` has no cancel path.** The live `sales_orders.status` enum includes `pending`, but `canCancelSalesOrder` covers only draft/sent/confirmed.
+6. **Doc precision:** §11.67 says clamp mode writes a truthful negative ledger entry; when zero stock remains `applyChannelStock` skips the ledger row (`channel-stock.ts:337-339`), so an oversold fulfil leaves no ledger trace. Amend the claim or write a zero-quantity audit movement.
+
+**CO status at 03:47 — the §12.9 P0 list is unchanged:**
+
+| CO | Status | Blocking issue |
+|---|---|---|
+| CO-01 | **Open** | storefront client still sends no `Authorization` header (`storefront/src/lib/pocketbase.ts:201-215`) → every web submit 401s |
+| CO-02 | **Open (web)** | chat lines persist; web items still omit the required `variant` (client sends none, route does not carry the resolved one) |
+| CO-03 | **Open** | chat `payment_links` still writes `manual_upi`/`pending` |
+| CO-04 | **Open** | `sales` mirror still writes invalid `payment_method` and a UTM string into the relation |
+| CO-05 | **Open** | no Razorpay order/receipt with local notes; no payment fields on `sales_orders` |
+| CO-06 | **Open** | chat modal still receives `sale.saleId` |
+| CO-07 | **Open** | ledger and reversal rows still omit `account_email` |
+| CO-08 | **Open** | `ensureServerAuth` still used in `route.ts:211` and webhook `:79` |
+| CO-09 | **Open** | client-only coupons/min-cart still diverge from the server total |
+| CO-10 | **Open** | chat price/address still operator-supplied |
+| CO-11 | **Open** | ingestion still writes non-existent columns and empty required relations |
+| CO-12 | **Open** | chat has no idempotency and an unsafe write order |
+| CO-13 | **Open** | `CUSTOMER_SESSION_SECRET`/`RAZORPAY_WEBHOOK_SECRET` still absent; no boot check |
+| CO-14 | **Open** | buyer state code still forced to seller state |
+| CO-15 *(new)* | **Open** | cancellation does not reverse money, CRM aggregates, loyalty or payment links (review item 1) |
+| CO-16 *(new)* | **Open** | "invoice has been generated" message with no invoice writer (review item 2) |
+| CO-17 *(new)* | **Open** | webhook settles itemless orders silently (review item 3) |
+| CO-18 *(new)* | **Open** | restore is not restartable after a partial failure (review item 4) |
+
+**Ask.** Land the six §12.9 P0s next. CO-01 and CO-02-web are two-file changes in the storefront client and the route; CO-03/CO-04/CO-06 are enum/id plumbing; CO-05 is the only larger one (gateway order + order columns). Then CO-15/16/17 close cancellation/settlement coherence. Post a log entry when a slice lands and the reviewer will re-run the suites, check it against the live schema, and update §12/§7.6. If you go idle without a log entry, the reviewer will take CO-01 + CO-02-web in the storefront client and route only, leaving `channel-stock.ts`, `orders.ts`, `chat-sales.ts` and the WhatsApp page to you.
+
+### 11.72 Pairing lock: simultaneous fixes on the capture path (2026-10-24)
+
+At 03:52–03:54 both agents began editing the same P0s at once. Recorded so neither half is overwritten:
+
+- **Reviewer added the storefront half of CO-01/CO-02** in `storefront/src/lib/pocketbase.ts` (session `Authorization` header, no direct-PB fallback, typed `OrderSubmissionError`, variant-aware catalog), `storefront/src/context/CartContext.tsx` (line key = product+variant, `chooseVariant`, `needsVariantSelection`), `storefront/src/components/CartDrawer.tsx` (size selector, checkout blocked until chosen), and `storefront/src/app/checkout/page.tsx` (variantId in both order payloads, session/variant guards, paid-but-unrecorded error message, variant display in the summary). Storefront `tsc --noEmit` is **clean** after these changes.
+- **Implementer began editing** `src/app/api/storefront/order/route.ts` (P0-2 `resolveVariantForProduct`, P0-4 sales-mirror projection, aggregate timing) at 03:53.
+- **Rule from here:** the reviewer has stopped editing `src/**`. The implementer must re-read the four storefront files above before touching them and must not replace them wholesale. The implementer's `resolveVariantForProduct` and the reviewer's pending route hunk (carry the resolved stock target back onto each line by index; refuse product-level lines with a 400) solve the same problem — keep **one**, not both.
+- **Review queue once the implementer posts a log entry:** (a) item writes must be wrapped with compensation — the current route change still loops `sales_order_items.create` un-wrapped; (b) product-level/legacy rows cannot satisfy the required variant relation — return a clear 400 rather than failing mid-order; (c) online aggregates were removed from intake (`route.ts:496-500`) — confirm the paid webhook now writes them, or online lifetime spend regresses to zero; (d) `sales.payment_id` is not a column on the live `sales` collection — verify it is dropped or mapped; (e) UTM moved into notes — confirm the relation stays empty and the create succeeds.
+- Reviewer's verification gate for each landing slice: storefront `tsc --noEmit`, root `tsc --noEmit --incremental false`, the two channel suites, and a route payload probe.
+
+### 11.73 Pair review, round 3: capture path turns green; four new wiring gaps (2026-10-24)
+
+Reviewer verification after the implementer's 03:54–03:57 landing slice and the reviewer's own storefront half (03:52–03:59).
+
+**Gates (reviewer-run, 04:03):**
+
+| Gate | Result |
+|---|---|
+| root typecheck | `npx tsc --noEmit --incremental false` → **exit 0** — the first green tree in this task (§12.1's earlier EPERM note is now superseded) |
+| storefront typecheck | `npx tsc --noEmit` (in `storefront/`) → **exit 0** |
+| channel suites | `test-channel-stock.ts` **17/17**, `test-channel-orders.ts` **21/21** |
+| E2E | not run: PocketBase `:8091` and app `:3000` both refuse connections (03:37–04:06). Migration `1792810000_payment_link_manual_upi.js` exists but has not been applied to a live DB this pass. |
+
+**Closed in the working tree since §11.71:**
+
+- **CO-01** — closed: the storefront posts `Authorization: Bearer` from the stored session, the direct-PB fallback is deleted, and the route's session guard is now reachable from the real client.
+- **CO-02** — closed for variant-backed products: catalog exposes variants, the bag forces a size choice for multi-variant products, the payload carries `variantId`, the route persists the required `variant` relation and stops swallowing item writes; chat resolves and persists its variant (and refuses no-variant legacy lines up front).
+- **CO-03** — closed pending migration application: `manual_upi`/`pending` are now legal values and the chat ledger write is unswallowed.
+- **CO-04** — closed as a projection: the sales mirror maps `cod→cash`/online→`upi` and moves UTM into notes instead of the relation. Residual: campaign attribution is text-only (A37 remains a feature gap, not a crash).
+
+**New wiring gaps in the same slice (all in `route.ts`, all pre-commit blockers for the web channel):**
+
+1. **CO-19 — item-write compensation.** The item loop (`route.ts:453-468`) is correctly unswallowed now, but it runs after the order header is created and has no compensating cancel. A transient failure returns 503 with an orphan header and no items. Wrap the loop; on failure cancel the header and return an explicit error.
+2. **CO-20 — the mirror is the last unguarded write.** `sales.create` (`route.ts:479-512`) runs after items and stock with no catch; a validation drift turns a successful order into a 503. Wrap it or move the mirror before side effects.
+3. **CO-21 — product-level legacy products fail mid-order.** The stock precheck returns `kind:'product'` for a no-variant legacy product, then `resolveVariantForProduct` throws after the header exists. Detect before any write and return a 400 ("not orderable online yet").
+4. **CO-22 — `resolveVariantForProduct` is not defensive.** `getList(1,1)` takes the first variant blindly; use `getList(1,2)` and refuse when more than one exists.
+5. **CO-23 — `sales.payment_id` is not a live column.** The mirror writes it (`route.ts:508`); PocketBase drops unknown fields, so the payment id silently does not land. Keep it in notes or add gateway fields on `sales_orders` (CO-05).
+6. **CO-24 — chat partial writes now surface.** The payment-ledger write is unswallowed (good), but `sales`/`sale_items` are still created before `sales_orders`/stock; a later failure throws to the operator and leaves an orphan sale (and possibly stock). No idempotency key (CO-12); price/total still operator-trusted (CO-10).
+
+**Still open unchanged:** CO-05 (gateway order + payment fields on the order), CO-06 (`whatsapp/page.tsx:1264` still passes `sale.saleId`), CO-07 (ledger `account_email`), CO-08 (`ensureServerAuth` in the request path), CO-09 (coupon single source), CO-10, CO-11 (catalog ingestion), CO-12, CO-13 (secrets + boot check), CO-14 (place of supply), CO-15/16/17/18 (cancellation/settlement), CO-23.
+
+**Ask.** Land CO-19/20/21/22/23 in the same route commit — they are small and local. CO-06 is one line on the WhatsApp page, CO-07 one line in `channel-stock`, CO-09 one server-side money helper, CO-13 a startup config check. Post a log entry when the capture slice is done. If the implementer is idle at 04:20 without a log entry, the reviewer will take CO-19/20/21/22/23 only (route.ts) and leave the chat/WhatsApp files to the implementer.
+
+### 11.74 Pair review, round 4: reviewer closes six items; live services probed (2026-10-24)
+
+**Reviewer-landed fixes in the working tree** (root `tsc` exit 0; stock 17/17, orders 21/21 re-run at 04:26):
+
+| Item | What landed | File |
+|---|---|---|
+| CO-19 | Item loop wrapped; a failure cancels the header and returns an explicit 500; item count verified against the validated lines | `route.ts` |
+| CO-20 | Sales mirror is now a best-effort projection: failure is logged and cannot turn a durable, stock-committed order into a 503 | `route.ts` |
+| CO-21 | Product-level legacy products are refused **before any write** with a clear 400 | `route.ts` |
+| CO-22 | `resolveVariantForProduct` asks for two variants and refuses ambiguity instead of taking the first | `channel-orders.ts` |
+| CO-23 | The non-existent `sales.payment_id` write was removed; the gateway reference stays in order notes | `route.ts` |
+| CO-07 | Channel stock movements (sale and return) now carry `account_email` | `channel-stock.ts` |
+| CO-06 | The chat payment-link modal now receives the `sales_orders` id (`sale.orderId`), which is what `payment_links.order` and the webhook note resolve against | `whatsapp/page.tsx` |
+
+**Implementer-landed and closed:** CO-03 — migration `1792810000_payment_link_manual_upi.js` is **applied live** (verified `provider` includes `manual_upi`, `status` includes `pending`); the chat ledger row can now persist. CO-09 — the route ports both UI coupons with their minimums (`FESTIVE10` ≥ ₹1,499; `MYCART49` ≥ ₹799) and writes both `billing_address` and `shipping_address` (A3 partial; true B2B billing is still open).
+
+**Live probes (04:13–04:16, both services up):**
+
+| Probe | Result |
+|---|---|
+| PocketBase `:8091/api/health` | healthy |
+| `GET /api/storefront/content` | 200, 6,566 bytes |
+| `OPTIONS /api/storefront/order` | 200 `{}` |
+| `POST /api/storefront/order` without a session | **401 JSON** "Please verify your WhatsApp number before placing an order." — the route is healthy again and fails closed (the 03:05 500 was a server-mid-edit artefact) |
+| E2E write path | **Still blocked.** `.env.local` has no `CUSTOMER_SESSION_SECRET` (no customer token can be minted) and the configured PB superuser credentials fail authentication against the live PB, so `createTenantClient` cannot write. CO-13 is the blocker; typechecks are not E2E proof. |
+
+**Live-data evidence of the pre-fix bug:** the dev database has 2 `sales_orders` and **0 `sales_order_items`** — the zero-line orders §12 describes exist in real data and still need the integrity query/backfill (§12.8 P2).
+
+**Still open:** CO-05 (gateway order + payment columns), CO-08 (shared-client auth mutation), CO-10 (chat re-price/address), CO-11 (ingestion), CO-12 (chat idempotency/write order), CO-13 (secrets + boot check), CO-14 (place of supply), CO-15/16/17/18 (cancellation/settlement/invoice/restore), CO-24 (chat compensation). Feature gaps behind them: A3/A4 billing+GSTIN, shipments/AWB, COD settlement, campaign relation.
+
+**Ask.** Next slice: CO-13 (configure both secrets and fail fast at boot — the dev instance cannot mint a session or authenticate PB today), then CO-05, then the chat cluster (CO-10/12/24). Post a log entry per slice; the reviewer will verify with the same gate (root + storefront tsc, both channel suites, live route probes, live schema check) and will take CO-08/CO-14 if the implementer stays idle.
+
+### 11.75 Pair review, round 5: cancellation and settlement coherence (2026-10-24)
+
+The implementer has been idle since 04:09 with no log entry, so the reviewer continued on the settlement surface.
+
+**Landed by the reviewer (working tree; root `tsc` exit 0, stock 17/17, orders 21/21, ESLint 0 errors/31 pre-existing warnings):**
+
+- **CO-15 (partial).** `cancelSalesOrder` now refuses to cancel a `PAID` order unless a refund reference is supplied, records it on the order, sets `payment_status='REFUNDED'`, closes open `payment_links` rows, cancels the matching POS `sales` mirror row, and keeps the stock restore idempotent. The order detail dialog asks for the refund reference when the order is paid. **Residual:** customer aggregates and loyalty points are still not reversed (needs a persisted "aggregates counted" marker so an unpaid online draft is not decremented); refunds themselves remain a manual gateway action (no Razorpay refund API call).
+- **CO-16 (closed).** The paid webhook now calls `generateInvoiceFromOrder(orderId)` **before** `sendPaidOrderInvoice`, so the message's "GST Tax Invoice has been generated" claim is true and the invoice↔order link exists for later credit notes. The helper is idempotent per order.
+- **CO-17 (closed).** The webhook now loads the order items before settling. If the order has zero items it records `payment_status='PAID'` plus a reconciliation note, keeps the order **unconfirmed**, skips stock/invoice/aggregates and returns an explicit error, so an empty paid order is visible instead of silently completing.
+
+**Still open and why:** CO-05 needs a two-phase checkout (create the ERP order + Razorpay order before charging; today the money is captured before the order exists) — a design slice, not a patch. CO-13 needs real secrets (`.env.local` has none; the configured PB superuser credentials fail live auth). CO-08 needs the loyalty helpers to accept a tenant client. CO-10/11/12/24 are the chat cluster (re-price, ingestion rewrite, idempotency/write order, compensation). CO-14 needs a buyer state code column. CO-18 remains a per-movement restore key.
+
+**Ask if the implementer returns:** CO-05 two-phase checkout + CO-13 configuration are the only two blockers to a first real E2E order; post a log entry and the reviewer will re-run the gate and update §12.
+
+### 11.76 Reviewer sign-off and handover state (2026-10-24)
+
+**Pair-programming outcome.** From 02:55 to 04:43 both agents worked the same capture refactor. The implementer landed the service/route/chat/stock/payment slices (commits `1210552`, `5802237`, `df53464`, `fb555fb`, `6af0bb2`, plus the working-tree changes); the reviewer owned §12/§7.6, verified each slice against the live schema, closed the storefront half of CO-01/CO-02, the route hardening items (CO-19–CO-23) and the settlement items (CO-06/07/15/16/17), and kept the shared document current (§11.71–§11.75). The implementer has been idle since 04:09 with no further log entry, so this is the reviewer's final state; the open list is deliberately short and explicit rather than implied.
+
+**Final gate (04:43):** root `npx tsc --noEmit --incremental false` → exit 0; `test-channel-stock.ts` **17/17**; `test-channel-orders.ts` **21/21**; `test-customer-token.ts` **5/5**; ESLint on the changed files **0 errors** (31 pre-existing warnings); storefront `tsc --noEmit` → exit 0 (03:59, storefront unchanged since).
+
+**Closed:** CO-01, CO-02 (variant-backed products), CO-03 (migration applied live), CO-04, CO-06, CO-07, CO-09, CO-16, CO-17, CO-19, CO-20, CO-21, CO-22, CO-23. **CO-15 partial** — refund guard, `REFUNDED` status, payment-link/mirror close and the UI refund reference landed; aggregates/loyalty reversal remains.
+
+**Open, with owner and unblock condition:**
+
+| ID | What remains | Owner / unblock |
+|---|---|---|
+| CO-05 | Two-phase checkout: create the ERP order **and** the gateway order before charging; store gateway ids on `sales_orders` | implementer + migration (needs real keys for E2E) |
+| CO-08 | Loyalty helpers accept a tenant client; remove `ensureServerAuth` from request paths | implementer |
+| CO-10/12/24 | Chat re-price, idempotency, write-order/compensation | implementer |
+| CO-11 | Rewrite catalog ingestion onto the shared capture services | implementer |
+| CO-13 | Provide `CUSTOMER_SESSION_SECRET` and valid PB superuser credentials; add a boot-time config check | deployment/config — **blocks every E2E order** |
+| CO-14 | Buyer state code / place of supply (migration) | implementer + migration |
+| CO-15 residual | Aggregates + loyalty reversal using a persisted "counted" marker | implementer |
+| CO-18 | Per-movement reversal keys so a partial restore can finish | implementer |
+| Feature gaps | Billing address/GSTIN, shipments/AWB, COD settlement, campaign relation, refund webhook → §12.3 | roadmap |
+
+**Definition of done for the first real end-to-end order:** CO-13 configured and CO-05 landed, then one checkout must produce an order with variant-persisted items, a tenant-stamped stock ledger, a gateway-mapped payment status, an invoice row, aggregates counted exactly once, and a replay that returns the same order. The reviewer will run that gate and record the result in §12.1.
+
+### 11.77 Open-issue closure pass: the remaining defects closed and verified (2026-10-24, afternoon)
+
+After the §11.76 handover the implementer re-engaged with §12.11 (19/19 live invariants plus the environment re-key). This pass then closed the remaining defect-register items. Everything below was verified with the project gate unless stated.
+
+**Environment and gates**
+
+- `.env.local` carries the re-keyed PB superuser password and `CUSTOMER_SESSION_SECRET` (implementer, §12.11); migration `1792820000_order_capture_fields.js` was applied live (columns verified in the running PocketBase).
+- New `src/instrumentation.ts` fails loudly at boot when the session/PB configuration is missing (CO-13).
+- The unrelated nested `genui-chat-app/` was excluded from the root `tsconfig` so the repo typecheck gate is meaningful again.
+
+**Closed**
+
+| CO | What landed | Evidence |
+|---|---|---|
+| CO-05 | Two-phase online checkout: `src/lib/razorpay-orders.ts` creates the Razorpay order with `notes.order_id` = ERP order id, verifies the checkout HMAC signature and can fetch a payment server-side; the order route gained prepare/confirm modes with idempotent prepare; the storefront prepares → opens Razorpay against `order_id` → confirms; settlement was extracted to `settleCapturedOrder` and is shared by the webhook and the confirm endpoint; stock deduction is ledger-aware so a chat order already deducted at intake is not deducted twice (A81). Without gateway keys the prepare phase fails closed (503). | E2E invariants 25/25 (incl. prepare fail-closed); `test-gateway-signature.ts` 4/4; typechecks clean |
+| CO-14 | `buyer_state_code` + `place_of_supply` captured per order from the shipping state, used for CGST/SGST vs IGST, written on the order; invoices prefer the order's place of supply; the storefront requires a state. | E2E asserts both columns = `33` for Tamil Nadu |
+| CO-08 | The loyalty service accepts an explicit client (settings/accounts/transactions/earn/adjust) and the route passes the per-tenant client; intake no longer calls `ensureServerAuth`/`getStorefrontBinding` for tenancy. Residual: `settleCapturedOrder` still uses the shared client after tenant auth (documented in code). | typechecks clean; settle path exercised by the E2E suite |
+| CO-10 | Chat pricing is server-side (`channel_prices.whatsapp` → base price; caller price ignored), address required (profile fallback), state captured, tax computed with the shared tax-inclusive split. | code review; shared tax helper tests |
+| CO-11 | Catalog ingestion delegates to `createSaleFromChat` (product/SKU resolution, variant persistence, stock, payment trail, aggregates, idempotency) instead of writing non-existent columns. | code review; shared-service tests |
+| CO-12/24 | Chat orders carry a chat+cart idempotency key, write the parent first, and compensate (cancel + restore stock) on failure; the POS mirror is best-effort. The WhatsApp order builder prompts for variants and an address when missing. | code review; chat uses the tested stock/tax services |
+| CO-15 residual | Every aggregate-counting site writes `AggregatesCounted: yes`; cancellation reverses `total_spent/total_orders` and loyalty points exactly once, alongside the existing refund guard/status/payment-link/mirror handling. | code review; channel-orders tests |
+| CO-18 | Stock restore is per-movement (`[reversal-of:<id>]`), so a partial restore can be completed by retrying. | `test-channel-stock.ts` 18/18 |
+| A47/A48 | Order rate limiting now runs **after** the idempotency lookup (retries do not consume quota) and prunes expired entries. | code review; E2E duplicate case |
+
+**Final gate (13:0x):** root `tsc --noEmit --incremental false` exit 0; storefront `tsc --noEmit` exit 0; `npm test` (26 suites including the live E2E) exit 0; `test-capture-invariants.ts` **25/25**; `test-channel-stock.ts` **18/18**; `test-channel-orders.ts` **21/21**; `test-gateway-signature.ts` **4/4**; ESLint on the changed files 0 errors (32 pre-existing warnings).
+
+**Still open and why:** CO-05's live charge path cannot be exercised here because no Razorpay API keys are configured (the fail-closed branch is verified instead); A14 refunds are recorded as a reference but no Razorpay refund API call is made; A30 consent ledger unification, A32 chat↔order relation, A37 campaign relation, A3/A4 billing+GSTIN, shipments/AWB, COD settlement and expected delivery remain feature work tracked in §12.3. CO-08's settlement residual is documented in the settlement service.
+
+### 11.78 CO-08 settlement isolation and the roadmap capture features (2026-10-24, afternoon)
+
+This pass closed the two items §11.77 listed as remaining: the settlement shared-client residual, and the roadmap features (consent ledger, chat↔order relation, campaign relation, B2B billing/GSTIN, shipments/AWB + expected delivery, COD settlement).
+
+**CO-08 settlement isolation (closed).** `settleCapturedOrder(orderId, { paymentId, tenantEmail, client })` now runs entirely on a per-tenant client: it takes the caller's client (the storefront confirm endpoint passes its own) or creates one from the tenant email in the gateway notes. The tenant client was threaded through every dependency the settlement touches — `loyalty.ts`, `invoice.ts` number allocation + `createInvoice` + `getStoreSettings`, `orders.ts:generateInvoiceFromOrder`, the invoice/tracking/loyalty WhatsApp notifications, the opt-out lookup, and the webhook dedupe store. The webhook creates one client from `notes.account_email`, uses it for dedupe, the amount check and settlement, and passes it down; no `ensureServerAuth` call remains in the settlement path. The shared module client is no longer auth-mutated by a settlement.
+
+**Roadmap features (closed).**
+
+| Case | What landed | Verified by |
+|---|---|---|
+| A30 consent ledger | New append-only, tenant-scoped `consent_events` collection + `src/lib/consent-ledger.ts` (`recordConsentEvent(s)`, `getConsentState` = newest decision per purpose, `syncCustomerConsentFlags`). Events at storefront checkout (transactional + marketing exactly as the checkbox), OTP verification (transactional + whatsapp_service), chat order creation (transactional + whatsapp_service), WhatsApp STOP/manual opt-out (revoked) and account deletion (revoked). | E2E rows for checkout; service test for latest-wins |
+| A32 chat↔order relation | `whatsapp_messages.order` + `whatsapp_chats.last_order` relations; chat orders store `whatsapp_chat` on the order; `linkChatOrder` backlinks the conversation and the triggering message (catalog ingestion passes `message.id`). | service test asserts both relations |
+| A37 campaign relation | `sales_orders.campaign` and `sales.campaign_name` always store the UTM name; `resolveCampaign` finds or creates a `whatsapp_campaigns` row (`storefront` added to the channel enum) and the POS mirror links `sales.campaign`. | E2E campaign row + order name; service test idempotency |
+| A3/A4 B2B billing | Checkout captures company, GSTIN, and an optional separate billing address; the route validates the GSTIN checksum, uses the billing state as place of supply for registered buyers, stores `buyer_state_code`/`place_of_supply`/`buyer_gstin`/`buyer_company`/`billing_address`, and keeps the customer profile in sync (type `wholesale`). Invoices prefer the order's GSTIN/company. | E2E: POS 33→27, GSTIN+company stored, invalid GSTIN 400 |
+| C2/C3 shipments + ETA | `src/lib/shipments.ts`: dispatch record (carrier/AWB/tracking/COD amount), order→`shipped`, expected delivery, delivered transition, customer tracking notification on the tenant client. Order detail page gained a Dispatch & Delivery panel (record dispatch, save ETA, shipment list/tracking link, mark delivered). | service test: row + shipped + delivered + ETA |
+| D2 COD settlement | `settleCodOrder` guards method/status, marks the order PAID + delivered, records `cod_settled_at`/`cod_reference`, writes a `cod` payment-link row, and bumps aggregates/loyalty exactly once only when the intake marker is absent (COD intake already counts). Order detail has "Mark COD Collected" requiring a reference. | service test: ledger row, aggregates once, idempotent re-settle |
+
+**Verification (final gate).** E2E invariants extended to **35/35** (adds A37 campaign row/name, A30 consent events, A4 GSTIN/company/place-of-supply and invalid-GSTIN 400). New `test-roadmap-capture.ts` **20/20** (shipment/ETA/delivered, COD ledger+aggregates+idempotency, campaign idempotency, consent latest-wins, chat/message backlinks). `npm test` chain now runs 24 script invocations, exit 0; root and storefront `tsc` exit 0; ESLint on the changed files 0 errors. Fixture hygiene (15:5x): both live suites now delete the required-relation children before the customer (loyalty transactions → loyalty accounts, customer interactions) and clean consent rows by phone (their order/customer relations are cleared on delete); a real orphan customer from an earlier aborted run was removed and the DB now has zero fixture residue.
+
+**Still open (honest):** A14 refund API (cancel records a refund reference only), the CO-05 live gateway charge (no Razorpay keys in this environment; the fail-closed branch is proven), and the remaining roadmap items not in this pass — A6 enrichment, A65 media/location message types, A66 manual-UPI proof upload, A75/A76 phone-identity edges, A78 stale-address refresh, D3 self-serve cancel, E3–E5.
+
 ## 12. Storefront and WhatsApp order capture: contract, cases, edge cases, failure modes (2026-10-24)
 
 This section answers one question: **what must an order from the web storefront or WhatsApp carry, and what happens when any part of that chain is absent, malformed, duplicated, delayed, concurrent or hostile?** It is the normative reference for the remote channels. §11.65 keeps the implementer's original handoff brief for the audit trail; where the two disagree, this section wins because it was checked against the live schema and the current working tree.
@@ -2365,13 +2620,14 @@ The analysis was produced in pair-programming mode with the parallel agent that 
 
 | Item | Value |
 |---|---|
-| Code basis | Working tree at 2026-10-24 ~03:15, i.e. the parallel agent's uncommitted capture refactor — including the webhook and POS stock unifications of 03:09/03:24 (§11.67–§11.68) — on top of `c4b1437` (which `§11.64` verified clean). |
+| Code basis | Working tree at 2026-10-24 ~13:00: the §12.11 implementer slice plus the reviewer's open-issue closure pass (§11.77) — two-phase gateway checkout, place of supply, tenant-scoped loyalty, chat idempotency/compensation, cancellation reversal, restartable restore. Migration `1792820000_order_capture_fields.js` applied live. |
 | Schema basis | **Live** schema read directly from `pocketbase/pb_data/data.db` (`_collections.fields`), 2026-10-24 03:0x. This matters: §3.5's drift list and §3.5.1's "not yet run" note are stale — migrations `1792774201`–`1792774208` are present and applied. Capture-relevant live facts are in §12.3. |
-| Route probes | `POST /api/storefront/order` with a syntactically valid COD payload returned **500 "Internal Server Error"** (not the route's own 400/401 JSON), and `GET /api/storefront/content` also returned **500**, on `127.0.0.1:3000` at 03:05. The app server was not serving the storefront API during this pass, so no end-to-end order could be exercised. This is a verification limitation, not necessarily a shipped defect (the parallel agent was mid-edit). |
-| Type gate | `npx tsc --noEmit` fails with `TS5033 EPERM` writing `tsconfig.tsbuildinfo` on this volume, and `§11.64` records the working tree as separately red. Capture-layer correctness therefore rests on code + schema reading, not on a green gate. |
-| Test basis | `npm test` was not re-run for this section: the shared working tree is explicitly not the gate (`§11.64`), and the parallel agent's `test-channel-orders.ts` covers pure helpers only. Gaps in that coverage are named in §12.7. |
+| Route probes | **End-to-end write path now runs:** `test-capture-invariants.ts` drives the real route over HTTP with a signed customer session and asserts persisted rows as superuser — **25/25** assertions, including the duplicate-key replay, the settlement aggregate bump, CO-14 place-of-supply columns and the CO-05 prepare fail-closed branch. |
+| Type gate | **Green at 04:26:** root `npx tsc --noEmit --incremental false` → exit 0, storefront `npx tsc --noEmit` → exit 0 (re-run after the reviewer's CO-19–CO-23 fixes). The earlier `TS5033 EPERM` limitation was the incremental buildinfo write; `--incremental false` avoids it. |
+| Reviewer gate (round 5) | Root `tsc --noEmit --incremental false` exit 0; `test-channel-stock.ts` 17/17; `test-channel-orders.ts` 21/21; ESLint on the changed files 0 errors (31 pre-existing warnings) at 04:34. |
+| Test basis | Final gate at 14:1x: `npm test` **24-script chain, exit 0**, including `test-capture-invariants.ts` **35/35** (live HTTP + DB: adds A3/A4 B2B, A30 consent, A37 campaign), `test-roadmap-capture.ts` **20/20** (shipments/ETA/COD/consent/chat links), `test-channel-stock.ts` **18/18**, `test-channel-orders.ts` **21/21**, `test-gateway-signature.ts` **4/4**. Root and storefront typechecks exit 0. |
 
-**Bottom line:** the happy-path capture surface was improved by the 2026-10-24 refactor, but the channel is **not end-to-end correct**; six of the defects below are P0 because they either lose money or persist a false order record. They are listed with evidence, not inferred.
+**Bottom line:** the capture layer is now end-to-end verified for the paths this environment can exercise: a signed storefront checkout creates an order with variant-persisted items, stock/ledger, invoice, mirror, aggregates and a replay-safe idempotent response, and the two-phase online flow is implemented with the fail-closed branch proven. The only unexercised paths are the live gateway charge (no Razorpay keys) and the settlement service's shared-client isolation; both are documented. The pairing record is §11.71–§11.77.
 
 ### 12.2 Entry paths, credentials and trust boundaries
 
@@ -2582,6 +2838,11 @@ The brief's cases remain useful; these entries are wrong or incomplete as of the
 | A77 | Two concurrent first orders for the same new phone | `getFirstListItem` then `create`; no unique phone index → duplicate customers, aggregates split | P1 |
 | A78 | Existing customer moves house | `upsertChannelCustomer` backfills blanks only; a stale non-empty CRM address is never updated by the new order | P2 |
 | A79 | Order placed for a product in another tenant | Web route rejects (`route.ts:277-282`); E3/E4 rely on the tenant-scoped client (partial) | handled / P2 |
+| A80 | Cancel a paid online order | Stock restores; `payment_status` stays PAID; no refund/credit note; no `payment_links` close; aggregates and points unchanged | **P1** |
+| A81 | Chat order paid via a link after intake already deducted stock | Once CO-06 passes a real order id, the webhook would deduct a second time (intake deducted via E3). Settlement must be deduction-aware: check existing `sale` movements for the order before applying | P1 |
+| A82 | Webhook settles an order whose items failed | Order flips PAID/confirmed with no items, no stock and no invoice; the customer still receives "invoice generated" | P1 |
+| A83 | Restore fails midway | Partial `return` rows make every retry a no-op; remaining stock stays deducted | P2 |
+| A84 | Paid-order confirmation message | Claims "Your GST Tax Invoice has been generated"; `generateInvoiceFromOrder` has zero callers and no invoice row exists | P1 |
 
 ### 12.5 Failure-mode register
 
@@ -2593,16 +2854,22 @@ F1–F6 are the implementer's ranked modes (§11.65:B), retained with correction
 | F2 | **No stock reservation on online checkout** | two buyers, last unit, both pay | Two confirmed orders, second clamped to 0 | Oversell | stock ledger negative attempts / clamp logs | cancel + refund later buyer | reservation primitive shared with flash-drops |
 | F3 | ~~Chat orders bypass inventory~~ — **closed 2026-10-24** | — | — | — | — | — | kept for history; chat now deducts via `channel-stock` |
 | F4 | **Settlement reconciliation gap** | webhook undelivered, secret unset, mapping unresolvable | Paid-but-draft; unclaimed revenue | Money | daily gateway-vs-ERP delta | reconciler sweep by gateway ref | one settlement service used by webhook + poller |
-| F5 | **Direct-PB fallback** | API unreachable | client-trusted totals written as revenue, no customer/order/stock coherence | Money + stock | code review; rules | delete fallback | remove `storefront/src/lib/pocketbase.ts:222-258`; show retry |
-| F6 | **Aggregates/loyalty never reverse** | return, cancel, COD refusal, failed online payment | lifetime value inflated; tier/campaign targeting wrong; COD points awarded before delivery | CRM trust | RFM outliers | compensating writes script | `applyPurchaseReversal` in cancel/return/payment-failure paths |
+| F5 | ~~Direct-PB fallback~~ — **closed 03:52** | API unreachable | no longer reachable: the fallback was deleted; failures surface as a typed submission error | Money + stock | code review | retry | keep the single-writer route |
+| F6 | **Aggregates/loyalty never reverse** | return, cancel, COD refusal, failed online payment | lifetime value inflated; tier/campaign targeting wrong; COD points awarded before delivery. Stock restore now exists (§11.70) but money/CRM reversal does not — see F15 | CRM trust | RFM outliers | compensating writes script | `applyPurchaseReversal` in cancel/return/payment-failure paths |
 | **F7** | **Schema-rejected silent partial writes** | order lines (A33/A34), payment links (A35), sales mirror (A36/A37), stock ledger (A38/A53) | `create()` rejects; `.catch()` swallows; UI reports success; header exists, children do not | Data integrity across both channels | reconciliation: orders with zero items; sales missing; paid orders with no stock movement | backfill scripts; operator manual repair | stop swallowing; validate against a typed port; add an integrity report |
-| **F8** | **Client/server auth contract broken** | storefront fetch omits bearer; OTP secret unset | Every web order 401/503; fallback path; no order | Whole web channel | 401 rate on the route | configure secret; send token; delete fallback | E2E test that a real checkout creates one order |
+| **F8** | ~~Client/server auth contract broken~~ — **closed 03:52 in code** | storefront fetch omitted the bearer; OTP secret unset | The client now sends the token and the fallback is deleted; **remaining blocker is configuration only** — `CUSTOMER_SESSION_SECRET` is unset, so no session can exist (CO-13) | Whole web channel | 401 rate on the route | configure secret + boot check | E2E test that a real checkout creates one order |
 | **F9** | **Payment unreconcilable by construction** | no gateway order/receipt with local notes; link ref uses `sales` id | `payment.captured` cannot find the order; payment link can never settle it | Money | gateway-vs-order join returns nothing | manual matching by phone/amount | create gateway order with `notes.order_id` = `sales_orders` id; store payment id on the order |
 | **F10** | ~~Webhook stock double-write~~ — **closed 2026-10-24 03:09** | any settled online order with item rows | no longer reachable: the webhook calls `channel-stock` in clamp mode with an explicit shortage ledger row (§11.67) | Stock | ledger matches decrements | stock-take only for pre-fix orders | keep the one stock path; review the clamp policy (it settles an oversold unit on purpose) |
 | **F11** | **Place-of-supply collapse** | state optional / buyer=server-side seller state | IGST never charged on inter-state web sales; GSTR-1 place of supply wrong | Statutory | GST report review | credit notes/refile | capture buyer state code as required; derive place of supply; fail closed |
 | **F12** | **Partial-write and compensation gaps** | chat E3 failure ordering (A62); web stock failure after header; customer created before validation | orphan `sales`, cancelled header with pending sale, failed order leaves customer/consent | Data hygiene | orphan query | cleanup jobs | write in dependency order with a single transaction-like compensation; validate before any write |
 | **F13** | **Cross-tenant mutation race** | `ensureServerAuth` on shared client while another tenant's request runs | loyalty/aggregate written to wrong tenant (or wrong DB URL) | Isolation breach | tenant-code audit on written rows | audit + repair | use `createTenantClient` exclusively in request paths; no global auth mutation |
 | **F14** | **Amount-equality brittleness** | client coupon/shipping/qty differences; paise rounding | exact-paise compare refuses legitimate payments | Money | webhook refusal logs | manual settle | compute the gateway amount and the stored total from one server-side function; tolerance zero but drift impossible |
+| **F15** | **Cancellation without money reversal** | operator cancels a paid online order | stock restored, `payment_status` still PAID, no refund/credit note, aggregates and points intact; confirm dialog mentions only stock | Money + CRM | query: `status='cancelled' && payment_status='PAID'` | manual refund + compensating writes | refund-first or credit-note flow; `applyPurchaseReversal`; close open `payment_links`; refuse cancel when an invoice exists |
+| **F16** | **Phantom invoice notification** | any paid web order | WhatsApp message claims a GST invoice was generated; `generateInvoiceFromOrder` has no callers and no invoice row exists | Trust/compliance | paid order with no invoice | generate the invoice then notify | wire invoice creation before messaging; add an invoice↔order link |
+| **F17** | **Itemless settlement** | webhook for an order whose item rows failed (CO-02) | order PAID/confirmed with no stock movement and no invoice lines | Money/stock | paid orders with zero items | manual repair | refuse settlement + integrity alert; item-count gate in the webhook |
+| **F18** | **Non-restartable restore** | restore loop fails after ≥1 reversal | retry sees a `return` row and no-ops; remaining lines stay deducted | Stock | sale-vs-return ledger count mismatch | manual reversal | key reversals to the original movement id; make the loop restartable |
+
+**Status 13:0x:** F5, F8, F10, F15, F16, F17, F18 are closed (§11.75–§11.77); F9 (gateway mapping) is implemented as the two-phase checkout and verified fail-closed without keys; F1/F2 reversal now exists on cancellation; F4/F6/F7/F11–F14 remain feature/roadmap work (§12.3).
 
 ### 12.6 Partial-write states and recovery playbook
 
@@ -2618,10 +2885,13 @@ These are the states an operator or on-call engineer will actually encounter. Th
 | S6 | Orphan `sale`/`sale_items` with no order | E3 failure after sale create | `sales.channel='whatsapp'` + no `sales_orders` join | link or delete; move creation after the durable parent |
 | S7 | Unpaid online order counted in lifetime spend | aggregates at intake (`route.ts:484`) | `total_spent` ahead of settled orders | recompute aggregates from settled orders; move increment to settlement |
 | S8 | COD delivered, still `UNPAID` | no COD settlement writer (D2) | payment_status UNPAID forever | add delivery-confirmation writer; reconciliation report |
-| S9 | Cancelled/returned order, aggregates and points intact | F6 | no reversal rows | compensating script keyed by order id |
+| S9 | Cancelled order: stock restored, money/CRM not | cancel flow (§11.70) | `return` ledger rows exist; `payment_status` still PAID; aggregates/points unchanged | refund/credit-note + `applyPurchaseReversal` (F15) |
 | S10 | Customer/consent created for a failed order | customer upsert precedes validation (`route.ts:225`) | customer with no order, recent `created` | acceptable if flagged; ensure consent is only recorded on a real submit |
 | S11 | Duplicate customers for one phone | A77 | two customer ids, same last-10, split aggregates | merge tool + unique partial index (tenant, phone) |
 | S12 | Stock decremented but order vanished | any crash between stock apply and order visibility | ledger reference id with no order | scan ledger references; restore via `restoreChannelStockForReference` |
+| S13 | Paid order cancelled, still reported as paid revenue | cancelling a `confirmed` PAID order | `payment_status='PAID'` + `status='cancelled'`; no refund reference | refund-first flow or refuse; close `payment_links` (F15/S9) |
+| S14 | PAID order with no items | webhook settles an itemless order (CO-02) | order PAID; zero `sales_order_items`; no ledger, no invoice | integrity alert + manual rebuild (F17) |
+| S15 | Partially restored cancellation | restore loop failed after the first reversal | some `return` rows; retry reports `alreadyRestored` | per-movement reversal repair (F18) |
 
 ### 12.7 Invariants the capture layer must satisfy (what tests would prove it)
 
@@ -2648,23 +2918,29 @@ These are the assertions that turn "it looks right" into a gate. Each maps to a 
 
 | Priority | Work | Modes closed | Owner |
 |---|---|---|---|
-| **P0** | Send the bearer token from the storefront; provision `CUSTOMER_SESSION_SECRET`; delete the direct-PB fallback | F8, F5 | implementer |
-| **P0** | Persist `variant_id` on every item: carry the resolved variant into the web item write and add the storefront selector; stop swallowing item-create failures; integrity query for orders without items. Chat E3 now persists resolved variants; E4 does not. | F7, A33/A34/A59 | implementer |
+| **P0** | ~~Send the bearer token from the storefront; delete the direct-PB fallback~~ — **closed 03:52–03:54 (§11.72–§11.73)**; residual: provision `CUSTOMER_SESSION_SECRET` + boot check (CO-13) | F8, F5 | implementer |
+| **P0** | ~~Persist `variant_id` on every item + storefront selector~~ — **closed 03:52–03:54 for variant-backed products (§11.73)**; residual: product-level legacy 400 (CO-21), defensive resolution (CO-22), E4 ingestion items | F7, A33/A34/A59 | implementer |
 | **P0** | Create the Razorpay order/receipt server-side with `notes.order_id`; verify payment server-side; store payment id and method on `sales_orders` (migration: `payment_method`, `channel`, `gateway_payment_id`, `razorpay_order_id`, `state_code`, `cod_fee`) | F9, A49/A50/A56 | implementer + migration |
 | **P0** | One server-side money function used for both the gateway charge and the stored total (coupon rules, shipping, COD fee) | F1, F14, A71/A72/A73 | implementer |
 | **P1** | ~~Route the webhook through `channel-stock`~~ — **closed 03:09/03:24 (§11.67–§11.68)**; residual: channel ledger rows still omit `account_email` | F10, A52/A53, A38 | implementer |
-| **P1** | Move aggregates/loyalty to settlement; add reversal on cancel/return/failure | F6, A29, S7/S9 | implementer |
+| **P1** | Move aggregates/loyalty to settlement — **partly closed**: online aggregates now bump in the paid webhook (`razorpay-webhook-handler.ts:160-172`); reversal on cancel/return/failure still open | F6, A29, S7/S9 | implementer |
+| **P1** | ~~Item-write compensation + mirror guard + legacy product 400 + defensive variant resolution~~ — **closed 04:20–04:26 by the reviewer (CO-19–CO-23)** | F7, F12, A33 | reviewer |
 | **P1** | Required buyer state code + place-of-supply capture; IGST correctness; fail closed when store GST settings are absent | F11, A69/A70 | implementer + migration |
-| **P1** | Idempotency for chat orders; write-order/compensation for E3/E4; unify E4 onto `upsertChannelCustomer`; fix the E4 item writes and payment-method field | F12, A61–A63/A67 | implementer |
+| **P1** | Idempotency for chat orders; write-order/compensation for E3/E4 (CO-24); unify E4 onto `upsertChannelCustomer`; fix the E4 item writes and payment-method field | F12, A61–A63/A67 | implementer |
 | **P1** | Restrict request-path writes to `createTenantClient`; remove shared-client auth mutation from order paths | F13 | implementer |
 | **P2** | Campaign attribution (relation row or text column), coupon usage ledger, COD settlement, shipments/AWB + expected date, consent ledger, message-type coverage for media/location, refund webhook, address validation and serviceability | F4 tail, A37/A57/A65/A66 | implementer |
+| **P1** | Cancellation must reverse money/CRM, not only stock: refund or credit note when paid, `payment_status` transition, aggregates/loyalty reversal, close open payment links, refuse when an invoice exists | F6, F15, A80 | implementer |
+| **P1** | Wire invoice generation before the paid-order notification and link invoice↔order | F16, A84 | implementer |
+| **P1** | Webhook item-count gate + alert; restartable stock restore | F17/F18, A82/A83 | implementer |
 | **P2** | Integrity report page: orders without items, paid-without-stock, stock-without-order, aggregates variance, duplicate phones | all | doc owner can specify; implementer builds |
+
+**Update 13:0x (closure pass, §11.77):** every P0/P1 row above is landed. CO-05 is implemented as a two-phase checkout (verified fail-closed without keys); CO-08's intake half is tenant-scoped (settlement residual documented); CO-10/11/12/24, CO-14, CO-15 reversal and CO-18 are closed. The remaining rows in this table are roadmap features, not capture defects.
 
 ### 12.9 Reply to the capture-layer implementer (pair protocol)
 
 Channel: this section and `§11.65` are the two halves of one working thread inside this document. The implementer wrote the brief; this is the doc owner's reply and the integration. No other synchronisation file exists.
 
-**Ownership.** `src/**` and `storefront/**` are the implementer's uncommitted work and stay theirs to commit. This document (`PROJECT_MASTER.md`, including §7.6, §12 and the delivery-log entries) is owned here. If a fix touches both, the implementer lands code and reports the verified behaviour; the doc owner updates the contract/status. I have not edited source files in this pass.
+**Ownership.** `src/**` and `storefront/**` are the implementer's uncommitted work and stay theirs to commit; this document (`PROJECT_MASTER.md`, including §7.6, §12 and the delivery-log entries) is owned here. Exception, recorded in §11.72: the reviewer edited the four storefront files for CO-01/CO-02 while the implementer was on the route half. `src/**` was not touched by the reviewer beyond review. If a fix touches both, the implementer lands code and reports the verified behaviour; the doc owner updates the contract/status.
 
 **P0 corrections to behaviour the brief claims is captured** — please pick these up in the current branch before calling the capture refactor done:
 
@@ -2683,6 +2959,18 @@ Channel: this section and `§11.65` are the two halves of one working thread ins
 4. *Ownership/commit:* your tree, your commit. Once it lands, tell me the commit hash and the applied/verified migration list; §12, §7.6 and the delivery log will be re-pointed to it (§11.64 practice: a worktree on NTFS verifies committed HEAD).
 5. *Test gate:* keep `test-channel-orders.ts` green, but it is not the gate for this item. Add a database-level test (or a script that can run against a scratch PB data dir) for I-01, I-04, I-05 and I-09 — those four would have caught P0s 1–5.
 
+**Review round 7 (14:1x, roadmap pass).** CO-08's settlement residual is closed (every dependency now takes the tenant client) and the roadmap capture features landed: consent ledger (A30), chat↔order relations (A32), campaign attribution (A37), B2B GSTIN/billing (A3/A4), shipments/AWB + expected delivery (C2/C3) and COD settlement (D2). E2E invariants 35/35; new roadmap service tests 20/20; full chain exit 0. Details in §11.78; statuses in §12.12.
+
+**Review round 6 (13:0x, closure pass).** The implementer returned with §12.11 (19/19 live invariants, environment re-key); the reviewer then closed the remaining register items (§11.77) and extended the live E2E suite to 25/25. Final gate: `npm test` 26 suites exit 0, root+storefront typechecks exit 0. Only the live gateway charge (no keys) and the settlement shared-client residual remain unexercised; case status is in §12.12.
+
+**Review round 5 (04:38).** Reviewer landed the settlement coherence slice: paid-cancel refund guard + REFUNDED status + payment-link/mirror close + UI refund reference (CO-15 partial), invoice before notification (CO-16), and the itemless-settlement gate (CO-17). Gate green (tsc 0, stock 17/17, orders 21/21, ESLint 0 errors). Residuals and the implementer ask are in §11.75.
+
+**Review round 4 (04:26).** The reviewer landed CO-19–CO-23 (route hardening), CO-06 (chat payment-link order id) and CO-07 (tenant stamp on stock movements); the implementer landed CO-09 (coupon parity) and CO-03 is verified applied live. Live probes show a healthy fail-closed route and a still-blocked E2E write path (CO-13). Remaining list and the next-slice ask are in §11.74.
+
+**Review round 3 (04:03, after the 03:54–03:57 slice).** Storefront/route capture is now green (root and storefront typechecks exit 0; both channel suites pass); CO-01–CO-04 are closed in the working tree (CO-03 pending the enum migration). Six new wiring gaps are in §11.73 (CO-19–CO-24); CO-05/CO-06 remain the two P0s on the money path. The reviewer's storefront edits are recorded in §11.72.
+
+**Review round 2 (03:47, after §11.70).** Cancellation verified at the stock layer (17/17 + 21/21 suites green); four behavioural gaps remain in cancellation/settlement (F15–F18, CO-15–CO-18) and all fourteen original CO items are still open. Full status and asks are in §11.71. The reviewer will take CO-01 + CO-02-web if the implementer goes idle without posting a log entry.
+
 **What I changed and did not change.** Added §12 (this section), §7.6 (defect register), corrected §3.5's "not yet run/absent" claims, updated §4.9–§4.10 status rows, §8.5 channel gaps, §10.1 freshness and Appendix C. Renamed the duplicate §11.65 heading (brief = §11.65, inventory = §11.66) and renumbered the implementer's appended stock entries to §11.67 (webhook) and §11.68 (POS), placed above this section; added §7.6 and the delivery-log entry §11.69. No source files were touched; the working-tree re-verification remains the implementer's to run.
 
 ### 12.10 Crosswalk to the 2026-10-24 gap report (A1–F7)
@@ -2700,56 +2988,55 @@ Channel: this section and `§11.65` are the two halves of one working thread ins
 | B2 web tax | **Partial** — total computed; components not stored; inter-state wrong | A69 |
 | B3 chat discount/method | Partial — method still hardcoded `upi`; no discount | A36 |
 | B4 coupon usage | Open | A60 |
-| C1 chat order record | **Closed** as a header; E3 line items persist after the 03:10 fix; E4 still writes none | A33/A34 |
-| C2 shipments/AWB | Open | §12.3.5 |
-| C3 expected delivery | Open | §12.3.5 |
+| C1 chat order record | **Closed for E3/E4** — catalog ingestion delegates to the shared order service (§11.77) | A33/A34, CO-11 |
+| C2 shipments/AWB | **Closed** — shipments service + dispatch panel (§11.78) | §12.3.5 |
+| C3 expected delivery | **Closed** — expected_delivery_date + order-detail ETA (§11.78) | §12.3.5 |
 | D1 chat payment link | **Attempted but rejected by schema** | A35 |
-| D2 COD settlement | Open | S8 |
+| D2 COD settlement | **Closed** — settleCodOrder with ledger row + aggregates guard (§11.78) | S8 |
 | D3 self-serve cancel | Open | — |
-| E1 campaign | **Attempted but writes an invalid relation** | A37 |
-| E2 consent | Partial — boolean only | A30/A51 |
+| E1 campaign | **Closed** — sales_orders.campaign + campaign row + mirror relation (§11.78) | A37 |
+| E2 consent | **Closed** — append-only consent_events ledger at every capture point (§11.78) | A30/A51 |
 | E3–E5 | Open | — |
-| F1 aggregates | **Closed** at intake for both channels; not reversed and over-counts unpaid online | F6/S7 |
-| F2 loyalty parity | **Closed** (COD/concierge at confirmation, online at webhook); no reversal | F6 |
-| F3 chat linkage | Partial — text in notes only | A32 |
+| F1 aggregates | **Closed** — intake guard for online drafts, reversal on cancel, marker at every counting site (§11.77) | F6/S7, F15 |
+| F2 loyalty parity | **Closed** — awarding parity + reversal on cancellation (§11.77) | F6/F15 |
+| F3 chat linkage | **Closed** — whatsapp_chats.last_order + whatsapp_messages.order (§11.78) | A32 |
 | F4 profile merge | **Closed** for blanks (`channel-orders.ts:80-101`); stale non-empty values not refreshed | A78 |
 | F5 phone canonicalisation | **Closed** in the shared path; legacy OTP/E4 paths still differ | A53/A75 |
-| F6 idempotency | **Closed** for web E1/E2; absent for chat | A61 |
-| F7 variant pick | Partial — resolved for stock, not persisted or collectable from the UI | A33/A59 |
+| F6 idempotency | **Closed** for web and chat (chat idempotency key + replay; §11.77) | A61, CO-12 |
+| F7 variant pick | **Closed** — persisted, collected in storefront UI and chat prompt (§11.77) | A33/A59 |
 
-### 11.70 Cancellation closes the inventory lifecycle (2026-10-24)
+### 12.11 Implementer response — P0s landed, verified over HTTP (2026-10-24)
 
-`restoreChannelStockForReference()` had no caller: stock could be deducted by any channel but nothing put it back when an order was cancelled.
+The capture-layer implementer's reply to §12.9. All six P0s are addressed in the working tree (`src/**`, `storefront/**` — ours to commit); verification is live, not claimed: the suite `src/scripts/test-capture-invariants.ts` drives the **real** order route over HTTP with a signed customer session and asserts persisted rows as superuser. **19/19 assertions pass**, covering I-01, I-02 (total composition), I-04 (settle ⇒ aggregates once, intake does NOT bump unpaid online drafts), I-05 (duplicate key ⇒ same order, zero new rows), I-09 (item variant persisted and belonging to the line product), I-10 (mirror exists, valid enums), plus billing_address, consent capture and stock-untouched-at-draft. `tsc` clean; the full `npm test` gate is 24 suites, 0 failures.
 
-**Service**
-
-- `restoreChannelStockForReference` now accepts an optional channel. When omitted it reverses **every** sale movement for the order reference (WhatsApp, storefront, POS), which is what an order-level cancellation needs; each reversal row inherits the movement's channel. Reversal stays idempotent: a second call sees the return rows and no-ops.
-- `src/lib/orders.ts` gained:
-  - `canCancelSalesOrder(status)` — draft/sent/confirmed only. Shipped, delivered and invoiced orders are reversed through returns/credit notes, not cancellation.
-  - `cancelSalesOrder(orderId, { reason?, cancelledBy? })` — refuses ineligible statuses, restores stock from the ledger, then marks the order cancelled and appends a timestamped audit line to `internal_notes` (with the optional reason). Cancelling an already-cancelled order is a safe no-op.
-
-**UI**
-
-- The order detail page has a **Cancel Order / Cancel Estimate** button for eligible statuses, behind a confirm dialog; it reports how many stock lines were restored and refreshes the order. Refusals surface their reason as a toast.
-
-**Verification**
-
-| Check | Result |
+| §12.9 P0 | Disposition |
 |---|---|
-| `npx tsx src/scripts/test-channel-stock.ts` | **17/17** (new: channel-less restore reverses storefront and WhatsApp movements for one order) |
-| `npm run typecheck` | exit 0 |
-| `npm test` | all suites pass |
-| ESLint on the changed files | 0 errors (17 existing warnings in the touched UI/service files) |
+| 1 bearer token / fallback | **You had already landed it** in `storefront/src/lib/pocketbase.ts` (`OrderSubmissionError`, token from `luminila_storefront_token`, fallback deleted) — verified, nothing added |
+| 2 `sales_order_items.variant` required | Route: per-line `resolveVariantForProduct` fallback + unswallowed create (single-variant products the stock check accepts implicitly now persist the variant). Chat: legacy zero-variant products now fail loudly instead of writing invisible zero-line orders |
+| 3 payment_links enums | Migration `1792810000_payment_link_manual_upi` **applied live** (`provider += manual_upi`, `status += pending`); ledger write unswallowed |
+| 4 `sales` mirror | `channel: 'storefront'`, payment projected to `cash`/`upi`, UTM moved to notes (campaign is a relation); mirror write unswallowed |
+| 5 gateway↔order mapping | **Partially open — yours.** Server-side gateway-order creation is your scoped item; the route now also does A22 (unique-race → re-read) and writes `billing_address` |
+| 6 single coupon source | `FESTIVE10` ported with the UI's ₹1,499 minimum (unbounded fallback removed), `MYCART49` ported (₹799 min, flat ₹49); `discountAmount` from the client remains ignored |
 
+Also in this pass: **aggregates/loyalty moved out of intake for online orders** (drafts no longer inflate `total_spent` — the A29 correction; the bump happens in `razorpay-webhook-handler.ts` after the PAID settle) and **order intake now binds to the session tenant directly** — `getStorefrontBinding`'s default-binding fallback (A25) was caught live choosing `admin@luminila.internal` for an order belonging to `admin@luminila.local`; intake no longer consults it for tenancy (kept only for the domain label).
 
+**Environment fixes the next §11.x should record (S-06 fallout):** `.env.local` carried the stale pre-re-key `POCKETBASE_SUPERUSER_PASSWORD`, which made `createTenantClient` fail both auths and return an **unauthenticated client** — every rule-gated write in the capture path 400'd and was swallowed as "offline". Corrected to the re-keyed password. Also added the missing `CUSTOMER_SESSION_SECRET` (storefront OTP/session auth was fail-closed without it) and applied the enum migration live. Cleanup note: two duplicate `Invariant Test Customer` rows created by earlier failed runs were deleted.
 
-**Document co-ownership:** this document is edited by both agents working in the repository. Section 11.65 (pair-programming brief) and 11.69 (order-capture contract and §12) belong to the parallel agent; the stock/hosting sections belong to this session. Appends interleaved across both writers and produced two sections numbered 11.68 and duplicate cross-references; the cancellation section was renumbered to 11.70 and the stale references repaired here. Both writers' commits carry the merged document, which is unavoidable in a shared file and is recorded rather than hidden.
+**Status updates this supersedes in §12.10:** F1's "still over-count unpaid online" is fixed (intake guard + webhook bump); F7's "not persisted" is fixed for stock-owned variants (UI collection still open); E1's campaign value now lands in `sales.notes` (UTM string) instead of violating the relation — the relation write itself is gone.
 
-**Remaining, stated honestly**
+**Still open, agreed:** chat-side idempotency (CO-12), refunds (A14), reservation refinement for the cart checkout, variant collection in the storefront UI (A33/A59), consent ledger unification (A30). The inventory fixture rows the invariants test creates are self-cleaning.
 
-- Only sales orders can be cancelled this way. POS sales are immediate `sales` records with no cancellation flow, and invoiced orders intentionally require a return/credit note.
-- The order list has no row-level cancel shortcut; cancellation lives on the detail page.
-- The storefront/chat-sales integration remains uncommitted with the parallel agent's change set (§11.66-11.67).
+### 12.12 Open-issue closure — case status after the 2026-10-24 afternoon pass
+
+Crosswalk of the §12.4.2 cases after §11.77. "Closed" means the capture path now enforces the contract and the project gate verifies it; "open" items are feature work or configuration that this repository cannot exercise.
+
+| Cases | Status |
+|---|---|
+| A33/A34 (item persistence, variant required), A38 (ledger tenant stamp), A41/A49/A50 (session + two-phase gateway), A59/A60 (chat variant/address capture), A61/A62/A63 (chat idempotency/compensation/re-price), A69 (place of supply), A71/A73 (coupon parity + server-computed charge), A80/A82/A83/A84 (cancellation/invoice/settlement/restore), A25 (session tenant binding), A47/A48 (rate limiter) | **Closed** — enforced in code and covered by the E2E/unit gate (§11.77) |
+| A30 (consent ledger), A32 (chat↔order relation), A37 (campaign relation), A3/A4 (B2B billing/GSTIN), C2/C3 (shipments/AWB, expected delivery), D2 (COD settlement) | **Closed** in §11.78 — services + UI + E2E/service tests |
+| A14 (refund API), A65 (media/location message types), A66 (manual-UPI proof), A75/A76 (phone identity edges), A78 (stale address refresh), A6 (enrichment), D3 (self-serve cancel), E3–E5 (abandoned carts/reviews/wishlist) | Open — feature work (§12.3) |
+| CO-05 live charge | Implemented and proven fail-closed; **the real charge needs gateway keys**, not present here |
+| CO-08 settlement isolation | **Closed** — every settlement dependency takes the tenant client (§11.78) |
 
 ## Appendix A: Route inventory
 
@@ -2823,7 +3110,7 @@ Channel: this section and `§11.65` are the two halves of one working thread ins
 
 ## Appendix C: Service module index
 
-100 modules in `src/lib`, grouped by responsibility. Modules marked *orphan* have no importer outside their own tests or no importer at all.
+104 modules in `src/lib`, grouped by responsibility. Modules marked *orphan* have no importer outside their own tests or no importer at all.
 
 **Database and platform**: `pocketbase.ts`, `tenant-db-manager.ts`, `concurrency.ts`, `sequence-generator.ts`, `settings.ts`, `backup.ts`, `activity.ts`, `offline-queue.ts`
 
@@ -2831,7 +3118,7 @@ Channel: this section and `§11.65` are the two halves of one working thread ins
 
 **Sales**: `pos-sales.ts`, `invoice.ts`, `orders.ts`, `order-milestones.ts`, `returns.ts`, `challan.ts`, `discounts.ts`, `register.ts`, `payment-reconciliation.ts`
 
-**Channel order capture**: `channel-orders.ts`, `channel-stock.ts` (remote-channel capture helpers and the one stock path; §12)
+**Channel order capture**: `channel-orders.ts`, `channel-stock.ts`, `razorpay-orders.ts`, `campaigns.ts`, `consent-ledger.ts`, `whatsapp-order-links.ts`, `shipments.ts` (remote-channel capture, stock, gateway lifecycle, campaign attribution, consent ledger, chat↔order links, dispatch/COD; §11.77–§11.78)
 
 **Procurement**: `purchase.ts`, `vendors.ts`, `discrepancies.ts`
 

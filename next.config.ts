@@ -14,6 +14,9 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
 
+  // Note: builds from exFAT drives also need scripts/fix-exfat-readlink.cjs
+  // (wired into the build scripts) because libuv misreports readlink() there.
+
   // Asset prefix for dev mode (only if TAURI_DEV_HOST is explicitly set by Tauri)
   assetPrefix: process.env.TAURI_DEV_HOST ? `http://${process.env.TAURI_DEV_HOST}:3000` : undefined,
 

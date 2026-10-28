@@ -45,9 +45,10 @@ export interface Product extends PBRecord {
     making_charges_type?: 'per_gram' | 'fixed' | 'percent';
     wastage_percent?: number;
     huid_code?: string;
-    // Imitation / Fashion Jewelry Attributes (Vasy.ai Aligned)
-    imitation_craft?: string;
-    plating_type?: string;
+    // Imitation / Fashion Jewelry Attributes (Vasy.ai Aligned).
+    // Field names match the live products columns (migration 1792774203).
+    craft?: string;
+    plating?: string;
     occasion?: string;
     base_metal?: string;
     stone_type?: string;

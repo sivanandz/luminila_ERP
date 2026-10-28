@@ -3,6 +3,7 @@ import { verifyOtp } from "@/lib/otp-store";
 import { isCustomerTokenConfigured, signCustomerToken } from "@/lib/customer-token";
 import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
 import { getStorefrontBinding } from "@/lib/storefront";
+import { recordConsentEvent } from "@/lib/consent-ledger";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -93,6 +94,26 @@ export async function POST(req: Request) {
                 });
             } catch {}
         }
+
+        // Consent ledger (A30): the OTP proves phone ownership, so record the
+        // transactional and WhatsApp-service consent; marketing stays a separate
+        // decision made on the storefront/checkout.
+        await recordConsentEvent(client, {
+            customerId: customerRecord.id,
+            phone: cleanDigits,
+            channel: "storefront",
+            purpose: "transactional",
+            granted: true,
+            source: "otp_verification",
+        });
+        await recordConsentEvent(client, {
+            customerId: customerRecord.id,
+            phone: cleanDigits,
+            channel: "storefront",
+            purpose: "whatsapp_service",
+            granted: true,
+            source: "otp_verification",
+        });
 
         // 4. Create cryptographically signed session token. Refuse rather than
         // fall back to a per-process key that would invalidate on restart.

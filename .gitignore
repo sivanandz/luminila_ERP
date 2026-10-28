@@ -63,6 +63,11 @@ pocketbase/pb_data/*
 !pocketbase/pb_data/.gitkeep
 pocketbase/pb_tenants/
 
+# Desktop build output (server-dist holds generated Next standalone output;
+# only the placeholder README is tracked)
+server-dist/*
+!server-dist/README.md
+
 # Runtime JSON data
 src/data/*.json
 !src/data/.gitkeep

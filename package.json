@@ -4,15 +4,17 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev-all.js",
-    "dev:frontend": "next dev",
+    "dev:frontend": "next dev --webpack",
     "dev:pb": "pocketbase\\pocketbase.exe serve --http=0.0.0.0:8090 --dir=pocketbase\\pb_data",
     "dev:sidecar": "node wppconnect-sidecar/server.js",
     "dev:all": "node scripts/dev-all.js",
-    "build": "next build --webpack",
-    "build:desktop": "next build --webpack && node scripts/prepare-server-dist.mjs",
+    "build": "set NODE_OPTIONS=--require ./scripts/fix-exfat-readlink.cjs&& node node_modules/next/dist/bin/next build --webpack",
+    "build:desktop": "npm run build && node scripts/prepare-server-dist.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "tsx src/scripts/test-invoice-math.ts && tsx src/scripts/test-returns-policy.ts && tsx src/scripts/test-tenant-auth.ts && tsx src/scripts/test-gstr1-period.ts && tsx src/scripts/test-returns-qc.ts && tsx src/scripts/test-manufacturing.ts && tsx src/scripts/test-cheque-register.ts && tsx src/scripts/test-cross-border.ts && tsx src/scripts/test-backup.ts && tsx src/scripts/test-offline-queue.ts && tsx src/scripts/test-valuation.ts && tsx src/scripts/test-imitation.ts && tsx src/scripts/test-rate-limit.ts && tsx src/scripts/test-customer-token.ts && tsx src/scripts/test-whatsapp-secret.ts && tsx src/scripts/test-webhook-dedupe.ts && tsx src/scripts/test-tenant-runtime.ts && tsx src/scripts/test-tenant-secrets.ts && tsx src/scripts/test-gstin.ts && tsx src/scripts/test-pos-quantity.ts",
+    "test:ai": "tsx src/scripts/test-ai-harness.ts && tsx src/scripts/test-ai-harness-integration.ts",
+    "verify:ai": "tsx src/scripts/verify-ai-harness-live.ts",
+    "test": "tsx src/scripts/test-invoice-math.ts && tsx src/scripts/test-returns-policy.ts && tsx src/scripts/test-tenant-auth.ts && tsx src/scripts/test-gstr1-period.ts && tsx src/scripts/test-returns-qc.ts && tsx src/scripts/test-manufacturing.ts && tsx src/scripts/test-cheque-register.ts && tsx src/scripts/test-cross-border.ts && tsx src/scripts/test-backup.ts && tsx src/scripts/test-offline-queue.ts && tsx src/scripts/test-valuation.ts && tsx src/scripts/test-imitation.ts && tsx src/scripts/test-rate-limit.ts && tsx src/scripts/test-customer-token.ts && tsx src/scripts/test-whatsapp-secret.ts && tsx src/scripts/test-webhook-dedupe.ts && tsx src/scripts/test-tenant-runtime.ts && tsx src/scripts/test-tenant-secrets.ts && tsx src/scripts/test-gstin.ts && tsx src/scripts/test-pos-quantity.ts && tsx src/scripts/test-channel-orders.ts && tsx src/scripts/test-gateway-signature.ts && tsx src/scripts/test-roadmap-capture.ts && tsx src/scripts/test-capture-invariants.ts",
     "lint": "eslint",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -27,6 +29,9 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0",
+    "@openuidev/react-headless": "^0.18.1",
+    "@openuidev/react-lang": "^1.0.1",
+    "@openuidev/react-ui": "^0.18.1",
     "@swc/helpers": "^0.5.17",
     "@tauri-apps/api": "^2.9.1",
     "class-variance-authority": "^0.7.1",
@@ -46,7 +51,9 @@
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
-    "tw-animate-css": "^1.4.0"
+    "tw-animate-css": "^1.4.0",
+    "zod": "^4.6.7",
+    "zustand": "^4.5.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -60,8 +67,8 @@
     "dotenv": "^17.2.3",
     "eslint": "^9",
     "eslint-config-next": "16.1.0",
-    "tailwindcss": "^4",
     "shadcn": "^3.6.2",
+    "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"
   }

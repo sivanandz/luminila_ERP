@@ -64,7 +64,7 @@ export default function ExpenseCategoriesPage() {
         <div className="flex flex-col h-full bg-bg-navy">
             <Header title="Expense Categories" subtitle="Manage spending categories" />
 
-            <div className="p-6 max-w-4xl mx-auto w-full">
+            <div className="flex-1 overflow-y-auto p-6 max-w-4xl mx-auto w-full">
                 <div className="flex justify-end mb-6">
                     <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
                         <DialogTrigger>

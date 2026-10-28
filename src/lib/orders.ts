@@ -17,6 +17,11 @@ import { createInvoice, getStoreSettings } from '@/lib/invoice';
 import { calculateGST, getStateCode, GST_RATES } from '@/lib/gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from '@/lib/sequence-generator';
 import { restoreChannelStockForReference, toStockDb } from '@/lib/channel-stock';
+import {
+    aggregatesWereCounted,
+    applyPurchaseReversal,
+} from '@/lib/channel-orders';
+import { adjustPoints, calculatePointsToEarn } from '@/lib/loyalty';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
 export type OrderType = 'estimate' | 'sales_order';
@@ -213,7 +218,8 @@ export async function convertEstimateToOrder(estimateId: string) {
 /**
  * Generate an Invoice from a Sales Order
  */
-export async function generateInvoiceFromOrder(orderId: string) {
+export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = pb) {
+    const pb = db;
     try {
         const order = await pb.collection('sales_orders').getOne(orderId);
 
@@ -239,7 +245,7 @@ export async function generateInvoiceFromOrder(orderId: string) {
             expand: 'product',
         });
 
-        const store = await getStoreSettings();
+        const store = await getStoreSettings(db);
         const isGstRegistered = store.is_gst_registered !== false && Boolean(store.store_gstin);
 
         // WPA-13 fix: sales_orders has no buyer_state_code/place_of_supply field
@@ -254,22 +260,38 @@ export async function generateInvoiceFromOrder(orderId: string) {
             store.store_state_code ||
             (/^\d{2}$/.test(gstinState) ? gstinState : '') ||
             '27';
-        let buyerStateCode = sellerStateCode;
-        let buyerGstin = '';
+        // Place of supply: prefer the buyer state captured on the order itself
+        // (CO-14 — the web channel writes buyer_state_code/place_of_supply).
+        // Fall back to the customer profile for orders created before the field
+        // existed, then to the seller state only as a last resort.
+        const orderPlace = order as {
+            buyer_state_code?: string;
+            place_of_supply?: string;
+            buyer_gstin?: string;
+            buyer_company?: string;
+        };
+        let buyerStateCode = String(
+            orderPlace.buyer_state_code || orderPlace.place_of_supply || ''
+        ).trim();
+        // The order's own GSTIN wins: the customer profile can change later.
+        let buyerGstin = String(orderPlace.buyer_gstin || '').trim();
         if (order.customer) {
             try {
                 const customer = await pb.collection('customers').getOne<Customer>(order.customer);
-                buyerGstin = String(customer.gstin || '').trim();
-                const gstinStateCode = buyerGstin.substring(0, 2);
-                buyerStateCode =
-                    customer.state_code ||
-                    getStateCode(customer.state || '') ||
-                    (/^\d{2}$/.test(gstinStateCode) ? gstinStateCode : '') ||
-                    sellerStateCode;
+                if (!buyerGstin) buyerGstin = String(customer.gstin || '').trim();
+                if (!buyerStateCode) {
+                    const gstinStateCode = buyerGstin.substring(0, 2);
+                    buyerStateCode =
+                        customer.state_code ||
+                        getStateCode(customer.state || '') ||
+                        (/^\d{2}$/.test(gstinStateCode) ? gstinStateCode : '') ||
+                        sellerStateCode;
+                }
             } catch {
-                // Customer lookup failed — fall back to the seller state (intra-state).
+                // Customer lookup failed — keep the order's own code, else seller.
             }
         }
+        if (!buyerStateCode) buyerStateCode = sellerStateCode;
 
         const invoiceItems = orderItems.map((item, idx: number) => {
             // Taxable value is net of the line discount (sales_order_items stores
@@ -329,7 +351,7 @@ export async function generateInvoiceFromOrder(orderId: string) {
             seller_name: store.store_name || 'Luminila Jewelry',
             seller_address: `${store.store_address || ''} ${store.store_city || ''}`.trim(),
             seller_state_code: store.store_state_code || '27',
-            buyer_name: order.customer_name || 'Walk-in Customer',
+            buyer_name: orderPlace.buyer_company || order.customer_name || 'Walk-in Customer',
             buyer_gstin: buyerGstin,
             buyer_phone: order.customer_phone || '',
             buyer_email: order.customer_email || '',
@@ -355,7 +377,7 @@ export async function generateInvoiceFromOrder(orderId: string) {
             paid_amount: 0,
             notes: order.notes || `Generated from Sales Order #${order.order_number || orderId}`,
             items: invoiceItems
-        });
+        }, db);
 
         // Mark order as invoiced
         await pb.collection('sales_orders').update(orderId, { status: 'invoiced' });
@@ -461,6 +483,8 @@ export interface CancelOrderResult {
     restored: number;
     alreadyRestored: boolean;
     alreadyCancelled: boolean;
+    /** True when the cancellation carried a refund reference (paid order). */
+    paymentReversed?: boolean;
 }
 
 /**
@@ -470,14 +494,25 @@ export interface CancelOrderResult {
  * deducted the stock (WhatsApp, storefront, POS) for this order reference.
  * Cancelling is refused for shipped/invoiced orders, whose reversal must go
  * through returns with a credit note.
+ *
+ * CO-15: a PAID order may only be cancelled together with a refund reference.
+ * Cancelling it otherwise restores stock while the CRM still reports paid
+ * revenue for an order that no longer exists. Open payment links and the POS
+ * `sales` mirror are closed in the same operation.
  */
 export async function cancelSalesOrder(
     orderId: string,
-    options: { reason?: string; cancelledBy?: string } = {}
+    options: { reason?: string; cancelledBy?: string; refundReference?: string } = {}
 ): Promise<CancelOrderResult> {
-    const order = await pb
-        .collection('sales_orders')
-        .getOne<{ status?: OrderStatus; internal_notes?: string; order_type?: OrderType }>(orderId);
+    const order = await pb.collection('sales_orders').getOne<{
+        status?: OrderStatus;
+        internal_notes?: string;
+        order_type?: OrderType;
+        payment_status?: string;
+        order_number?: string;
+        total?: number;
+        customer?: string;
+    }>(orderId);
 
     if (order.status === 'cancelled') {
         return { success: true, orderId, restored: 0, alreadyRestored: true, alreadyCancelled: true };
@@ -488,17 +523,84 @@ export async function cancelSalesOrder(
         );
     }
 
+    const paymentStatus = String(order.payment_status || '').toUpperCase();
+    const refundReference = (options.refundReference || '').trim();
+    if (paymentStatus === 'PAID' && !refundReference) {
+        throw new Error(
+            'This order is marked PAID. Refund the payment first, then retry with the refund reference so the cancellation stays auditable.'
+        );
+    }
+
     const restore = await restoreChannelStockForReference(toStockDb(pb), {
         referenceId: orderId,
         notes: options.reason ? `Cancelled: ${options.reason}` : undefined,
     });
 
+    // CO-15 residual: reverse lifetime counters and loyalty points when the
+    // order actually counted them. The marker is written by the counting site
+    // (web intake for COD/concierge, paid webhook for online orders), so an
+    // online draft that never settled is not decremented.
+    if (aggregatesWereCounted(order.internal_notes)) {
+        const amount = Number(order.total) || 0;
+        await applyPurchaseReversal(pb, order.customer || '', amount);
+        if (order.customer) {
+            try {
+                const points = await calculatePointsToEarn(amount);
+                if (points > 0) {
+                    await adjustPoints(
+                        order.customer,
+                        -points,
+                        `Order ${order.order_number || orderId} cancelled`
+                    );
+                }
+            } catch (loyaltyErr) {
+                // A legacy order may not have a loyalty account or enough
+                // balance; that must not block the cancellation.
+                console.warn('[orders] loyalty reversal skipped:', loyaltyErr);
+            }
+        }
+    }
+
+    // Close any still-open payment links for this order (CO-15).
+    const openLinks = await pb
+        .collection('payment_links')
+        .getFullList<{ id: string; status?: string }>({
+            filter: `order="${orderId}" && status != "cancelled" && status != "paid"`,
+        })
+        .catch(() => []);
+    for (const link of openLinks) {
+        await pb.collection('payment_links').update(link.id, { status: 'cancelled' }).catch(() => {});
+    }
+
+    // Keep the POS revenue mirror in step with the order lifecycle (CO-15).
+    if (order.order_number) {
+        const mirrors = await pb
+            .collection('sales')
+            .getFullList<{ id: string }>({ filter: `channel_order_id="${order.order_number}"` })
+            .catch(() => []);
+        for (const mirror of mirrors) {
+            await pb.collection('sales').update(mirror.id, { status: 'cancelled' }).catch(() => {});
+        }
+    }
+
     const stamp = new Date().toISOString();
-    const auditLine = `[cancelled ${stamp}${options.cancelledBy ? ` by ${options.cancelledBy}` : ''}${options.reason ? ` — ${options.reason}` : ''}]`;
-    await pb.collection('sales_orders').update(orderId, {
+    const auditLine = `[cancelled ${stamp}${options.cancelledBy ? ` by ${options.cancelledBy}` : ''}${
+        options.reason ? ` — ${options.reason}` : ''
+    }${refundReference ? ` | refund ${refundReference}` : ''}]`;
+    const update: Record<string, unknown> = {
         status: 'cancelled',
         internal_notes: [order.internal_notes, auditLine].filter(Boolean).join('\n'),
-    });
+    };
+    if (refundReference) update.payment_status = 'REFUNDED';
 
-    return { success: true, orderId, restored: restore.restored, alreadyRestored: restore.alreadyRestored, alreadyCancelled: false };
+    await pb.collection('sales_orders').update(orderId, update);
+
+    return {
+        success: true,
+        orderId,
+        restored: restore.restored,
+        alreadyRestored: restore.alreadyRestored,
+        alreadyCancelled: false,
+        paymentReversed: Boolean(refundReference),
+    };
 }

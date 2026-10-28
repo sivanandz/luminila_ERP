@@ -55,6 +55,16 @@ import {
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { pb } from "@/lib/pocketbase";
+import {
+    NITHTHIGAL_DEFAULTS,
+    mergeNiththigal,
+    type NiththigalContent,
+} from "@/lib/niththigal-content";
+import {
+    NiththigalEditor,
+    assetUrl,
+    getStorefrontOrigin,
+} from "@/components/storefront-control/NiththigalEditor";
 
 export interface HeroSlide {
     id: string;
@@ -93,6 +103,7 @@ export interface FaqItem {
 }
 
 export interface StorefrontContentState {
+    niththigal: NiththigalContent;
     announcement: {
         enabled: boolean;
         primary: string;
@@ -232,6 +243,7 @@ export interface StorefrontContentState {
 }
 
 export type CmsTab =
+    | "niththigal"
     | "domain_binding"
     | "ticker"
     | "hero"
@@ -485,6 +497,7 @@ const LINK_PRESETS = [
 ];
 
 const DEFAULT_STATE: StorefrontContentState = {
+    niththigal: NITHTHIGAL_DEFAULTS,
     announcement: {
         enabled: true,
         primary: "PAN INDIA SHIPPING • DISPATCHED IN 24-48 HRS",
@@ -712,7 +725,7 @@ export default function StorefrontControlPage() {
     const [selectedSlideIndex, setSelectedSlideIndex] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
-    const [activeTab, setActiveTab] = useState<CmsTab>("layout");
+    const [activeTab, setActiveTab] = useState<CmsTab>("niththigal");
 
     useEffect(() => {
         setMounted(true);
@@ -774,6 +787,9 @@ export default function StorefrontControlPage() {
                 setContent({
                     ...DEFAULT_STATE,
                     ...data,
+                    niththigal: data.niththigal
+                        ? mergeNiththigal(NITHTHIGAL_DEFAULTS, data.niththigal)
+                        : DEFAULT_STATE.niththigal,
                     announcement: { ...DEFAULT_STATE.announcement, ...(data.announcement || {}) },
                     hero: {
                         ...DEFAULT_STATE.hero,
@@ -1046,13 +1062,13 @@ export default function StorefrontControlPage() {
                 <div className="space-y-1">
                     <div className="flex items-center gap-2">
                         <Globe className="w-6 h-6 text-primary" />
-                        <h1 className="text-2xl font-bold tracking-tight">Storefront Studio & CMS Engine</h1>
+                        <h1 className="text-2xl font-bold tracking-tight">Niththigal Storefront CMS</h1>
                         <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
-                            Live on :3001
+                            Live storefront
                         </Badge>
                     </div>
                     <p className="text-muted-foreground text-sm">
-                        Total control over homepage sections, hero slides, visual merchandising, and social commerce.
+                        Edit every section, image, link and theme token of the live Niththigal storefront.
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1060,7 +1076,7 @@ export default function StorefrontControlPage() {
                         <RotateCcw className="w-4 h-4" />
                         Reset Defaults
                     </Button>
-                    <a href="http://localhost:3001" target="_blank" rel="noopener noreferrer">
+                    <a href={getStorefrontOrigin() || "/"} target="_blank" rel="noopener noreferrer">
                         <Button variant="outline" size="sm" className="gap-1.5">
                             <ExternalLink className="w-4 h-4" />
                             View Storefront
@@ -1074,93 +1090,54 @@ export default function StorefrontControlPage() {
             </div>
 
             {/* Quick Live Preview Bar */}
-            <Card className="bg-muted/40 border-dashed">
+            <Card className="bg-muted/40 border-dashed overflow-hidden">
                 <CardHeader className="py-3 px-5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground uppercase tracking-wider font-semibold">
                         <span className="flex items-center gap-1.5">
                             <Eye className="w-3.5 h-3.5" />
-                            Live Storefront Appearance Preview
+                            Live Storefront Preview
                         </span>
-                        <span>Atelier Theme</span>
+                        <span>
+                            Niththigal · {content.niththigal.sections.filter((section) => section.enabled).length} sections
+                        </span>
                     </div>
                 </CardHeader>
                 <CardContent className="px-5 pb-5">
-                    <div className="rounded-md border bg-black text-white overflow-hidden shadow-md">
-                        {/* Mock Ticker */}
-                        {content.announcement.enabled && (
-                            <div className="bg-white text-black text-[10px] tracking-widest uppercase font-medium py-1 px-4 text-center">
-                                {content.announcement.primary}
+                    <div className="grid gap-4 rounded-2xl border border-[#dbe1c7] bg-[#f0f2dd] p-4 sm:grid-cols-[1fr_180px]">
+                        <div className="min-w-0">
+                            <p className="text-[9px] font-semibold tracking-[0.18em] text-[#5e6753]">
+                                {content.niththigal.hero.eyebrow}
+                            </p>
+                            <h2 className="mt-2 font-serif text-3xl leading-[1.02] tracking-tight text-[#193d32]">
+                                {content.niththigal.hero.titleLine1}
+                                <br />
+                                {content.niththigal.hero.titleLine2Prefix}{" "}
+                                <em className="text-[#6c785c]">{content.niththigal.hero.titleEmphasis}</em>
+                            </h2>
+                            <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-[#5e6753]">
+                                {content.niththigal.hero.description}
+                            </p>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-[#193d32] px-3 py-1.5 text-[9px] font-semibold text-[#f0f2dd]">
+                                    {content.niththigal.hero.primaryCta} ↗
+                                </span>
+                                <span className="border-b border-[#aeb4a4] pb-0.5 text-[9px] text-[#243a30]">
+                                    {content.niththigal.hero.secondaryCta} →
+                                </span>
                             </div>
-                        )}
-                        {/* Mock Hero Slideshow Box */}
-                        {(() => {
-                            const activeSlide = (content.hero.slides && content.hero.slides[selectedSlideIndex]) || content.hero.slides?.[0] || {
-                                title: content.hero.brandName || "The Atelier",
-                                tagline: content.hero.tagline || "craftisans",
-                                ctaText: content.hero.ctaText || "shop now ↓",
-                                ctaLink: content.hero.ctaLink || "#catalog-section",
-                                imageUrl: content.hero.imageUrl || "",
-                                overlayOpacity: content.hero.overlayOpacity ?? 0.25,
-                            };
-                            const totalSlides = content.hero.slides?.length || 1;
-                            return (
-                                <div
-                                    className="relative h-48 flex flex-col justify-end bg-cover bg-center p-6 text-left"
-                                    style={{
-                                        backgroundImage: `url(${activeSlide.imageUrl})`,
-                                    }}
-                                >
-                                    <div
-                                        className="absolute inset-0 bg-black"
-                                        style={{ opacity: activeSlide.overlayOpacity }}
-                                    />
-                                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
-
-                                    {/* Slide Counter & Dots */}
-                                    <div className="absolute top-4 right-5 z-10 flex items-center gap-3 text-white/70 text-xs font-mono">
-                                        <span>
-                                            {String(selectedSlideIndex + 1).padStart(2, "0")} / {String(totalSlides).padStart(2, "0")}
-                                        </span>
-                                        <div className="flex gap-1">
-                                            {Array.from({ length: totalSlides }).map((_, i) => (
-                                                <button
-                                                    key={i}
-                                                    type="button"
-                                                    onClick={() => setSelectedSlideIndex(i)}
-                                                    className={`h-1 rounded-full transition-all ${
-                                                        i === selectedSlideIndex ? "w-6 bg-white" : "w-2 bg-white/40"
-                                                    }`}
-                                                />
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <div className="relative z-10 max-w-lg space-y-1">
-                                        {activeSlide.badgeText && (
-                                            <span className="inline-block text-[10px] font-mono tracking-widest px-2 py-0.5 rounded bg-white/20 backdrop-blur-md text-white mb-1">
-                                                {activeSlide.badgeText}
-                                            </span>
-                                        )}
-                                        <h2 className="text-3xl font-extrabold tracking-tighter lowercase text-white">
-                                            {activeSlide.title}
-                                        </h2>
-                                        {activeSlide.tagline && (
-                                            <p className="text-xs uppercase tracking-widest text-white/80 font-medium">
-                                                {activeSlide.tagline}
-                                            </p>
-                                        )}
-                                        <div className="pt-2 flex items-center gap-3">
-                                            <span className="text-[11px] uppercase tracking-widest text-white underline decoration-1 underline-offset-4 font-semibold">
-                                                {activeSlide.ctaText}
-                                            </span>
-                                            <span className="text-[10px] text-white/60 font-mono">
-                                                → {activeSlide.ctaLink}
-                                            </span>
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })()}
+                            <p className="mt-3 text-[9px] font-medium text-[#5e6753]">
+                                {content.niththigal.hero.noteTitle}
+                            </p>
+                        </div>
+                        <div className="overflow-hidden rounded-xl border border-white/70 bg-[#e9eed4]">
+                            {content.niththigal.hero.imageUrl ? (
+                                <img
+                                    src={assetUrl(content.niththigal.hero.imageUrl)}
+                                    alt={content.niththigal.hero.imageAlt}
+                                    className="h-36 w-full object-cover"
+                                />
+                            ) : null}
+                        </div>
                     </div>
                 </CardContent>
             </Card>
@@ -1169,18 +1146,8 @@ export default function StorefrontControlPage() {
             <div className="block sm:hidden w-full mb-2">
                 {(() => {
                     const cmsTabs = [
+                        { id: "niththigal", label: "Niththigal Storefront", icon: Sparkles },
                         { id: "domain_binding", label: "Domain & Admin Binding", icon: Globe },
-                        { id: "layout", label: "Section Builder", icon: Layers },
-                        { id: "branding_theme", label: "Branding & Theming", icon: Palette },
-                        { id: "hero", label: "Hero Slideshow", icon: ImageIcon },
-                        { id: "ticker", label: "Announcement & Urgency", icon: Megaphone },
-                        { id: "trust", label: "Trust Guarantee Strip", icon: ShieldCheck },
-                        { id: "vitrines", label: "Vitrines & Catalog", icon: Sliders },
-                        { id: "merchandising", label: "Badges & Spotlights", icon: Pin },
-                        { id: "reviews", label: "Customer Reviews", icon: Star },
-                        { id: "story_faq", label: "Story & FAQ", icon: BookOpen },
-                        { id: "promo", label: "Coupons & Banners", icon: Tag },
-                        { id: "mobile_social", label: "Mobile Bar & Socials", icon: Smartphone },
                     ];
                     const curTab = cmsTabs.find((t) => t.id === activeTab) || cmsTabs[0];
                     const CurIcon = curTab.icon;
@@ -1212,18 +1179,8 @@ export default function StorefrontControlPage() {
 
             <div className="hidden sm:flex items-center border-b gap-1 text-sm overflow-x-auto pb-1.5 scrollbar-thin shrink-0">
                 {[
+                    { id: "niththigal", label: "Niththigal Storefront", icon: Sparkles },
                     { id: "domain_binding", label: "Domain & Admin Binding", icon: Globe },
-                    { id: "layout", label: "Section Builder", icon: Layers },
-                    { id: "branding_theme", label: "Branding & Theming", icon: Palette },
-                    { id: "hero", label: "Hero Slideshow", icon: ImageIcon },
-                    { id: "ticker", label: "Announcement & Urgency", icon: Megaphone },
-                    { id: "trust", label: "Trust Guarantee Strip", icon: ShieldCheck },
-                    { id: "vitrines", label: "Vitrines & Catalog", icon: Sliders },
-                    { id: "merchandising", label: "Badges & Spotlights", icon: Pin },
-                    { id: "reviews", label: "Customer Reviews", icon: Star },
-                    { id: "story_faq", label: "Story & FAQ", icon: BookOpen },
-                    { id: "promo", label: "Coupons & Banners", icon: Tag },
-                    { id: "mobile_social", label: "Mobile Bar & Socials", icon: Smartphone },
                 ].map((tab) => {
                     const Icon = tab.icon;
                     return (
@@ -1242,6 +1199,27 @@ export default function StorefrontControlPage() {
                     );
                 })}
             </div>
+
+            {/* TAB: Niththigal Storefront */}
+            {activeTab === "niththigal" && (
+                <NiththigalEditor
+                    value={content.niththigal}
+                    inventoryTenant={
+                        content.adminBinding?.boundAdminEmail || user?.email || ""
+                    }
+                    onChange={(next) => setContent({ ...content, niththigal: next })}
+                    onReset={() => {
+                        if (
+                            window.confirm(
+                                "Reset every Niththigal section, label and theme token to the example defaults? This affects the editor state until you save."
+                            )
+                        ) {
+                            setContent({ ...content, niththigal: NITHTHIGAL_DEFAULTS });
+                            toast.info("Niththigal content reset to the example defaults. Save to apply.");
+                        }
+                    }}
+                />
+            )}
 
             {/* TAB: Domain & Admin Account Binding */}
             {activeTab === "domain_binding" && (

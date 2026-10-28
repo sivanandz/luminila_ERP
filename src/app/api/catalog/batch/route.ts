@@ -4,6 +4,7 @@ import PocketBase from 'pocketbase';
 import { createTenantClient, getPocketBaseUrl, sanitizeFilter } from '@/lib/pocketbase';
 import { getStorefrontBinding } from '@/lib/storefront';
 import { buildMetaBatchRequests, resolvePublicCatalogOrigin, sendMetaCatalogBatch } from '@/lib/meta-catalog-batch';
+import { loadTenantChannelDefinitions } from '@/lib/server-pricing';
 
 export const dynamic = 'force-dynamic';
 
@@ -174,6 +175,7 @@ export async function POST(req: NextRequest) {
         // 6. Resolve tenant brand name
         const binding = await getStorefrontBinding(tenantEmail);
         const brandName = binding.brandName || 'Niththigal Jewellery';
+        const channelDefinitions = await loadTenantChannelDefinitions(client, tenantEmail);
 
         // 7. Build batch requests
         const batchRequests = buildMetaBatchRequests(
@@ -182,7 +184,8 @@ export async function POST(req: NextRequest) {
             origin,
             phone,
             action,
-            brandName
+            brandName,
+            channelDefinitions
         );
 
         // 8. Check if Access Token is configured

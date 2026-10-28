@@ -182,6 +182,9 @@ export async function getUsers(): Promise<UserProfile[]> {
 }
 
 export async function setUserRoles(userId: string, roleIds: string[]): Promise<void> {
+    // user_roles rows are tenant-scoped by account_email; stamp the acting
+    // tenant so the assignment stays visible to this store only.
+    const accountEmail = String((pb.authStore.model as { email?: string } | null)?.email || '').trim().toLowerCase();
     // Remove all existing roles
     const existingRoles = await pb.collection('user_roles').getFullList({
         filter: `user="${userId}"`
@@ -191,7 +194,7 @@ export async function setUserRoles(userId: string, roleIds: string[]): Promise<v
     }
     // Add new roles
     for (const roleId of roleIds) {
-        await pb.collection('user_roles').create({ user: userId, role: roleId });
+        await pb.collection('user_roles').create({ user: userId, role: roleId, account_email: accountEmail });
     }
 }
 

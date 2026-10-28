@@ -35,7 +35,7 @@ export function AppChrome({ children }: { children: React.ReactNode }) {
             <WhatsAppEventSyncProvider />
             <OfflineSync />
             <Sidebar />
-            <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-[calc(4rem+env(safe-area-inset-bottom,0px))] md:pb-0">
+            <main className="app-main flex-1 flex flex-col h-full min-w-0 overflow-hidden relative pb-[calc(4rem+env(safe-area-inset-bottom,0px))] md:pb-0">
                 <ErrorBoundary>{children}</ErrorBoundary>
             </main>
             <MobileBottomNav />

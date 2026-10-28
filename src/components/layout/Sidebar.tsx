@@ -24,7 +24,6 @@ import {
     Tags,
 
     Diamond,
-    Gem,
     Users,
     Undo2,
     Activity,
@@ -45,6 +44,7 @@ import {
     ChevronsDown,
     ChevronsUp,
     Globe,
+    Sparkles,
 } from "lucide-react";
 
 interface NavItem {
@@ -58,6 +58,7 @@ interface NavItem {
 
 const navGroups: NavItem[] = [
     { href: "/", icon: <LayoutDashboard size={20} />, label: "Dashboard" },
+    { href: "/assistant", icon: <Sparkles size={20} />, label: "AI Assistant" },
     {
         icon: <Store size={20} />,
         label: "Sales",
@@ -93,7 +94,6 @@ const navGroups: NavItem[] = [
         children: [
             { href: "/inventory", icon: <Package size={18} />, label: "Stock Management" },
             { href: "/manufacturing", icon: <Hammer size={18} />, label: "Karigar Jobs" },
-            { href: "/imitation", icon: <Gem size={18} />, label: "Fashion Jewellery" },
             { href: "/labels", icon: <Printer size={18} />, label: "Print Labels" },
         ],
     },
@@ -258,7 +258,7 @@ export function Sidebar() {
     }
 
     return (
-        <aside className="hidden md:flex md:w-64 lg:w-72 bg-card border-r flex-col h-full shrink-0 z-30 select-none">
+        <aside className="no-print hidden md:flex md:w-64 lg:w-72 bg-card border-r flex-col h-full shrink-0 z-30 select-none">
             {/* Logo */}
             <div className="p-6 flex items-center gap-3">
                 <div className="size-10 bg-primary/10 rounded-lg flex items-center justify-center border border-primary/20">

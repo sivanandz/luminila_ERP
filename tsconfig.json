@@ -39,9 +39,13 @@
   ],
   "exclude": [
     "node_modules",
+    "node_modules_broken_*",
     "backup_*",
+    "genui-chat-app",
+    "scratch",
     "src/scripts",
     "scripts",
-    "storefront"
+    "storefront",
+    "storefront_example"
   ]
 }

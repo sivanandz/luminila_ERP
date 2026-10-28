@@ -8,7 +8,12 @@ import {
     addCustomChannel,
     updateChannel,
     removeCustomChannel,
+    computeRulePrice,
+    describePricingRule,
     type SalesChannelDefinition,
+    type ChannelPricingRule,
+    type PriceRuleMode,
+    type PriceRounding,
 } from "@/lib/channel-pricing";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,7 +51,7 @@ import {
 
 export function SalesChannelsSettings() {
     const [channels, setChannels] = useState<SalesChannelDefinition[]>(() => getConfiguredChannels());
-    const [testBasePrice, setTestBasePrice] = useState<number>(1500);
+    const [testCostPrice, setTestCostPrice] = useState<number>(600);
 
     // Modal state for Add/Edit
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -57,6 +62,11 @@ export function SalesChannelsSettings() {
     const [formDescription, setFormDescription] = useState("");
     const [formColor, setFormColor] = useState<SalesChannelDefinition["badgeColor"]>("blue");
     const [formPreset, setFormPreset] = useState<string>("0");
+    const [formRuleMode, setFormRuleMode] = useState<PriceRuleMode>("percent");
+    const [formPercent, setFormPercent] = useState<string>("0");
+    const [formFixed, setFormFixed] = useState<string>("0");
+    const [formGateway, setFormGateway] = useState(false);
+    const [formRounding, setFormRounding] = useState<PriceRounding>("none");
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     useEffect(() => {
@@ -73,6 +83,11 @@ export function SalesChannelsSettings() {
         setFormDescription("");
         setFormColor("cyan");
         setFormPreset("0");
+        setFormRuleMode("percent");
+        setFormPercent("0");
+        setFormFixed("0");
+        setFormGateway(false);
+        setFormRounding("none");
         setIsModalOpen(true);
     };
 
@@ -84,6 +99,17 @@ export function SalesChannelsSettings() {
         setFormDescription(ch.description || "");
         setFormColor(ch.badgeColor || "blue");
         setFormPreset(ch.discountPreset !== undefined ? String(ch.discountPreset) : "0");
+        setFormRuleMode(ch.pricingRule?.mode || "percent");
+        setFormPercent(
+            String(
+                ch.pricingRule?.percent ??
+                    ch.discountPreset ??
+                    0
+            )
+        );
+        setFormFixed(String(ch.pricingRule?.fixed ?? 0));
+        setFormGateway(Boolean(ch.pricingRule?.gatewayGrossUp));
+        setFormRounding(ch.pricingRule?.rounding || "none");
         setIsModalOpen(true);
     };
 
@@ -104,6 +130,19 @@ export function SalesChannelsSettings() {
         }
 
         const presetNum = parseFloat(formPreset) || 0;
+        const pricingRule: ChannelPricingRule = {
+            mode: formRuleMode,
+            percent:
+                formRuleMode === "fixed"
+                    ? undefined
+                    : parseFloat(formPercent) || 0,
+            fixed:
+                formRuleMode === "percent"
+                    ? undefined
+                    : parseFloat(formFixed) || 0,
+            gatewayGrossUp: formGateway || undefined,
+            rounding: formRounding === "none" ? undefined : formRounding,
+        };
 
         setIsSubmitting(true);
         try {
@@ -115,6 +154,7 @@ export function SalesChannelsSettings() {
                     description: formDescription.trim(),
                     badgeColor: formColor,
                     discountPreset: presetNum,
+                    pricingRule,
                 });
                 toast.success(`Updated sales channel "${formName.trim()}"`);
             } else {
@@ -126,6 +166,7 @@ export function SalesChannelsSettings() {
                     description: formDescription.trim() || `Sales channel for ${formName.trim()}`,
                     badgeColor: formColor,
                     discountPreset: presetNum,
+                    pricingRule,
                 });
                 toast.success(`Created sales channel "${formName.trim()}"`);
             }
@@ -218,7 +259,6 @@ export function SalesChannelsSettings() {
             {/* Channels Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {channels.map((chan) => {
-                    const preset = chan.discountPreset || 0;
                     return (
                         <div
                             key={chan.id}
@@ -269,20 +309,10 @@ export function SalesChannelsSettings() {
                             <div className="pt-3 border-t border-border/50 flex items-center justify-between gap-2">
                                 <div className="flex items-center gap-1.5">
                                     <Percent size={13} className="text-amber-400" />
-                                    <span className="text-[11px] font-medium text-muted-foreground">Preset:</span>
-                                    {preset === 0 ? (
-                                        <span className="text-[11px] font-mono font-semibold text-foreground/80">
-                                            Base (100%)
-                                        </span>
-                                    ) : preset > 0 ? (
-                                        <span className="text-[11px] font-mono font-bold text-purple-400">
-                                            +{preset}% Markup
-                                        </span>
-                                    ) : (
-                                        <span className="text-[11px] font-mono font-bold text-emerald-400">
-                                            {preset}% Discount
-                                        </span>
-                                    )}
+                                    <span className="text-[11px] font-medium text-muted-foreground">Rule:</span>
+                                    <span className={`text-[11px] font-mono font-semibold ${chan.pricingRule ? "text-foreground/90" : "text-muted-foreground/70"}`}>
+                                        {describePricingRule(chan.pricingRule)}
+                                    </span>
                                 </div>
 
                                 <div className="flex items-center gap-1">
@@ -325,21 +355,21 @@ export function SalesChannelsSettings() {
                                 Live Channel Pricing Simulator
                             </h4>
                             <p className="text-[11px] text-muted-foreground">
-                                Preview how products with automated preset formulas price across your channels.
+                                Preview each channel's cost-based rule against a sample cost.
                             </p>
                         </div>
                     </div>
 
                     <div className="flex items-center gap-2">
-                        <Label className="text-xs text-muted-foreground whitespace-nowrap">Sample Base Retail (₹):</Label>
+                        <Label className="text-xs text-muted-foreground whitespace-nowrap">Sample Cost (₹):</Label>
                         <div className="relative w-32">
                             <span className="absolute left-2.5 top-1.5 text-xs text-muted-foreground font-mono">₹</span>
                             <Input
                                 type="number"
                                 min="0"
                                 step="10"
-                                value={testBasePrice}
-                                onChange={(e) => setTestBasePrice(parseFloat(e.target.value) || 0)}
+                                value={testCostPrice}
+                                onChange={(e) => setTestCostPrice(parseFloat(e.target.value) || 0)}
                                 className="h-8 pl-6 text-xs font-mono font-bold bg-background border-border"
                             />
                         </div>
@@ -348,9 +378,7 @@ export function SalesChannelsSettings() {
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-1">
                     {channels.map((chan) => {
-                        const preset = chan.discountPreset || 0;
-                        const factor = 1 + preset / 100;
-                        const simulated = Math.round(testBasePrice * factor);
+                        const simulated = computeRulePrice(testCostPrice, chan.pricingRule);
 
                         return (
                             <div
@@ -361,12 +389,12 @@ export function SalesChannelsSettings() {
                                     <span className="text-[11px] font-semibold text-muted-foreground truncate">
                                         {chan.shortLabel}
                                     </span>
-                                    <span className="text-[9px] font-mono text-muted-foreground/80">
-                                        {preset > 0 ? `+${preset}%` : preset < 0 ? `${preset}%` : "0%"}
+                                    <span className="text-[9px] font-mono text-muted-foreground/80 truncate max-w-[80px]" title={describePricingRule(chan.pricingRule)}>
+                                        {chan.pricingRule ? "Cost rule" : "No rule"}
                                     </span>
                                 </div>
                                 <div className="text-sm font-mono font-bold text-foreground">
-                                    ₹{simulated.toLocaleString("en-IN")}
+                                    {simulated === null ? "—" : `₹${simulated.toLocaleString("en-IN")}`}
                                 </div>
                             </div>
                         );
@@ -460,18 +488,100 @@ export function SalesChannelsSettings() {
                             </div>
 
                             <div className="space-y-1">
-                                <Label className="text-xs font-semibold text-muted-foreground">Preset % (+Markup / -Discount)</Label>
-                                <div className="relative">
-                                    <Input
-                                        type="number"
-                                        step="1"
-                                        placeholder="0"
-                                        value={formPreset}
-                                        onChange={(e) => setFormPreset(e.target.value)}
-                                        className="bg-background border-border text-xs h-9 font-mono pr-7"
-                                    />
-                                    <span className="absolute right-2.5 top-2 text-xs text-muted-foreground font-mono">%</span>
+                                <Label className="text-xs font-semibold text-muted-foreground">Pricing Rule Type</Label>
+                                <Select
+                                    value={formRuleMode}
+                                    onValueChange={(val) => {
+                                        if (val) setFormRuleMode(val as PriceRuleMode);
+                                    }}
+                                >
+                                    <SelectTrigger className="bg-background border-border text-xs h-9">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="percent">Percent (%)</SelectItem>
+                                        <SelectItem value="fixed">Fixed amount (₹)</SelectItem>
+                                        <SelectItem value="hybrid">Hybrid (% + ₹)</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+
+                        <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                                <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                                    Cost-based pricing rule
+                                </Label>
+                                <span className="text-[10px] font-mono text-muted-foreground">
+                                    price = cost × (1 + %) + ₹
+                                </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                {formRuleMode !== "fixed" && (
+                                    <div className="space-y-1">
+                                        <Label className="text-[11px] text-muted-foreground">Percent (+markup / −discount)</Label>
+                                        <div className="relative">
+                                            <Input
+                                                type="number"
+                                                step="1"
+                                                placeholder="0"
+                                                value={formPercent}
+                                                onChange={(e) => setFormPercent(e.target.value)}
+                                                className="bg-background border-border text-xs h-9 font-mono pr-7"
+                                            />
+                                            <span className="absolute right-2.5 top-2 text-xs text-muted-foreground font-mono">%</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {formRuleMode !== "percent" && (
+                                    <div className="space-y-1">
+                                        <Label className="text-[11px] text-muted-foreground">Fixed amount (₹)</Label>
+                                        <Input
+                                            type="number"
+                                            step="1"
+                                            placeholder="0"
+                                            value={formFixed}
+                                            onChange={(e) => setFormFixed(e.target.value)}
+                                            className="bg-background border-border text-xs h-9 font-mono"
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                    <Label className="text-[11px] text-muted-foreground">Rounding</Label>
+                                    <Select
+                                        value={formRounding}
+                                        onValueChange={(val) => {
+                                            if (val) setFormRounding(val as PriceRounding);
+                                        }}
+                                    >
+                                        <SelectTrigger className="bg-background border-border text-xs h-9">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">Nearest ₹1</SelectItem>
+                                            <SelectItem value="nearest10">Nearest ₹10</SelectItem>
+                                            <SelectItem value="nearest50">Nearest ₹50</SelectItem>
+                                            <SelectItem value="charm99">Charm ₹X99</SelectItem>
+                                        </SelectContent>
+                                    </Select>
                                 </div>
+
+                                <label className="flex items-end gap-2 pb-2 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={formGateway}
+                                        onChange={(e) => setFormGateway(e.target.checked)}
+                                        className="size-3.5 rounded border-border accent-primary"
+                                    />
+                                    <span className="text-[11px] text-muted-foreground leading-tight">
+                                        Gross up 2.2% gateway fee
+                                    </span>
+                                </label>
                             </div>
                         </div>
                     </div>

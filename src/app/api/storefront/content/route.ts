@@ -2,6 +2,7 @@ import { NextResponse, NextRequest } from "next/server";
 import PocketBase from "pocketbase";
 import { createTenantClient } from "@/lib/pocketbase";
 import { hasCapability } from "@/lib/api-auth";
+import { NITHTHIGAL_DEFAULTS, mergeNiththigal } from "@/lib/niththigal-content";
 
 const PB_KEY = "storefront_content";
 
@@ -64,14 +65,15 @@ const DEFAULT_CONTENT = {
         ],
     },
     layoutSections: [
-        { id: "hero_slideshow", name: "Hero Editorial Slideshow", enabled: true, order: 1 },
-        { id: "trust_strip", name: "Trust & Insured Dispatch Bar", enabled: true, order: 2 },
-        { id: "category_vitrines", name: "Product Vitrines & Catalog Grid", enabled: true, order: 3 },
-        { id: "flash_promo", name: "Festive Promo & Coupon Banner", enabled: true, order: 4 },
-        { id: "customer_reviews", name: "Verified Customer Reviews", enabled: true, order: 5 },
-        { id: "instagram_feed", name: "Instagram Atelier Showcase", enabled: false, order: 6 },
-        { id: "brand_story", name: "Brand Story & Heirloom Craft", enabled: true, order: 7 },
-        { id: "faq_accordion", name: "Jewellery Care & Shipping FAQ", enabled: true, order: 8 },
+        { id: "nt_hero", name: "Editorial Hero", enabled: true, order: 1 },
+        { id: "nt_social_proof", name: "Trust & Social Proof Bar", enabled: true, order: 2 },
+        { id: "nt_collection", name: "Product Showcase (Live Catalogue)", enabled: true, order: 3 },
+        { id: "nt_story", name: "Brand Story Band", enabled: true, order: 4 },
+        { id: "nt_benefits", name: "Benefits", enabled: true, order: 5 },
+        { id: "nt_testimonials", name: "Community Stories", enabled: true, order: 6 },
+        { id: "nt_pricing", name: "Wholesale Pricing Tiers", enabled: true, order: 7 },
+        { id: "nt_faq", name: "FAQ", enabled: true, order: 8 },
+        { id: "nt_final_cta", name: "Final CTA", enabled: true, order: 9 },
     ],
     trustStrip: {
         enabled: true,
@@ -236,6 +238,7 @@ const DEFAULT_CONTENT = {
         storefrontName: "Boutique Storefront",
         boundAt: "2026-10-19T00:00:00.000Z",
     },
+    niththigal: NITHTHIGAL_DEFAULTS,
 };
 
 const CORS_HEADERS = {
@@ -301,7 +304,13 @@ export async function GET(req: NextRequest) {
         let content = DEFAULT_CONTENT;
         if (record && record.value) {
             const parsed = typeof record.value === "string" ? JSON.parse(record.value) : record.value;
-            content = { ...DEFAULT_CONTENT, ...parsed };
+            content = {
+                ...DEFAULT_CONTENT,
+                ...parsed,
+                // Section editors save partial blocks; merge them over the
+                // defaults so an omitted nested field never blanks the page.
+                niththigal: mergeNiththigal(NITHTHIGAL_DEFAULTS, parsed.niththigal),
+            };
         }
 
         // Pentest M-01 remediation: Do not disclose operator internal bindings to unauthorized public callers
@@ -422,6 +431,10 @@ export async function POST(req: Request) {
             promoBanner: { ...current.promoBanner, ...(body.promoBanner || {}) },
             socialAndContact: { ...current.socialAndContact, ...(body.socialAndContact || {}) },
             vitrines: Array.isArray(body.vitrines) ? body.vitrines : current.vitrines,
+            niththigal: mergeNiththigal(
+                mergeNiththigal(NITHTHIGAL_DEFAULTS, current.niththigal),
+                body.niththigal
+            ),
             adminBinding: safeAdminBinding,
         };
 

@@ -35,6 +35,11 @@ export interface Product {
     image_data?: string;
     barcode?: string;
     hsn_code?: string;
+    /** Imitation / fashion craft attributes (Vasy-aligned; live columns craft/plating/occasion/base_metal). */
+    craft?: string;
+    plating?: string;
+    occasion?: string;
+    base_metal?: string;
     /** GST percentage. Optional until the column is provisioned. */
     gst_rate?: number;
     location?: string;

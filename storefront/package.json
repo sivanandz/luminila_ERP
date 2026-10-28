@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3001",
-    "build": "next build",
+    "dev": "node scripts/next-run.mjs dev -p 3001 --webpack",
+    "build": "node scripts/next-run.mjs build --webpack",
     "start": "next start -p 3001",
-    "lint": "next lint"
+    "lint": "next lint",
+    "seo:audit": "node scripts/seo-audit.mjs --json",
+    "seo:indexnow": "node scripts/indexnow.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

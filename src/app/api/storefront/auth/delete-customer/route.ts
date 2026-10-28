@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createTenantClient } from "@/lib/pocketbase";
 import { verifyCustomerToken } from "@/lib/customer-token";
 import { getStorefrontBinding } from "@/lib/storefront";
+import { recordConsentEvent } from "@/lib/consent-ledger";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -75,6 +76,25 @@ async function handleDelete(req: Request) {
                 { status: 403, headers: CORS_HEADERS }
             );
         }
+
+        // Consent ledger (A30): deletion revokes marketing and service consent.
+        // The events are written before removal and keep the phone number so the
+        // revocation survives the deleted relation.
+        const deletedPhone = existing.phone || customerAuth.phone || "";
+        await recordConsentEvent(client, {
+            phone: deletedPhone,
+            channel: "storefront",
+            purpose: "marketing",
+            granted: false,
+            source: "account_deletion",
+        });
+        await recordConsentEvent(client, {
+            phone: deletedPhone,
+            channel: "storefront",
+            purpose: "whatsapp_service",
+            granted: false,
+            source: "account_deletion",
+        });
 
         // 5. Delete customer record from PocketBase
         await client.collection("customers").delete(targetId);

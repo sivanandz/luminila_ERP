@@ -1,0 +1,17 @@
+{
+  "name": "niththigal-jewellery",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "python -m http.server 3000 --bind 0.0.0.0",
+    "test": "node check.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Premium South Indian-inspired jewellery storefront",
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.64.1"
+  },
+  "private": true
+}

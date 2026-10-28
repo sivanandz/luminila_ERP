@@ -156,6 +156,9 @@ export async function ensureSetupAdminUser(input: {
     password: string;
     name: string;
 }): Promise<{ id: string }> {
+    // The first store user owns the tenant; every users row must carry the
+    // account_email scope or it is invisible under the tenant isolation rules.
+    const accountEmail = input.email.trim().toLowerCase();
     try {
         const existing = await pb.collection("users").getFirstListItem(`email="${input.email}"`);
         return await pb.collection("users").update(existing.id, {
@@ -164,6 +167,7 @@ export async function ensureSetupAdminUser(input: {
             passwordConfirm: input.password,
             verified: true,
             is_active: true,
+            ...(existing.account_email ? {} : { account_email: accountEmail }),
         });
     } catch (err: unknown) {
         if ((err as { status?: number })?.status !== 404) throw err;
@@ -175,6 +179,7 @@ export async function ensureSetupAdminUser(input: {
             emailVisibility: true,
             verified: true,
             is_active: true,
+            account_email: accountEmail,
         });
     }
 }
@@ -186,7 +191,13 @@ export async function linkUserToAdminRole(userId: string, roleId: string | undef
     } catch (err: unknown) {
         if ((err as { status?: number })?.status !== 404) return;
         try {
-            await pb.collection("user_roles").create({ user: userId, role: roleId });
+            // Tenant-scope the role link so it stays visible only to this store.
+            const owner = await pb.collection("users").getOne(userId);
+            await pb.collection("user_roles").create({
+                user: userId,
+                role: roleId,
+                account_email: owner.account_email || owner.email?.trim().toLowerCase() || "",
+            });
         } catch (urErr) {
             console.warn("user_roles creation notice:", urErr);
         }

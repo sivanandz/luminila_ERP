@@ -35,7 +35,8 @@ function toWhatsAppNumber(phone: string): string {
 /**
  * Send automated confirmation & digital receipt when an order is paid via Razorpay
  */
-export async function sendPaidOrderInvoice(orderId: string): Promise<{ success: boolean; error?: string }> {
+export async function sendPaidOrderInvoice(orderId: string, db: typeof pb = pb): Promise<{ success: boolean; error?: string }> {
+    const pb = db;
     try {
         const order = await pb.collection('sales_orders').getOne(orderId, {
             expand: 'customer',
@@ -46,7 +47,7 @@ export async function sendPaidOrderInvoice(orderId: string): Promise<{ success: 
             return { success: false, error: 'Customer phone number missing from order' };
         }
 
-        if (await isWhatsAppOptedOut(phone)) {
+        if (await isWhatsAppOptedOut(phone, db)) {
             return { success: false, error: 'Customer has opted out of WhatsApp notifications' };
         }
 
@@ -86,8 +87,10 @@ export async function sendShippingTracking(
     orderId: string,
     courierName: string,
     awbNumber: string,
-    trackingUrl?: string
+    trackingUrl?: string,
+    db: typeof pb = pb
 ): Promise<{ success: boolean; error?: string }> {
+    const pb = db;
     try {
         const order = await pb.collection('sales_orders').getOne(orderId, {
             expand: 'customer',
@@ -138,15 +141,17 @@ export async function sendLoyaltyMilestoneAlert(
     customerId: string,
     pointsEarned: number,
     totalBalance?: number,
-    tierName?: string
+    tierName?: string,
+    db: typeof pb = pb
 ): Promise<{ success: boolean; error?: string }> {
+    const pb = db;
     try {
         const customer = await pb.collection('customers').getOne(customerId);
         if (!customer.phone) {
             return { success: false, error: 'Customer phone missing' };
         }
 
-        if (customer.whatsapp_opt_out || await isWhatsAppOptedOut(customer.phone)) {
+        if (customer.whatsapp_opt_out || await isWhatsAppOptedOut(customer.phone, db)) {
             return { success: false, error: 'Customer has opted out of WhatsApp notifications' };
         }
 

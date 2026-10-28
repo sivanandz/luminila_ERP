@@ -39,9 +39,14 @@ import {
     ChevronUp,
     Truck,
     FileSpreadsheet,
+    Layers,
+    MoreHorizontal,
+    ClipboardPaste,
 } from "lucide-react";
 import { ProductBroadcastModal } from "@/components/whatsapp/ProductBroadcastModal";
 import { ProductPhotoTaggingModal, type ShotType } from "@/components/inventory/ProductPhotoTaggingModal";
+import { QuickAddProductDialog } from "@/components/inventory/QuickAddProductDialog";
+import { PasteProductsDialog } from "@/components/inventory/PasteProductsDialog";
 import { DiscrepancyModal } from "@/components/inventory/DiscrepancyModal";
 import { ProductPurchaseHistoryModal } from "@/components/inventory/ProductPurchaseHistoryModal";
 import { QuickReceivePOModal } from "@/components/inventory/QuickReceivePOModal";
@@ -51,7 +56,14 @@ import { getOpenPurchaseOrders, getOpenPurchaseOrderItems, reconcilePOWithInward
 import { getVariantStockSummary, recordManualIntakeMovement } from "@/lib/products";
 import { subscribeInventoryChanges } from "@/lib/inventory-feed";
 import { ChannelPricingInput } from "@/components/pricing/ChannelPricingInput";
-import { getChannelPrice } from "@/lib/channel-pricing";
+import {
+    getChannelPrice,
+    getChannelPriceFromList,
+    getConfiguredChannels,
+    loadConfiguredChannels,
+    subscribeConfiguredChannels,
+    type SalesChannelDef,
+} from "@/lib/channel-pricing";
 import { MobileScanner } from "@/lib/mobile-scanner";
 import {
     getSKUTaxonomies,
@@ -66,12 +78,18 @@ import {
     computeNextSkuSequence,
 } from "@/lib/sku-generator";
 import {
-
-
-
-
-
-
+    BASE_METAL_DEFINITIONS,
+    CRAFT_DEFINITIONS,
+    OCCASION_DEFINITIONS,
+    PLATING_DEFINITIONS,
+} from "@/lib/imitation-jewelry-engine";
+import {
+    DropdownMenu,
+    DropdownMenuTrigger,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -99,11 +117,11 @@ import {
     getProducts,
     createProduct,
     updateProduct,
-    deleteProduct,
 
     createVariant,
     getProductVariants,
     updateVariant,
+    deleteVariant,
     STORAGE_LOCATIONS,
     getProductDisplayImage,
     type Product as PbProduct,
@@ -128,6 +146,11 @@ interface Product {
     image: string | null;
     hsn_code?: string;
     location?: string;
+    craft?: string;
+    plating?: string;
+    occasion?: string;
+    base_metal?: string;
+    is_active?: boolean;
 }
 
 // PocketBase product row as returned by getProducts(), which queries with
@@ -162,6 +185,10 @@ function InventoryContent() {
     const [loading, setLoading] = useState(true);
     const [, setError] = useState<string | null>(null);
     const [showAddDialog, setShowAddDialog] = useState(false);
+    const [showQuickAdd, setShowQuickAdd] = useState(false);
+    const [showPasteList, setShowPasteList] = useState(false);
+    const [statusFilter, setStatusFilter] = useState<"all" | "published" | "draft">("all");
+    const [salesChannels, setSalesChannels] = useState<SalesChannelDef[]>(() => getConfiguredChannels());
     const [formLoading, setFormLoading] = useState(false);
     const [categories, setCategories] = useState<Category[]>([]);
     const [, setAttributes] = useState<ProductAttribute[]>([]);
@@ -209,6 +236,10 @@ function InventoryContent() {
         hsn_code: "71179010",
         image_url: "",
         location: "Showcase Tray A",
+        craft: "",
+        plating: "",
+        occasion: "",
+        base_metal: "",
     });
 
     // Auto-populate po_reference when opening add dialog during active inward mode
@@ -418,7 +449,7 @@ function InventoryContent() {
             setLoading(true);
             setError(null);
 
-            const fetchedProducts: ProductRecordWithCategory[] = await getProducts();
+            const fetchedProducts: ProductRecordWithCategory[] = await getProducts({ activeOnly: false });
 
             // Map PB data to UI Product interface
             // We need to fetch variants to get stock levels. 
@@ -470,7 +501,14 @@ function InventoryContent() {
                     name: p.name,
                     category: p.category ? catName : "Uncategorized",
                     categoryId: p.category,
-                    price: p.base_price,
+                    price: getChannelPrice(
+                        {
+                            base_price: p.base_price,
+                            cost_price: p.cost_price,
+                            channel_prices: p.channel_prices,
+                        },
+                        "pos"
+                    ),
                     cost_price: p.cost_price || 0,
                     channel_prices: p.channel_prices || {},
                     stock: variantMap.get(p.id) || 0,
@@ -479,6 +517,11 @@ function InventoryContent() {
                     image: getProductDisplayImage(p),
                     hsn_code: p.hsn_code,
                     location: p.location || "Showcase Tray A",
+                    craft: p.craft || "",
+                    plating: p.plating || "",
+                    occasion: p.occasion || "",
+                    base_metal: p.base_metal || "",
+                    is_active: p.is_active !== false,
                 };
             });
 
@@ -497,6 +540,15 @@ function InventoryContent() {
         loadOpenPOCount();
         getCategories().then(setCategories);
         getAttributes().then(setAttributes);
+        loadConfiguredChannels()
+            .then((channels) => {
+                setSalesChannels(channels);
+                // Prices materialised at load time may predate the tenant's
+                // rules; refetch once the rules are available.
+                fetchProducts();
+            })
+            .catch(console.error);
+        const unsubscribeChannels = subscribeConfiguredChannels(setSalesChannels);
 
         // Realtime subscription with graceful error catch (handles transient SSE 404 client id)
         const unsubscribe = subscribeInventoryChanges({
@@ -505,13 +557,25 @@ function InventoryContent() {
             onDiscrepancyChange: loadDiscrepancyCount,
         });
 
-        return unsubscribe;
+        return () => {
+            unsubscribe();
+            unsubscribeChannels();
+        };
     }, []);
 
     // Handle add/edit
     const handleAddProduct = async () => {
         setFormLoading(true);
         try {
+            if (!newProduct.name.trim()) {
+                toast.error("Product name is required.");
+                return;
+            }
+            if (!parseFloat(newProduct.cost_price) && !parseFloat(newProduct.base_price)) {
+                toast.error("Enter a cost price so channel prices can be calculated.");
+                return;
+            }
+
             // Find category ID from name if needed
             let categoryId = "";
             if (newProduct.category && newProduct.category !== "Uncategorized") {
@@ -528,20 +592,38 @@ function InventoryContent() {
             }
 
             const costPrice = parseFloat(newProduct.cost_price) || 0;
+            const manualBasePrice = parseFloat(newProduct.base_price) || 0;
+            // Cost is the pricing root. When the Shop channel has a cost rule,
+            // materialise its output into base_price so legacy consumers and
+            // lists keep showing the real counter price.
+            const resolvedBasePrice = getChannelPrice(
+                {
+                    base_price: manualBasePrice,
+                    cost_price: costPrice,
+                    channel_prices: newProduct.channel_prices || {},
+                },
+                "pos"
+            );
             const poRef = newProduct.po_reference.trim();
 
             const productPayload: Omit<PbProduct, "id" | "created" | "updated"> = {
                 name: newProduct.name,
                 sku: newProduct.sku,
                 category: categoryId,
-                base_price: parseFloat(newProduct.base_price) || 0,
+                base_price: resolvedBasePrice > 0 ? resolvedBasePrice : manualBasePrice,
                 cost_price: costPrice,
                 channel_prices: newProduct.channel_prices || {},
                 hsn_code: newProduct.hsn_code,
                 image_url: newProduct.image_url && newProduct.image_url.startsWith('http') ? newProduct.image_url : '',
                 image_data: newProduct.image_url || '',
                 location: newProduct.location || "Showcase Tray A",
-                is_active: true
+                craft: newProduct.craft || '',
+                plating: newProduct.plating || '',
+                occasion: newProduct.occasion || '',
+                base_metal: newProduct.base_metal || '',
+                is_active: isEditMode
+                    ? products.find((product) => product.id === editingProductId)?.is_active !== false
+                    : false,
             };
 
             let targetVariantId = "";
@@ -620,7 +702,7 @@ function InventoryContent() {
             }
 
             setShowAddDialog(false);
-            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A' });
+            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '' });
             fetchProducts();
         } catch (err) {
             console.error('Error saving product:', err);
@@ -632,10 +714,84 @@ function InventoryContent() {
         }
     };
 
-    const handleDeleteProduct = async (id: string) => {
-        if (!confirm("Are you sure you want to delete this product?")) return;
+    const DEMO_SKUS = ["TMP-NCK-LAKSHMI", "KND-JHU-MALAR", "BGL-NILA-HERITAGE"];
+    const demoPromptHandled = useRef(false);
+
+    const publishReadiness = (product: Product): string[] => {
+        const missing: string[] = [];
+        if (!product.image) missing.push("a photo");
+        if (!product.category || product.category === "Uncategorized") missing.push("a category");
+        if (!product.cost_price || product.cost_price <= 0) missing.push("a cost price");
+        if (!product.price || product.price <= 0) missing.push("a selling price");
+        return missing;
+    };
+
+    const handlePublishProduct = async (product: Product) => {
+        const missing = publishReadiness(product);
+        if (missing.length > 0) {
+            toast.error(`Add ${missing.join(", ")} before publishing.`);
+            return;
+        }
         try {
-            await deleteProduct(id);
+            await updateProduct(product.id, { is_active: true });
+            toast.success(`${product.name} is live on the storefront.`);
+            fetchProducts();
+        } catch (err) {
+            console.error("Publish failed:", err);
+            toast.error(err instanceof Error ? err.message : "Could not publish the product");
+        }
+    };
+
+    const handleQuickAddCreated = async (created: {
+        productId: string;
+        name: string;
+        sku: string;
+        categoryName: string;
+    }) => {
+        const hadRealProducts = products.some((product) => !DEMO_SKUS.includes(product.sku));
+        await fetchProducts();
+        getCategories().then(setCategories).catch(() => {});
+
+        if (hadRealProducts || demoPromptHandled.current) return;
+        const demos = products.filter((product) => DEMO_SKUS.includes(product.sku));
+        if (demos.length === 0) return;
+
+        demoPromptHandled.current = true;
+        const shouldRemove = window.confirm(
+            `Your first real piece (${created.name}) is in. Remove the ${demos.length} demo products and their stock variants from inventory?`
+        );
+        if (!shouldRemove) return;
+
+        for (const demo of demos) {
+            const variants = await getProductVariants(demo.id).catch(() => []);
+            for (const variant of variants) {
+                await deleteVariant(variant.id).catch(() => {});
+            }
+            await pb.collection("products").delete(demo.id).catch(() => {});
+        }
+        toast.success("Demo products removed.");
+        await fetchProducts();
+    };
+
+    const handleDeleteProduct = async (id: string) => {
+        if (!confirm("Delete this product permanently? This cannot be undone.")) return;
+        try {
+            // A product with sales history must stay readable for invoices and
+            // order details, so it is refused rather than orphaned.
+            const history = await pb
+                .collection("sales_order_items")
+                .getList(1, 1, { filter: `product="${id}"` })
+                .catch(() => null);
+            if (history && history.totalItems > 0) {
+                toast.error("This product has sales history and cannot be deleted. Unpublish it instead.");
+                return;
+            }
+
+            const variants = await getProductVariants(id).catch(() => []);
+            for (const variant of variants) {
+                await deleteVariant(variant.id).catch(() => {});
+            }
+            await pb.collection("products").delete(id);
             toast.success("Product deleted");
             fetchProducts();
         } catch (err: unknown) {
@@ -718,22 +874,31 @@ function InventoryContent() {
     const filteredProducts = products.filter(product => {
         const matchesCategory = selectedCategory === "All" || product.category === selectedCategory || product.categoryId === selectedCategory;
         const matchesLocation = selectedLocation === "All" || (product.location || "Showcase Tray A") === selectedLocation;
+        const matchesStatus =
+            statusFilter === "all" ||
+            (statusFilter === "draft"
+                ? product.is_active === false
+                : product.is_active !== false);
         const q = scanQuery.trim().toLowerCase();
         const matchesSearch = !q || product.name.toLowerCase().includes(q) || product.sku.toLowerCase().includes(q);
-        return matchesCategory && matchesLocation && matchesSearch;
+        return matchesCategory && matchesLocation && matchesStatus && matchesSearch;
     });
+
+    const publishedCount = products.filter((product) => product.is_active !== false).length;
+    const draftCount = products.length - publishedCount;
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
             <Header
                 title="Inventory"
-                subtitle={`${products.length} products • ${products.reduce((acc, p) => acc + p.stock, 0)} total units`}
+                subtitle={`${publishedCount} published • ${draftCount} drafts • ${products.reduce((acc, p) => acc + p.stock, 0)} units`}
                 action={
-                    <Button onClick={() => setShowAddDialog(true)}>
-                        <Plus size={20} className="mr-2" />
-                        Add Product
+                    <Button onClick={() => setShowQuickAdd(true)}>
+                        <Plus size={18} className="mr-2" />
+                        Quick add
                     </Button>
                 }
+                hideSearch
             />
 
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
@@ -792,121 +957,175 @@ function InventoryContent() {
                         </div>
                     )}
 
-                    {/* Filters */}
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                        <div className="flex items-center gap-3 flex-1 flex-wrap">
-                            <div className="relative group max-w-sm flex-1 min-w-[200px]">
-                                <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-moonstone">
-                                    <Search size={20} />
-                                </div>
+                    {/* Toolbar */}
+                    <div className="flex flex-col gap-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div className="relative min-w-[220px] flex-1 max-w-[440px]">
+                                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone pointer-events-none" />
                                 <input
-                                    className="bg-surface-navy border-none text-white text-sm rounded-lg block w-full pl-10 py-3 pr-4 focus:ring-1 focus:ring-primary placeholder-moonstone transition-all shadow-sm"
-                                    placeholder="Search by name or SKU..."
+                                    className="h-10 w-full rounded-lg border border-surface-hover/70 bg-surface-navy/70 pl-9 pr-10 text-sm text-white placeholder-moonstone outline-none transition-colors focus:border-primary/60 focus:ring-1 focus:ring-primary/30"
+                                    placeholder="Search name or SKU, or scan…"
                                     type="text"
                                     value={scanQuery}
                                     onChange={(e) => setScanQuery(e.target.value)}
-                                    // Use Enter to scan
                                     onKeyDown={(e) => { if (e.key === 'Enter') handleScanSubmit(e) }}
                                 />
-                            </div>
-                            <div className="flex bg-surface-navy p-1 rounded-lg border border-surface-hover overflow-x-auto max-w-md">
-                                <button onClick={() => setSelectedCategory("All")} className={`px-4 py-1.5 text-xs font-bold rounded-md whitespace-nowrap ${selectedCategory === "All" ? "bg-bg-navy text-white" : "text-moonstone"}`}>All Categories</button>
-                                {categories.map(cat => (
-                                    <button key={cat.id} onClick={() => setSelectedCategory(cat.name)} className={`px-4 py-1.5 text-xs font-bold rounded-md whitespace-nowrap ${selectedCategory === cat.name ? "bg-bg-navy text-white" : "text-moonstone"}`}>{cat.name}</button>
-                                ))}
-                            </div>
-                            {/* InvenTree Physical Location Filter */}
-                            <div className="flex items-center gap-1.5 bg-surface-navy px-3 py-1.5 rounded-lg border border-surface-hover">
-                                <MapPin size={14} className="text-gold shrink-0" />
-                                <select
-                                    value={selectedLocation}
-                                    onChange={(e) => setSelectedLocation(e.target.value)}
-                                    className="bg-transparent text-xs font-semibold text-white border-none focus:outline-none cursor-pointer"
+                                <button
+                                    type="button"
+                                    onClick={() => setShowScanDialog(true)}
+                                    title="Scan a barcode"
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-moonstone transition-colors hover:bg-surface-hover/50 hover:text-white"
                                 >
-                                    <option value="All" className="bg-surface-navy text-white">All Facilities</option>
-                                    {locationsList.length > 0 ? (
-                                        locationsList.map(loc => (
-                                            <option key={loc.id} value={loc.name} className="bg-surface-navy text-white">
-                                                [{loc.code}] {loc.name}
-                                            </option>
-                                        ))
-                                    ) : (
-                                        STORAGE_LOCATIONS.map(loc => (
-                                            <option key={loc} value={loc} className="bg-surface-navy text-white">{loc}</option>
-                                        ))
-                                    )}
-                                </select>
+                                    <ScanBarcode size={16} />
+                                </button>
                             </div>
-                        </div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                            <button
-                                onClick={() => setShowQuickReceiveModal(true)}
-                                className="bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-indigo-500/30 transition-colors font-semibold text-xs relative"
-                                title="Take delivery and match incoming stock from active Purchase Orders"
-                            >
-                                <Truck size={16} />
-                                <span>Receive from PO</span>
-                                {openPOCount > 0 && (
-                                    <span className="bg-emerald-400 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full ml-1">
-                                        {openPOCount}
+
+                            <DropdownMenu>
+                                <DropdownMenuTrigger className="flex h-10 items-center gap-2 rounded-lg border border-surface-hover/70 bg-surface-navy/70 px-3 text-xs font-medium text-moonstone transition-colors hover:bg-surface-hover/40 hover:text-white">
+                                    <Layers size={15} />
+                                    <span className="max-w-[140px] truncate">
+                                        {selectedCategory === "All" ? "All categories" : selectedCategory}
                                     </span>
-                                )}
-                            </button>
-                            <button
-                                onClick={() => setShowTransferModal(true)}
-                                className="bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-blue-500/30 transition-colors font-semibold text-xs"
-                                title="Inter-Location Stock Transfer across PoS Counters & Warehouses"
-                            >
-                                <ArrowRightLeft size={16} /> Inter-Store / Warehouse Transfer
-                            </button>
-                            <button
-                                onClick={() => {
-                                    const list = selectedProductIds.length > 0
-                                        ? products.filter(p => selectedProductIds.includes(p.id))
-                                        : filteredProducts.slice(0, 5);
-                                    setBroadcastProductsList(list);
-                                    setShowBroadcastModal(true);
-                                }}
-                                className="bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-emerald-500/30 transition-colors font-semibold text-xs"
-                                title="Broadcast products to WhatsApp Status, Channels & Groups"
-                            >
-                                <Share2 size={16} /> Broadcast {selectedProductIds.length > 0 ? `(${selectedProductIds.length})` : 'Products'}
-                            </button>
-                            <button
-                                onClick={() => {
-                                    setSelectedDiscrepancyProduct(null);
-                                    setShowDiscrepancyModal(true);
-                                }}
-                                className="bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 h-10 px-3.5 rounded-lg flex items-center gap-2 border border-amber-500/40 transition-colors font-semibold text-xs relative"
-                                title="Manage Damaged, Missing, and Vendor Replacement Items"
-                            >
-                                <AlertTriangle size={16} className="text-amber-400" />
-                                <span>Quarantine / Replacements</span>
-                                {activeDiscrepanciesCount > 0 && (
-                                    <span className="bg-amber-400 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full ml-1">
-                                        {activeDiscrepanciesCount}
+                                    <ChevronDown size={14} />
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="start" className="w-56">
+                                    <DropdownMenuItem onClick={() => setSelectedCategory("All")}>
+                                        <span className="flex-1">All categories</span>
+                                        <span className="text-[10px] text-moonstone">{products.length}</span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    {categories.map((cat) => (
+                                        <DropdownMenuItem key={cat.id} onClick={() => setSelectedCategory(cat.name)}>
+                                            <span className="flex-1 truncate">{cat.name}</span>
+                                            <span className="text-[10px] text-moonstone">
+                                                {products.filter((product) => product.category === cat.name).length}
+                                            </span>
+                                        </DropdownMenuItem>
+                                    ))}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <DropdownMenu>
+                                <DropdownMenuTrigger className="flex h-10 items-center gap-2 rounded-lg border border-surface-hover/70 bg-surface-navy/70 px-3 text-xs font-medium text-moonstone transition-colors hover:bg-surface-hover/40 hover:text-white">
+                                    <MapPin size={15} />
+                                    <span className="max-w-[140px] truncate">
+                                        {selectedLocation === "All" ? "All locations" : selectedLocation}
                                     </span>
-                                )}
-                            </button>
-                            <button onClick={fetchProducts} className="bg-surface-navy text-moonstone hover:text-white h-10 px-4 rounded-lg flex items-center gap-2 border border-surface-hover"><RefreshCw size={16} /> Sync</button>
-                            <button onClick={() => setShowScanDialog(true)} className="bg-primary/20 text-primary h-10 px-4 rounded-lg flex items-center gap-2 border border-primary/30"><ScanBarcode size={16} /> Scan</button>
-                            <a
-                                href="/api/inventory/template"
-                                download="luminila_inventory_import_template.xlsx"
-                                className="bg-surface-navy text-moonstone hover:text-white h-10 px-3.5 rounded-lg flex items-center gap-2 border border-surface-hover text-xs font-semibold transition-colors"
-                                title="Download official Excel template pre-formatted for bulk inventory upload"
-                            >
-                                <FileSpreadsheet size={16} className="text-teal-400" />
-                                <span>Excel Template</span>
-                            </a>
-                            <button
-                                onClick={() => setShowBulkImportModal(true)}
-                                className="bg-teal-600/20 text-teal-300 hover:bg-teal-600/30 hover:text-white h-10 px-4 rounded-lg flex items-center gap-2 border border-teal-500/40 text-xs font-semibold transition-colors"
-                                title="Upload inventory in bulk from Excel (.xlsx) or CSV"
-                            >
-                                <Upload size={16} className="text-teal-400" />
-                                <span>Bulk Import</span>
-                            </button>
+                                    <ChevronDown size={14} />
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="start" className="w-60">
+                                    <DropdownMenuItem onClick={() => setSelectedLocation("All")}>
+                                        All locations
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    {locationsList.length > 0
+                                        ? locationsList.map((location) => (
+                                              <DropdownMenuItem key={location.id} onClick={() => setSelectedLocation(location.name)}>
+                                                  [{location.code}] {location.name}
+                                              </DropdownMenuItem>
+                                          ))
+                                        : STORAGE_LOCATIONS.map((location) => (
+                                              <DropdownMenuItem key={location} onClick={() => setSelectedLocation(location)}>
+                                                  {location}
+                                              </DropdownMenuItem>
+                                          ))}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <DropdownMenu>
+                                <DropdownMenuTrigger className="flex h-10 items-center gap-2 rounded-lg border border-surface-hover/70 bg-surface-navy/70 px-3 text-xs font-medium text-moonstone transition-colors hover:bg-surface-hover/40 hover:text-white">
+                                    <CheckCircle2 size={15} />
+                                    <span>
+                                        {statusFilter === "all"
+                                            ? "All statuses"
+                                            : statusFilter === "published"
+                                              ? "Published"
+                                              : "Drafts"}
+                                    </span>
+                                    <ChevronDown size={14} />
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="start" className="w-44">
+                                    <DropdownMenuItem onClick={() => setStatusFilter("all")}>
+                                        <span className="flex-1">All</span>
+                                        <span className="text-[10px] text-moonstone">{products.length}</span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => setStatusFilter("published")}>
+                                        <span className="flex-1">Published</span>
+                                        <span className="text-[10px] text-moonstone">{publishedCount}</span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => setStatusFilter("draft")}>
+                                        <span className="flex-1">Drafts</span>
+                                        <span className="text-[10px] text-moonstone">{draftCount}</span>
+                                    </DropdownMenuItem>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <DropdownMenu>
+                                <DropdownMenuTrigger
+                                    aria-label="More inventory actions"
+                                    className="relative flex size-10 items-center justify-center rounded-lg border border-surface-hover/70 bg-surface-navy/70 text-moonstone transition-colors hover:bg-surface-hover/40 hover:text-white"
+                                >
+                                    <MoreHorizontal size={18} />
+                                    {(openPOCount > 0 || activeDiscrepanciesCount > 0) && (
+                                        <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-amber-400" />
+                                    )}
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-60">
+                                    <DropdownMenuLabel>Operations</DropdownMenuLabel>
+                                    <DropdownMenuItem onClick={() => setShowQuickReceiveModal(true)}>
+                                        <Truck size={14} />
+                                        <span className="flex-1">Receive from PO</span>
+                                        {openPOCount > 0 && (
+                                            <span className="text-[10px] text-moonstone">{openPOCount}</span>
+                                        )}
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => setShowTransferModal(true)}>
+                                        <ArrowRightLeft size={14} />
+                                        Transfer stock
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                        onClick={() => {
+                                            setSelectedDiscrepancyProduct(null);
+                                            setShowDiscrepancyModal(true);
+                                        }}
+                                    >
+                                        <AlertTriangle size={14} />
+                                        <span className="flex-1">Quarantine / replacements</span>
+                                        {activeDiscrepanciesCount > 0 && (
+                                            <span className="text-[10px] text-amber-300">{activeDiscrepanciesCount}</span>
+                                        )}
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuLabel>Inventory</DropdownMenuLabel>
+                                    <DropdownMenuItem onClick={() => setShowBulkImportModal(true)}>
+                                        <Upload size={14} />
+                                        Import from Excel
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => setShowPasteList(true)}>
+                                        <ClipboardPaste size={14} />
+                                        Paste a product list
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => window.location.assign("/api/inventory/template")}>
+                                        <FileSpreadsheet size={14} />
+                                        Download Excel template
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                        onClick={() => {
+                                            setIsEditMode(false);
+                                            setEditingProductId(null);
+                                            setShowAddDialog(true);
+                                        }}
+                                    >
+                                        <Edit size={14} />
+                                        Advanced product form
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem onClick={fetchProducts}>
+                                        <RefreshCw size={14} />
+                                        Sync now
+                                    </DropdownMenuItem>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
                         </div>
                     </div>
 
@@ -915,8 +1134,43 @@ function InventoryContent() {
                         <div className="flex justify-center p-12"><Loader2 className="animate-spin text-primary" size={40} /></div>
                     ) : (
                         <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
-                            {filteredProducts.map((product) => {
+                            {filteredProducts.length === 0 ? (
+                                <div className="col-span-full rounded-xl border border-dashed border-surface-hover/80 bg-surface-navy/40 px-6 py-12 text-center">
+                                    <Package size={38} className="mx-auto text-moonstone/60" />
+                                    <h3 className="mt-3 text-sm font-bold text-white">
+                                        {products.length === 0 ? "Add your first piece" : "Nothing matches this view"}
+                                    </h3>
+                                    <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-moonstone">
+                                        {products.length === 0
+                                            ? "A photo, a name and a cost price are enough. It saves as a draft, so nothing reaches the storefront until you publish."
+                                            : "Clear the status or category filter, or add a new piece."}
+                                    </p>
+                                    <div className="mt-4 flex items-center justify-center gap-2">
+                                        <Button onClick={() => setShowQuickAdd(true)} className="h-9 text-xs font-bold">
+                                            <Plus size={14} />
+                                            Quick add
+                                        </Button>
+                                        <Button
+                                            variant="outline"
+                                            onClick={() => setShowPasteList(true)}
+                                            className="h-9 text-xs border-surface-hover/80 bg-transparent text-white hover:bg-surface-hover/40"
+                                        >
+                                            <ClipboardPaste size={14} />
+                                            Paste a list
+                                        </Button>
+                                    </div>
+                                </div>
+                            ) : (
+                                filteredProducts.map((product) => {
                                 const isSelected = selectedProductIds.includes(product.id);
+                                const pricingShape = {
+                                    base_price: product.price,
+                                    cost_price: product.cost_price,
+                                    channel_prices: product.channel_prices,
+                                };
+                                const whatsappPrice = getChannelPriceFromList(pricingShape, "whatsapp", salesChannels);
+                                const websitePrice = getChannelPriceFromList(pricingShape, "website", salesChannels);
+                                const wholesalePrice = getChannelPriceFromList(pricingShape, "wholesale", salesChannels);
                                 return (
                                     <div
                                         key={product.id}
@@ -990,6 +1244,10 @@ function InventoryContent() {
                                                         hsn_code: product.hsn_code || "7117",
                                                         image_url: product.image || "",
                                                         location: product.location || "Showcase Tray A",
+                                                        craft: product.craft || "",
+                                                        plating: product.plating || "",
+                                                        occasion: product.occasion || "",
+                                                        base_metal: product.base_metal || "",
                                                     });
                                                     setIsEditMode(true);
                                                     setEditingProductId(product.id);
@@ -1000,7 +1258,14 @@ function InventoryContent() {
                                         </div>
                                         <div>
                                             <div className="flex items-center justify-between mb-0.5">
-                                                <p className="text-[10px] font-bold text-primary uppercase tracking-wider">{product.sku}</p>
+                                                <div className="flex items-center gap-1.5 min-w-0">
+                                                    <p className="text-[10px] font-bold text-primary uppercase tracking-wider truncate">{product.sku}</p>
+                                                    {product.is_active === false && (
+                                                        <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-300">
+                                                            Draft
+                                                        </span>
+                                                    )}
+                                                </div>
                                                 <div className="flex items-center gap-1 text-[10px] font-medium text-amber-300/90 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                                                     <MapPin size={10} className="text-gold shrink-0" />
                                                     <span className="truncate max-w-[100px]">{product.location || 'Showcase Tray A'}</span>
@@ -1010,23 +1275,33 @@ function InventoryContent() {
                                             <div className="flex justify-between items-center mt-2">
                                                 <div className="flex items-center gap-1.5 flex-wrap">
                                                     <span className="text-white font-mono font-bold">{formatPrice(product.price)}</span>
-                                                    {product.channel_prices?.whatsapp && Number(product.channel_prices.whatsapp) > 0 && (
-                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold" title={`WhatsApp Price: ₹${Number(product.channel_prices.whatsapp).toLocaleString('en-IN')}`}>
-                                                            WA: ₹{Number(product.channel_prices.whatsapp).toLocaleString('en-IN')}
+                                                    {whatsappPrice > 0 && whatsappPrice !== product.price && (
+                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold" title={`WhatsApp Price: ₹${whatsappPrice.toLocaleString('en-IN')}`}>
+                                                            WA: ₹{whatsappPrice.toLocaleString('en-IN')}
                                                         </span>
                                                     )}
-                                                    {(product.channel_prices?.website || product.channel_prices?.shopify) && (
-                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 font-semibold" title={`Website Price: ₹${Number(product.channel_prices.website || product.channel_prices.shopify).toLocaleString('en-IN')}`}>
-                                                            Web: ₹{Number(product.channel_prices.website || product.channel_prices.shopify).toLocaleString('en-IN')}
+                                                    {websitePrice > 0 && websitePrice !== product.price && (
+                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 font-semibold" title={`Website Price: ₹${websitePrice.toLocaleString('en-IN')}`}>
+                                                            Web: ₹{websitePrice.toLocaleString('en-IN')}
                                                         </span>
                                                     )}
-                                                    {product.channel_prices?.wholesale && Number(product.channel_prices.wholesale) > 0 && (
-                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold" title={`B2B Wholesale Price: ₹${Number(product.channel_prices.wholesale).toLocaleString('en-IN')}`}>
-                                                            B2B: ₹{Number(product.channel_prices.wholesale).toLocaleString('en-IN')}
+                                                    {wholesalePrice > 0 && wholesalePrice !== product.price && (
+                                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold" title={`B2B Wholesale Price: ₹${wholesalePrice.toLocaleString('en-IN')}`}>
+                                                            B2B: ₹{wholesalePrice.toLocaleString('en-IN')}
                                                         </span>
                                                     )}
                                                 </div>
                                                 <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                                    {product.is_active === false && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => void handlePublishProduct(product)}
+                                                            className="text-[10px] font-semibold px-2 py-1 rounded bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 transition-colors flex items-center gap-1"
+                                                            title="Publish to the storefront"
+                                                        >
+                                                            <CheckCircle2 size={11} /> Publish
+                                                        </button>
+                                                    )}
                                                     <span className={`text-xs px-2 py-1 rounded ${product.stock > 5 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>Stock: {product.stock}</span>
                                                     {product.pending_po_quantity && product.pending_po_quantity > 0 ? (
                                                         <span
@@ -1046,14 +1321,45 @@ function InventoryContent() {
                                         </div>
                                     </div>
                                 );
-                            })}
+                                })
+                            )}
                         </div>
                     )}
                 </div>
             </div>
 
+            {/* Quick Add */}
+            <QuickAddProductDialog
+                open={showQuickAdd}
+                onOpenChange={setShowQuickAdd}
+                categories={categories}
+                existingSkus={products.map((product) => product.sku)}
+                onCreated={handleQuickAddCreated}
+            />
+
+            {/* Paste a list */}
+            <PasteProductsDialog
+                open={showPasteList}
+                onOpenChange={setShowPasteList}
+                categories={categories}
+                existingSkus={products.map((product) => product.sku)}
+                onImported={() => {
+                    fetchProducts();
+                    getCategories().then(setCategories).catch(() => {});
+                }}
+            />
+
             {/* Add Dialog */}
-            <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+            <Dialog
+                open={showAddDialog}
+                onOpenChange={(open) => {
+                    setShowAddDialog(open);
+                    if (!open && !formLoading) {
+                        setIsEditMode(false);
+                        setEditingProductId(null);
+                    }
+                }}
+            >
                 <DialogContent className="bg-surface-navy/98 backdrop-blur-2xl border-surface-hover/80 text-white max-w-4xl sm:max-w-4xl lg:max-w-5xl max-h-[min(94vh,calc(100dvh-1.5rem))] overflow-y-auto p-5 sm:p-6 shadow-2xl custom-scrollbar">
                     <DialogHeader>
                         <DialogTitle className="text-lg font-bold flex items-center justify-between">
@@ -1423,12 +1729,74 @@ function InventoryContent() {
                                         placeholder="1499"
                                         className="bg-bg-navy border-surface-hover text-sm h-9 font-mono mt-1 font-semibold"
                                     />
+                                    <p className="text-[10px] text-moonstone mt-1">
+                                        The Shop rule sets the counter price when configured; this is the fallback.
+                                    </p>
                                 </div>
+                            </div>
+
+                            {/* Craft Specification (Imitation / Fashion Jewelry) */}
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-bg-navy/60 p-2.5 rounded-lg border border-surface-hover/70">
+                                <div>
+                                    <Label className="text-xs text-moonstone">Craft</Label>
+                                    <Select value={newProduct.craft || "none"} onValueChange={v => setNewProduct({ ...newProduct, craft: v === "none" ? "" : (v || "") })}>
+                                        <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue placeholder="—" /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">—</SelectItem>
+                                            {Object.entries(CRAFT_DEFINITIONS).map(([key, def]) => (
+                                                <SelectItem key={key} value={key}>{def.label}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div>
+                                    <Label className="text-xs text-moonstone">Plating</Label>
+                                    <Select value={newProduct.plating || "none"} onValueChange={v => setNewProduct({ ...newProduct, plating: v === "none" ? "" : (v || "") })}>
+                                        <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue placeholder="—" /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">—</SelectItem>
+                                            {Object.entries(PLATING_DEFINITIONS).map(([key, def]) => (
+                                                <SelectItem key={key} value={key}>{def.label}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div>
+                                    <Label className="text-xs text-moonstone">Occasion</Label>
+                                    <Select value={newProduct.occasion || "none"} onValueChange={v => setNewProduct({ ...newProduct, occasion: v === "none" ? "" : (v || "") })}>
+                                        <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue placeholder="—" /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">—</SelectItem>
+                                            {Object.entries(OCCASION_DEFINITIONS).map(([key, label]) => (
+                                                <SelectItem key={key} value={key}>{label}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div>
+                                    <Label className="text-xs text-moonstone">Base Metal</Label>
+                                    <Select value={newProduct.base_metal || "none"} onValueChange={v => setNewProduct({ ...newProduct, base_metal: v === "none" ? "" : (v || "") })}>
+                                        <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue placeholder="—" /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">—</SelectItem>
+                                            {Object.entries(BASE_METAL_DEFINITIONS).map(([key, label]) => (
+                                                <SelectItem key={key} value={key}>{label}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                {newProduct.plating && PLATING_DEFINITIONS[newProduct.plating] && (
+                                    <p className="col-span-full text-[10px] text-moonstone">
+                                        Plating durability: ~{PLATING_DEFINITIONS[newProduct.plating].durabilityMonths} months.
+                                        Spec prints on dumbbell tags from the Labels page.
+                                    </p>
+                                )}
                             </div>
 
                             {/* Multi-Channel Custom Pricing Engine */}
                             <ChannelPricingInput
                                 basePrice={parseFloat(newProduct.base_price) || 0}
+                                costPrice={parseFloat(newProduct.cost_price) || 0}
                                 channelPrices={newProduct.channel_prices || {}}
                                 onChange={(cp) => setNewProduct(prev => ({ ...prev, channel_prices: cp }))}
                                 onBasePriceChange={(bp) => setNewProduct(prev => ({ ...prev, base_price: String(bp) }))}
@@ -1495,7 +1863,7 @@ function InventoryContent() {
                                 disabled={formLoading}
                                 className="mt-1 h-10 font-bold bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg cursor-pointer"
                             >
-                                {formLoading ? 'Saving Product...' : (isEditMode ? 'Update Product' : 'Save & Tag Product')}
+                                {formLoading ? 'Saving Product...' : (isEditMode ? 'Update Product' : 'Save as draft')}
                             </Button>
                         </div>
                     </div>

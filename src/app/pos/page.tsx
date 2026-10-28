@@ -118,6 +118,7 @@ interface CartItem {
     variant: string;
     price: number;
     basePrice?: number;
+    costPrice?: number;
     priceAdjustment?: number;
     channelPrices?: Record<string, number>;
     quantity: number;
@@ -139,6 +140,7 @@ interface POSProduct {
     variant: string;
     price: number;
     basePrice?: number;
+    costPrice?: number;
     priceAdjustment?: number;
     channelPrices?: Record<string, number>;
     stock: number;
@@ -224,47 +226,59 @@ export default function POSPage() {
     const selectedChannelRef = useRef<string>("pos");
     const [availableChannels, setAvailableChannels] = useState<SalesChannelDef[]>(getConfiguredChannels());
 
-    useEffect(() => {
-        loadConfiguredChannels().then(setAvailableChannels).catch(console.error);
+    const repriceForChannel = useCallback((newChannel: string) => {
+        // Recalculate cart lines, quick-add tiles and search results with the
+        // channel's current cost-based rule.
+        setCart(prev => prev.map(item => {
+            const prodData = {
+                base_price: item.basePrice !== undefined ? item.basePrice : item.price,
+                cost_price: item.costPrice || 0,
+                channel_prices: item.channelPrices,
+            };
+            return {
+                ...item,
+                price: getChannelPrice(prodData, newChannel, item.priceAdjustment || 0),
+            };
+        }));
+        setQuickAddProducts(prev => prev.map(p => {
+            const prodData = {
+                base_price: p.basePrice !== undefined ? p.basePrice : p.price,
+                cost_price: p.costPrice || 0,
+                channel_prices: p.channelPrices,
+            };
+            return {
+                ...p,
+                price: getChannelPrice(prodData, newChannel, p.priceAdjustment || 0),
+            };
+        }));
+        setSearchResults(prev => prev.map(p => {
+            const prodData = {
+                base_price: p.basePrice !== undefined ? p.basePrice : p.price,
+                cost_price: p.costPrice || 0,
+                channel_prices: p.channelPrices,
+            };
+            return {
+                ...p,
+                price: getChannelPrice(prodData, newChannel, p.priceAdjustment || 0),
+            };
+        }));
     }, []);
+
+    useEffect(() => {
+        loadConfiguredChannels()
+            .then((channels) => {
+                setAvailableChannels(channels);
+                // Prices computed during the initial load used the default rules;
+                // reprice now that the tenant's rules are available.
+                repriceForChannel(selectedChannelRef.current);
+            })
+            .catch(console.error);
+    }, [repriceForChannel]);
 
     const handleChannelChange = (newChannel: string) => {
         setSelectedChannel(newChannel);
         selectedChannelRef.current = newChannel;
-        // Recalculate price of all items in cart according to the newly selected channel
-        setCart(prev => prev.map(item => {
-            const prodData = {
-                base_price: item.basePrice !== undefined ? item.basePrice : item.price,
-                channel_prices: item.channelPrices,
-            };
-            const updatedPrice = getChannelPrice(prodData, newChannel, item.priceAdjustment || 0);
-            return {
-                ...item,
-                price: updatedPrice,
-            };
-        }));
-        // Update quick-add products display prices
-        setQuickAddProducts(prev => prev.map(p => {
-            const prodData = {
-                base_price: p.basePrice !== undefined ? p.basePrice : p.price,
-                channel_prices: p.channelPrices,
-            };
-            return {
-                ...p,
-                price: getChannelPrice(prodData, newChannel, p.priceAdjustment || 0),
-            };
-        }));
-        // Update search results display prices
-        setSearchResults(prev => prev.map(p => {
-            const prodData = {
-                base_price: p.basePrice !== undefined ? p.basePrice : p.price,
-                channel_prices: p.channelPrices,
-            };
-            return {
-                ...p,
-                price: getChannelPrice(prodData, newChannel, p.priceAdjustment || 0),
-            };
-        }));
+        repriceForChannel(newChannel);
         const channelName = availableChannels.find(c => c.id === newChannel)?.name || newChannel;
         toast.info(`Switched active sales channel to "${channelName}"`);
     };
@@ -421,8 +435,9 @@ export default function POSPage() {
                         sku: p?.sku ? `${p.sku}${v.sku_suffix ? '-' + v.sku_suffix : ''}` : v.id,
                         name: p?.name || 'Unknown Product',
                         variant: v.variant_name || 'Default',
-                        price: getChannelPrice({ base_price: basePrice, channel_prices: channelPrices }, selectedChannelRef.current, priceAdjustment),
+                        price: getChannelPrice({ base_price: basePrice, cost_price: p?.cost_price || 0, channel_prices: channelPrices }, selectedChannelRef.current, priceAdjustment),
                         basePrice,
+                        costPrice: p?.cost_price || 0,
                         priceAdjustment,
                         channelPrices,
                         stock: v.stock_level || 0,
@@ -458,8 +473,9 @@ export default function POSPage() {
                         sku: p.full_sku,
                         name: p.name,
                         variant: p.variant_name,
-                        price: getChannelPrice({ base_price: basePrice, channel_prices: p.channel_prices }, selectedChannelRef.current, priceAdjustment),
+                        price: getChannelPrice({ base_price: basePrice, cost_price: p.cost_price || 0, channel_prices: p.channel_prices }, selectedChannelRef.current, priceAdjustment),
                         basePrice,
+                        costPrice: p.cost_price || 0,
                         priceAdjustment,
                         channelPrices: p.channel_prices,
                         stock: p.stock,
@@ -509,8 +525,9 @@ export default function POSPage() {
                     sku: p?.sku ? `${p.sku}${v.sku_suffix ? '-' + v.sku_suffix : ''}` : v.id,
                     name: p?.name || 'Unknown Product',
                     variant: v.variant_name || 'Default',
-                    price: getChannelPrice({ base_price: basePrice, channel_prices: p?.channel_prices }, selectedChannelRef.current, priceAdjustment),
+                    price: getChannelPrice({ base_price: basePrice, cost_price: p?.cost_price || 0, channel_prices: p?.channel_prices }, selectedChannelRef.current, priceAdjustment),
                     basePrice,
+                    costPrice: p?.cost_price || 0,
                     priceAdjustment,
                     channelPrices: p?.channel_prices,
                     stock: stock,
@@ -559,6 +576,7 @@ export default function POSPage() {
                     variant: product.variant,
                     price: product.price,
                     basePrice: product.basePrice,
+                    costPrice: product.costPrice,
                     priceAdjustment: product.priceAdjustment,
                     channelPrices: product.channelPrices,
                     quantity: 1,
