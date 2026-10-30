@@ -154,7 +154,7 @@ export default function AssistantPage() {
                 title="AI Assistant"
                 subtitle="OpenAI-compatible harness over your store data"
                 action={
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
                         <Button variant="outline" size="sm" className="lg:hidden" onClick={() => setHistoryOpen(true)}>
                             <History className="mr-1.5 size-3.5" />
                             History

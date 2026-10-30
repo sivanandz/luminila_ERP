@@ -405,7 +405,7 @@ function availabilityUrl(inStock: boolean): string {
         : "https://schema.org/OutOfStock";
 }
 
-function isProductInStock(product: StorefrontProduct): boolean {
+export function isProductInStock(product: StorefrontProduct): boolean {
     if (product.stock_status === "out_of_stock") return false;
     return Number(product.total_stock) > 0;
 }
@@ -557,7 +557,7 @@ export function productGroupJsonLd(input: ProductGroupSeoInput): JsonLdNode | nu
                 isVariantOf: { "@id": `${groupUrl}#productgroup` },
             };
             if (image) node.image = image;
-            const inStock = Number(variant.stock) > 0;
+            const inStock = Number(variant.stock) > 0 && isProductInStock(product);
             const offer = buildOffer(product, variantUrl, inStock);
             if (offer) node.offers = offer;
             return node;

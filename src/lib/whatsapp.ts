@@ -52,6 +52,11 @@ function readSidecarSecret(): string {
 
 const WPPCONNECT_SECRET = readSidecarSecret();
 
+/** Bearer token the sidecar expects; empty when no token is configured. */
+export function getWppConnectSecret(): string {
+    return WPPCONNECT_SECRET;
+}
+
 /** False when no token is available, which means WhatsApp calls cannot authenticate. */
 export function isWhatsAppConfigured(): boolean {
     return WPPCONNECT_SECRET.length >= 16;
@@ -160,6 +165,8 @@ export interface WPPMessage {
     timestamp: number;
     isGroupMsg: boolean;
     fromMe: boolean;
+    /** WhatsApp acknowledgement level: 0 pending, 1 sent, 2 delivered, 3 read, 4 played. */
+    ack?: number;
     type: string; // chat, image, video, document, ptt, audio, sticker, link
     caption?: string;
     mediaUrl?: string;
@@ -170,6 +177,16 @@ export interface WPPMessage {
         pushname: string;
         phone: string;
     };
+    /** True when the message is starred (as reported by the sidecar transcript). */
+    star?: boolean;
+    /** Structured payloads for the message types WhatsApp renders natively. */
+    location?: { lat: number; lng: number; name?: string; address?: string };
+    vcard?: { name?: string; vcard?: string };
+    poll?: { name: string; options: string[]; isEnded?: boolean };
+    /** Inbound cart/order message summary (items arrive via getOrderbyMsg when needed). */
+    order?: { title?: string; itemCount?: number; total?: number; currency?: string };
+    /** Product message card data. */
+    product?: { name?: string; price?: number; currency?: string; image?: string };
     // Quoted/reply message support
     quotedMsg?: {
         id: string;
@@ -498,6 +515,69 @@ export async function sendFile(
 }
 
 /**
+ * Send a voice note (PTT) or plain audio.
+ *
+ * `ptt: true` posts to `/send-audio` so WhatsApp renders a proper push-to-talk
+ * bubble with a waveform instead of a document attachment. Prefer OGG/Opus
+ * (`audio/ogg;codecs=opus` in MediaRecorder where the browser supports it);
+ * WhatsApp expects OGG/Opus — webm/Opus is sent as a fallback with the .webm
+ * name so at least the container stays honest.
+ */
+export async function sendAudio(
+    sessionId: string,
+    chatId: string,
+    base64Audio: string,
+    options?: { ptt?: boolean; filename?: string; mimetype?: string }
+): Promise<boolean> {
+    try {
+        const filename = options?.filename || (options?.ptt ? "voice.oga" : "audio.mp3");
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-audio`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                phone: chatId,
+                base64: base64Audio,
+                ptt: options?.ptt ?? false,
+                mimetype: options?.mimetype,
+                filename
+            })
+        });
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Send a video so it lands as a native video bubble rather than a document.
+ */
+export async function sendVideo(
+    sessionId: string,
+    chatId: string,
+    base64Video: string,
+    filename?: string,
+    caption?: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-video`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                phone: chatId,
+                base64: base64Video,
+                filename: filename || "video.mp4",
+                caption: caption || ""
+            })
+        });
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Mark chat as read
  */
 export async function markAsRead(sessionId: string, chatId: string): Promise<boolean> {
@@ -657,6 +737,532 @@ export async function archiveChat(
     }
 }
 
+// ==============================
+// CHAT MANAGEMENT FUNCTIONS
+// (pin, mute, clear, delete, block — all implemented on the sidecar)
+// ==============================
+
+/** Pin or unpin a chat to the top of the list. */
+export async function pinChat(
+    sessionId: string,
+    chatId: string,
+    pin: boolean = true
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/pin-chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chatId, pin })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Mute or unmute a chat.
+ *
+ * `duration` is a count and `unit` its unit, matching the WPPConnect
+ * `sendMute(id, time, type)` signature (`'hours' | 'minutes' | 'year'`).
+ * Unmuting is a separate call — WhatsApp has no negative duration.
+ */
+export async function muteChat(
+    sessionId: string,
+    chatId: string,
+    options?: { duration?: number; unit?: "hours" | "minutes" | "year" }
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/send-mute`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chatId,
+                duration: options?.duration ?? 8,
+                unit: options?.unit ?? "hours"
+            })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Clear all messages in a chat, optionally keeping starred ones. */
+export async function clearChatMessages(
+    sessionId: string,
+    chatId: string,
+    keepStarred: boolean = true
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/clear-chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chatId, keepStarred })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Delete a chat entirely (messages and the thread entry). */
+export async function deleteChat(
+    sessionId: string,
+    chatId: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/delete-chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chatId })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Block (or unblock) a contact. */
+export async function setContactBlocked(
+    sessionId: string,
+    contactId: string,
+    blocked: boolean
+): Promise<boolean> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/${blocked ? "block-contact" : "unblock-contact"}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ contactId })
+            }
+        );
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+// ==============================
+// MESSAGE-LEVEL ACTIONS
+// ==============================
+
+/**
+ * React to a message. An empty emoji removes the reaction.
+ */
+export async function sendReaction(
+    sessionId: string,
+    messageId: string,
+    emoji: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/react-message`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messageId, reaction: emoji || "" })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Reject an incoming WhatsApp call. `callId` comes from the sidecar's
+ * `incoming_call` socket event; omit it to reject every pending call.
+ */
+export async function rejectCall(
+    sessionId: string,
+    callId?: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/reject-call`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(callId ? { callId } : {})
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+// ==============================
+// GROUP ADMINISTRATION
+// ==============================
+
+export interface WPPGroupMember {
+    id: string;
+    name: string;
+    isAdmin: boolean;
+    isSuperAdmin: boolean;
+}
+
+export interface WPPGroupInfo {
+    id: string;
+    name?: string;
+    description?: string;
+    participants: WPPGroupMember[];
+}
+
+/** Fetch a group's member list with admin flags. */
+export async function getGroupMembers(
+    sessionId: string,
+    groupId: string
+): Promise<WPPGroupMember[]> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/group-members/${encodeURIComponent(groupId)}`
+        );
+        if (!response.ok) return [];
+        const data = await response.json();
+        return Array.isArray(data.members) ? data.members : [];
+    } catch {
+        return [];
+    }
+}
+
+/** Fetch a group's metadata (name, description, participants). */
+export async function getGroupInfo(
+    sessionId: string,
+    groupId: string
+): Promise<WPPGroupInfo | null> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/group/${encodeURIComponent(groupId)}`
+        );
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data.group || null;
+    } catch {
+        return null;
+    }
+}
+
+/** Promote / demote a group member's admin role. */
+export async function setGroupMemberRole(
+    sessionId: string,
+    groupId: string,
+    participantId: string,
+    promote: boolean
+): Promise<boolean> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/${promote ? "group-promote-participant" : "group-demote-participant"}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ groupId, participantId })
+            }
+        );
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Rename a group. */
+export async function setGroupSubject(
+    sessionId: string,
+    groupId: string,
+    subject: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/set-group-subject`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId, subject })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Change a group's description. */
+export async function setGroupDescription(
+    sessionId: string,
+    groupId: string,
+    description: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/set-group-description`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId, description })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Toggle whether only group admins can send messages. */
+export async function setGroupAdminsOnly(
+    sessionId: string,
+    groupId: string,
+    value: boolean
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/set-group-admins-only`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId, value })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Add a participant to a group. */
+export async function addGroupParticipant(
+    sessionId: string,
+    groupId: string,
+    participantPhone: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/group-add-participant`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId, participantPhone })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Remove a participant from a group. */
+export async function removeGroupParticipant(
+    sessionId: string,
+    groupId: string,
+    participantPhone: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/group-remove-participant`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId, participantPhone })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Get the group's join link (requires the session to be a group admin). */
+export async function getGroupInviteLink(
+    sessionId: string,
+    groupId: string
+): Promise<string | null> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/group-invite-link/${encodeURIComponent(groupId)}`
+        );
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data.link || null;
+    } catch {
+        return null;
+    }
+}
+
+/** Leave a group. */
+export async function leaveGroup(
+    sessionId: string,
+    groupId: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/leave-group`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+// ==============================
+// CATALOG COLLECTIONS / CART / PRODUCT IMAGES
+// ==============================
+
+/** Raw collection record as returned by the /catalog/collections endpoint. */
+export interface WPPCollection {
+    id?: string | { id?: string; _serialized?: string };
+    name?: string;
+    products?: unknown[];
+    [key: string]: unknown;
+}
+
+/** List catalog collections (each carries its product ids). */
+export async function getCatalogCollections(
+    sessionId: string
+): Promise<WPPCollection[]> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/collections`);
+        if (!response.ok) return [];
+        const data = await response.json();
+        return Array.isArray(data.collections) ? data.collections : [];
+    } catch {
+        return [];
+    }
+}
+
+/** Create a catalog collection from a set of product ids. */
+export async function createCatalogCollection(
+    sessionId: string,
+    name: string,
+    productIds: string[]
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/collections`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, productIds })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Rename a catalog collection and/or move products in or out of it. */
+export async function editCatalogCollection(
+    sessionId: string,
+    collectionId: string,
+    options: { name?: string; productsToAdd?: string[]; productsToRemove?: string[] }
+): Promise<boolean> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/catalog/collections/${encodeURIComponent(collectionId)}`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(options)
+            }
+        );
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Delete a catalog collection. */
+export async function deleteCatalogCollection(
+    sessionId: string,
+    collectionId: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/catalog/collections/${encodeURIComponent(collectionId)}`,
+            { method: "DELETE" }
+        );
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Toggle the WhatsApp cart on the business catalog. */
+export async function setCatalogCartEnabled(
+    sessionId: string,
+    enabled: boolean
+): Promise<boolean> {
+    try {
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/catalog/cart-enabled`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled })
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Add an extra image to a catalog product (the main image uses changeProductImage). */
+export async function addCatalogProductImage(
+    sessionId: string,
+    productId: string,
+    base64OrUrl: string
+): Promise<boolean> {
+    try {
+        const isUrl = base64OrUrl.startsWith("http://") || base64OrUrl.startsWith("https://") || base64OrUrl.startsWith("/");
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${encodeURIComponent(productId)}/image`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(isUrl ? { imageUrl: base64OrUrl } : { base64: base64OrUrl })
+            }
+        );
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
+/** Remove an extra catalog product image by its index. */
+export async function removeCatalogProductImage(
+    sessionId: string,
+    productId: string,
+    imageIndex: string
+): Promise<boolean> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/catalog/products/${encodeURIComponent(productId)}/image/${encodeURIComponent(imageIndex)}`,
+            { method: "DELETE" }
+        );
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.success;
+    } catch {
+        return false;
+    }
+}
+
 /** Raw contact record as returned by the WPPConnect /contacts endpoint */
 interface WPPApiContact {
     id?: WPPApiId;
@@ -731,6 +1337,26 @@ export async function getAllLabels(sessionId: string): Promise<WPPLabel[]> {
 
         const data = await response.json();
         return data.labels || [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Get the chat ids a WhatsApp label is attached to
+ * (used to show which labels are already on the open chat).
+ */
+export async function getLabelChatIds(
+    sessionId: string,
+    labelId: string
+): Promise<string[]> {
+    try {
+        const response = await fetch(
+            `${WPPCONNECT_URL}/api/${sessionId}/labels/${encodeURIComponent(labelId)}/chats`
+        );
+        if (!response.ok) return [];
+        const data = await response.json();
+        return Array.isArray(data.chats) ? data.chats.map(String) : [];
     } catch {
         return [];
     }
@@ -1185,6 +1811,8 @@ interface WPPApiMessage {
     timestamp?: number;
     isGroupMsg?: boolean;
     fromMe?: boolean;
+    /** WhatsApp acknowledgement level: 0 pending, 1 sent, 2 delivered, 3 read, 4 played. */
+    ack?: number;
     notifyName?: string;
     stanzaId?: string;
     text?: string;
@@ -1206,14 +1834,44 @@ interface WPPApiMessage {
     };
     quotedMsg?: WPPApiMessage;
     quotedMsgObj?: WPPApiMessage;
+    /** True on the star field of starred transcripts. */
+    star?: boolean;
+    // Runtime-only fields on location / vcard / poll / order / product messages
+    lat?: number;
+    lng?: number;
+    locationName?: string;
+    address?: string;
+    vcard?: string;
+    vcardFormattedName?: string;
+    vcardList?: Array<{ vcard?: string; displayName?: string }>;
+    pollName?: string;
+    pollOptions?: unknown;
+    isEnded?: boolean;
+    /** Order/cart message payload (title/item count/total). */
+    total?: number;
+    itemCount?: number;
+    catalogProductId?: string;
+    productData?: { name?: string; priceAmount1000?: number; currency?: string; pictureUrl?: string; productImage?: string };
+    productImage?: string;
+    productImageInitialDigest?: unknown;
 }
 
 /**
  * Get messages from a specific chat
  */
-export async function getChatMessages(sessionId: string, chatId: string, count = 20): Promise<WPPMessage[]> {
+export async function getChatMessages(
+    sessionId: string,
+    chatId: string,
+    count = 20,
+    beforeId?: string
+): Promise<WPPMessage[]> {
     try {
-        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/messages/${encodeURIComponent(chatId)}?count=${count}`);
+        // `before` pages backwards through history: count messages older than
+        // the given id (sidecar forwards it as direction:'before').
+        const query = beforeId
+            ? `count=${count}&before=${encodeURIComponent(beforeId)}`
+            : `count=${count}`;
+        const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/messages/${encodeURIComponent(chatId)}?${query}`);
         if (!response.ok) return [];
 
         const data = await response.json();
@@ -1330,6 +1988,7 @@ export async function getChatMessages(sessionId: string, chatId: string, count =
                     timestamp: msg.t || msg.timestamp || 0,
                     isGroupMsg: msg.isGroupMsg || false,
                     fromMe: msg.fromMe || msg.id?.fromMe || false,
+                    ack: typeof msg.ack === 'number' ? msg.ack : 0,
                     type: msg.type || 'chat',
                     caption: msg.caption || '',
                     // DON'T use msg.body as fallback - it contains raw base64 for images
@@ -1342,7 +2001,48 @@ export async function getChatMessages(sessionId: string, chatId: string, count =
                         pushname: msg.sender?.pushname || msg.notifyName || '',
                         phone: msg.sender?.id?.user || ''
                     },
-                    quotedMsg
+                    quotedMsg,
+                    star: !!msg.star,
+                    // Structured payloads: keep them on the projection so the
+                    // transcript can render location pins, contacts, polls,
+                    // orders and product cards natively instead of blank text.
+                    location: msg.type === 'location'
+                        ? {
+                            lat: Number(msg.lat) || 0,
+                            lng: Number(msg.lng) || 0,
+                            name: msg.locationName || '',
+                            address: msg.address || '',
+                        }
+                        : undefined,
+                    vcard: (msg.type === 'vcard' || msg.type === 'multi_vcard')
+                        ? {
+                            name: msg.vcardFormattedName || msg.vcardList?.[0]?.displayName || '',
+                            vcard: msg.vcard || msg.vcardList?.[0]?.vcard || '',
+                        }
+                        : undefined,
+                    poll: msg.type === 'poll_creation'
+                        ? {
+                            name: msg.pollName || msg.caption || msg.body || 'Poll',
+                            options: Array.isArray(msg.pollOptions) ? msg.pollOptions.map(String) : [],
+                            isEnded: !!msg.isEnded,
+                        }
+                        : undefined,
+                    order: msg.type === 'order'
+                        ? {
+                            title: msg.pollName || msg.caption || '',
+                            itemCount: Number(msg.itemCount) || 0,
+                            total: Number(msg.total) || 0,
+                            currency: 'INR',
+                        }
+                        : undefined,
+                    product: msg.type === 'product'
+                        ? {
+                            name: msg.productData?.name || msg.caption || '',
+                            price: msg.productData?.priceAmount1000 ? msg.productData.priceAmount1000 / 1000 : Number(msg.total) || 0,
+                            currency: msg.productData?.currency || 'INR',
+                            image: msg.productData?.pictureUrl || msg.productImage || '',
+                        }
+                        : undefined,
                 };
             });
     } catch {
@@ -1358,6 +2058,19 @@ export async function sendMessage(
     phone: string,
     message: string
 ): Promise<boolean> {
+    return (await sendMessageDetailed(sessionId, phone, message)).ok;
+}
+
+/**
+ * Send a text message and return the server message id when the sidecar reports
+ * one. The chat view uses the id to attach the delivery/read receipts that the
+ * sidecar pushes for that message.
+ */
+export async function sendMessageDetailed(
+    sessionId: string,
+    phone: string,
+    message: string
+): Promise<{ ok: boolean; id: string | null }> {
     try {
         // If phone is already a chat ID (contains @), use it as-is
         // Otherwise, format as phone number (remove non-digits)
@@ -1375,10 +2088,25 @@ export async function sendMessage(
             }),
         });
 
-        return response.ok;
+        if (!response.ok) return { ok: false, id: null };
+
+        let id: string | null = null;
+        try {
+            const data = await response.json();
+            const result = (data as { result?: unknown })?.result;
+            if (typeof result === 'string') {
+                id = result;
+            } else if (result && typeof result === 'object') {
+                const rawId = (result as { id?: unknown }).id as { _serialized?: string } | string | undefined;
+                id = typeof rawId === 'string' ? rawId : rawId?._serialized || null;
+            }
+        } catch {
+            /* a body without a result is still a successful send */
+        }
+        return { ok: true, id };
     } catch (err) {
         console.error("Failed to send message:", err);
-        return false;
+        return { ok: false, id: null };
     }
 }
 
@@ -1615,12 +2343,16 @@ export class WhatsAppManager {
         return sendMessage(this.sessionId, phone, message);
     }
 
+    async sendMessageDetailed(phone: string, message: string): Promise<{ ok: boolean; id: string | null }> {
+        return sendMessageDetailed(this.sessionId, phone, message);
+    }
+
     async getChats(): Promise<WPPChat[]> {
         return getAllChats(this.sessionId);
     }
 
-    async getMessages(chatId: string, count = 20): Promise<WPPMessage[]> {
-        return getChatMessages(this.sessionId, chatId, count);
+    async getMessages(chatId: string, count = 20, beforeId?: string): Promise<WPPMessage[]> {
+        return getChatMessages(this.sessionId, chatId, count, beforeId);
     }
 
     async downloadMedia(messageId: string): Promise<string | null> {
@@ -1652,6 +2384,18 @@ export class WhatsAppManager {
 
     async sendFile(chatId: string, base64: string, filename: string, caption?: string): Promise<boolean> {
         return sendFile(this.sessionId, chatId, base64, filename, caption);
+    }
+
+    async sendAudio(
+        chatId: string,
+        base64Audio: string,
+        options?: { ptt?: boolean; filename?: string; mimetype?: string }
+    ): Promise<boolean> {
+        return sendAudio(this.sessionId, chatId, base64Audio, options);
+    }
+
+    async sendVideo(chatId: string, base64Video: string, filename?: string, caption?: string): Promise<boolean> {
+        return sendVideo(this.sessionId, chatId, base64Video, filename, caption);
     }
 
     async markAsRead(chatId: string): Promise<boolean> {

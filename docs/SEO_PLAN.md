@@ -1,5 +1,9 @@
 # Storefront SEO + AI discoverability — implementation plan
 
+Implementation status (2026-10-28): implemented and verified; see
+[`SEO_AI_OPTIMIZATION.md`](./SEO_AI_OPTIMIZATION.md). This plan is retained as the
+design record and acceptance criteria.
+
 Scope: `storefront/`. Grounded in `docs/SEO_BRIEF.md` (verified 2026-10-27) and
 `docs/seo-research/00-confirmation.md`. No new npm dependencies.
 Env: `storefront/.env.example` (read).
@@ -288,6 +292,10 @@ Breadcrumbs are user paths, not URL mirrors.
 cd storefront
 npm run build
 npm run seo:audit
+
+# Isolated export (recommended when a dev server/watcher locks out/):
+npm run seo:build
+node scripts/seo-audit.mjs --out "<OUT_DIR>" --json
 ```
 
 The build goes through `scripts/next-run.mjs`, which preloads the repo's

@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
     provisionTenantDatabase,
+    resolvePrimaryPocketBasePort,
     resolveTenantDatabase,
     readTenantRegistry,
 } from '@/lib/tenant-db-manager';
 import { authenticateOperator, tenantAccessAllowed } from '@/lib/api-auth';
+import { isSingleAccountMode } from '@/lib/deployment-mode';
 
 export const runtime = 'nodejs';
 
@@ -18,6 +20,16 @@ function errorResponse(message: string, status: number) {
 }
 
 /**
+ * Single-account deployments have one database. Resolve it through the same
+ * port probe the tenant paths use, so a deployment listening on 8091 is not
+ * reported as 8090.
+ */
+async function primaryPocketBaseUrl(): Promise<string> {
+    const port = await resolvePrimaryPocketBasePort();
+    return `http://127.0.0.1:${port}`;
+}
+
+/**
  * GET /api/system/tenant-db?email=...
  *
  * The login screen runs before a session exists, so the lookup itself stays
@@ -27,6 +39,12 @@ function errorResponse(message: string, status: number) {
  */
 export async function GET(req: NextRequest) {
     try {
+        // One database per deployment: the email parameter cannot select another
+        // instance, so it is neither read nor trusted.
+        if (isSingleAccountMode()) {
+            return NextResponse.json({ success: true, pbUrl: await primaryPocketBaseUrl() });
+        }
+
         const emailParam = (req.nextUrl.searchParams.get('email') || '').trim().toLowerCase();
         const registry = readTenantRegistry();
         const targetEmail = emailParam || registry.activeTenantEmail;
@@ -59,6 +77,21 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
         const mode: 'provision' | 'resolve' = body.mode || 'resolve';
+
+        // Provisioning is a multi-account operation and must be refused before
+        // any authentication or registry work. Resolve still answers with the
+        // primary instance so old clients can connect, but never with an
+        // emailed tenant.
+        if (isSingleAccountMode()) {
+            if (mode === 'provision') {
+                return NextResponse.json(
+                    { success: false, error: 'Multi-account provisioning is disabled in this single-account deployment.' },
+                    { status: 403 }
+                );
+            }
+            return NextResponse.json({ success: true, pbUrl: await primaryPocketBaseUrl() });
+        }
+
         const email = String(body.email || '').trim().toLowerCase();
 
         if (!email) {

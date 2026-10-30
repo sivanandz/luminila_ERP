@@ -1,6 +1,7 @@
 import type PocketBase from "pocketbase";
 import { createTenantClient } from "@/lib/pocketbase";
 import { readTenantRegistry } from "@/lib/tenant-db-manager";
+import { SINGLE_ACCOUNT_EMAIL, isSingleAccountMode } from "@/lib/deployment-mode";
 
 const STOREFRONT_CONTENT_KEY = "storefront_content";
 const PRIMARY_ADMIN_EMAIL = "admin@luminila.local";
@@ -12,13 +13,25 @@ export interface StorefrontTenant {
 }
 
 /**
- * Resolve the tenant that owns the storefront. The content record's
- * adminBinding is authoritative; the registry/primary fallbacks only apply
- * before the CMS has ever bound a tenant.
+ * Resolve the tenant that owns the storefront.
+ *
+ * Single-account mode owns one database and one account, so the primary client
+ * is returned before any lookup: a stale registry entry or a binding that names
+ * another email must not switch the deployment to another database.
+ *
+ * In multi mode the content record's adminBinding is authoritative; the
+ * registry/primary fallbacks only apply before the CMS has ever bound a tenant.
  */
 export async function resolveStorefrontTenant(
     hintEmail?: string
 ): Promise<StorefrontTenant> {
+    if (isSingleAccountMode()) {
+        return {
+            email: SINGLE_ACCOUNT_EMAIL,
+            client: await createTenantClient(),
+        };
+    }
+
     let email = (hintEmail || "").trim().toLowerCase();
 
     if (!email) {

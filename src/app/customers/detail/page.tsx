@@ -115,7 +115,13 @@ function CustomerDetailContent() {
     }, [id]);
 
     const loadCustomer = async () => {
-        if (!id) return;
+        // Without ?id= there is nothing to fetch — settle into the "not found" state
+        // instead of leaving the page on a spinner forever.
+        if (!id) {
+            setCustomer(null);
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         const data = await getCustomer(id);
         setCustomer(data);

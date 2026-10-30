@@ -58,32 +58,35 @@ export function Header({ title, subtitle, action, children, hideSearch }: Header
 
     return (
         <>
-            <header className="flex items-center justify-between px-4 py-3 md:px-8 md:py-5 border-b border-border bg-background sticky top-0 z-20 gap-3 md:gap-6">
-                <div className="flex items-center gap-3 md:gap-6 flex-1 min-w-0">
-                    <div className="min-w-0">
+            <header className="border-b border-border bg-background sticky top-0 z-20 px-4 py-3 md:px-8 md:py-5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 md:gap-x-6">
+                    <div className="order-1 min-w-0 flex-1 md:flex-none">
                         <h2 className="text-foreground text-lg md:text-xl font-bold tracking-tight truncate">{title}</h2>
                         {subtitle && <p className="text-muted-foreground text-xs hidden lg:block truncate">{subtitle}</p>}
                     </div>
 
-                    {/* Search Bar - hidden on very small phones, visible on sm+ */}
+                    {/*
+                      Phones: title and actions share the first line (the actions may
+                      wrap internally), the search takes a full-width second line.
+                      Desktop: title, flexible search, then the action cluster.
+                    */}
                     {!hideSearch && (
-                    <div className="relative group flex-1 max-w-xs md:max-w-md hidden sm:block">
+                    <div className="relative group order-3 w-full min-w-0 md:order-2 md:w-auto md:max-w-md md:flex-1">
                         <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-muted-foreground group-focus-within:text-primary">
                             <Search size={18} />
                         </div>
                         <input
                             suppressHydrationWarning
-                            className="bg-card border border-border text-foreground text-xs md:text-sm rounded-lg block w-full pl-9 py-2 md:py-2.5 pr-4 focus:ring-1 focus:ring-primary placeholder-muted-foreground transition-all"
+                            className="bg-card border border-border text-foreground text-base md:text-sm rounded-lg block w-full pl-9 py-2 md:py-2.5 pr-4 focus:ring-1 focus:ring-primary placeholder-muted-foreground transition-all"
                             placeholder="Search..."
                             type="text"
+                            enterKeyHint="search"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                         />
                     </div>
                     )}
-                </div>
-
-                <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
+                    <div className="order-2 flex min-w-0 flex-wrap items-center justify-end gap-1.5 md:order-3 md:gap-3">
                     {/* Server Connection Status Pill */}
                     <button
                         onClick={() => setIsServerModalOpen(true)}
@@ -163,6 +166,7 @@ export function Header({ title, subtitle, action, children, hideSearch }: Header
                             <span className="hidden sm:inline">New Sale</span>
                         </Button>
                     )}
+                    </div>
                 </div>
             </header>
 

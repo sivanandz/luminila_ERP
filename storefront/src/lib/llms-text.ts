@@ -82,9 +82,9 @@ export function buildLlmsIndex(
     lines.push(
         "",
         "## Policies",
-        `- [Shipping & returns](${absoluteUrl("/shipping-returns")})`,
-        `- [Jewellery care](${absoluteUrl("/jewellery-care")})`,
-        `- [Privacy & terms](${absoluteUrl("/privacy")})`,
+        `- [Shipping & returns](${absoluteUrl("/shipping-returns")}): dispatch, tracking and the 7-day return promise.`,
+        `- [Jewellery care](${absoluteUrl("/jewellery-care")}): how to keep gold-tone imitation jewellery lovely.`,
+        `- [Privacy & terms](${absoluteUrl("/privacy")}): what is stored and how to request deletion.`,
         ""
     );
 
@@ -104,6 +104,14 @@ export function buildLlmsFull(
         "",
         `${brand} is an imitation jewellery label, not solid gold. This file is a community convention, not an official standard; it is a convenience for agents, not a Google requirement.`,
         "",
+        "## Pages",
+        `- [Home](${absoluteUrl("/")}): the collection, brand story and FAQ.`,
+        `- [About ${brand}](${absoluteUrl("/about")}): what ${brand} is and how the pieces are made.`,
+        `- [FAQ](${absoluteUrl("/faq")}): materials, bangle sizing, care, ordering, delivery and returns.`,
+        `- [Shipping & returns](${absoluteUrl("/shipping-returns")}): dispatch, tracking and the 7-day return promise.`,
+        `- [Jewellery care](${absoluteUrl("/jewellery-care")}): how to keep gold-tone imitation jewellery lovely.`,
+        `- [Privacy & terms](${absoluteUrl("/privacy")}): what is stored and how to request deletion.`,
+        "",
         "## Collections",
     ];
 
@@ -120,8 +128,14 @@ export function buildLlmsFull(
         const url = productUrl(catalog, product.id);
         if (!url) continue;
         const category = text(product.category) || "Jewellery";
+        const summaryPrice =
+            product.website_price > 0 ? ` · ${money(product.website_price)}` : "";
         lines.push("", `### ${product.name}`, "");
-        lines.push(`- URL: ${url}`);
+        lines.push(
+            `- [${product.name}](${url}): ${category}${summaryPrice} · ${availability(
+                product
+            )}.`
+        );
         lines.push(`- Category: ${category}`);
         if (product.website_price > 0) {
             lines.push(`- Price: ${money(product.website_price)} (INR), taxes included`);
@@ -154,6 +168,14 @@ export function buildLlmsFull(
     for (const item of content.faq.items) {
         lines.push("", `### ${text(item.question)}`, "", text(item.answer));
     }
+
+    lines.push(
+        "",
+        "## Policies",
+        `- [Shipping & returns](${absoluteUrl("/shipping-returns")}): dispatch, tracking and the 7-day return promise.`,
+        `- [Jewellery care](${absoluteUrl("/jewellery-care")}): how to keep gold-tone imitation jewellery lovely.`,
+        `- [Privacy & terms](${absoluteUrl("/privacy")}): what is stored and how to request deletion.`
+    );
 
     lines.push("", "## Shipping & returns", "", text(content.info.shipping.body));
     lines.push("", "## Jewellery care", "", text(content.info.care.body));

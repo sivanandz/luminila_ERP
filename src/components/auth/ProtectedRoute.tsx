@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ShieldX } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePermissions, type Resource, type Permission } from "@/hooks/usePermissions";
+import { isMultiAccountEnabled } from "@/lib/deployment-mode";
 import { Button } from "@/components/ui/button";
 
 interface ProtectedRouteProps {
@@ -79,7 +80,7 @@ export function ProtectedRoute({
                         <Button onClick={() => router.push('/login')}>
                             Sign In
                         </Button>
-                    ) : !hasAnyPermissions ? (
+                    ) : !hasAnyPermissions && isMultiAccountEnabled() ? (
                         <Button onClick={() => router.push('/setup')}>
                             Check Setup
                         </Button>

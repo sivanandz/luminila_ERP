@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
     X,
     RefreshCw,
@@ -28,7 +28,8 @@ import {
     DollarSign,
     Info,
     HelpCircle,
-    ArrowUpRight
+    ArrowUpRight,
+    Image as ImageIcon
 } from "lucide-react";
 import { toast } from "sonner";
 import { getCurrentTenantEmail } from "@/lib/pocketbase";
@@ -47,6 +48,12 @@ import {
     createCatalogProduct,
     editCatalogProduct,
     deleteCatalogProduct,
+    getCatalogCollections,
+    createCatalogCollection,
+    deleteCatalogCollection,
+    setCatalogCartEnabled,
+    addCatalogProductImage,
+    type WPPCollection,
     CatalogProduct
 } from "@/lib/whatsapp";
 import { Button } from "@/components/ui/button";
@@ -122,6 +129,28 @@ export function WhatsAppCatalogEditorModal({
     const [bulkSyncing, setBulkSyncing] = useState(false);
     const [linkingProductId, setLinkingProductId] = useState<string>("");
     const [isLinking, setIsLinking] = useState(false);
+
+    // Cart + collections surface (WhatsApp Business catalog features that were
+    // previously unreachable from the app)
+    const [cartEnabled, setCartEnabled] = useState<boolean | null>(null);
+    const [collections, setCollections] = useState<WPPCollection[]>([]);
+    const [showCollections, setShowCollections] = useState(false);
+    const [newCollectionName, setNewCollectionName] = useState("");
+    const [collectionsBusy, setCollectionsBusy] = useState(false);
+    const [addingImage, setAddingImage] = useState(false);
+
+    const loadCollections = useCallback(async () => {
+        setCollectionsBusy(true);
+        try {
+            setCollections(await getCatalogCollections(sessionId));
+        } finally {
+            setCollectionsBusy(false);
+        }
+    }, [sessionId]);
+
+    useEffect(() => {
+        if (isOpen) void loadCollections();
+    }, [isOpen, loadCollections]);
 
     // Initial fetch when opened
     useEffect(() => {
@@ -543,6 +572,107 @@ export function WhatsAppCatalogEditorModal({
                         </Button>
                     </div>
                 </div>
+
+                {/* Cart & Collections strip */}
+                <div className="flex flex-wrap items-center gap-3 px-6 py-2 border-b border-border bg-muted/20 text-xs">
+                    <label className="flex items-center gap-2 cursor-pointer select-none font-semibold text-muted-foreground">
+                        <Switch
+                            checked={cartEnabled === true}
+                            onCheckedChange={async (checked) => {
+                                const prev = cartEnabled;
+                                setCartEnabled(checked);
+                                const ok = await setCatalogCartEnabled(sessionId, checked);
+                                if (ok) {
+                                    toast.success(checked ? "WhatsApp cart enabled" : "WhatsApp cart disabled");
+                                } else {
+                                    setCartEnabled(prev);
+                                    toast.error("Could not toggle the WhatsApp cart");
+                                }
+                            }}
+                        />
+                        Shopping cart on catalog
+                    </label>
+                    <div className="h-4 w-px bg-border" />
+                    <button
+                        onClick={() => setShowCollections(prev => !prev)}
+                        className="font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                        Collections {collections.length > 0 ? `(${collections.length})` : ""}
+                    </button>
+                </div>
+
+                {showCollections && (
+                    <div className="px-6 py-3 border-b border-border bg-card space-y-2">
+                        <div className="flex gap-2">
+                            <Input
+                                value={newCollectionName}
+                                onChange={e => setNewCollectionName(e.target.value)}
+                                placeholder="New collection name…"
+                                className="h-8 text-xs flex-1"
+                            />
+                            <Button
+                                size="sm"
+                                className="h-8 text-xs"
+                                disabled={collectionsBusy || !newCollectionName.trim()}
+                                onClick={async () => {
+                                    setCollectionsBusy(true);
+                                    try {
+                                        // Start with the visible catalog items so the
+                                        // collection is immediately useful
+                                        const ids = catalogItems.slice(0, 20).map(i => i.id);
+                                        const ok = await createCatalogCollection(sessionId, newCollectionName.trim(), ids);
+                                        if (ok) {
+                                            toast.success(`Collection "${newCollectionName.trim()}" created`);
+                                            setNewCollectionName("");
+                                            await loadCollections();
+                                        } else {
+                                            toast.error("Could not create the collection");
+                                        }
+                                    } finally {
+                                        setCollectionsBusy(false);
+                                    }
+                                }}
+                            >
+                                Create
+                            </Button>
+                        </div>
+                        {collections.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">
+                                {collectionsBusy ? "Loading…" : "No collections yet — group catalog items into collections customers can browse."}
+                            </p>
+                        ) : (
+                            <ul className="space-y-1">
+                                {collections.map(c => {
+                                    const cid = typeof c.id === "string" ? c.id : c.id?.id || c.id?._serialized || String(c.id ?? "");
+                                    return (
+                                        <li key={cid} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-muted/50">
+                                            <span className="flex-1 truncate text-xs font-medium">{c.name || cid}</span>
+                                            <span className="text-[10px] text-muted-foreground">
+                                                {Array.isArray(c.products) ? `${c.products.length} items` : ""}
+                                            </span>
+                                            <button
+                                                onClick={async () => {
+                                                    if (!window.confirm(`Delete collection "${c.name || cid}"?`)) return;
+                                                    const ok = await deleteCatalogCollection(sessionId, cid);
+                                                    if (ok) {
+                                                        toast.success("Collection deleted");
+                                                        await loadCollections();
+                                                    } else {
+                                                        toast.error("Delete failed");
+                                                    }
+                                                }}
+                                                className="text-muted-foreground hover:text-red-500 p-1"
+                                                title="Delete collection"
+                                            >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        )}
+                    </div>
+                )}
 
                 {/* KPI Strip */}
                 <div className="grid grid-cols-2 sm:grid-cols-5 border-b border-border divide-x divide-border bg-card text-xs">
@@ -1027,6 +1157,47 @@ export function WhatsAppCatalogEditorModal({
                                                 checked={!editForm.isHidden}
                                                 onCheckedChange={(checked) => setEditForm({ ...editForm, isHidden: !checked })}
                                             />
+                                        </div>
+
+                                        {/* Extra product images (WhatsApp supports several per item) */}
+                                        <div className="flex items-center gap-2 p-3 rounded-xl border border-dashed border-border">
+                                            <input
+                                                type="file"
+                                                accept="image/*"
+                                                className="hidden"
+                                                id="wa-extra-image"
+                                                onChange={async (e) => {
+                                                    const file = e.target.files?.[0];
+                                                    e.target.value = "";
+                                                    if (!file || !selectedItem) return;
+                                                    setAddingImage(true);
+                                                    try {
+                                                        const dataUrl = await new Promise<string>((resolve, reject) => {
+                                                            const reader = new FileReader();
+                                                            reader.onload = () => resolve(reader.result as string);
+                                                            reader.onerror = () => reject(new Error("read failed"));
+                                                            reader.readAsDataURL(file);
+                                                        });
+                                                        const ok = await addCatalogProductImage(sessionId, selectedItem.id, dataUrl);
+                                                        if (ok) toast.success(`Extra image added to "${selectedItem.name}"`);
+                                                        else toast.error("WhatsApp rejected the extra image");
+                                                    } catch {
+                                                        toast.error("Could not read the image file");
+                                                    } finally {
+                                                        setAddingImage(false);
+                                                    }
+                                                }}
+                                            />
+                                            <label
+                                                htmlFor="wa-extra-image"
+                                                className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground cursor-pointer"
+                                            >
+                                                {addingImage ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
+                                                Add extra product image
+                                            </label>
+                                            <span className="text-[10px] text-muted-foreground flex-1 truncate">
+                                                Extra gallery images appear alongside the main photo on WhatsApp
+                                            </span>
                                         </div>
 
                                         {/* Option: Two-way sync price to PocketBase */}

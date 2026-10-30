@@ -701,8 +701,109 @@ export default function CustomersPage() {
                             </div>
                         </div>
 
-                        {/* Customers Directory Table */}
-                        <div className="border border-border rounded-xl bg-card overflow-hidden shadow-sm">
+                        {/* Phone: stacked profile cards. The six-column directory table cannot
+                            fit a phone width, and a full-height table scroller at this width makes
+                            the whole panel scroll sideways, so present the same fields as cards. */}
+                        <div className="sm:hidden space-y-3">
+                            {loading ? (
+                                <div className="border border-border rounded-xl bg-card py-12 text-center text-muted-foreground shadow-sm">
+                                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-primary" />
+                                    Loading customer directory...
+                                </div>
+                            ) : filteredCustomers.length === 0 ? (
+                                <div className="border border-border rounded-xl bg-card py-12 px-4 text-center text-muted-foreground shadow-sm">
+                                    No customers found matching the active search.
+                                </div>
+                            ) : (
+                                filteredCustomers.map((c) => {
+                                    const typeInfo = typeConfig[c.customer_type] || typeConfig.retail;
+                                    const TypeIcon = typeInfo.icon;
+                                    const leadStatus = (c as any).lead_status || "new_lead";
+                                    const leadInfo = leadStatusConfig[leadStatus] || leadStatusConfig.new_lead;
+                                    const birthday = c.date_of_birth || (c as any).birthday_date;
+                                    const anniversary = c.anniversary || (c as any).anniversary_date;
+
+                                    return (
+                                        <div key={c.id} className="border border-border rounded-xl bg-card p-4 shadow-sm space-y-3">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="font-bold text-foreground text-sm break-words">{c.name}</p>
+                                                    <div className="mt-0.5 space-y-0.5 text-[11px] text-muted-foreground">
+                                                        {c.phone && (
+                                                            <span className="flex items-center gap-1 font-mono">
+                                                                <Phone className="w-3 h-3 shrink-0" /> {c.phone}
+                                                            </span>
+                                                        )}
+                                                        {c.email && (
+                                                            <span className="flex items-center gap-1 min-w-0" title={c.email}>
+                                                                <Mail className="w-3 h-3 shrink-0" />
+                                                                <span className="truncate">{c.email}</span>
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="flex flex-col items-end gap-1 shrink-0">
+                                                    <Badge variant="outline" className={`text-[10px] gap-1 font-semibold ${typeInfo.color}`}>
+                                                        <TypeIcon className="w-3 h-3" /> {typeInfo.label}
+                                                    </Badge>
+                                                    <Badge variant="outline" className={`text-[9px] ${leadInfo.class}`}>
+                                                        {leadInfo.label}
+                                                    </Badge>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-2.5 text-[11px] text-muted-foreground">
+                                                {(c as any).ring_size && (
+                                                    <span>Ring: <span className="font-semibold text-foreground">{(c as any).ring_size}</span></span>
+                                                )}
+                                                {(c as any).bangle_size && (
+                                                    <span>Bangle: <span className="font-semibold text-foreground">{(c as any).bangle_size}</span></span>
+                                                )}
+                                                {(c as any).preferred_metal && (
+                                                    <span className="text-primary font-medium">{(c as any).preferred_metal}</span>
+                                                )}
+                                                {!((c as any).ring_size || (c as any).bangle_size || (c as any).preferred_metal) && (
+                                                    <span className="italic text-muted-foreground/60">No jewelry specs</span>
+                                                )}
+                                                {birthday && <span>🎂 {birthday.slice(5)}</span>}
+                                                {anniversary && <span>💍 {anniversary.slice(5)}</span>}
+                                            </div>
+
+                                            <div>
+                                                <p className="font-bold text-foreground text-sm">{formatINR(c.total_spent || 0)}</p>
+                                                <p className="text-[11px] text-muted-foreground">
+                                                    {c.total_orders || 0} orders • {c.loyalty_points || 0} pts
+                                                </p>
+                                            </div>
+
+                                            <div className="flex items-center gap-2">
+                                                {c.phone && (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => router.push(`/whatsapp?chatId=${encodeURIComponent(c.phone!)}`)}
+                                                        className="h-9 flex-1 text-[11px] gap-1 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10 font-semibold"
+                                                    >
+                                                        <MessageCircle className="w-3.5 h-3.5" /> Chat
+                                                    </Button>
+                                                )}
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => router.push(`/customers/detail?id=${c.id}`)}
+                                                    className="h-9 flex-1 text-[11px] font-semibold"
+                                                >
+                                                    Profile <ArrowUpRight className="w-3 h-3 ml-0.5" />
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+
+                        {/* Tablet / Desktop: Customers Directory Table */}
+                        <div className="hidden sm:block border border-border rounded-xl bg-card overflow-hidden shadow-sm">
                             <div className="overflow-x-auto">
                                 <table className="w-full text-left text-xs">
                                     <thead className="bg-muted/50 text-muted-foreground uppercase text-[10px] tracking-wider border-b border-border">

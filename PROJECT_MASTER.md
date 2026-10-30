@@ -253,6 +253,19 @@ Strengths: row rules are consistently applied across the schema; `updateRule` bl
 
 Weakness: the control plane that decides *which* tenant the shared client talks to is a mutable module global with an unauthenticated HTTP entry point. See 6.3.
 
+#### Shipped default: single account (2026-10-29)
+
+The default build serves one account, **Niththigal**: one PocketBase database (`PB_URL` /
+`NEXT_PUBLIC_POCKETBASE_URL`, ports 8090/8091) and `account_email = SINGLE_ACCOUNT_EMAIL` on every
+stamp and filter, whichever user signed in. Multi-account is opt-in — `getDeploymentMode()` in
+`src/lib/deployment-mode.ts` returns `multi` only when `TENANT_MODE` or `NEXT_PUBLIC_TENANT_MODE`
+is `multi`, and the public value is inlined at build time, so re-enabling multi also needs a
+rebuild. Single mode disables the setup wizard (`/setup` redirects to `/login`, provisioning is
+refused) and creates the first admin from `INITIAL_ADMIN_EMAIL` / `INITIAL_ADMIN_PASSWORD` on an
+empty `users` collection. See [`docs/SINGLE_ACCOUNT_DEPLOYMENT_2026-10-29.md`](docs/SINGLE_ACCOUNT_DEPLOYMENT_2026-10-29.md)
+for the env table, fresh-VPS bring-up, the one-time `account_email` re-stamp, and the limitation
+that a non-primary login cannot write under the current row rules.
+
 ### 3.4 Layer rules (normative)
 
 These are the rules the code is supposed to follow. Compliance is measured, not assumed.
@@ -381,6 +394,7 @@ Status vocabulary, applied strictly:
 | Stock movement audit trail | Live | Every increment and decrement logged with source |
 | Excel bulk import | Live | `excel-import.ts` (36 KB) with template download route |
 | SKU generator with jewelry grammar | Live | `sku-generator.ts` encodes category, metal, purity, size |
+| Quick add series memory | Live | Quick Add runs the taxonomy engine with a remembered last series (`quick-add-memory.ts`, PB `store_settings` key `quick_add_memory`): auto-apply + recent-series chips, colour-swatch picks, auto piece names, `Alt+N` / `Enter` shortcuts, camera-first next piece, and clone-a-piece row action that parses architecture SKUs back into taxonomy codes |
 | Metal rate engine | Live | `jewelry-engine.ts` computes rate-based pricing |
 | Manufacturing BOM | Live | `/manufacturing` costs a job card: metal, five charge heads, scrap credit, per-gram cost and loss reconciliation (section 11.10) |
 | Karigar job-work tracker | Live | Job cards persist with status and karigar name; metal issued and loss variance are visible, though no running artisan balance yet |

@@ -186,40 +186,40 @@ export default function ChequeRegisterPage() {
             <Header title="Cheque Register" subtitle="Post-dated cheques, deposit, clearing and bounce" />
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">In hand</p>
-                            <p className="text-lg font-semibold font-mono">{formatINR(summary.openInHandAmount)}</p>
-                            <p className="text-[11px] text-muted-foreground">{summary.openInHandCount} cheques</p>
+                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.openInHandAmount)}</p>
+                            <p className="text-[11px] text-muted-foreground break-words">{summary.openInHandCount} cheques</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">PDC due</p>
-                            <p className="text-lg font-semibold font-mono">{formatINR(summary.pdcAmount)}</p>
-                            <p className="text-[11px] text-muted-foreground">{summary.pdcCount} post-dated</p>
+                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.pdcAmount)}</p>
+                            <p className="text-[11px] text-muted-foreground break-words">{summary.pdcCount} post-dated</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">Pending clearing</p>
-                            <p className="text-lg font-semibold font-mono">{formatINR(summary.depositedPendingAmount)}</p>
-                            <p className="text-[11px] text-muted-foreground">{summary.depositedPendingCount} deposited</p>
+                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.depositedPendingAmount)}</p>
+                            <p className="text-[11px] text-muted-foreground break-words">{summary.depositedPendingCount} deposited</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">Bounced</p>
-                            <p className="text-lg font-semibold font-mono">{formatINR(summary.bouncedAmount)}</p>
-                            <p className="text-[11px] text-muted-foreground">{summary.bouncedCount} dishonoured</p>
+                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.bouncedAmount)}</p>
+                            <p className="text-[11px] text-muted-foreground break-words">{summary.bouncedCount} dishonoured</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">Stale (90d+)</p>
-                            <p className="text-lg font-semibold font-mono">{formatINR(summary.staleAmount)}</p>
-                            <p className="text-[11px] text-muted-foreground">{summary.staleCount} past validity</p>
+                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.staleAmount)}</p>
+                            <p className="text-[11px] text-muted-foreground break-words">{summary.staleCount} past validity</p>
                         </CardContent>
                     </Card>
                 </div>
@@ -231,7 +231,7 @@ export default function ChequeRegisterPage() {
                         </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                             <div className="space-y-1">
                                 <Label>Cheque number</Label>
                                 <Input value={chequeNumber} onChange={(e) => setChequeNumber(e.target.value)} maxLength={6} placeholder="123456" className="font-mono" />
@@ -255,7 +255,7 @@ export default function ChequeRegisterPage() {
                                 <Input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="HDFC Bank" />
                             </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                             <div className="space-y-1">
                                 <Label>Branch</Label>
                                 <Input value={branchName} onChange={(e) => setBranchName(e.target.value)} placeholder="Optional" />

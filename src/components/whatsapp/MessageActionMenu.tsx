@@ -13,9 +13,15 @@ import {
     Copy,
     Check,
     X,
+    Star,
+    Forward,
+    Trash2,
 } from "lucide-react";
 import { useViewport } from "@/hooks/use-viewport";
 import type { ContactType } from "@/lib/whatsapp-crm";
+
+/** Quick reaction row shown above the action list. */
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"] as const;
 
 export interface MessageAction {
     key: string;
@@ -51,6 +57,14 @@ export interface MessageActionMenuProps {
     onAutoBarcodeTag?: () => void;
     /** Common actions. */
     onQuoteReply?: () => void;
+    /** WhatsApp-level message actions (react / star / forward / delete). */
+    onReact?: (emoji: string) => void;
+    onStar?: () => void;
+    isStarred?: boolean;
+    onForward?: () => void;
+    onDelete?: () => void;
+    /** Only own outbound messages can be deleted for everyone. */
+    canDelete?: boolean;
 }
 
 /**
@@ -78,6 +92,12 @@ export function MessageActionMenu({
     onCreateProduct,
     onAutoBarcodeTag,
     onQuoteReply,
+    onReact,
+    onStar,
+    isStarred,
+    onForward,
+    onDelete,
+    canDelete,
 }: MessageActionMenuProps) {
     const menuRef = useRef<HTMLDivElement>(null);
     const [copied, setCopied] = React.useState(false);
@@ -201,6 +221,27 @@ export function MessageActionMenu({
             accent: 'text-muted-foreground',
             handler: onQuoteReply,
         },
+        onStar && {
+            key: 'star',
+            label: isStarred ? 'Unstar Message' : 'Star Message',
+            icon: <Star size={15} className={isStarred ? 'text-amber-400 fill-amber-400' : undefined} />,
+            accent: 'text-amber-500',
+            handler: onStar,
+        },
+        onForward && {
+            key: 'forward',
+            label: 'Forward Message',
+            icon: <Forward size={15} />,
+            accent: 'text-sky-500',
+            handler: onForward,
+        },
+        onDelete && canDelete && {
+            key: 'delete',
+            label: 'Delete Message',
+            icon: <Trash2 size={15} />,
+            accent: 'text-red-500',
+            handler: onDelete,
+        },
         {
             key: 'copy',
             label: copied ? 'Copied!' : 'Copy Text',
@@ -276,10 +317,26 @@ export function MessageActionMenu({
         </div>
     );
 
+    const reactionRow = onReact ? (
+        <div className="px-2 py-1.5 border-b border-border/60 flex items-center gap-1">
+            {QUICK_REACTIONS.map((emoji) => (
+                <button
+                    key={emoji}
+                    data-action
+                    onClick={() => { onReact(emoji); onClose(); }}
+                    className="flex-1 h-8 rounded-lg hover:bg-muted/70 active:scale-110 transition-all text-base leading-none"
+                    aria-label={`React ${emoji}`}
+                >
+                    {emoji}
+                </button>
+            ))}
+        </div>
+    ) : null;
+
     // ---- Desktop: glassmorphic popover anchored at the right-click point ----
     if (isDesktop) {
         const menuWidth = 270;
-        const menuHeight = Math.min(480, (actions.length + commonActions.length) * 38 + 60);
+        const menuHeight = Math.min(480, (actions.length + commonActions.length) * 38 + 110);
         const x = Math.min(position?.x ?? 0, (typeof window !== 'undefined' ? window.innerWidth : 1200) - menuWidth - 16);
         const y = Math.min(position?.y ?? 0, (typeof window !== 'undefined' ? window.innerHeight : 800) - menuHeight - 16);
 
@@ -291,6 +348,7 @@ export function MessageActionMenu({
                 role="menu"
             >
                 {header}
+                {reactionRow}
                 {actions.map(renderButton)}
                 {actions.length > 0 && commonActions.length > 0 && (
                     <div className="my-1 border-t border-border/50" />
@@ -313,6 +371,7 @@ export function MessageActionMenu({
             >
                 <div className="w-10 h-1 rounded-full bg-border mx-auto mt-1 mb-2" />
                 {header}
+                {reactionRow}
                 <div className="mt-1 space-y-0.5">
                     {actions.map((a) => (
                         <button

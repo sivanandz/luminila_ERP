@@ -9,6 +9,22 @@ import { useNtCatalog } from "./NtCatalogContext";
 import { useNtUi } from "./NtUiContext";
 import { NtBrand } from "./NtBrand";
 
+/** A bare hash must survive a click from any page, so it renders as "/#…". */
+function pageHref(href: string): string {
+    const value = (href || "").trim();
+    if (value.startsWith("#")) return `/${value}`;
+    return value || "#";
+}
+
+function findHashTarget(hash: string): Element | null {
+    if (!hash || hash.length < 2) return null;
+    try {
+        return document.querySelector(hash);
+    } catch {
+        return null;
+    }
+}
+
 function buildNavItems(items: NtNavItem[], categories: string[]): NtNavItem[] {
     const all =
         items.find((item) => item.filter === "All pieces") ?? {
@@ -107,10 +123,10 @@ export function NtHeader() {
 
     const activate = (item: NtNavItem) => (event: React.MouseEvent<HTMLAnchorElement>) => {
         setMenuOpen(false);
-        const hashTarget =
-            item.href.startsWith("#") && item.href.length > 1
-                ? document.querySelector(item.href)
-                : null;
+        const raw = (item.href || "").trim();
+        const hash = raw.startsWith("#") ? raw : raw.startsWith("/#") ? raw.slice(1) : "";
+        const hashTarget = findHashTarget(hash);
+        const destination = raw.startsWith("#") ? `/${raw}` : raw || "/";
 
         if (item.filter) {
             event.preventDefault();
@@ -123,15 +139,15 @@ export function NtHeader() {
                 } catch {
                     /* storage unavailable */
                 }
-                window.location.assign(`/${item.href}`);
+                window.location.assign(destination);
             }
             return;
         }
 
         // Hash links in the global header must still work from /checkout.
-        if (item.href.startsWith("#") && !hashTarget) {
+        if (hash && !hashTarget) {
             event.preventDefault();
-            window.location.assign(`/${item.href}`);
+            window.location.assign(destination);
         }
     };
 
@@ -175,7 +191,11 @@ export function NtHeader() {
 
                     <nav className="desktop-nav" aria-label="Main navigation">
                         {navItems.map((item) => (
-                            <a key={`${item.label}-${item.href}`} href={item.href} onClick={activate(item)}>
+                            <a
+                                key={`${item.label}-${item.href}`}
+                                href={pageHref(item.href)}
+                                onClick={activate(item)}
+                            >
                                 {item.label}
                             </a>
                         ))}
@@ -246,7 +266,11 @@ export function NtHeader() {
                 {menuOpen ? (
                     <nav className="mobile-nav" aria-label="Mobile navigation">
                         {mobileNavItems.map((item) => (
-                            <a key={`${item.label}-${item.href}`} href={item.href} onClick={activate(item)}>
+                            <a
+                                key={`${item.label}-${item.href}`}
+                                href={pageHref(item.href)}
+                                onClick={activate(item)}
+                            >
                                 {item.label} <span aria-hidden>↗</span>
                             </a>
                         ))}

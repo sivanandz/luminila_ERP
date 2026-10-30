@@ -2,6 +2,9 @@
 
 Status: grounded research brief for the Niththigal storefront (`storefront/`).
 Verified: 2026-10-27 against the official sources linked below.
+Implementation status (2026-10-28): the gaps recorded here were implemented; see
+[`SEO_AI_OPTIMIZATION.md`](./SEO_AI_OPTIMIZATION.md). This file remains the pre-change
+audit and the source record.
 Rule: nothing in this file is an opinion presented as a standard. Where a claim is a
 recommendation, a proposal, or a retired feature, it is labelled as such.
 
@@ -299,9 +302,12 @@ These are hard constraints, not preferences:
 2. Do not invent a physical address, phone number, email, Instagram URL, GTIN, MPN,
    founding date, review count, rating, shipping rate, or delivery promise that is not in
    the visible site content.
-3. Do not add `Offer.shippingDetails` with a made-up shipping price. The site says
-   delivery is calculated at checkout and taxes are included; it does not state a
-   shipping rate.
+3. Do not add `Offer.shippingDetails` with a made-up shipping price. The checkout
+   displays a flat ₹99 shipping fee (free over ₹799) and a ₹99 COD fee, while
+   `/shipping-returns` says delivery estimates appear at checkout. The CMS has no
+   declared Merchant Center shipping policy, so the structured data and feed omit
+   shipping; do not invent a different rate. If ₹99 is the real policy, publish it
+   consistently on `/shipping-returns` and the AEO copy first.
 4. Do not add `priceValidUntil` without a real expiry date.
 5. Do not add a `SearchAction` unless a working search URL exists.
 6. Do not use the 336 KB data-URL wordmark as `Organization.logo`.

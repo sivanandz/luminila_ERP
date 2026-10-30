@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import { readRegistrySecret } from './tenant-secrets';
+import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from './deployment-mode';
 
 export interface TenantDbRecord {
     email: string;
@@ -271,6 +272,15 @@ export async function provisionTenantDatabase(params: {
     dataDir: string;
     isolated: boolean;
 }> {
+    // Single mode serves one account from the primary database. Provisioning
+    // would allocate a port, create a directory and write the registry, so it
+    // is refused outright rather than silently no-op'd.
+    if (isSingleAccountMode()) {
+        throw new Error(
+            'Multi-account tenant provisioning is disabled: this deployment runs in single-account mode (TENANT_MODE=single). Set TENANT_MODE=multi to re-enable per-account databases.'
+        );
+    }
+
     const cleanEmail = params.email.trim().toLowerCase();
     const tenantSlug = getTenantDbSlug(cleanEmail);
     const registry = readTenantRegistry();
@@ -356,6 +366,20 @@ export async function resolveTenantDatabase(
     tenantSlug: string;
     isolated: boolean;
 }> {
+    // Single mode has exactly one database: every account resolves to the
+    // primary instance, and the registry is neither read nor written.
+    if (isSingleAccountMode()) {
+        const primaryPort = await resolvePrimaryPocketBasePort();
+        return {
+            success: true,
+            found: false,
+            pbUrl: `http://127.0.0.1:${primaryPort}`,
+            port: primaryPort,
+            tenantSlug: 'primary',
+            isolated: false,
+        };
+    }
+
     const cleanEmail = (email || '').trim().toLowerCase();
     const registry = readTenantRegistry();
     // Callers that are only looking up a URL (login, API routes) must not change
@@ -422,6 +446,26 @@ export async function getServerTenantPocketBaseConfig(preferredEmail?: string): 
     adminEmail: string;
     adminPassword: string;
 }> {
+    // Single mode connects every caller to the primary database with the
+    // configured superuser; the per-tenant registry is not consulted.
+    if (isSingleAccountMode()) {
+        const primaryPort = await resolvePrimaryPocketBasePort();
+        const singlePassword =
+            process.env.POCKETBASE_SUPERUSER_PASSWORD ||
+            process.env.PB_ADMIN_PASSWORD;
+        if (!singlePassword) {
+            throw new Error('No PocketBase superuser credentials configured (set POCKETBASE_SUPERUSER_PASSWORD)');
+        }
+        return {
+            pbUrl: `http://127.0.0.1:${primaryPort}`,
+            adminEmail:
+                process.env.POCKETBASE_SUPERUSER_EMAIL ||
+                process.env.PB_ADMIN_EMAIL ||
+                SINGLE_ACCOUNT_EMAIL,
+            adminPassword: singlePassword,
+        };
+    }
+
     const registry = readTenantRegistry();
     const targetEmail = (preferredEmail || registry.activeTenantEmail || '').trim().toLowerCase();
 

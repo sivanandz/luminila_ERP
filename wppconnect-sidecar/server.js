@@ -312,6 +312,14 @@ function attachClientListeners(names, client) {
     if (typeof client.onPollResponse === 'function') {
         client.onPollResponse((poll) => emit('poll_response', { poll }));
     }
+    // Incoming WhatsApp calls are otherwise invisible to the operator; surface
+    // them so the UI can show a banner and offer reject (see /reject-call).
+    if (typeof client.onIncomingCall === 'function') {
+        client.onIncomingCall((call) => {
+            console.log(`[${names[0]}] Incoming call from ${call?.peerJid || 'unknown'} (video: ${!!call?.isVideo})`);
+            emit('incoming_call', { call });
+        });
+    }
 }
 
 /**
@@ -901,6 +909,8 @@ app.get('/api/:session/chats', async (req, res) => {
 });
 
 // Get messages from chat
+// `before=<messageId>` pages backwards through history (count messages older
+// than that id), which is what the transcript's "load older" button uses.
 app.get('/api/:session/messages/:chatId', async (req, res) => {
     const { session, chatId } = req.params;
     const { count = 20 } = req.query;
@@ -911,7 +921,12 @@ app.get('/api/:session/messages/:chatId', async (req, res) => {
     }
 
     try {
-        const messages = await sessionData.client.getMessages(chatId, { count: parseInt(count) });
+        const params = { count: parseInt(count) || 20 };
+        if (req.query.before) {
+            params.id = String(req.query.before);
+            params.direction = 'before';
+        }
+        const messages = await sessionData.client.getMessages(chatId, params);
         res.json({ success: true, messages });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1089,15 +1104,33 @@ app.post('/api/:session/send-image', async (req, res) => {
 // Send video
 app.post('/api/:session/send-video', async (req, res) => {
     const { session } = req.params;
-    const { phone, base64, filename, caption } = req.body;
+    const { phone, base64, filename, caption, mimetype } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
+    if (!base64) {
+        return res.status(400).json({ success: false, error: 'base64 is required' });
+    }
 
     try {
-        const result = await sessionData.client.sendFile(phone, base64, filename || 'video.mp4', caption || '');
+        const to = typeof phone === 'string' && phone.includes('@') ? phone : `${phone}@c.us`;
+        // type:'video' is what makes WhatsApp render a playable bubble instead
+        // of a document chip; the mimetype comes from the client when it knows.
+        const options = {
+            type: 'video',
+            filename: filename || 'video.mp4',
+            caption: caption || '',
+            ...(mimetype ? { mimetype } : {})
+        };
+        let result;
+        try {
+            result = await sessionData.client.sendFile(to, base64, options);
+        } catch (optionsErr) {
+            // Older builds only expose the positional overload
+            result = await sessionData.client.sendFile(to, base64, options.filename, options.caption);
+        }
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1107,43 +1140,71 @@ app.post('/api/:session/send-video', async (req, res) => {
 // Send file/document
 app.post('/api/:session/send-file', async (req, res) => {
     const { session } = req.params;
-    const { phone, base64, filename, caption } = req.body;
+    const { phone, base64, filename, caption, mimetype } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
+    if (!base64) {
+        return res.status(400).json({ success: false, error: 'base64 is required' });
+    }
 
     try {
-        const result = await sessionData.client.sendFile(phone, base64, filename || 'file', caption || '');
+        const to = typeof phone === 'string' && phone.includes('@') ? phone : `${phone}@c.us`;
+        const safeName = filename || 'file';
+        const withExt = /\.[A-Za-z0-9]{2,6}$/.test(safeName) ? safeName : `${safeName}.bin`;
+        const options = {
+            type: 'document',
+            filename: withExt,
+            caption: caption || '',
+            ...(mimetype ? { mimetype } : {})
+        };
+        let result;
+        try {
+            result = await sessionData.client.sendFile(to, base64, options);
+        } catch (optionsErr) {
+            result = await sessionData.client.sendFile(to, base64, withExt, options.caption);
+        }
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Send audio
+// Send audio (plain audio, or `ptt: true` for a push-to-talk voice note)
 app.post('/api/:session/send-audio', async (req, res) => {
     const { session } = req.params;
-    const { phone, base64, ptt = false } = req.body;
+    const { phone, base64, ptt = false, mimetype, filename } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
+    if (!base64) {
+        return res.status(400).json({ success: false, error: 'base64 is required' });
+    }
 
     try {
+        const to = typeof phone === 'string' && phone.includes('@') ? phone : `${phone}@c.us`;
         let result;
-        if (ptt) {
-            if (typeof base64 === 'string' && (base64.startsWith('data:') || /^[A-Za-z0-9+/=]{50,}$/.test(base64.trim()))) {
-                result = await sessionData.client.sendPttFromBase64(phone, base64, 'voice.oga');
-            } else if (typeof sessionData.client.sendPtt === 'function') {
-                result = await sessionData.client.sendPtt(phone, base64);
+        try {
+            // The options form carries isPtt/waveform, which is what turns a raw
+            // audio payload into a voice-note bubble with a playable waveform.
+            result = await sessionData.client.sendFile(to, base64, {
+                type: 'audio',
+                isPtt: !!ptt,
+                waveform: !!ptt,
+                filename: filename || (ptt ? 'voice.oga' : 'audio.mp3'),
+                ...(mimetype ? { mimetype } : {})
+            });
+        } catch (optionsErr) {
+            // Fallback: legacy positional senders
+            if (ptt && typeof sessionData.client.sendPttFromBase64 === 'function') {
+                result = await sessionData.client.sendPttFromBase64(to, base64, filename || 'voice.oga');
             } else {
-                result = await sessionData.client.sendPttFromBase64(phone, base64, 'voice.oga');
+                result = await sessionData.client.sendFile(to, base64, filename || 'audio.mp3', '');
             }
-        } else {
-            result = await sessionData.client.sendFile(phone, base64, 'audio.mp3', '');
         }
         res.json({ success: true, result });
     } catch (error) {
@@ -1733,8 +1794,142 @@ app.get('/api/:session/group-invite-link/:groupId', async (req, res) => {
 });
 
 // ============================================
+// GROUP ADMINISTRATION (members, roles, metadata)
+// ============================================
+
+// Group members with admin flags — one page call per WPPConnect 2.3.6's
+// single-call member fetch.
+app.get('/api/:session/group-members/:groupId', async (req, res) => {
+    const { session, groupId } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const [members, admins] = await Promise.all([
+            sessionData.client.getGroupMembers(groupId),
+            sessionData.client.getGroupAdmins(groupId).catch(() => []),
+        ]);
+        const adminIds = new Set((admins || []).map(a => {
+            const id = a?.id?._serialized || (typeof a === 'string' ? a : a?.user);
+            return typeof id === 'string' ? id : '';
+        }));
+        res.json({
+            success: true,
+            members: (members || []).map(m => {
+                const id = m?.id?._serialized || (typeof m === 'string' ? m : m?.user) || '';
+                return {
+                    id,
+                    name: m?.name || m?.pushname || (typeof id === 'string' ? id.split('@')[0] : ''),
+                    isAdmin: adminIds.has(id) || m?.isAdmin || false,
+                    isSuperAdmin: m?.isSuperAdmin || false,
+                };
+            }),
+            admins: admins || [],
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Promote a member to group admin
+app.post('/api/:session/group-promote-participant', async (req, res) => {
+    const { session } = req.params;
+    const { groupId, participantId } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        await sessionData.client.promoteParticipant(groupId, participantId);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Demote a group admin back to member
+app.post('/api/:session/group-demote-participant', async (req, res) => {
+    const { session } = req.params;
+    const { groupId, participantId } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        await sessionData.client.demoteParticipant(groupId, participantId);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Rename a group
+app.post('/api/:session/set-group-subject', async (req, res) => {
+    const { session } = req.params;
+    const { groupId, subject } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.setGroupSubject(groupId, String(subject || ''));
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Change a group description
+app.post('/api/:session/set-group-description', async (req, res) => {
+    const { session } = req.params;
+    const { groupId, description } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.setGroupDescription(groupId, String(description || ''));
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Toggle whether only admins can send messages
+app.post('/api/:session/set-group-admins-only', async (req, res) => {
+    const { session } = req.params;
+    const { groupId, value } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.setMessagesAdminsOnly(groupId, !!value);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============================================
 // CATALOG & BUSINESS APIs (for inventory system)
 // ============================================
+// The legacy spellings (/get-products, /add-product, /del-products,
+// /get-collections, /get-all-labels, /send-order-message, …) were removed —
+// the app uses /catalog/products, /catalog/collections, /labels and /send-order.
 
 // Catalog APIs require the catalog owner's chat id; default to the session's own number
 async function resolveOwnChatId(sessionData) {
@@ -1751,8 +1946,17 @@ async function resolveOwnChatId(sessionData) {
     return null;
 }
 
-// Get all products from business catalog
-app.get('/api/:session/get-products', async (req, res) => {
+// ============================================
+// CATALOG COLLECTIONS / CART / PRODUCT IMAGES
+// (WPPConnect catalog.layer — exposed for the catalog editor)
+// ============================================
+
+async function resolveCatalogOwner(sessionData, req) {
+    return req.query.chatId || req.query.phone || await resolveOwnChatId(sessionData);
+}
+
+// List catalog collections with their products
+app.get('/api/:session/catalog/collections', async (req, res) => {
     const { session } = req.params;
     const sessionData = sessions.get(session);
 
@@ -1761,113 +1965,46 @@ app.get('/api/:session/get-products', async (req, res) => {
     }
 
     try {
-        const count = parseInt(req.query.count, 10) || 50;
-        const target = req.query.phone || await resolveOwnChatId(sessionData);
+        const target = await resolveCatalogOwner(sessionData, req);
         if (!target) {
-            return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?phone=<chatId>' });
-        }
-        const products = await sessionData.client.getProducts(target, count);
-        res.json({ success: true, products });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Get product by ID
-app.get('/api/:session/get-product-by-id/:productId', async (req, res) => {
-    const { session, productId } = req.params;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        const owner = req.query.chatId || await resolveOwnChatId(sessionData);
-        if (!owner) {
             return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?chatId=<chatId>' });
         }
-        const product = await sessionData.client.getProductById(owner, productId);
-        res.json({ success: true, product });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Add product to catalog
-app.post('/api/:session/add-product', async (req, res) => {
-    const { session } = req.params;
-    const { name, description, price, currency = 'INR', image, isHidden, url, retailerId } = req.body;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        // Signature: createProduct(name, image, description, price, isHidden, url, retailerId, currency)
-        const result = await sessionData.client.createProduct(
-            name,
-            image,
-            description || '',
-            Number(price) || 0,
-            !!isHidden,
-            url || '',
-            retailerId || '',
-            currency || 'INR'
-        );
-        res.json({ success: true, result });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Delete products
-app.post('/api/:session/del-products', async (req, res) => {
-    const { session } = req.params;
-    const { productIds } = req.body;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        const ids = Array.isArray(productIds) ? productIds : [productIds].filter(Boolean);
-        const result = await sessionData.client.delProducts(ids);
-        res.json({ success: true, result });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Get collections
-app.get('/api/:session/get-collections', async (req, res) => {
-    const { session } = req.params;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        const target = req.query.phone || await resolveOwnChatId(sessionData);
-        if (!target) {
-            return res.status(400).json({ success: false, error: 'Unable to resolve catalog chat id; pass ?phone=<chatId>' });
-        }
-        const qnt = String(parseInt(req.query.count, 10) || 10);
+        const count = String(parseInt(req.query.count, 10) || 20);
         const maxProducts = String(parseInt(req.query.maxProducts, 10) || 100);
-        const collections = await sessionData.client.getCollections(target, qnt, maxProducts);
+        const collections = await sessionData.client.getCollections(target, count, maxProducts);
         res.json({ success: true, collections });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Send order message
-app.post('/api/:session/send-order-message', async (req, res) => {
+// Create a catalog collection
+app.post('/api/:session/catalog/collections', async (req, res) => {
     const { session } = req.params;
-    const { phone, orderItems, options } = req.body;
+    const { name, productIds } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+    if (!name || !String(name).trim()) {
+        return res.status(400).json({ success: false, error: 'Collection name is required' });
+    }
+
+    try {
+        // WPPConnect's own example passes an array of product ids
+        const products = Array.isArray(productIds) ? productIds : [];
+        const result = await sessionData.client.createCollection(String(name).trim(), products);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Edit a catalog collection (rename, add or remove products)
+app.put('/api/:session/catalog/collections/:collectionId', async (req, res) => {
+    const { session, collectionId } = req.params;
+    const { name, collectionName, productsToAdd, productsToRemove } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
@@ -1875,7 +2012,85 @@ app.post('/api/:session/send-order-message', async (req, res) => {
     }
 
     try {
-        const result = await sessionData.client.sendOrderMessage(phone, orderItems, options);
+        const options = {};
+        const finalName = collectionName !== undefined ? collectionName : name;
+        if (finalName !== undefined && finalName !== null && String(finalName).length > 0) {
+            options.collectionName = String(finalName);
+        }
+        if (Array.isArray(productsToAdd)) options.productsToAdd = productsToAdd;
+        if (Array.isArray(productsToRemove)) options.productsToRemove = productsToRemove;
+        const result = await sessionData.client.editCollection(collectionId, options);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Delete a catalog collection
+app.delete('/api/:session/catalog/collections/:collectionId', async (req, res) => {
+    const { session, collectionId } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.deleteCollection(collectionId);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Enable or disable the WhatsApp cart on the business catalog
+app.post('/api/:session/catalog/cart-enabled', async (req, res) => {
+    const { session } = req.params;
+    const { enabled } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.updateCartEnabled(!!enabled);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Add an extra image to a catalog product (products support several images)
+app.post('/api/:session/catalog/products/:productId/image', async (req, res) => {
+    const { session, productId } = req.params;
+    const { base64, imageUrl } = req.body;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const image = await resolveCatalogImageBase64(base64 || imageUrl);
+        const result = await sessionData.client.addProductImage(productId, image);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Remove an extra image from a catalog product (index-based, as WPPConnect exposes it)
+app.delete('/api/:session/catalog/products/:productId/image/:imageIndex', async (req, res) => {
+    const { session, productId, imageIndex } = req.params;
+    const sessionData = sessions.get(session);
+
+    if (!sessionData || !sessionData.client) {
+        return res.status(404).json({ success: false, error: 'Session not connected' });
+    }
+
+    try {
+        const result = await sessionData.client.removeProductImage(productId, String(imageIndex));
         res.json({ success: true, result });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -1894,81 +2109,6 @@ app.get('/api/:session/get-order-by-messageId/:messageId', async (req, res) => {
     try {
         const order = await sessionData.client.getOrderbyMsg(messageId);
         res.json({ success: true, order });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// ============================================
-// LABELS APIs
-// ============================================
-
-// Get all labels
-app.get('/api/:session/get-all-labels', async (req, res) => {
-    const { session } = req.params;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        const labels = await sessionData.client.getAllLabels();
-        res.json({ success: true, labels });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Add new label
-app.post('/api/:session/add-new-label', async (req, res) => {
-    const { session } = req.params;
-    const { name, options } = req.body;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        const result = await sessionData.client.addNewLabel(name, options);
-        res.json({ success: true, result });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Add or remove label from chat
-app.post('/api/:session/add-or-remove-label', async (req, res) => {
-    const { session } = req.params;
-    const { chatId, labelId, action = 'add' } = req.body;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        // addOrRemoveLabels expects { labelId, type } options (not { id })
-        const result = await sessionData.client.addOrRemoveLabels([chatId], [{ labelId, type: action === 'add' ? 'add' : 'remove' }]);
-        res.json({ success: true, result });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Delete label
-app.delete('/api/:session/delete-label/:labelId', async (req, res) => {
-    const { session, labelId } = req.params;
-    const sessionData = sessions.get(session);
-
-    if (!sessionData || !sessionData.client) {
-        return res.status(404).json({ success: false, error: 'Session not connected' });
-    }
-
-    try {
-        await sessionData.client.deleteLabel(labelId);
-        res.json({ success: true });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2179,8 +2319,8 @@ app.post('/api/:session/send-link-preview', async (req, res) => {
 // CHAT MANAGEMENT APIs
 // ============================================
 
-// Get unread messages (supports both /unread-messages and /all-unread-messages)
-app.get(['/api/:session/unread-messages', '/api/:session/all-unread-messages'], async (req, res) => {
+// Get unread messages
+app.get('/api/:session/unread-messages', async (req, res) => {
     const { session } = req.params;
     const sessionData = sessions.get(session);
 
@@ -2267,25 +2407,34 @@ app.post('/api/:session/clear-chat', async (req, res) => {
 });
 
 // Mute chat
+// `duration` is a count and `unit` one of 'hours' | 'minutes' | 'year',
+// matching WPPConnect's sendMute(id, time, type) signature. Unmuting is a
+// separate call (sendMute with no duration), so it is exposed as duration=0.
 app.post('/api/:session/send-mute', async (req, res) => {
     const { session } = req.params;
-    const { chatId, duration } = req.body; // duration in seconds, -1 for forever
+    const { chatId, duration, unit } = req.body;
     const sessionData = sessions.get(session);
 
     if (!sessionData || !sessionData.client) {
         return res.status(404).json({ success: false, error: 'Session not connected' });
     }
 
+    const parsedDuration = Number(duration);
+    const muteUnit = ['minutes', 'hours', 'year'].includes(unit) ? unit : 'hours';
+
     try {
         let result;
-        if (typeof sessionData.client.sendMute === 'function') {
-            result = await sessionData.client.sendMute(chatId, duration || 8, 'hours');
+        if (parsedDuration === 0) {
+            // Unmute: sendMute(id) with no duration lifts the mute
+            result = await sessionData.client.sendMute(chatId);
+        } else if (typeof sessionData.client.sendMute === 'function') {
+            result = await sessionData.client.sendMute(chatId, parsedDuration > 0 ? parsedDuration : 8, muteUnit);
         } else if (sessionData.client.page && !sessionData.client.page.isClosed()) {
             result = await sessionData.client.page.evaluate(async ({ id, time }) => {
                 if (window.WPP?.chat?.mute) {
                     return await window.WPP.chat.mute(id, { expiration: time });
                 }
-            }, { id: chatId, time: duration });
+            }, { id: chatId, time: parsedDuration > 0 ? parsedDuration : 8 });
         }
         res.json({ success: true, result });
     } catch (error) {

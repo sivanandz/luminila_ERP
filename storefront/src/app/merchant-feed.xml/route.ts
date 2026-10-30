@@ -5,6 +5,7 @@ import {
     absoluteAssetUrl,
     absoluteUrl,
     googleProductCategoryId,
+    isProductInStock,
     productPath,
 } from "@/lib/seo";
 
@@ -59,7 +60,7 @@ export async function GET() {
 
         for (const variant of variants) {
             const available =
-                variant.stock_level > 0 && product.stock_status !== "out_of_stock";
+                variant.stock_level > 0 && isProductInStock(product);
             const variantLabel =
                 variant.label && variant.label !== "Standard"
                     ? ` — ${oneLine(variant.label)}`

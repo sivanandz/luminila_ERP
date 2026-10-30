@@ -61,13 +61,15 @@ export async function openRazorpayCheckout(options: RazorpayPaymentOptions) {
         amount: options.amount * 100, // Amount in paise
         currency: "INR",
         ...(options.orderId ? { order_id: options.orderId } : {}),
-        name: options.brandName || "Fashion Atelier",
+        // Omit optional fields rather than filling them with placeholder data:
+        // Razorpay then uses the merchant account's own name.
+        ...(options.brandName ? { name: options.brandName } : {}),
         description: options.description || "Online Jewellery Order",
         image: "https://cdn-icons-png.flaticon.com/512/751/751508.png",
         prefill: {
             name: options.customerName,
             contact: options.customerPhone,
-            email: options.customerEmail || "customer@example.com",
+            ...(options.customerEmail ? { email: options.customerEmail } : {}),
         },
         theme: {
             color: options.themeColor || "#000000",

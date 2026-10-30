@@ -136,59 +136,68 @@ export default function GSTReportPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="GST Report (GSTR-1)" subtitle="B2B and B2C invoices for filing" />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-8 scroll-smooth">
                 {/* Actions */}
-                <div className="flex items-center justify-between mb-6">
-                    <Button variant="ghost" onClick={() => router.push("/reports")}>
+                <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-start lg:justify-between">
+                    <Button
+                        variant="ghost"
+                        onClick={() => router.push("/reports")}
+                        className="h-9 justify-start sm:h-8"
+                    >
                         <ArrowLeft className="w-4 h-4 mr-2" />
                         Back to Reports
                     </Button>
 
-                    <div className="flex items-center gap-4">
+                    <div className="flex flex-wrap items-center gap-2 lg:gap-4">
                         <Input
                             placeholder="Org GSTIN"
                             value={gstin}
                             onChange={(e) => setGstin(e.target.value)}
-                            className="w-40 bg-card uppercase font-mono"
+                            className="w-full bg-card uppercase font-mono sm:w-40"
                             maxLength={15}
                         />
-                        <div className="flex items-center gap-2">
+                        <div className="flex w-full items-center gap-2 sm:w-auto">
                             <Input
                                 type="date"
                                 value={startDate}
                                 onChange={(e) => setStartDate(e.target.value)}
-                                className="w-40 bg-card"
+                                className="min-w-0 flex-1 bg-card sm:w-40 sm:flex-none"
                             />
                             <span className="text-muted-foreground">to</span>
                             <Input
                                 type="date"
                                 value={endDate}
                                 onChange={(e) => setEndDate(e.target.value)}
-                                className="w-40 bg-card"
+                                className="min-w-0 flex-1 bg-card sm:w-40 sm:flex-none"
                             />
                         </div>
-                        <Button onClick={handleExportJSON} className="bg-green-600 hover:bg-green-700">
-                            <FileText className="w-4 h-4 mr-2" />
-                            Export JSON
-                        </Button>
-                        <Button
-                            onClick={handleExportOfficial}
-                            disabled={officialBusy}
-                            className="bg-blue-600 hover:bg-blue-700"
-                            title="Official GSTN GSTR-1 JSON including credit notes and HSN summary"
-                        >
-                            <Download className="w-4 h-4 mr-2" />
-                            {officialBusy ? "Building..." : "GSTN JSON"}
-                        </Button>
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                            <Button
+                                onClick={handleExportJSON}
+                                className="h-9 w-full bg-green-600 hover:bg-green-700 sm:h-8 sm:w-auto"
+                            >
+                                <FileText className="w-4 h-4 mr-2" />
+                                Export JSON
+                            </Button>
+                            <Button
+                                onClick={handleExportOfficial}
+                                disabled={officialBusy}
+                                className="h-9 w-full bg-blue-600 hover:bg-blue-700 sm:h-8 sm:w-auto"
+                                title="Official GSTN GSTR-1 JSON including credit notes and HSN summary"
+                            >
+                                <Download className="w-4 h-4 mr-2" />
+                                {officialBusy ? "Building..." : "GSTN JSON"}
+                            </Button>
+                        </div>
                     </div>
                 </div>
 
                 {/* Summary */}
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">B2B Sales</p>
-                            <p className="text-xl font-semibold text-green-400">
+                            <p className="text-xl font-semibold text-green-400 break-words">
                                 {formatINR(summary.totalB2B || 0)}
                             </p>
                         </CardContent>
@@ -196,7 +205,7 @@ export default function GSTReportPage() {
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">B2C Sales</p>
-                            <p className="text-xl font-semibold text-blue-400">
+                            <p className="text-xl font-semibold text-blue-400 break-words">
                                 {formatINR(summary.totalB2C || 0)}
                             </p>
                         </CardContent>
@@ -204,7 +213,7 @@ export default function GSTReportPage() {
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">CGST</p>
-                            <p className="text-xl font-semibold">
+                            <p className="text-xl font-semibold break-words">
                                 {formatINR(summary.totalCGST || 0)}
                             </p>
                         </CardContent>
@@ -212,7 +221,7 @@ export default function GSTReportPage() {
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">SGST</p>
-                            <p className="text-xl font-semibold">
+                            <p className="text-xl font-semibold break-words">
                                 {formatINR(summary.totalSGST || 0)}
                             </p>
                         </CardContent>
@@ -220,7 +229,7 @@ export default function GSTReportPage() {
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">IGST</p>
-                            <p className="text-xl font-semibold">
+                            <p className="text-xl font-semibold break-words">
                                 {formatINR(summary.totalIGST || 0)}
                             </p>
                         </CardContent>

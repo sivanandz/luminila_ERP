@@ -72,48 +72,62 @@ export default function SalesReportPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="Sales Report" subtitle="Invoice and revenue summary" />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-8 scroll-smooth">
                 {/* Actions */}
-                <div className="flex items-center justify-between mb-6">
-                    <Button variant="ghost" onClick={() => router.push("/reports")}>
+                <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-start lg:justify-between">
+                    <Button
+                        variant="ghost"
+                        onClick={() => router.push("/reports")}
+                        className="h-9 justify-start sm:h-8"
+                    >
                         <ArrowLeft className="w-4 h-4 mr-2" />
                         Back to Reports
                     </Button>
 
-                    <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 lg:gap-4">
+                        <div className="flex w-full items-center gap-2 sm:w-auto">
                             <Input
                                 type="date"
                                 value={startDate}
                                 onChange={(e) => setStartDate(e.target.value)}
-                                className="w-40 bg-card"
+                                className="min-w-0 flex-1 bg-card sm:w-40 sm:flex-none"
                             />
                             <span className="text-muted-foreground">to</span>
                             <Input
                                 type="date"
                                 value={endDate}
                                 onChange={(e) => setEndDate(e.target.value)}
-                                className="w-40 bg-card"
+                                className="min-w-0 flex-1 bg-card sm:w-40 sm:flex-none"
                             />
                         </div>
 
-                        <Button variant="outline" onClick={handleExport}>
-                            <Download className="w-4 h-4 mr-2" />
-                            Export CSV
-                        </Button>
-                        <Button variant="outline" onClick={handlePrint}>
-                            <Printer className="w-4 h-4 mr-2" />
-                            Print
-                        </Button>
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                            <Button
+                                variant="outline"
+                                onClick={handleExport}
+                                className="h-9 w-full sm:h-8 sm:w-auto"
+                            >
+                                <Download className="w-4 h-4 mr-2" />
+                                Export CSV
+                            </Button>
+                            <Button
+                                variant="outline"
+                                onClick={handlePrint}
+                                className="h-9 w-full sm:h-8 sm:w-auto"
+                            >
+                                <Printer className="w-4 h-4 mr-2" />
+                                Print
+                            </Button>
+                        </div>
                     </div>
                 </div>
 
                 {/* Summary Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">Total Sales</p>
-                            <p className="text-2xl font-semibold text-primary">
+                            <p className="text-2xl font-semibold text-primary break-words">
                                 {formatINR(summary.totalSales || 0)}
                             </p>
                         </CardContent>
@@ -121,7 +135,7 @@ export default function SalesReportPage() {
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">Total Tax</p>
-                            <p className="text-2xl font-semibold">
+                            <p className="text-2xl font-semibold break-words">
                                 {formatINR(summary.totalTax || 0)}
                             </p>
                         </CardContent>
@@ -129,13 +143,13 @@ export default function SalesReportPage() {
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">Invoices</p>
-                            <p className="text-2xl font-semibold">{summary.totalOrders || 0}</p>
+                            <p className="text-2xl font-semibold break-words">{summary.totalOrders || 0}</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
                             <p className="text-sm text-muted-foreground">Avg. Order</p>
-                            <p className="text-2xl font-semibold">
+                            <p className="text-2xl font-semibold break-words">
                                 {formatINR(
                                     summary.totalOrders > 0
                                         ? summary.totalSales / summary.totalOrders

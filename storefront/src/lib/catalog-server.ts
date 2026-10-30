@@ -20,7 +20,11 @@ import {
     buildProductSlugIndex,
     type ItemSeo,
 } from "@/lib/seo";
-import { fetchJson, storefrontApiEndpoint } from "@/lib/site-content-server";
+import {
+    describeError,
+    fetchJson,
+    storefrontApiEndpoint,
+} from "@/lib/site-content-server";
 
 /** Maximum products serialised into the initial client payload. */
 export const INITIAL_CATALOG_LIMIT = 120;
@@ -220,7 +224,7 @@ async function loadBuildCatalog(): Promise<BuildCatalog> {
                 console.warn(`[seo] ${url} returned an unexpected payload.`);
             }
         } catch (error) {
-            console.warn(`[seo] Could not load the catalogue from ${url}.`, error);
+            console.warn(`[seo] Could not load the catalogue from ${url}: ${describeError(error)}`);
         }
     }
 

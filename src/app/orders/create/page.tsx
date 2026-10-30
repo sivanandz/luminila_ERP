@@ -444,20 +444,20 @@ export default function CreateOrderPage() {
 
                         {/* Order Items */}
                         <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover flex-1">
-                            <div className="flex items-center justify-between mb-6">
+                            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
                                 <h3 className="text-white font-bold text-lg">Order Items</h3>
-                                <div className="flex items-center gap-2">
+                                <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
                                     <Button
                                         type="button"
                                         variant="outline"
                                         size="sm"
                                         onClick={() => setShowBarcodeScanner(true)}
-                                        className="h-10 px-3 bg-bg-navy border-surface-hover hover:border-primary/50 text-primary flex items-center gap-1.5"
+                                        className="h-10 w-full justify-center px-3 bg-bg-navy border-surface-hover hover:border-primary/50 text-primary flex items-center gap-1.5 lg:w-auto"
                                     >
                                         <ScanBarcode size={16} />
                                         <span>Scan Barcode</span>
                                     </Button>
-                                    <div className="relative w-64">
+                                    <div className="relative w-full lg:w-64">
                                         <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-moonstone">
                                             <Plus size={16} />
                                         </div>
@@ -466,10 +466,10 @@ export default function CreateOrderPage() {
                                             placeholder="Add Item..."
                                             value={productSearch}
                                             onChange={(e) => setProductSearch(e.target.value)}
-                                            className="input bg-bg-navy border-surface-hover w-full pl-9 h-10 text-sm text-white focus:w-80 transition-all"
+                                            className="input bg-bg-navy border-surface-hover w-full pl-9 h-10 text-sm text-white lg:focus:w-80 transition-all"
                                         />
                                     {showProductResults && productResults.length > 0 && (
-                                        <div className="absolute top-full right-0 mt-2 w-96 bg-surface-navy border border-surface-hover rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
+                                        <div className="absolute left-0 right-0 top-full mt-2 lg:left-auto lg:right-0 lg:w-96 bg-surface-navy border border-surface-hover rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
                                             {productResults.map(product => (
                                                 <div key={product.id}>
                                                     {product.variants.length > 0 ? (

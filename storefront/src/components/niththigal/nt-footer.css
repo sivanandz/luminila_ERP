@@ -1,0 +1,31 @@
+/*
+ * The editorial footer grid is brand + link columns + note. When a third link
+ * column is rendered, widen the grid instead of wrapping the note onto a new
+ * row. Breakpoints mirror the footer rules in src/app/niththigal.css.
+ */
+.footer-top.nt-footer-wide {
+    grid-template-columns: 1.5fr 1fr 1fr 1fr 1.3fr;
+}
+
+@media (max-width: 1100px) {
+    .footer-top.nt-footer-wide {
+        grid-template-columns: 1.35fr 1fr 1fr 1fr 1.1fr;
+        gap: 25px;
+    }
+}
+
+@media (max-width: 800px) {
+    .footer-top.nt-footer-wide {
+        grid-template-columns: 1.2fr 1fr 1fr 1fr;
+    }
+}
+
+@media (max-width: 600px) {
+    .footer-top.nt-footer-wide {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .footer-top.nt-footer-wide .footer-links:nth-child(4) {
+        grid-column: 1 / -1;
+    }
+}

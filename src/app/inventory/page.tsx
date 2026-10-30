@@ -42,6 +42,7 @@ import {
     Layers,
     MoreHorizontal,
     ClipboardPaste,
+    Copy,
 } from "lucide-react";
 import { ProductBroadcastModal } from "@/components/whatsapp/ProductBroadcastModal";
 import { ProductPhotoTaggingModal, type ShotType } from "@/components/inventory/ProductPhotoTaggingModal";
@@ -77,6 +78,8 @@ import {
     getSubcategoriesForCategory,
     computeNextSkuSequence,
 } from "@/lib/sku-generator";
+import { loadQuickAddMemory } from "@/lib/quick-add-memory";
+import { useInventoryShortcuts } from "@/hooks/use-inventory-shortcuts";
 import {
     BASE_METAL_DEFINITIONS,
     CRAFT_DEFINITIONS,
@@ -186,6 +189,7 @@ function InventoryContent() {
     const [, setError] = useState<string | null>(null);
     const [showAddDialog, setShowAddDialog] = useState(false);
     const [showQuickAdd, setShowQuickAdd] = useState(false);
+    const [cloneSeed, setCloneSeed] = useState<Product | null>(null);
     const [showPasteList, setShowPasteList] = useState(false);
     const [statusFilter, setStatusFilter] = useState<"all" | "published" | "draft">("all");
     const [salesChannels, setSalesChannels] = useState<SalesChannelDef[]>(() => getConfiguredChannels());
@@ -312,9 +316,29 @@ function InventoryContent() {
 
     useEffect(() => {
         loadSKUTaxonomies().then(setSkuTaxonomies);
+        loadQuickAddMemory().catch(() => {});
         const unsubscribe = subscribeSKUTaxonomies(setSkuTaxonomies);
         return () => unsubscribe();
     }, []);
+
+    // Alt+N opens Quick add when no other modal is in the way.
+    useInventoryShortcuts(
+        {
+            onQuickAdd: () => {
+                setCloneSeed(null);
+                setShowQuickAdd(true);
+            },
+        },
+        !showQuickAdd &&
+            !showAddDialog &&
+            !showPasteList &&
+            !showScanDialog &&
+            !showDiscrepancyModal &&
+            !showBroadcastModal &&
+            !showBulkImportModal &&
+            !showImportDialog &&
+            !showPOHistoryModal
+    );
 
     // Handle Scan Logic. `overrideQuery` lets the camera path pass the scanned code
     // directly, because a setScanQuery() in the same event is not visible to this
@@ -893,10 +917,20 @@ function InventoryContent() {
                 title="Inventory"
                 subtitle={`${publishedCount} published • ${draftCount} drafts • ${products.reduce((acc, p) => acc + p.stock, 0)} units`}
                 action={
-                    <Button onClick={() => setShowQuickAdd(true)}>
-                        <Plus size={18} className="mr-2" />
-                        Quick add
-                    </Button>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            onClick={() => {
+                                setCloneSeed(null);
+                                setShowQuickAdd(true);
+                            }}
+                        >
+                            <Plus size={18} className="mr-2" />
+                            Quick add
+                        </Button>
+                        <span className="hidden md:inline-flex items-center rounded border border-surface-hover/60 bg-bg-navy/70 px-1.5 py-0.5 text-[9px] font-mono text-moonstone">
+                            Alt+N
+                        </span>
+                    </div>
                 }
                 hideSearch
             />
@@ -1174,7 +1208,7 @@ function InventoryContent() {
                                 return (
                                     <div
                                         key={product.id}
-                                        className={`bg-surface-navy rounded-xl border p-3 md:p-4 group transition-all shadow-sm relative ${
+                                        className={`min-w-0 bg-surface-navy rounded-xl border p-3 md:p-4 group transition-all shadow-sm relative ${
                                             isSelected ? 'border-emerald-500 ring-1 ring-emerald-500/40' : 'border-surface-hover hover:border-primary/50'
                                         }`}
                                     >
@@ -1195,7 +1229,7 @@ function InventoryContent() {
                                             ) : (
                                                 <Package size={48} className="text-surface-hover/50" />
                                             )}
-                                            <div className="absolute inset-0 bg-bg-navy/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[2px]">
+                                            <div className="absolute inset-0 bg-bg-navy/80 opacity-0 group-hover:opacity-100 transition-opacity flex flex-wrap items-center justify-center content-center gap-1.5 p-1.5 backdrop-blur-[2px]">
                                                 <button
                                                     onClick={() => {
                                                         setBroadcastProductsList([product]);
@@ -1253,6 +1287,17 @@ function InventoryContent() {
                                                     setEditingProductId(product.id);
                                                     setShowAddDialog(true);
                                                 }} className="bg-primary text-primary-foreground p-2 rounded-lg hover:scale-110"><Edit size={18} /></button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setCloneSeed(product);
+                                                        setShowQuickAdd(true);
+                                                    }}
+                                                    className="bg-surface-hover/60 text-white p-2 rounded-lg hover:scale-110"
+                                                    title="Clone into Quick add — change colour & photo, save"
+                                                >
+                                                    <Copy size={16} />
+                                                </button>
                                                 <button onClick={() => handleDeleteProduct(product.id)} className="bg-red-500 text-white p-2 rounded-lg hover:scale-110"><Trash2 size={18} /></button>
                                             </div>
                                         </div>
@@ -1331,9 +1376,13 @@ function InventoryContent() {
             {/* Quick Add */}
             <QuickAddProductDialog
                 open={showQuickAdd}
-                onOpenChange={setShowQuickAdd}
+                onOpenChange={(next) => {
+                    setShowQuickAdd(next);
+                    if (!next) setCloneSeed(null);
+                }}
                 categories={categories}
                 existingSkus={products.map((product) => product.sku)}
+                cloneSeed={cloneSeed}
                 onCreated={handleQuickAddCreated}
             />
 

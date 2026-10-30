@@ -236,6 +236,42 @@ process.on('exit', () => {
     }
 });
 
+// ---------------------------------------------------------------
+// Deployment mode. This orchestrator is not Next, so it does not
+// inherit Next's env loading: read the two mode keys from
+// .env.local itself, or the gate below disagrees with the dev
+// server (Next loads that file and runs multi-account while the
+// tenant databases never come up). An export in the shell wins
+// over the file, the same precedence Next uses. Mirrors
+// src/lib/deployment-mode.ts:getDeploymentMode().
+// ---------------------------------------------------------------
+const DEPLOYMENT_MODE_KEYS = ['TENANT_MODE', 'NEXT_PUBLIC_TENANT_MODE'];
+
+function loadDeploymentModeEnv() {
+    let content = '';
+    try {
+        const envPath = path.join(ROOT_DIR, '.env.local');
+        if (fs.existsSync(envPath)) content = fs.readFileSync(envPath, 'utf8');
+    } catch { /* unreadable .env.local leaves the shell environment in charge */ }
+
+    for (const line of content.split(/\r?\n/)) {
+        const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+        if (!match || !DEPLOYMENT_MODE_KEYS.includes(match[1])) continue;
+        // Shell exports take precedence, even when empty (Next does the same).
+        if (process.env[match[1]] !== undefined) continue;
+        const raw = match[2].trim();
+        const quoted = raw.match(/^(['"`])([\s\S]*)\1$/);
+        process.env[match[1]] = quoted ? quoted[2] : raw.replace(/\s+#.*$/, '').trim();
+    }
+}
+
+/** Multi-account only when either mode variable is "multi" (trimmed, case-insensitive). */
+function isMultiAccountMode() {
+    return DEPLOYMENT_MODE_KEYS.some(
+        (key) => String(process.env[key] || '').trim().toLowerCase() === 'multi'
+    );
+}
+
 async function main() {
     console.log(`\n${CYAN}══════════════════════════════════════════════════════${RESET}`);
     console.log(`${CYAN}${BOLD}     Luminila Unified Server Orchestrator     ${RESET}`);
@@ -303,37 +339,44 @@ async function main() {
     process.env.PB_PORT = String(pbPort);
     process.env.NEXT_PUBLIC_POCKETBASE_URL = `http://127.0.0.1:${pbPort}`;
 
-    // 1b. Auto-restore any isolated tenant PocketBase instances from pb_tenants/registry.json
-    try {
-        const registryPath = path.join(PB_DIR, 'pb_tenants', 'registry.json');
-        if (fs.existsSync(registryPath) && fs.existsSync(PB_EXE)) {
-            const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-            const tenants = registry && registry.tenants ? Object.values(registry.tenants) : [];
-            for (const tenant of tenants) {
-                if (!tenant || tenant.tenantSlug === 'primary' || !tenant.port || !tenant.dataDir) continue;
-                const running = await isPocketBaseHealthy(tenant.port);
-                if (!running && fs.existsSync(tenant.dataDir)) {
-                    console.log(`${GREEN}[PB:${tenant.tenantSlug}]${RESET} Starting isolated tenant DB on port ${tenant.port}...`);
-                    const tProc = spawn(
-                        PB_EXE,
-                        [
-                            'serve',
-                            `--http=0.0.0.0:${tenant.port}`,
-                            `--dir=${tenant.dataDir}`,
-                            `--migrationsDir=${path.join(PB_DIR, 'pb_migrations')}`,
-                        ],
-                        {
-                            cwd: PB_DIR,
-                            stdio: ['ignore', 'pipe', 'pipe'],
-                        }
-                    );
-                    children.push(tProc);
-                    pipeOutput(tProc, `[PB:${tenant.port}]`, GREEN);
+    // 1b. Auto-restore any isolated tenant PocketBase instances from pb_tenants/registry.json.
+    // Tenant databases are a multi-account feature; single-account mode (the default)
+    // serves the one primary database above, so the registry is not read.
+    loadDeploymentModeEnv();
+    if (!isMultiAccountMode()) {
+        console.log(`${CYAN}[PB]${RESET} Single-account mode: tenant databases are not started (set TENANT_MODE=multi to re-enable multi-account).`);
+    } else {
+        try {
+            const registryPath = path.join(PB_DIR, 'pb_tenants', 'registry.json');
+            if (fs.existsSync(registryPath) && fs.existsSync(PB_EXE)) {
+                const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+                const tenants = registry && registry.tenants ? Object.values(registry.tenants) : [];
+                for (const tenant of tenants) {
+                    if (!tenant || tenant.tenantSlug === 'primary' || !tenant.port || !tenant.dataDir) continue;
+                    const running = await isPocketBaseHealthy(tenant.port);
+                    if (!running && fs.existsSync(tenant.dataDir)) {
+                        console.log(`${GREEN}[PB:${tenant.tenantSlug}]${RESET} Starting isolated tenant DB on port ${tenant.port}...`);
+                        const tProc = spawn(
+                            PB_EXE,
+                            [
+                                'serve',
+                                `--http=0.0.0.0:${tenant.port}`,
+                                `--dir=${tenant.dataDir}`,
+                                `--migrationsDir=${path.join(PB_DIR, 'pb_migrations')}`,
+                            ],
+                            {
+                                cwd: PB_DIR,
+                                stdio: ['ignore', 'pipe', 'pipe'],
+                            }
+                        );
+                        children.push(tProc);
+                        pipeOutput(tProc, `[PB:${tenant.port}]`, GREEN);
+                    }
                 }
             }
+        } catch (tErr) {
+            console.warn(`${YELLOW}[PB] Notice restoring tenant DBs: ${tErr.message}${RESET}`);
         }
-    } catch (tErr) {
-        console.warn(`${YELLOW}[PB] Notice restoring tenant DBs: ${tErr.message}${RESET}`);
     }
 
     // Ensure .env.local preserves existing environment keys while updating NEXT_PUBLIC_POCKETBASE_URL

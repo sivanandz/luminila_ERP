@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { StorefrontProduct } from "@/lib/pocketbase";
-import { productPath } from "@/lib/seo";
+import { isProductInStock, productPath } from "@/lib/seo";
 
 function money(value: number): string {
     return new Intl.NumberFormat("en-IN", {
@@ -62,7 +62,9 @@ export function ProductGrid({
                                 </h3>
                                 <p className="product-price">
                                     {money(product.website_price)}{" "}
-                                    <small>{product.total_stock > 0 ? "in stock" : "sold out"}</small>
+                                    <small>
+                                        {isProductInStock(product) ? "in stock" : "sold out"}
+                                    </small>
                                 </p>
                             </div>
                             <Link

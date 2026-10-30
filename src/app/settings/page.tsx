@@ -58,9 +58,10 @@ import { EwayBillSettings } from "@/components/settings/EwayBillSettings";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { getStoreSettings, saveStoreSettings, getDefaultStoreSettings, type StoreSettings } from "@/lib/settings";
+import { isSingleAccountMode, SINGLE_ACCOUNT_STORE_NAME } from "@/lib/deployment-mode";
 import { getPocketBaseUrl } from "@/lib/pocketbase";
 import { collectDatabaseSnapshot } from "@/lib/database-snapshot";
-import { getDetailedSessionStatus, getBusinessProfile, type DetailedSessionStatus, type BusinessProfile } from "@/lib/whatsapp";
+import { getDetailedSessionStatus, getBusinessProfile, editBusinessProfile, getTenantWhatsAppSessionId, type DetailedSessionStatus, type BusinessProfile } from "@/lib/whatsapp";
 
 interface SettingSection {
     id: string;
@@ -246,6 +247,41 @@ export default function SettingsPage() {
         }
     };
 
+    // Push the store's identity to the connected WhatsApp Business profile
+    // (description, email, website, address, category). The report gap: the app
+    // could only read this profile, never write it.
+    const [isPushingWaProfile, setIsPushingWaProfile] = useState(false);
+    const [waCategory, setWaCategory] = useState("");
+
+    const handlePushToWhatsApp = async () => {
+        setIsPushingWaProfile(true);
+        try {
+            const sessionId = getTenantWhatsAppSessionId(user?.email) || "luminila";
+            const ok = await editBusinessProfile(sessionId, {
+                description: settings.storeName
+                    ? `${settings.storeName}${settings.invoiceFooter ? ` — ${settings.invoiceFooter}` : ""}`
+                    : undefined,
+                email: settings.email || undefined,
+                address: [settings.address, settings.city, settings.state, settings.pincode]
+                    .filter(Boolean)
+                    .join(", ") || undefined,
+                categories: waCategory.trim() ? [waCategory.trim()] : undefined,
+            });
+            if (ok) {
+                const profile = await getBusinessProfile(sessionId);
+                if (profile) setWaBusinessProfile(profile);
+                toast.success("Pushed store details to the WhatsApp Business profile.");
+            } else {
+                toast.error("WhatsApp rejected the profile update (are you connected?).");
+            }
+        } catch (err) {
+            console.error("Failed to push WhatsApp business profile:", err);
+            toast.error("Failed to update WhatsApp Business profile");
+        } finally {
+            setIsPushingWaProfile(false);
+        }
+    };
+
     // Connection statuses
     const connections = {
         pocketbase: true,
@@ -348,9 +384,9 @@ export default function SettingsPage() {
             />
 
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-8">
+                <div className="grid grid-cols-1 lg:grid-cols-[15rem_minmax(0,1fr)] gap-4 md:gap-8">
                     {/* Settings Navigation: Themed Dropdown on Mobile/Narrow, Sidebar on Desktop */}
-                    <div className="lg:col-span-1">
+                    <div className="min-w-0">
                         {/* Mobile Dropdown */}
                         <div className="block lg:hidden w-full">
                             {(() => {
@@ -385,15 +421,16 @@ export default function SettingsPage() {
                                     <button
                                         key={section.id}
                                         onClick={() => setActiveSection(section.id)}
-                                        className={`w-full whitespace-nowrap flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all ${activeSection === section.id
+                                        aria-current={activeSection === section.id ? "page" : undefined}
+                                        className={`w-full min-w-0 flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all ${activeSection === section.id
                                             ? "bg-primary text-primary-foreground font-bold shadow-xs"
                                             : "text-muted-foreground hover:bg-background hover:text-foreground"
                                             }`}
                                     >
-                                        <span className={activeSection === section.id ? "text-primary-foreground" : "text-muted-foreground group-hover:text-foreground"}>
+                                        <span className={`shrink-0 ${activeSection === section.id ? "text-primary-foreground" : "text-muted-foreground group-hover:text-foreground"}`}>
                                             {section.icon}
                                         </span>
-                                        <span className="font-medium text-sm">{section.title}</span>
+                                        <span className="font-medium text-sm truncate" title={section.title}>{section.title}</span>
                                     </button>
                                 ))}
                             </nav>
@@ -401,7 +438,7 @@ export default function SettingsPage() {
                     </div>
 
                     {/* Content */}
-                    <div className="lg:col-span-3">
+                    <div className="min-w-0">
                         <div className="card bg-card border border-border rounded-xl min-h-[500px] p-6">
                             {activeSection === "store" && (
                                 <div className="space-y-8 animate-fade-in">
@@ -490,6 +527,20 @@ export default function SettingsPage() {
                                                 onChange={(e) => setSettings({ ...settings, whatsappPhone: e.target.value })}
                                             />
                                         </div>
+
+                                        {/* WhatsApp Business category (pushed with the profile) */}
+                                        {waStatus?.connected && (
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold text-muted-foreground uppercase">
+                                                    WhatsApp Business Category
+                                                </Label>
+                                                <Input
+                                                    placeholder="e.g. Jewelry & Watches"
+                                                    value={waCategory}
+                                                    onChange={(e) => setWaCategory(e.target.value)}
+                                                />
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div className="space-y-2">
@@ -498,15 +549,26 @@ export default function SettingsPage() {
                                                 Street Address / Shop No / Building
                                             </Label>
                                             {waStatus?.connected && (
-                                                <button
-                                                    type="button"
-                                                    disabled={isSyncingWaProfile}
-                                                    className="text-xs text-primary hover:underline font-semibold flex items-center gap-1 disabled:opacity-50"
-                                                    onClick={handleSyncFromWhatsApp}
-                                                >
-                                                    {isSyncingWaProfile ? <Loader2 size={12} className="animate-spin" /> : <MessageCircle size={12} />}
-                                                    Auto-fill from Connected WhatsApp
-                                                </button>
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        disabled={isSyncingWaProfile}
+                                                        className="text-xs text-primary hover:underline font-semibold flex items-center gap-1 disabled:opacity-50"
+                                                        onClick={handleSyncFromWhatsApp}
+                                                    >
+                                                        {isSyncingWaProfile ? <Loader2 size={12} className="animate-spin" /> : <MessageCircle size={12} />}
+                                                        Auto-fill from Connected WhatsApp
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        disabled={isPushingWaProfile}
+                                                        className="text-xs text-muted-foreground hover:text-primary hover:underline font-semibold flex items-center gap-1 disabled:opacity-50"
+                                                        onClick={handlePushToWhatsApp}
+                                                    >
+                                                        {isPushingWaProfile ? <Loader2 size={12} className="animate-spin" /> : <Store size={12} />}
+                                                        Push store details to WhatsApp
+                                                    </button>
+                                                </>
                                             )}
                                         </div>
                                         <Textarea
@@ -1206,7 +1268,11 @@ export default function SettingsPage() {
                                         </div>
                                         <div className="p-3 bg-surface-navy/60 rounded-lg text-xs text-moonstone border border-surface-hover flex items-center justify-between">
                                             <span>Format: JSON Full Dump (PocketBase compatible)</span>
-                                            <span className="text-emerald-400 font-semibold">● Isolated Tenant PocketBase Live ({getPocketBaseUrl().replace(/^https?:\/\//, "")})</span>
+                                            <span className="text-emerald-400 font-semibold">
+                                                ● {isSingleAccountMode()
+                                                    ? `Single-Account PocketBase Live · ${SINGLE_ACCOUNT_STORE_NAME}`
+                                                    : "Isolated Tenant PocketBase Live"} ({getPocketBaseUrl().replace(/^https?:\/\//, "")})
+                                            </span>
                                         </div>
                                     </div>
                                 </div>

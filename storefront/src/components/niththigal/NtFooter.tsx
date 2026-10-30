@@ -9,20 +9,54 @@ import {
 import { useNtCatalog } from "./NtCatalogContext";
 import { useNtUi } from "./NtUiContext";
 import { NtBrand } from "./NtBrand";
+import "./nt-footer.css";
+
+/** Canonical page for a policy action when the CMS supplies no real URL. */
+const POLICY_PATHS: Partial<Record<NtFooterLink["action"], string>> = {
+    shipping: "/shipping-returns",
+    privacy: "/privacy",
+    care: "/jewellery-care",
+};
+
+/** A bare hash must survive a click from any page, so it renders as "/#…". */
+function pageHref(href: string): string {
+    const value = (href || "").trim();
+    if (value.startsWith("#")) return `/${value}`;
+    return value || "/";
+}
+
+/**
+ * Policy links always point at the visible page. A saved CMS value such as
+ * "#" or "#faq" is replaced by the canonical path, never opened as a dialog.
+ */
+function policyHref(link: NtFooterLink): string {
+    const canonical = POLICY_PATHS[link.action];
+    if (!canonical) return pageHref(link.href);
+    const value = (link.href || "").trim();
+    if (value.startsWith("/") && !value.startsWith("//") && value !== "/") return value;
+    return canonical;
+}
+
+function findHashTarget(hash: string): Element | null {
+    if (!hash || hash.length < 2) return null;
+    try {
+        return document.querySelector(hash);
+    } catch {
+        return null;
+    }
+}
 
 function FooterLink({ link }: { link: NtFooterLink }) {
     const { setFilter } = useNtCatalog();
-    const { openSaved, openInfo, openSearch } = useNtUi();
+    const { openSaved, openSearch } = useNtUi();
 
-    if (link.action !== "none") {
+    // Saved pieces and search stay dialog actions; policies are real pages.
+    if (link.action === "saved" || link.action === "search") {
         return (
             <button
                 type="button"
                 onClick={() => {
                     if (link.action === "saved") openSaved();
-                    if (link.action === "shipping") openInfo("shipping");
-                    if (link.action === "privacy") openInfo("privacy");
-                    if (link.action === "care") openInfo("care");
                     if (link.action === "search") openSearch();
                 }}
             >
@@ -31,14 +65,23 @@ function FooterLink({ link }: { link: NtFooterLink }) {
         );
     }
 
+    if (
+        link.action === "shipping" ||
+        link.action === "privacy" ||
+        link.action === "care"
+    ) {
+        return <a href={policyHref(link)}>{link.label}</a>;
+    }
+
+    const raw = (link.href || "").trim();
+    const hash = raw.startsWith("#") ? raw : raw.startsWith("/#") ? raw.slice(1) : "";
+    const destination = raw.startsWith("#") ? `/${raw}` : raw || "/";
+
     return (
         <a
-            href={link.href}
+            href={pageHref(raw)}
             onClick={(event) => {
-                const hashTarget =
-                    link.href.startsWith("#") && link.href.length > 1
-                        ? document.querySelector(link.href)
-                        : null;
+                const hashTarget = findHashTarget(hash);
 
                 if (link.filter) {
                     event.preventDefault();
@@ -51,14 +94,14 @@ function FooterLink({ link }: { link: NtFooterLink }) {
                         } catch {
                             /* storage unavailable */
                         }
-                        window.location.assign(`/${link.href}`);
+                        window.location.assign(destination);
                     }
                     return;
                 }
 
-                if (link.href.startsWith("#") && !hashTarget) {
+                if (hash && !hashTarget) {
                     event.preventDefault();
-                    window.location.assign(`/${link.href}`);
+                    window.location.assign(destination);
                 }
             }}
         >
@@ -131,7 +174,7 @@ export function NtFooter() {
 
     return (
         <footer className="footer">
-            <div className="footer-top">
+            <div className={`footer-top${columns.length >= 3 ? " nt-footer-wide" : ""}`}>
                 <div className="footer-brand">
                     <NtBrand brand={brand} variant="footer" />
                     <p>

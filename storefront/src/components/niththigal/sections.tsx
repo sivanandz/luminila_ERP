@@ -157,6 +157,7 @@ export function Hero({ content }: { content: NiththigalContent }) {
                     width={1122}
                     height={1402}
                     fetchPriority="high"
+                    decoding="async"
                 />
                 {previousImage ? (
                     <img
@@ -164,6 +165,9 @@ export function Hero({ content }: { content: NiththigalContent }) {
                         src={previousImage}
                         alt=""
                         aria-hidden
+                        width={1122}
+                        height={1402}
+                        decoding="async"
                     />
                 ) : null}
                 <div className="hero-image-shade" />
@@ -261,6 +265,7 @@ export function Story({ content }: { content: NiththigalContent }) {
                     width={1024}
                     height={1024}
                     loading="lazy"
+                    decoding="async"
                 />
                 <div className="story-stamp">
                     <span>{story.stampTop}</span>
@@ -459,7 +464,14 @@ export function Instagram({ content }: { content: NiththigalContent }) {
 function InstaCard({ post }: { post: NtInstagramPost }) {
     const inner = (
         <>
-            <img src={post.imageUrl} alt={post.caption} loading="lazy" />
+            <img
+                src={post.imageUrl}
+                alt={post.caption}
+                width={800}
+                height={1000}
+                loading="lazy"
+                decoding="async"
+            />
             <span className="insta-badge">
                 {post.type === "reel" ? <ReelIcon /> : <InstagramIcon />}
                 {post.type === "reel" ? "REEL" : "POST"}
@@ -570,14 +582,14 @@ export function Faq({ content }: { content: NiththigalContent }) {
 export function FinalCta({ content }: { content: NiththigalContent }) {
     const cta = content.finalCta;
     return (
-        <section className="final-cta reveal">
+        <section className="final-cta reveal" aria-labelledby="final-cta-title">
             <div className="cta-orbit orbit-one" aria-hidden />
             <div className="cta-orbit orbit-two" aria-hidden />
             {cta.decoration ? (
                 <span className="cta-flower" aria-hidden>{cta.decoration}</span>
             ) : null}
             <div className="eyebrow">{cta.eyebrow}</div>
-            <h2>
+            <h2 id="final-cta-title">
                 {cta.headingPlain}
                 <br />
                 <em>{cta.headingEmphasis}</em>

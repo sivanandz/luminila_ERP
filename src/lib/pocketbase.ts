@@ -1,6 +1,7 @@
 import PocketBase from 'pocketbase';
 import { readRegistrySecret } from './tenant-secrets';
 import { resolvePocketBaseBaseUrl } from './pocketbase-url';
+import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from './deployment-mode';
 
 // Determine default URL
 const DEFAULT_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090';
@@ -55,6 +56,21 @@ export function resolveTenantRuntime(
 }
 
 /**
+ * Authenticate a fresh client with superuser credentials, falling back to the
+ * users collection for deployments whose admin lives there.
+ */
+async function authenticateTenantClient(client: PocketBase, email: string, password: string): Promise<void> {
+    if (!email || !password) return;
+    // Values may be plaintext (legacy registry) or enc:v1: ciphertext.
+    const secret = readRegistrySecret(password);
+    try {
+        await client.collection("_superusers").authWithPassword(email, secret);
+    } catch {
+        await client.collection("users").authWithPassword(email, secret).catch(() => {});
+    }
+}
+
+/**
  * A fresh, authenticated client for one tenant.
  *
  * `ensureServerAuth` mutates the module-level client's base URL and auth store,
@@ -63,6 +79,18 @@ export function resolveTenantRuntime(
  * shared client, so a route that uses it is isolated by construction.
  */
 export async function createTenantClient(preferredTenantEmail?: string): Promise<PocketBase> {
+    // Single mode has exactly one database: no registry read, no per-email lookup.
+    if (isSingleAccountMode()) {
+        const singleClient = new PocketBase(getPocketBaseUrl());
+        singleClient.autoCancellation(false);
+        await authenticateTenantClient(
+            singleClient,
+            process.env.POCKETBASE_SUPERUSER_EMAIL || process.env.PB_ADMIN_EMAIL || '',
+            process.env.POCKETBASE_SUPERUSER_PASSWORD || process.env.PB_ADMIN_PASSWORD || ''
+        );
+        return singleClient;
+    }
+
     let registry: TenantRegistryLike | null = null;
 
     if (typeof window === "undefined") {
@@ -91,34 +119,37 @@ export async function createTenantClient(preferredTenantEmail?: string): Promise
 
     const client = new PocketBase(runtime.url);
     client.autoCancellation(false);
-
-    if (runtime.adminEmail && runtime.adminPassword) {
-        // Values may be plaintext (legacy registry) or enc:v1: ciphertext.
-        const password = readRegistrySecret(runtime.adminPassword);
-        try {
-            await client.collection("_superusers").authWithPassword(runtime.adminEmail, password);
-            return client;
-        } catch {
-            await client.collection("users").authWithPassword(runtime.adminEmail, password).catch(() => {});
-        }
-    }
-
+    await authenticateTenantClient(client, runtime.adminEmail, runtime.adminPassword);
     return client;
 }
 
 // Disable auto-cancellation for duplicate requests
 pb.autoCancellation(false);
 
-// Multi-Account Data Isolation: Auto-inject account_email on record creation
+/**
+ * Email stamped on records and used to scope filters.
+ *
+ * Single mode always returns the one account, whichever user signed in: the
+ * PocketBase rules treat SINGLE_ACCOUNT_EMAIL as the owner of rows stamped with
+ * it or with an empty account_email. Multi mode returns the signed-in user's
+ * lowercased email, or '' when there is no session.
+ */
+export function accountScopeEmail(): string {
+    if (isSingleAccountMode()) return SINGLE_ACCOUNT_EMAIL;
+    return pb.authStore.model?.email?.trim().toLowerCase() || '';
+}
+
+// Account Data Isolation: Auto-inject account_email on record creation
 pb.beforeSend = function (url, options) {
-    if (options.method === 'POST' && pb.authStore.model?.email) {
+    const accountEmail = accountScopeEmail();
+    if (options.method === 'POST' && accountEmail) {
         if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
             if (!(options.body as Record<string, unknown>).account_email) {
-                (options.body as Record<string, unknown>).account_email = pb.authStore.model.email;
+                (options.body as Record<string, unknown>).account_email = accountEmail;
             }
         } else if (options.body instanceof FormData) {
             if (!options.body.has('account_email')) {
-                options.body.append('account_email', pb.authStore.model.email);
+                options.body.append('account_email', accountEmail);
             }
         }
     }
@@ -153,7 +184,8 @@ if (typeof window !== "undefined") {
  * Automatically routes to the active or preferred tenant's isolated PocketBase instance if provisioned.
  */
 export async function ensureServerAuth(preferredTenantEmail?: string): Promise<boolean> {
-    if (typeof window === "undefined") {
+    // Single mode has one database: skip the tenant registry entirely.
+    if (typeof window === "undefined" && !isSingleAccountMode()) {
         try {
             const nodeRequire = eval("require") as NodeRequire;
             const fs = nodeRequire("fs") as typeof import("fs");
@@ -184,7 +216,11 @@ export async function ensureServerAuth(preferredTenantEmail?: string): Promise<b
     }
 
     if (pb.authStore.isValid && (pb.authStore as any).isSuperuser) return true;
-    const adminEmail = process.env.POCKETBASE_SUPERUSER_EMAIL || process.env.PB_ADMIN_EMAIL;
+    // Single mode falls back to the one account so routes authenticate as the
+    // identity their records are stamped with.
+    const adminEmail = process.env.POCKETBASE_SUPERUSER_EMAIL
+        || process.env.PB_ADMIN_EMAIL
+        || (isSingleAccountMode() ? SINGLE_ACCOUNT_EMAIL : '');
     const adminPassword = process.env.POCKETBASE_SUPERUSER_PASSWORD || process.env.PB_ADMIN_PASSWORD;
     if (!adminEmail || !adminPassword) {
         return pb.authStore.isValid;
@@ -255,6 +291,15 @@ export async function provisionTenantPocketBase(
     isolated?: boolean;
     error?: string;
 }> {
+    // Single mode never provisions a second database; refuse without an API call.
+    if (isSingleAccountMode()) {
+        return {
+            success: false,
+            pbUrl: getPocketBaseUrl(),
+            error: 'Multi-account provisioning is disabled in single-account mode.',
+        };
+    }
+
     try {
         const res = await fetch("/api/system/tenant-db", {
             method: "POST",
@@ -287,9 +332,40 @@ export async function provisionTenantPocketBase(
 }
 
 /**
+ * Drop a leftover tenant database URL before single mode resolves anything.
+ *
+ * Constraint: getPocketBaseUrl() prefers the stored PB_CUSTOM_URL value, so a
+ * tenant URL left in storage by the previous multi-account mode would otherwise
+ * win over the single account's database. Ports 8092..8199 are the tenant
+ * range; a stored primary URL on 8090/8091 is a legitimate override and stays.
+ */
+function dropStaleTenantUrl(): void {
+    if (typeof window === "undefined") return;
+    let stored = "";
+    try {
+        stored = localStorage.getItem("PB_CUSTOM_URL") || "";
+    } catch {
+        return;
+    }
+    if (!stored) return;
+    const portMatch = stored.match(/:(\d{2,5})(?:\/|$)/);
+    if (!portMatch) return;
+    const port = Number(portMatch[1]);
+    if (port >= 8092 && port <= 8199) {
+        setPocketBaseUrl("");
+    }
+}
+
+/**
  * Resolve and wake up the dedicated PocketBase instance for an account during `/login` or session restore
  */
 export async function resolveTenantPocketBase(email?: string): Promise<string> {
+    // Single mode has one database: drop a stale tenant URL and make no request.
+    if (isSingleAccountMode()) {
+        dropStaleTenantUrl();
+        return getPocketBaseUrl();
+    }
+
     try {
         const cleanEmail = (email || pb.authStore.model?.email || "").trim().toLowerCase();
         const endpoint = cleanEmail
@@ -311,10 +387,55 @@ export async function resolveTenantPocketBase(email?: string): Promise<string> {
 }
 
 /**
+ * Single mode has no tenant to wake: health-check the primary URL and, on
+ * localhost only, fall back to the two primary ports. Tenant databases lived on
+ * 8092+, so that range is never probed here.
+ */
+async function autoDiscoverSingleAccountPocketBase(): Promise<string> {
+    if (typeof window === "undefined") return getPocketBaseUrl();
+
+    ensureAuth();
+    const resolved = await resolveTenantPocketBase();
+
+    try {
+        const probe = new PocketBase(resolved);
+        probe.autoCancellation(false);
+        const health = await probe.health.check();
+        if (health.code === 200) return resolved;
+    } catch {
+        // Fall through to the primary-port probe
+    }
+
+    if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+        const candidatePorts = [8091, 8090];
+        for (const port of candidatePorts) {
+            const candidateUrl = `http://127.0.0.1:${port}`;
+            if (candidateUrl === resolved) continue;
+            try {
+                const testPb = new PocketBase(candidateUrl);
+                testPb.autoCancellation(false);
+                const health = await testPb.health.check();
+                if (health.code === 200) {
+                    setPocketBaseUrl(candidateUrl);
+                    return candidateUrl;
+                }
+            } catch {
+                // Port not responding
+            }
+        }
+    }
+    return resolved;
+}
+
+/**
  * Auto-discover active PocketBase server on localhost if default port (8090)
  * is blocked or occupied by a foreign application, or wake up the tenant's isolated DB.
  */
 export async function autoDiscoverPocketBase(): Promise<string> {
+    if (isSingleAccountMode()) {
+        return autoDiscoverSingleAccountPocketBase();
+    }
+
     if (typeof window !== "undefined") {
         ensureAuth();
         const authedEmail = pb.authStore.model?.email;
@@ -420,6 +541,8 @@ export async function checkServerStatus(targetUrl?: string): Promise<ServerHealt
  * Resolves current authenticated tenant email for data isolation
  */
 export function getCurrentTenantEmail(): string {
+    // Single mode: every record belongs to the one account, whichever user signed in.
+    if (isSingleAccountMode()) return SINGLE_ACCOUNT_EMAIL;
     ensureAuth();
     return pb.authStore.model?.email?.trim().toLowerCase() || "default";
 }

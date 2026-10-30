@@ -14,6 +14,7 @@ interface PocketBaseFieldError {
 }
 
 import { useAuth } from "@/contexts/AuthContext";
+import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from "@/lib/deployment-mode";
 import Link from "next/link";
 
 export default function LoginPage() {
@@ -23,7 +24,7 @@ export default function LoginPage() {
     const [showPassword, setShowPassword] = useState(false);
 
     const [formData, setFormData] = useState({
-        email: "",
+        email: isSingleAccountMode() ? SINGLE_ACCOUNT_EMAIL : "",
         password: "",
     });
 
@@ -126,13 +127,15 @@ export default function LoginPage() {
                         <div className="pt-1" />
                     </form>
 
-                    <div className="mt-6 text-center space-y-2">
-                        <div>
-                            <Link href="/setup?force=true" className="text-muted-foreground hover:text-primary transition-colors text-xs font-medium">
-                                First time here or need to reconfigure? Run initial setup wizard
-                            </Link>
+                    {!isSingleAccountMode() && (
+                        <div className="mt-6 text-center space-y-2">
+                            <div>
+                                <Link href="/setup?force=true" className="text-muted-foreground hover:text-primary transition-colors text-xs font-medium">
+                                    First time here or need to reconfigure? Run initial setup wizard
+                                </Link>
+                            </div>
                         </div>
-                    </div>
+                    )}
                 </div>
 
                 {/* Footer */}

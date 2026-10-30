@@ -3,12 +3,32 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Image from "next/image";
 import { Header } from "@/components/layout";
+import type { Socket } from "socket.io-client";
 import {
     whatsappManager,
     checkWPPConnectStatus,
     parseOrderFromMessage,
     normalizeMessageId,
     getMessageStanzaId,
+    getWhatsAppUrl,
+    getWppConnectSecret,
+    replyToMessage,
+    starMessage,
+    sendReaction,
+    rejectCall,
+    forwardMessage,
+    pinChat,
+    muteChat,
+    clearChatMessages,
+    deleteChat as deleteChatApi,
+    setContactBlocked,
+    archiveChat,
+    getTenantWhatsAppSessionId,
+    getAllLabels,
+    getLabelChatIds,
+    addLabel,
+    addOrRemoveLabel,
+    type WPPLabel,
 } from "@/lib/whatsapp";
 import type { WPPMessage } from "@/lib/whatsapp";
 import { toast } from "sonner";
@@ -29,6 +49,7 @@ import {
 
     MoreVertical,
     CheckCheck,
+    Clock,
     Loader2,
     Image as ImageIcon,
     FileText,
@@ -63,6 +84,11 @@ import {
     PanelRightOpen,
     Building2,
     Megaphone,
+    Quote,
+    Forward,
+    Ban,
+    MapPin,
+    Star,
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import {
@@ -83,6 +109,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { ChatContextMenu } from "@/components/whatsapp/ChatContextMenu";
+import { GroupInfoModal } from "@/components/whatsapp/GroupInfoModal";
 import { SlashCommandPalette } from "@/components/whatsapp/SlashCommandPalette";
 import { RazorpayPaymentModal } from "@/components/whatsapp/RazorpayPaymentModal";
 import { WhatsAppCatalogSyncModal } from "@/components/whatsapp/WhatsAppCatalogSyncModal";
@@ -117,12 +144,83 @@ import { BroadcastComposerModal } from "@/components/whatsapp/BroadcastComposerM
 import { AdminApprovalModal } from "@/components/whatsapp/AdminApprovalModal";
 import { MarqueeText } from "@/components/ui/marquee-text";
 import { getWhatsAppBinding, type WhatsAppBinding } from "@/lib/whatsapp-binding";
-import { getTenantWhatsAppSessionId } from "@/lib/whatsapp";
 import { useAuth } from "@/contexts/AuthContext";
 import type { Product as ProductRecord, Sale } from "@/types/database";
 import { getChannelPrice } from "@/lib/channel-pricing";
 
 // --- Types ---
+
+/** Payload of the sidecar's `ack` socket event. */
+interface WppAckEvent {
+    session?: string;
+    ack?: {
+        id?: unknown;
+        ack?: number;
+    };
+}
+
+/** Payload of the sidecar's `message_revoked` socket event. */
+interface WppRevokedEvent {
+    session?: string;
+    revoked?: {
+        id?: unknown;
+        /** Id of the message that was taken back (WPPConnect's refId). */
+        refId?: unknown;
+        author?: unknown;
+        from?: unknown;
+        to?: unknown;
+    };
+}
+
+/** Payload of the sidecar's `message_edit` socket event. */
+interface WppEditEvent {
+    session?: string;
+    edited?: {
+        id?: unknown;
+        body?: unknown;
+        msg?: { body?: unknown; caption?: unknown; type?: unknown } | null;
+    };
+}
+
+/** Payload of the sidecar's `message_reaction` socket event. */
+interface WppReactionEvent {
+    session?: string;
+    reaction?: {
+        id?: unknown;
+        msgId?: unknown;
+        reactionText?: unknown;
+        sender?: { _serialized?: unknown; id?: unknown } | unknown;
+    };
+}
+
+/** Payload of the sidecar's `incoming_call` socket event. */
+interface WppIncomingCallEvent {
+    session?: string;
+    call?: {
+        id?: unknown;
+        peerJid?: unknown;
+        offerTime?: unknown;
+        isVideo?: unknown;
+        isGroup?: unknown;
+        isSilenced?: unknown;
+    };
+}
+
+/** Payload of the sidecar's `message` socket event (the onAnyMessage projection). */
+interface WppIncomingEvent {
+    session?: string;
+    message?: {
+        id?: unknown;
+        from?: unknown;
+        to?: unknown;
+        body?: unknown;
+        type?: unknown;
+        timestamp?: unknown;
+        isGroupMsg?: unknown;
+        fromMe?: unknown;
+        sender?: { pushname?: unknown; name?: unknown } | null;
+    };
+}
 
 interface Message {
     id: string;
@@ -132,12 +230,28 @@ interface Message {
     timestamp: Date;
     isOrder: boolean;
     fromMe: boolean;
+    /** WhatsApp acknowledgement level: 0 pending, 1 sent, 2 delivered, 3 read, 4 played. */
+    ack?: number;
     type?: string;
     mediaUrl?: string;
     caption?: string;
     mimetype?: string;
     filename?: string;
     parsed?: ReturnType<typeof parseOrderFromMessage>;
+    /** Set when the sender deleted the message for everyone. */
+    revoked?: boolean;
+    /** Set when a sent text was edited afterwards. */
+    edited?: boolean;
+    /** Emojis reacting to this message, keyed by sender id. */
+    reactions?: Record<string, string>;
+    /** True when the message is starred. */
+    star?: boolean;
+    /** Native WhatsApp payloads for non-text message types. */
+    location?: { lat: number; lng: number; name?: string; address?: string };
+    vcard?: { name?: string; vcard?: string };
+    poll?: { name: string; options: string[]; isEnded?: boolean };
+    order?: { title?: string; itemCount?: number; total?: number; currency?: string };
+    product?: { name?: string; price?: number; currency?: string; image?: string };
     // Quoted/reply message support
     quotedMsg?: {
         id: string;
@@ -463,6 +577,139 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar, chatMessages }: {
             .catch(() => setStatus('failed'));
     }, [msg.id, isMediaType, onLoadMedia, status]);
 
+    // --- Non-media native types (location / contact / poll / order / product) ---
+
+    if (msg.revoked) {
+        return (
+            <div className="flex items-center gap-2 text-muted-foreground italic">
+                <Ban size={14} />
+                <span className="text-sm">This message was deleted</span>
+                {msg.edited && <span className="text-[10px] not-italic opacity-70">(edited)</span>}
+            </div>
+        );
+    }
+
+    if (type === "location" && msg.location) {
+        const { lat, lng, name, address } = msg.location;
+        const mapHref = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`;
+        return (
+            <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
+                <a
+                    href={mapHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 bg-muted/30 p-3 rounded-lg hover:bg-muted/50 transition-colors"
+                    onClick={e => e.stopPropagation()}
+                >
+                    <MapPin size={20} className="text-red-500 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{name || 'Shared location'}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                            {address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`}
+                        </p>
+                    </div>
+                    <ExternalLink size={14} className="text-muted-foreground shrink-0" />
+                </a>
+            </div>
+        );
+    }
+
+    if ((type === "vcard" || type === "multi_vcard") && msg.vcard) {
+        const vcfHref = `data:text/vcard;charset=utf-8,${encodeURIComponent(msg.vcard.vcard || '')}`;
+        const vcfName = (msg.vcard.name || 'contact').replace(/[^\w.-]+/g, '_');
+        return (
+            <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
+                <div className="flex items-center gap-3 bg-muted/30 p-3 rounded-lg">
+                    <UserCircle size={20} className="text-emerald-500 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{msg.vcard.name || 'Contact card'}</p>
+                        <p className="text-xs text-muted-foreground">Shared contact</p>
+                    </div>
+                    {msg.vcard.vcard && (
+                        <a
+                            href={vcfHref}
+                            download={`${vcfName}.vcf`}
+                            className="text-xs font-semibold text-primary hover:underline shrink-0"
+                            onClick={e => e.stopPropagation()}
+                        >
+                            Save
+                        </a>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    if (type === "poll_creation" && msg.poll) {
+        return (
+            <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
+                <div className="bg-muted/30 p-3 rounded-lg">
+                    <div className="flex items-center gap-2">
+                        <ListOrdered size={16} className="text-primary shrink-0" />
+                        <p className="text-sm font-semibold truncate flex-1">{msg.poll.name}</p>
+                        {msg.poll.isEnded && (
+                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">Ended</span>
+                        )}
+                    </div>
+                    <ul className="mt-2 space-y-1">
+                        {msg.poll.options.map((opt, i) => (
+                            <li key={i} className="text-xs text-muted-foreground flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 shrink-0" />
+                                {opt}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            </div>
+        );
+    }
+
+    if (type === "order" && msg.order) {
+        return (
+            <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
+                <div className="bg-muted/30 p-3 rounded-lg flex items-center gap-3">
+                    <ShoppingCart size={20} className="text-primary shrink-0" />
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{msg.order.title || 'Order'}</p>
+                        <p className="text-xs text-muted-foreground">
+                            {(msg.order.itemCount ?? 0) > 0 ? `${msg.order.itemCount} item(s)` : 'Cart order'}
+                            {msg.order.total ? ` · ₹${msg.order.total.toLocaleString('en-IN')}` : ''}
+                        </p>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (type === "product" && msg.product) {
+        return (
+            <div className="space-y-2">
+                <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
+                <div className="bg-muted/30 p-3 rounded-lg flex items-center gap-3">
+                    {msg.product.image ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- WhatsApp product images are remote CDN URLs of arbitrary dimensions
+                        <img src={msg.product.image} alt={msg.product.name || 'Product'} className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                    ) : (
+                        <Package size={20} className="text-primary shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{msg.product.name || 'Product'}</p>
+                        {msg.product.price ? (
+                            <p className="text-xs text-muted-foreground">
+                                {msg.product.currency === 'INR' ? '₹' : `${msg.product.currency} `}
+                                {msg.product.price.toLocaleString('en-IN')}
+                            </p>
+                        ) : null}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     if (type === "image" || type === "sticker") {
         return (
             <div className="space-y-2">
@@ -685,6 +932,8 @@ export default function WhatsAppPage() {
     const [loadingChats, setLoadingChats] = useState(false);
     const [selectedChat, setSelectedChat] = useState<string | null>(null);
     const selectedChatRef = React.useRef<string | null>(null);
+    /** True while the realtime socket is connected; gates the ack fallback poll. */
+    const [realtimeConnected, setRealtimeConnected] = useState(false);
     const readChatTimestampsRef = React.useRef<Map<string, number>>(new Map());
 
     // Hydrate read timestamps from sessionStorage on initial mount
@@ -1030,12 +1279,19 @@ export default function WhatsAppPage() {
                         timestamp: new Date(msg.timestamp * 1000),
                         isOrder: parseOrderFromMessage(msg.body).isOrder,
                         fromMe: msg.fromMe,
+                        ack: msg.ack ?? 0,
                         type: msg.type,
                         mediaUrl: msg.mediaUrl || '',
                         mimetype: msg.mimetype || '',
                         caption: msg.caption || '',
                         parsed: parseOrderFromMessage(msg.body),
                         quotedMsg: msg.quotedMsg, // Pass through quoted message
+                        star: msg.star,
+                        location: msg.location,
+                        vcard: msg.vcard,
+                        poll: msg.poll,
+                        order: msg.order,
+                        product: msg.product,
                     };
                 });
                 parsed.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -1090,6 +1346,316 @@ export default function WhatsAppPage() {
         loadChatMessages();
         // eslint-disable-next-line react-hooks/exhaustive-deps -- chats is only read here for the current chat's display name; adding it would re-download messages, re-persist and re-mark chats read on every 10s poll refresh of the chat list
     }, [selectedChat, sessionStatus]);
+
+    /**
+     * Chat scrolling.
+     *
+     * PocketBase returns the thread oldest-first, and the pane is a plain
+     * overflow container: without anchoring it kept the previous chat's
+     * scrollTop, so a new chat opened wherever the last one was left. Stick to
+     * the newest message when a chat opens or the thread grows, and let the
+     * reader keep their position once they scroll up.
+     */
+    const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+    const stickToBottomRef = useRef(true);
+
+    const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+        const el = messagesScrollRef.current;
+        if (!el) return;
+        el.scrollTo({ top: el.scrollHeight, behavior });
+    }, []);
+
+    const handleMessagesScroll = useCallback(() => {
+        const el = messagesScrollRef.current;
+        if (!el) return;
+        stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    }, []);
+
+    // A newly opened chat always lands on its newest message. The retry covers
+    // the frame where the thread is still being laid out (media, fonts).
+    useEffect(() => {
+        stickToBottomRef.current = true;
+        const frame = requestAnimationFrame(() => scrollMessagesToBottom('auto'));
+        const timer = window.setTimeout(() => scrollMessagesToBottom('auto'), 150);
+        return () => {
+            cancelAnimationFrame(frame);
+            window.clearTimeout(timer);
+        };
+    }, [selectedChat, scrollMessagesToBottom]);
+
+    // Keep the newest message in view while the thread loads or grows, unless
+    // the reader scrolled up to read history.
+    const lastMessageId =
+        selectedChatMessages.length > 0 ? selectedChatMessages[selectedChatMessages.length - 1].id : '';
+    useEffect(() => {
+        if (!stickToBottomRef.current) return;
+        const frame = requestAnimationFrame(() => scrollMessagesToBottom('auto'));
+        return () => cancelAnimationFrame(frame);
+    }, [selectedChatMessages.length, lastMessageId, scrollMessagesToBottom]);
+
+    /**
+     * Delivery and read receipts arrive after the send, so refresh just the ack
+     * values while a thread is open. Only existing messages are updated in place;
+     * bodies, ordering and the persisted chat record are untouched.
+     *
+     * This is the fallback for when the realtime socket is down: while the
+     * socket is connected, acks arrive as events and this poll stays idle.
+     */
+    useEffect(() => {
+        if (!selectedChat || realtimeConnected) return;
+        let cancelled = false;
+        const refreshAcks = async () => {
+            try {
+                const latest = await whatsappManager.getMessages(selectedChat, 40);
+                if (cancelled || latest.length === 0) return;
+                const ackById = new Map<string, number>();
+                // Optimistic "sent-…" rows have no server id yet; match them by
+                // body and minute so their ticks still advance to delivered/read.
+                const ackByBody = new Map<string, number>();
+                for (const msg of latest) {
+                    const ack = typeof msg.ack === 'number' ? msg.ack : 0;
+                    ackById.set(normalizeMessageId(msg.id), ack);
+                    if (msg.fromMe) {
+                        ackByBody.set(`${msg.body}|${Math.floor(msg.timestamp / 60)}`, ack);
+                    }
+                }
+                setSelectedChatMessages(prev => {
+                    let changed = false;
+                    const next = prev.map(m => {
+                        const ack = ackById.get(normalizeMessageId(m.id)) ??
+                            (m.id.startsWith('sent-')
+                                ? ackByBody.get(`${m.body}|${Math.floor(m.timestamp.getTime() / 60000)}`)
+                                : undefined);
+                        if (ack === undefined || ack === (m.ack ?? 0)) return m;
+                        changed = true;
+                        return { ...m, ack };
+                    });
+                    return changed ? next : prev;
+                });
+            } catch {
+                /* the next tick retries */
+            }
+        };
+        const timer = window.setInterval(refreshAcks, 8000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [selectedChat, realtimeConnected]);
+
+    // Refs so the realtime connection is built once for the page's lifetime
+    // instead of being torn down and re-handshaken on every chat switch.
+    const loadChatsRef = React.useRef(loadExistingChats);
+    useEffect(() => {
+        loadChatsRef.current = loadExistingChats;
+    }, [loadExistingChats]);
+    const chatListRefreshTimerRef = React.useRef<number | null>(null);
+
+    // --- Incoming WhatsApp calls (surfaced so they are never silent) ---
+    const [incomingCall, setIncomingCall] = useState<{
+        id: string;
+        peerJid: string;
+        isVideo: boolean;
+        receivedAt: number;
+    } | null>(null);
+
+    /**
+     * Realtime channel. The sidecar pushes `ack`, `message`, `message_revoked`,
+     * `message_edit` and `message_reaction`; all five land in the transcript
+     * immediately, so a delete on the phone, an edit, a reaction or an inbound
+     * reply no longer needs a manual refresh to show up.
+     */
+    useEffect(() => {
+        const token = getWppConnectSecret();
+        if (!token) return;
+
+        let cancelled = false;
+        let socket: Socket | null = null;
+
+        const handleAck = (payload: WppAckEvent) => {
+            const id = normalizeMessageId(payload?.ack?.id);
+            const ack = payload?.ack?.ack;
+            if (!id || typeof ack !== 'number') return;
+            setSelectedChatMessages(prev => {
+                let changed = false;
+                const next = prev.map(m => {
+                    if (normalizeMessageId(m.id) !== id || (m.ack ?? 0) === ack) return m;
+                    changed = true;
+                    return { ...m, ack };
+                });
+                return changed ? next : prev;
+            });
+        };
+
+        const handleRevoked = (payload: WppRevokedEvent) => {
+            const revoked = payload?.revoked;
+            if (!revoked) return;
+            // WPPConnect puts the withdrawn message's id in refId; fall back to
+            // id for builds that populate it directly.
+            const target = normalizeMessageId(revoked.refId) || normalizeMessageId(revoked.id);
+            if (!target) return;
+            setSelectedChatMessages(prev => {
+                let changed = false;
+                const next = prev.map(m => {
+                    if (normalizeMessageId(m.id) !== target || m.revoked) return m;
+                    changed = true;
+                    return { ...m, revoked: true, body: "" };
+                });
+                return changed ? next : prev;
+            });
+            // A revoked message changes the thread everywhere, not just here.
+            if (chatListRefreshTimerRef.current === null) {
+                chatListRefreshTimerRef.current = window.setTimeout(() => {
+                    chatListRefreshTimerRef.current = null;
+                    void loadChatsRef.current();
+                }, 1500);
+            }
+        };
+
+        const handleEdit = (payload: WppEditEvent) => {
+            const edited = payload?.edited;
+            const id = normalizeMessageId(edited?.id);
+            if (!id) return;
+            const updated = edited?.msg;
+            const body = typeof updated?.body === "string"
+                ? updated.body
+                : typeof edited?.body === "string" ? edited.body : null;
+            const caption = typeof updated?.caption === "string" ? updated.caption : undefined;
+            setSelectedChatMessages(prev => {
+                let changed = false;
+                const next = prev.map(m => {
+                    if (normalizeMessageId(m.id) !== id) return m;
+                    const nextBody = body !== null ? body : m.body;
+                    if (nextBody === m.body && !m.edited) return m;
+                    changed = true;
+                    return { ...m, body: nextBody, caption: caption ?? m.caption, edited: true };
+                });
+                return changed ? next : prev;
+            });
+        };
+
+        const handleReaction = (payload: WppReactionEvent) => {
+            const reaction = payload?.reaction;
+            const target = normalizeMessageId(reaction?.msgId) || normalizeMessageId(reaction?.id);
+            const emoji = typeof reaction?.reactionText === "string" ? reaction.reactionText : "";
+            const senderRaw = reaction?.sender as { _serialized?: unknown; id?: unknown } | string | undefined;
+            const senderId = typeof senderRaw === "string"
+                ? senderRaw
+                : typeof senderRaw?._serialized === "string"
+                    ? senderRaw._serialized
+                    : typeof senderRaw?.id === "string" ? senderRaw.id : "";
+            if (!target || !senderId) return;
+            setSelectedChatMessages(prev => {
+                let changed = false;
+                const next = prev.map(m => {
+                    if (normalizeMessageId(m.id) !== target) return m;
+                    const current = { ...(m.reactions || {}) };
+                    // Empty reactionText means the reaction was withdrawn.
+                    if (emoji) current[senderId] = emoji;
+                    else delete current[senderId];
+                    changed = true;
+                    return { ...m, reactions: current };
+                });
+                return changed ? next : prev;
+            });
+        };
+
+        const handleIncomingMessage = (payload: WppIncomingEvent) => {
+            const msg = payload?.message;
+            if (!msg || msg.fromMe) return;
+            const id = normalizeMessageId(msg.id);
+            const chat = typeof msg.from === "string" ? msg.from : "";
+            if (!id || !chat) return;
+
+            if (selectedChatRef.current === chat) {
+                setSelectedChatMessages(prev => {
+                    if (prev.some(m => normalizeMessageId(m.id) === id)) return prev;
+                    const seconds = typeof msg.timestamp === "number" ? msg.timestamp : 0;
+                    return [...prev, {
+                        id,
+                        from: chat,
+                        fromName: typeof msg.sender?.pushname === "string"
+                            ? msg.sender.pushname
+                            : typeof msg.sender?.name === "string" ? msg.sender.name : chat,
+                        body: typeof msg.body === "string" ? msg.body : "",
+                        timestamp: new Date(seconds > 0 ? seconds * 1000 : Date.now()),
+                        isOrder: false,
+                        fromMe: false,
+                        ack: 0,
+                        type: typeof msg.type === "string" ? msg.type : "chat",
+                    }];
+                });
+                void whatsappManager.markAsRead(chat).catch(() => {});
+            }
+
+            // Background threads only need their unread badge refreshed.
+            if (chatListRefreshTimerRef.current === null) {
+                chatListRefreshTimerRef.current = window.setTimeout(() => {
+                    chatListRefreshTimerRef.current = null;
+                    void loadChatsRef.current();
+                }, 1500);
+            }
+        };
+
+        const handleIncomingCall = (payload: WppIncomingCallEvent) => {
+            const call = payload?.call;
+            const id = typeof call?.id === "string" ? call.id : "";
+            const peerJid = typeof call?.peerJid === "string" ? call.peerJid : "";
+            if (!id || !peerJid) return;
+            setIncomingCall({
+                id,
+                peerJid,
+                isVideo: !!call?.isVideo,
+                receivedAt: Date.now(),
+            });
+            toast.info(`${call?.isVideo ? "Video" : "Voice"} call from ${peerJid.split("@")[0]}`);
+        };
+
+        void (async () => {
+            try {
+                const { io } = await import('socket.io-client');
+                if (cancelled) return;
+                const client = io(getWhatsAppUrl(), {
+                    auth: { token },
+                    transports: ['websocket'],
+                    reconnectionDelay: 1000,
+                    reconnectionDelayMax: 5000,
+                });
+                socket = client;
+                client.on('connect', () => setRealtimeConnected(true));
+                client.on('disconnect', () => setRealtimeConnected(false));
+                client.on('connect_error', () => setRealtimeConnected(false));
+                client.on('ack', handleAck);
+                client.on('message_revoked', handleRevoked);
+                client.on('message_edit', handleEdit);
+                client.on('message_reaction', handleReaction);
+                client.on('message', handleIncomingMessage);
+                client.on('incoming_call', handleIncomingCall);
+            } catch {
+                setRealtimeConnected(false);
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+            if (chatListRefreshTimerRef.current !== null) {
+                window.clearTimeout(chatListRefreshTimerRef.current);
+                chatListRefreshTimerRef.current = null;
+            }
+            if (socket) {
+                socket.off('connect');
+                socket.off('disconnect');
+                socket.off('connect_error');
+                socket.off('ack', handleAck);
+                socket.off('message_revoked', handleRevoked);
+                socket.off('message_edit', handleEdit);
+                socket.off('message_reaction', handleReaction);
+                socket.off('message', handleIncomingMessage);
+                socket.off('incoming_call', handleIncomingCall);
+                socket.disconnect();
+            }
+        };
+    }, []);
 
     // Fetch Customer Data on Chat Selection
     useEffect(() => {
@@ -1217,17 +1783,17 @@ export default function WhatsAppPage() {
         const itemsList = cart.map(item => `• ${item.name} x${item.quantity} - ${formatPrice(item.base_price * item.quantity)}`).join("\n");
         const invoiceMsg = `🧾 *Invoice & Order Summary*\n\n${itemsList}\n\n*Total: ${formatPrice(cartTotal)}*\n\nPlease confirm to pay.`;
 
-        await whatsappManager.sendMessage(selectedChat, invoiceMsg);
+        const sent = await whatsappManager.sendMessageDetailed(selectedChat, invoiceMsg);
 
         // Add to local chat view
         setSelectedChatMessages(prev => [...prev, {
-            id: `sent-${Date.now()}`,
+            id: sent.id || `sent-${Date.now()}`,
             from: "me",
             fromName: "You",
             body: invoiceMsg,
             timestamp: new Date(),
             isOrder: false,
-            fromMe: true,
+            fromMe: true, ack: 1,
             type: "chat"
         }]);
     };
@@ -1490,16 +2056,16 @@ Secure checkout via UPI, Credit/Debit Cards, or NetBanking:
 
 _Your order will be confirmed and processed immediately upon successful payment._ ✨`;
         if (selectedChat) {
-            const success = await whatsappManager.sendMessage(selectedChat, text);
-            if (success) {
+            const sent = await whatsappManager.sendMessageDetailed(selectedChat, text);
+            if (sent.ok) {
                 setSelectedChatMessages(prev => [...prev, {
-                    id: `sent-${Date.now()}`,
+                    id: sent.id || `sent-${Date.now()}`,
                     from: "me",
                     fromName: "You",
                     body: text,
                     timestamp: new Date(),
                     isOrder: false,
-                    fromMe: true,
+                    fromMe: true, ack: 1,
                     type: "chat"
                 }]);
             }
@@ -1833,21 +2399,300 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
     const sendReply = async () => {
         if (!selectedChat || !replyText.trim()) return;
-        const success = await whatsappManager.sendMessage(selectedChat, replyText);
-        if (success) {
+        // A quoted reply goes through the reply endpoint so WhatsApp threads it
+        // on the phone; plain text stays on the normal send path.
+        let sentId: string | null = null;
+        let ok = false;
+        if (replyingTo) {
+            ok = await replyToMessage(
+                whatsappManager.getSessionIdSafe(),
+                selectedChat,
+                replyText,
+                replyingTo.id
+            );
+        } else {
+            const sent = await whatsappManager.sendMessageDetailed(selectedChat, replyText);
+            ok = sent.ok;
+            sentId = sent.id;
+        }
+        if (ok) {
             setReplyText("");
+            const quoted = replyingTo;
+            setReplyingTo(null);
             setSelectedChatMessages(prev => [...prev, {
-                id: `sent-${Date.now()}`,
+                id: sentId || `sent-${Date.now()}`,
                 from: "me",
                 fromName: "You",
                 body: replyText,
                 timestamp: new Date(),
                 isOrder: false,
-                fromMe: true,
-                type: "chat"
+                fromMe: true, ack: 1,
+                type: "chat",
+                ...(quoted ? {
+                    quotedMsg: {
+                        id: quoted.id,
+                        body: quoted.excerpt,
+                        type: 'chat',
+                        sender: quoted.sender,
+                    },
+                } : {}),
             }]);
+            void stopTypingIndicator();
         }
     };
+
+    // --- Quoted reply state (real threading, not a "> quote" paste) ---
+    const [replyingTo, setReplyingTo] = useState<{
+        id: string;
+        excerpt: string;
+        sender: string;
+    } | null>(null);
+
+    const startQuotedReply = (message: WPPMessage | null) => {
+        if (!message) return;
+        setReplyingTo({
+            id: normalizeMessageId(message.id),
+            excerpt: (message.caption || message.body || '').slice(0, 160),
+            sender: message.sender?.pushname || message.sender?.name || (message as WPPMessageWithFromName).fromName || '',
+        });
+    };
+
+    // --- Message-level actions (react / star / forward / delete) ---
+    const [showForwardModal, setShowForwardModal] = useState(false);
+    const [forwardingMessageId, setForwardingMessageId] = useState<string | null>(null);
+    const [forwardSearch, setForwardSearch] = useState('');
+
+    const handleMessageReact = async (message: WPPMessage, emoji: string) => {
+        const id = normalizeMessageId(message.id);
+        if (!id) return;
+        // Optimistic toggle; the socket event reconciles the real state.
+        const key = id;
+        const mine = 'me';
+        setSelectedChatMessages(prev => prev.map(m => {
+            if (normalizeMessageId(m.id) !== key) return m;
+            const current = { ...(m.reactions || {}) };
+            if (current[mine] === emoji) delete current[mine];
+            else current[mine] = emoji;
+            return { ...m, reactions: current };
+        }));
+        const alreadyMine = selectedChatMessages.find(m => normalizeMessageId(m.id) === key)?.reactions?.[mine] === emoji;
+        await sendReaction(getTenantWhatsAppSessionId(getCurrentTenantEmail()) || whatsappManager.getSessionIdSafe(), id, alreadyMine ? '' : emoji);
+    };
+
+    const handleMessageStar = async (message: WPPMessage) => {
+        const id = normalizeMessageId(message.id);
+        if (!id) return;
+        const sessionId = getTenantWhatsAppSessionId(getCurrentTenantEmail()) || whatsappManager.getSessionIdSafe();
+        const ok = await starMessage(sessionId, id, !message.star);
+        toast[ok ? 'success' : 'error'](ok ? (message.star ? 'Removed star' : 'Message starred') : 'Could not update star');
+    };
+
+    const handleMessageForward = (message: WPPMessage) => {
+        setForwardingMessageId(normalizeMessageId(message.id));
+        setForwardSearch('');
+        setShowForwardModal(true);
+    };
+
+    const handleMessageDelete = async (message: WPPMessage) => {
+        const id = normalizeMessageId(message.id);
+        if (!id || !selectedChat) return;
+        if (!window.confirm('Delete this message for everyone?')) return;
+        const ok = await whatsappManager.deleteMessage(id, true);
+        if (ok) {
+            setSelectedChatMessages(prev => prev.map(m =>
+                normalizeMessageId(m.id) === id ? { ...m, revoked: true, body: "" } : m
+            ));
+        }
+        toast[ok ? 'success' : 'error'](ok ? 'Message deleted' : 'Could not delete message');
+    };
+
+    // --- Typing indicator: tell the contact we're composing while they type ---
+    const typingStopTimerRef = React.useRef<number | null>(null);
+
+    const stopTypingIndicator = React.useCallback(async () => {
+        if (typingStopTimerRef.current !== null) {
+            window.clearTimeout(typingStopTimerRef.current);
+            typingStopTimerRef.current = null;
+        }
+        const chat = selectedChatRef.current;
+        if (!chat) return;
+        try { await whatsappManager.setTyping(chat, false); } catch { /* ignore */ }
+    }, []);
+
+    const handleComposerChange = (value: string) => {
+        setReplyText(value);
+        const chat = selectedChat;
+        if (!chat || !value.trim()) {
+            void stopTypingIndicator();
+            return;
+        }
+        void whatsappManager.setTyping(chat, true).catch(() => {});
+        // Reset the auto-stop window; a stalled composer stops typing after 6s.
+        if (typingStopTimerRef.current !== null) window.clearTimeout(typingStopTimerRef.current);
+        typingStopTimerRef.current = window.setTimeout(() => {
+            typingStopTimerRef.current = null;
+            void whatsappManager.setTyping(chat, false).catch(() => {});
+        }, 6000);
+    };
+
+    // --- Chat-level actions (pin / mute / archive / clear / delete / block) ---
+    const [chatMenuOpen, setChatMenuOpen] = useState(false);
+    const [showGroupInfo, setShowGroupInfo] = useState(false);
+
+    // --- WhatsApp Business labels on the open chat ---
+    // (the real WhatsApp labels, not the local CRM tags)
+    const [waLabels, setWaLabels] = useState<WPPLabel[]>([]);
+    const [waLabelsLoading, setWaLabelsLoading] = useState(false);
+    const [chatWaLabelIds, setChatWaLabelIds] = useState<Set<string>>(new Set());
+    const [newWaLabelName, setNewWaLabelName] = useState('');
+    const [showWaLabelInput, setShowWaLabelInput] = useState(false);
+
+    const loadWaLabels = async () => {
+        const chat = selectedChat;
+        if (!chat) return;
+        setWaLabelsLoading(true);
+        try {
+            const labels = await getAllLabels(sidecarSessionId());
+            setWaLabels(labels);
+            // Resolve which labels are attached to this chat (one lookup per
+            // label, only when the submenu opens — the list is short)
+            const attached = await Promise.all(
+                labels.map(async l => ((await getLabelChatIds(sidecarSessionId(), l.id)).includes(chat) ? l.id : null))
+            );
+            setChatWaLabelIds(new Set(attached.filter(Boolean) as string[]));
+        } finally {
+            setWaLabelsLoading(false);
+        }
+    };
+
+    const toggleChatWaLabel = async (labelId: string) => {
+        const chat = selectedChat;
+        if (!chat) return;
+        const isOn = chatWaLabelIds.has(labelId);
+        const ok = await addOrRemoveLabel(sidecarSessionId(), labelId, [chat], isOn ? 'remove' : 'add');
+        if (ok) {
+            setChatWaLabelIds(prev => {
+                const next = new Set(prev);
+                if (isOn) next.delete(labelId); else next.add(labelId);
+                return next;
+            });
+        }
+        toast[ok ? 'success' : 'error'](ok ? (isOn ? 'Label removed' : 'Label applied') : 'Label update failed');
+    };
+
+    // --- History paging: "Load older messages" at the top of the transcript ---
+    const [loadingOlder, setLoadingOlder] = useState(false);
+    const [noMoreHistory, setNoMoreHistory] = useState(false);
+
+    /** Map sidecar messages to the transcript shape (same mapping as loadChatMessages). */
+    const mapWppToLocal = useCallback((msgs: WPPMessage[], chatId: string): Message[] => {
+        return msgs.map((msg) => ({
+            id: normalizeMessageId(msg.id),
+            from: msg.from || chatId,
+            fromName: msg.sender?.pushname || msg.sender?.name ||
+                (msg.fromMe ? 'You' : chatId.split('@')[0] || 'Unknown'),
+            body: msg.body,
+            timestamp: new Date(msg.timestamp * 1000),
+            isOrder: parseOrderFromMessage(msg.body).isOrder,
+            fromMe: msg.fromMe,
+            ack: msg.ack ?? 0,
+            type: msg.type,
+            mediaUrl: msg.mediaUrl || '',
+            mimetype: msg.mimetype || '',
+            caption: msg.caption || '',
+            parsed: parseOrderFromMessage(msg.body),
+            quotedMsg: msg.quotedMsg,
+            star: msg.star,
+            location: msg.location,
+            vcard: msg.vcard,
+            poll: msg.poll,
+            order: msg.order,
+            product: msg.product,
+        }));
+    }, []);
+
+    const handleLoadOlder = async () => {
+        if (!selectedChat || loadingOlder || selectedChatMessages.length === 0 || noMoreHistory) return;
+        setLoadingOlder(true);
+        try {
+            const oldest = selectedChatMessages[0];
+            const older = await whatsappManager.getMessages(selectedChat, 30, normalizeMessageId(oldest.id));
+            const known = new Set(selectedChatMessages.map(m => normalizeMessageId(m.id)));
+            const fresh = mapWppToLocal(older, selectedChat).filter(m => !known.has(m.id));
+            if (fresh.length === 0) {
+                setNoMoreHistory(true);
+            } else {
+                setSelectedChatMessages(prev => [...fresh, ...prev]);
+                if (older.length < 30) setNoMoreHistory(true);
+            }
+        } catch {
+            toast.error('Could not load older messages');
+        } finally {
+            setLoadingOlder(false);
+        }
+    };
+
+    const sidecarSessionId = () =>
+        getTenantWhatsAppSessionId(getCurrentTenantEmail()) || whatsappManager.getSessionIdSafe();
+
+    const runChatAction = async (label: string, action: () => Promise<boolean>) => {
+        const ok = await action();
+        toast[ok ? 'success' : 'error'](ok ? label : `${label} failed`);
+        if (ok) void loadExistingChats();
+        return ok;
+    };
+
+    const handleChatPin = () =>
+        runChatAction('Chat pin updated', () => pinChat(sidecarSessionId(), selectedChat!, true));
+
+    const handleChatMute = () =>
+        runChatAction('Chat muted for 8 hours', () =>
+            muteChat(sidecarSessionId(), selectedChat!, { duration: 8, unit: 'hours' }));
+
+    const handleChatArchive = () =>
+        runChatAction('Chat archived', async () => {
+            const ok = await archiveChat(sidecarSessionId(), selectedChat!, true);
+            if (ok && selectedChat) setSelectedChat(null);
+            return ok;
+        });
+
+    const handleChatClear = async () => {
+        if (!window.confirm('Clear all messages in this chat? Starred messages are kept.')) return;
+        await runChatAction('Chat cleared', () => clearChatMessages(sidecarSessionId(), selectedChat!, true));
+        if (selectedChat) setSelectedChatMessages([]);
+    };
+
+    const handleChatDelete = async () => {
+        if (!window.confirm('Delete this chat entirely? This cannot be undone.')) return;
+        const ok = await deleteChatApi(sidecarSessionId(), selectedChat!);
+        toast[ok ? 'success' : 'error'](ok ? 'Chat deleted' : 'Delete failed');
+        if (ok) {
+            setSelectedChat(null);
+            setSelectedChatMessages([]);
+            void loadExistingChats();
+        }
+    };
+
+    const handleChatBlock = async () => {
+        if (!window.confirm('Block this contact? They will no longer be able to message you.')) return;
+        await runChatAction('Contact blocked', () => setContactBlocked(sidecarSessionId(), selectedChat!, true));
+    };
+
+    // --- Incoming call banner actions ---
+    const handleRejectIncomingCall = async () => {
+        const call = incomingCall;
+        if (!call) return;
+        setIncomingCall(null);
+        const ok = await rejectCall(sidecarSessionId(), call.id);
+        toast[ok ? 'success' : 'error'](ok ? 'Call rejected' : 'Could not reject the call');
+    };
+
+    // Auto-expire the call banner: WhatsApp rings for ~45s
+    useEffect(() => {
+        if (!incomingCall) return;
+        const timer = window.setTimeout(() => setIncomingCall(null), 45000);
+        return () => window.clearTimeout(timer);
+    }, [incomingCall]);
 
     // Attachment Handlers
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1875,14 +2720,34 @@ _Your order will be confirmed and processed immediately upon successful payment.
             reader.onload = async () => {
                 const base64 = (reader.result as string).split(',')[1];
                 let success = false;
+                const isImage = attachmentFile.type.startsWith('image/');
+                const isVideo = attachmentFile.type.startsWith('video/');
+                const isAudio = attachmentFile.type.startsWith('audio/');
+                const contentType = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'ptt' : 'document';
 
-                if (attachmentFile.type.startsWith('image/')) {
+                if (isImage) {
                     success = await whatsappManager.sendImage(
                         selectedChat,
                         base64,
                         replyText || undefined,
                         attachmentFile.name
                     );
+                } else if (isVideo) {
+                    // Native video bubble, not a document chip
+                    success = await whatsappManager.sendVideo(
+                        selectedChat,
+                        base64,
+                        attachmentFile.name,
+                        replyText || undefined
+                    );
+                } else if (isAudio) {
+                    // Audio attachments also go through send-audio so they keep
+                    // a playable audio bubble rather than becoming documents.
+                    success = await whatsappManager.sendAudio(selectedChat, base64, {
+                        ptt: false,
+                        filename: attachmentFile.name,
+                        mimetype: attachmentFile.type
+                    });
                 } else {
                     success = await whatsappManager.sendFile(
                         selectedChat,
@@ -1898,11 +2763,11 @@ _Your order will be confirmed and processed immediately upon successful payment.
                         id: `sent-${Date.now()}`,
                         from: "me",
                         fromName: "You",
-                        body: replyText || `[${attachmentFile.type.startsWith('image/') ? 'Image' : 'File'}] ${attachmentFile.name}`,
+                        body: replyText || `[${contentType === 'ptt' ? 'Audio' : contentType.charAt(0).toUpperCase() + contentType.slice(1)}] ${attachmentFile.name}`,
                         timestamp: new Date(),
                         isOrder: false,
-                        fromMe: true,
-                        type: attachmentFile.type.startsWith('image/') ? 'image' : 'document',
+                        fromMe: true, ack: 1,
+                        type: contentType,
                         mediaUrl: attachmentPreview || ''
                     }]);
 
@@ -1927,10 +2792,27 @@ _Your order will be confirmed and processed immediately upon successful payment.
     };
 
     // Voice Recording Handlers
+    // Browsers cannot encode OGG/Opus (Chrome/Edge) but WhatsApp expects it, so
+    // we ask for it first and fall back to webm/Opus, keeping whichever codec we
+    // actually got so the sidecar can declare the right mimetype.
+    const recordingMimeRef = React.useRef<string>('audio/webm;codecs=opus');
+
+    const pickRecordingMime = (): string => {
+        if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
+            return 'audio/webm;codecs=opus';
+        }
+        for (const candidate of ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm']) {
+            if (MediaRecorder.isTypeSupported(candidate)) return candidate;
+        }
+        return '';
+    };
+
     const startRecording = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const mediaRecorder = new MediaRecorder(stream);
+            const mimeType = pickRecordingMime();
+            recordingMimeRef.current = mimeType || 'audio/webm;codecs=opus';
+            const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
             mediaRecorderRef.current = mediaRecorder;
             audioChunksRef.current = [];
 
@@ -1941,22 +2823,21 @@ _Your order will be confirmed and processed immediately upon successful payment.
             };
 
             mediaRecorder.onstop = async () => {
-                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-                const audioFile = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+                const mime = recordingMimeRef.current;
+                const isOgg = mime.includes('ogg');
+                const audioBlob = new Blob(audioChunksRef.current, { type: mime });
+                const voiceName = `voice_${Date.now()}.${isOgg ? 'oga' : 'webm'}`;
 
-                // Convert to base64 and send
+                // Convert to base64 and send as a real PTT voice note
                 const reader = new FileReader();
                 reader.onload = async () => {
                     const base64 = (reader.result as string).split(',')[1];
                     if (selectedChat) {
-                        // Note: WPPConnect might need audio to be sent differently
-                        // For now, send as file
-                        const success = await whatsappManager.sendFile(
-                            selectedChat,
-                            base64,
-                            audioFile.name,
-                            'Voice message'
-                        );
+                        const success = await whatsappManager.sendAudio(selectedChat, base64, {
+                            ptt: true,
+                            filename: voiceName,
+                            mimetype: mime
+                        });
                         if (success) {
                             setSelectedChatMessages(prev => [...prev, {
                                 id: `sent-${Date.now()}`,
@@ -1965,7 +2846,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                 body: "🎤 Voice message",
                                 timestamp: new Date(),
                                 isOrder: false,
-                                fromMe: true,
+                                fromMe: true, ack: 1,
                                 type: "ptt"
                             }]);
                         }
@@ -2171,7 +3052,29 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
 
     return (
-        <div className="flex flex-col h-full overflow-hidden">
+        <div className="flex flex-col h-full overflow-hidden relative">
+            {/* Incoming WhatsApp call banner */}
+            {incomingCall && (
+                <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[999] flex items-center gap-3 bg-card border border-amber-500/40 shadow-2xl rounded-full pl-4 pr-2 py-2 animate-in fade-in slide-in-from-top-2">
+                    <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse shrink-0" />
+                    <span className="text-xs font-semibold text-foreground truncate max-w-[220px]">
+                        {incomingCall.isVideo ? '🎥 Video' : '📞 Voice'} call · {incomingCall.peerJid.split('@')[0]}
+                    </span>
+                    <button
+                        onClick={handleRejectIncomingCall}
+                        className="text-xs font-bold text-red-500 hover:bg-red-500/10 px-3 py-1.5 rounded-full transition-colors shrink-0"
+                    >
+                        Reject
+                    </button>
+                    <button
+                        onClick={() => setIncomingCall(null)}
+                        className="text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 shrink-0"
+                        title="Dismiss"
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
             <Header
                 title="WhatsApp Concierge"
                 subtitle="Chat & Create Orders"
@@ -2628,13 +3531,14 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                     </span>
                                 ) : null;
 
-                                return (
-                                <div
-                                    key={chat.id}
-                                    onClick={() => {
-                                        setSelectedChat(chat.id);
-                                        markChatAsReadLocally(chat.id);
-                                    }}
+                                                return (
+                                                <div
+                                                    key={chat.id}
+                                                    onClick={() => {
+                                                        setSelectedChat(chat.id);
+                                                        setNoMoreHistory(false);
+                                                        markChatAsReadLocally(chat.id);
+                                                    }}
                                     className={`group p-3 border-b border-border cursor-pointer hover:bg-muted/50 transition-colors flex gap-3 ${selectedChat === chat.id ? 'bg-primary/10 border-l-4 border-l-primary' : ''}`}
                                 >
                                     {/* Profile Pic / Avatar */}
@@ -2683,7 +3587,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     </div>
 
                     {/* MIDDLE: Chat Window */}
-                    <div className={`flex-1 min-w-[320px] bg-card rounded-xl border border-border flex flex-col overflow-hidden relative ${!selectedChat ? 'hidden md:flex' : 'flex'}`}>
+                    <div className={`flex-1 min-w-0 bg-card rounded-xl border border-border flex flex-col overflow-hidden relative ${!selectedChat ? 'hidden md:flex' : 'flex'}`}>
                         {selectedChat ? (
                             <>
                                 <div className="h-14 border-b border-border flex items-center px-4 bg-background/50 backdrop-blur justify-between gap-2">
@@ -2771,13 +3675,112 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         )}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0">
+                                        {/* Chat actions: pin / mute / archive / clear / delete / block */}
+                                        <div className="relative">
+                                            <button
+                                                onClick={() => setChatMenuOpen(prev => !prev)}
+                                                className="p-1.5 rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                                                title="Chat actions"
+                                            >
+                                                <MoreVertical size={16} />
+                                            </button>
+                                            {chatMenuOpen && (
+                                                <>
+                                                    <div className="fixed inset-0 z-40" onClick={() => setChatMenuOpen(false)} />
+                                                    <div className="absolute right-0 top-full mt-1 z-50 w-52 rounded-xl bg-card border border-border shadow-2xl p-1 text-xs">
+                                                        {(selectedChat?.includes('@g.us') || chats.find(c => c.id === selectedChat)?.isGroup) && (
+                                                            <button
+                                                                onClick={() => { setChatMenuOpen(false); setShowGroupInfo(true); }}
+                                                                className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-muted transition-colors font-medium text-foreground"
+                                                            >
+                                                                Group info & members
+                                                            </button>
+                                                        )}
+                                                        {/* WhatsApp Business labels on this chat */}
+                                                        <div className="px-2.5 py-2 border-b border-border/50">
+                                                            <div className="flex items-center justify-between mb-1.5">
+                                                                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">WhatsApp Labels</span>
+                                                                <button
+                                                                    onClick={() => void loadWaLabels()}
+                                                                    className="text-[10px] font-semibold text-primary hover:underline"
+                                                                >
+                                                                    {waLabelsLoading ? 'Loading…' : 'Load'}
+                                                                </button>
+                                                            </div>
+                                                            {waLabels.length > 0 && (
+                                                                <div className="space-y-0.5">
+                                                                    {waLabels.map(label => (
+                                                                        <label key={label.id} className="flex items-center gap-2 py-0.5 cursor-pointer select-none">
+                                                                            <input
+                                                                                type="checkbox"
+                                                                                checked={chatWaLabelIds.has(label.id)}
+                                                                                onChange={() => void toggleChatWaLabel(label.id)}
+                                                                                className="accent-primary"
+                                                                            />
+                                                                            <span className="truncate">{label.name}</span>
+                                                                        </label>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {showWaLabelInput ? (
+                                                                <div className="flex gap-1 mt-1.5">
+                                                                    <input
+                                                                        autoFocus
+                                                                        value={newWaLabelName}
+                                                                        onChange={e => setNewWaLabelName(e.target.value)}
+                                                                        placeholder="New label name"
+                                                                        className="flex-1 bg-muted rounded px-2 py-1 text-xs focus:outline-none"
+                                                                        onKeyDown={async e => {
+                                                                            if (e.key !== 'Enter' || !newWaLabelName.trim()) return;
+                                                                            const ok = await addLabel(sidecarSessionId(), newWaLabelName.trim());
+                                                                            if (ok) {
+                                                                                setNewWaLabelName('');
+                                                                                setShowWaLabelInput(false);
+                                                                                await loadWaLabels();
+                                                                                toast.success('Label created');
+                                                                            } else {
+                                                                                toast.error('Could not create label');
+                                                                            }
+                                                                        }}
+                                                                    />
+                                                                    <button onClick={() => setShowWaLabelInput(false)} className="text-muted-foreground px-1">×</button>
+                                                                </div>
+                                                            ) : (
+                                                                <button
+                                                                    onClick={() => setShowWaLabelInput(true)}
+                                                                    className="text-[10px] font-semibold text-primary hover:underline mt-1"
+                                                                >
+                                                                    + New label
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                        {[
+                                                            { key: 'pin', label: 'Pin chat', run: handleChatPin },
+                                                            { key: 'mute', label: 'Mute for 8 hours', run: handleChatMute },
+                                                            { key: 'archive', label: 'Archive chat', run: handleChatArchive },
+                                                            { key: 'clear', label: 'Clear messages', run: handleChatClear },
+                                                            { key: 'delete', label: 'Delete chat', run: handleChatDelete, danger: true },
+                                                            { key: 'block', label: 'Block contact', run: handleChatBlock, danger: true },
+                                                        ].map(item => (
+                                                            <button
+                                                                key={item.key}
+                                                                onClick={() => { setChatMenuOpen(false); void item.run(); }}
+                                                                className={`w-full text-left px-2.5 py-2 rounded-lg hover:bg-muted transition-colors font-medium ${item.danger ? 'text-red-500 hover:bg-red-500/10' : 'text-foreground'}`}
+                                                            >
+                                                                {item.label}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
                                         <label className="text-xs hidden sm:flex items-center gap-1 cursor-pointer select-none">
                                             <input type="checkbox" checked={autoReplyEnabled} onChange={e => setAutoReplyEnabled(e.target.checked)} className="accent-primary" />
                                             Auto-Reply
                                         </label>
                                         <button
                                             onClick={() => setShowConciergePanel(prev => !prev)}
-                                            className={`p-1.5 rounded-lg border transition-colors ${showConciergePanel ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+                                            className={`hidden xl:inline-flex p-1.5 rounded-lg border transition-colors ${showConciergePanel ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'}`}
                                             title={showConciergePanel ? "Hide Concierge Sidebar" : "Show Concierge Sidebar"}
                                         >
                                             {showConciergePanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
@@ -2787,8 +3790,23 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
                                 <div
                                     {...longPressHandlers}
+                                    ref={messagesScrollRef}
+                                    onScroll={handleMessagesScroll}
                                     className={`flex-1 overflow-y-auto p-4 space-y-3 bg-muted/10 ${longPressing ? 'select-none' : ''}`}
                                 >
+                                    {/* Load older history */}
+                                    {selectedChatMessages.length > 0 && !noMoreHistory && (
+                                        <div className="flex justify-center pb-1">
+                                            <button
+                                                onClick={handleLoadOlder}
+                                                disabled={loadingOlder}
+                                                className="text-[11px] text-muted-foreground hover:text-foreground bg-muted/60 hover:bg-muted px-3 py-1.5 rounded-full transition-colors flex items-center gap-1.5"
+                                            >
+                                                {loadingOlder ? <Loader2 size={12} className="animate-spin" /> : <ChevronLeft size={12} />}
+                                                {loadingOlder ? 'Loading…' : 'Load older messages'}
+                                            </button>
+                                        </div>
+                                    )}
                                     {selectedChatMessages.map(msg => {
                                         const stanzaId = getMessageStanzaId(msg.id);
                                         return (
@@ -2836,6 +3854,38 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                         onFindSimilar={handleFindSimilar}
                                                         chatMessages={selectedChatMessages}
                                                     />
+                                                    {/* Edited marker + reaction chips */}
+                                                    <div className="flex flex-wrap items-center gap-1 mt-1">
+                                                        {msg.edited && !msg.revoked && (
+                                                            <span className="text-[10px] italic opacity-60">edited</span>
+                                                        )}
+                                                        {Object.values(msg.reactions || {}).filter(Boolean).map((emoji, i) => (
+                                                            <span
+                                                                key={i}
+                                                                className="text-[11px] leading-none bg-muted/80 border border-border rounded-full px-1.5 py-0.5"
+                                                                title="Reaction"
+                                                            >
+                                                                {emoji}
+                                                            </span>
+                                                        ))}
+                                                        {msg.star && (
+                                                            <Star size={11} className="text-amber-400 fill-amber-400" aria-label="Starred" />
+                                                        )}
+                                                    </div>
+                                                    {msg.fromMe && (
+                                                        <div className="mt-1 flex items-center justify-end gap-1 text-[10px] leading-none text-primary-foreground/70">
+                                                            <span>{msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                                            {(msg.ack ?? 0) >= 3 ? (
+                                                                <CheckCheck size={13} className="text-sky-300" aria-label="Read" />
+                                                            ) : msg.ack === 2 ? (
+                                                                <CheckCheck size={13} aria-label="Delivered" />
+                                                            ) : msg.ack === 1 ? (
+                                                                <Check size={13} aria-label="Sent" />
+                                                            ) : (
+                                                                <Clock size={13} className="opacity-70" aria-label="Pending" />
+                                                            )}
+                                                        </div>
+                                                    )}
                                                 </div>
                                                 {msg.fromMe && (
                                                     <button
@@ -2858,6 +3908,26 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         );
                                     })}
                                 </div>
+
+                                {/* Quoted Reply Preview */}
+                                {replyingTo && (
+                                    <div className="px-3 py-2 bg-muted/50 border-t border-border flex items-center gap-2">
+                                        <Quote size={14} className="text-primary shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-[11px] font-semibold text-primary truncate">
+                                                {replyingTo.sender || 'Reply'}
+                                            </p>
+                                            <p className="text-xs text-muted-foreground truncate">{replyingTo.excerpt}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => setReplyingTo(null)}
+                                            className="p-1 hover:bg-muted rounded text-muted-foreground hover:text-foreground"
+                                            title="Cancel reply"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
+                                )}
 
                                 {/* Attachment Preview */}
                                 {attachmentFile && (
@@ -2950,7 +4020,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             value={replyText}
                                             onChange={e => {
                                                 const val = e.target.value;
-                                                setReplyText(val);
+                                                handleComposerChange(val);
                                                 if (val.startsWith('/')) {
                                                     setSlashQuery(val);
                                                     setSlashPaletteOpen(true);
@@ -3008,7 +4078,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     {/* RIGHT: Concierge Overlay */}
                     {/* RIGHT: Multi-function Sidebar */}
                     {showConciergePanel && (
-                        <div className="w-80 xl:w-96 shrink-0 bg-card rounded-xl border border-border flex flex-col overflow-hidden">
+                        <div className="hidden xl:flex w-96 shrink-0 bg-card rounded-xl border border-border flex-col overflow-hidden">
                         {/* Tab Bar */}
                         <div className="flex border-b border-border bg-muted/20">
                             <button
@@ -3938,7 +5008,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 }}
                 onSetLeadStatus={handleContextSetLeadStatus}
                 onOpenCustomerCRM={() => setActivePanel('customer')}
-                onQuoteReply={msg => setReplyText(`> ${msg.body || ''}\n\n`)}
+                onQuoteReply={msg => startQuotedReply(msg)}
             />
 
             {/* Context Action Engine — long-press / right-click (spec §8) */}
@@ -3996,8 +5066,79 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     setVendorIngestMsg(text);
                 }}
                 onAutoBarcodeTag={() => handleAutoBarcodeTag(actionMenu.message!)}
-                onQuoteReply={() => setReplyText(`> ${actionMenu.message?.caption || actionMenu.message?.body || ''}\n\n`)}
+                onQuoteReply={() => startQuotedReply(actionMenu.message)}
+                onReact={emoji => handleMessageReact(actionMenu.message!, emoji)}
+                onStar={() => handleMessageStar(actionMenu.message!)}
+                isStarred={!!actionMenu.message?.star}
+                onForward={() => handleMessageForward(actionMenu.message!)}
+                onDelete={() => handleMessageDelete(actionMenu.message!)}
+                canDelete={!!actionMenu.message?.fromMe}
             />
+
+            {/* Forward target picker */}
+            {showForwardModal && (
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px]" onClick={() => setShowForwardModal(false)} />
+                    <div className="relative w-full max-w-md bg-card rounded-2xl border border-border shadow-2xl flex flex-col max-h-[70vh]">
+                        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                            <h3 className="text-sm font-bold text-foreground">Forward message</h3>
+                            <button onClick={() => setShowForwardModal(false)} className="text-muted-foreground hover:text-foreground">
+                                <Trash2 size={16} />
+                            </button>
+                        </div>
+                        <div className="px-4 py-2 border-b border-border">
+                            <input
+                                autoFocus
+                                value={forwardSearch}
+                                onChange={e => setForwardSearch(e.target.value)}
+                                placeholder="Search chats..."
+                                className="w-full bg-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-2">
+                            {chats
+                                .filter(c => c.id !== selectedChat)
+                                .filter(c => (c.name || c.id).toLowerCase().includes(forwardSearch.toLowerCase()))
+                                .slice(0, 60)
+                                .map(c => (
+                                    <button
+                                        key={c.id}
+                                        onClick={async () => {
+                                            if (!forwardingMessageId) return;
+                                            const ok = await forwardMessage(sidecarSessionId(), forwardingMessageId, c.id);
+                                            toast[ok ? 'success' : 'error'](ok ? `Forwarded to ${c.name || c.id}` : 'Forward failed');
+                                            setShowForwardModal(false);
+                                            setForwardingMessageId(null);
+                                        }}
+                                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-muted/70 transition-colors text-left"
+                                    >
+                                        <Forward size={14} className="text-sky-500 shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium truncate">{c.name || c.id}</p>
+                                            {c.isGroup && <p className="text-[10px] text-muted-foreground">Group</p>}
+                                        </div>
+                                    </button>
+                                ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Group management panel */}
+            {showGroupInfo && selectedChat && (
+                <GroupInfoModal
+                    isOpen
+                    onClose={() => setShowGroupInfo(false)}
+                    sessionId={sidecarSessionId()}
+                    groupId={selectedChat}
+                    initialName={chats.find(c => c.id === selectedChat)?.name}
+                    onChanged={() => void loadExistingChats()}
+                    onLeft={() => {
+                        setSelectedChat(null);
+                        setSelectedChatMessages([]);
+                    }}
+                />
+            )}
 
             {/* Vendor Ingestion Modals (spec §8.2) */}
             {vendorIngestMsg !== null && (

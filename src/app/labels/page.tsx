@@ -728,18 +728,20 @@ function LabelsContent() {
                                     </div>
                                 ) : null}
 
-                                {/* Size Preview */}
-                                <div className="flex items-center gap-3 text-xs text-moonstone">
-                                    <span className="font-bold uppercase">Preview:</span>
+                                {/* Size Preview: the dashed swatch keeps the true aspect
+                                    ratio, so the dimension caption sits beside it instead of
+                                    inside it — a 14.3mm roll is only ~21px wide on screen. */}
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-moonstone">
+                                    <span className="font-bold uppercase shrink-0">Preview:</span>
                                     <div
-                                        className="border-2 border-dashed border-primary/40 bg-primary/5 rounded flex items-center justify-center text-[8px] text-primary/60"
+                                        className="shrink-0 border-2 border-dashed border-primary/40 bg-primary/5 rounded"
                                         style={{
                                             width: `${Math.min(selectedLabelSize.width * 1.5, 120)}px`,
                                             height: `${Math.min(selectedLabelSize.height * 1.5, 60)}px`
                                         }}
-                                    >
-                                        {selectedLabelSize.width}×{selectedLabelSize.height}mm
-                                    </div>
+                                        aria-hidden="true"
+                                    />
+                                    <span className="font-mono whitespace-nowrap text-primary/80">{selectedLabelSize.width}×{selectedLabelSize.height}mm</span>
                                 </div>
                             </div>
                         </div>
@@ -872,10 +874,7 @@ function LabelsContent() {
                                 ? (rollLayout === '3-up' ? '45mm 100mm' : '14.3mm 100mm')
                                 : 'auto'};
                         }
-                    }
-                `}</style>
-                <style jsx global>{`
-                    @media print {
+
                         html, body {
                             margin: 0 !important;
                             padding: 0 !important;

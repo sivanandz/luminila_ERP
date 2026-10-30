@@ -1059,11 +1059,13 @@ export default function StorefrontControlPage() {
             <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6 pb-28">
             {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-card border rounded-lg p-5 shadow-xs">
-                <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                        <Globe className="w-6 h-6 text-primary" />
-                        <h1 className="text-2xl font-bold tracking-tight">Niththigal Storefront CMS</h1>
-                        <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
+                <div className="min-w-0 space-y-1">
+                    <div className="flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                            <Globe className="w-6 h-6 shrink-0 text-primary" />
+                            <h1 className="break-words text-2xl font-bold tracking-tight">Niththigal Storefront CMS</h1>
+                        </div>
+                        <Badge variant="outline" className="shrink-0 text-xs bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
                             Live storefront
                         </Badge>
                     </div>
@@ -1071,18 +1073,23 @@ export default function StorefrontControlPage() {
                         Edit every section, image, link and theme token of the live Niththigal storefront.
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={handleReset} className="gap-1.5">
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                    <Button variant="outline" size="sm" onClick={handleReset} className="h-9 w-full gap-1.5 sm:h-7 sm:w-auto">
                         <RotateCcw className="w-4 h-4" />
                         Reset Defaults
                     </Button>
-                    <a href={getStorefrontOrigin() || "/"} target="_blank" rel="noopener noreferrer">
-                        <Button variant="outline" size="sm" className="gap-1.5">
+                    <a
+                        href={getStorefrontOrigin() || "/"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full sm:w-auto"
+                    >
+                        <Button variant="outline" size="sm" className="h-9 w-full gap-1.5 sm:h-7 sm:w-auto">
                             <ExternalLink className="w-4 h-4" />
                             View Storefront
                         </Button>
                     </a>
-                    <Button onClick={handleSave} disabled={isSaving} size="sm" className="gap-1.5 bg-primary">
+                    <Button onClick={handleSave} disabled={isSaving} size="sm" className="h-9 w-full gap-1.5 bg-primary sm:h-7 sm:w-auto">
                         <Save className="w-4 h-4" />
                         {isSaving ? "Saving..." : "Save Changes"}
                     </Button>

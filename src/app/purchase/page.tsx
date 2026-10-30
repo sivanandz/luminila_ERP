@@ -180,10 +180,11 @@ export default function PurchaseOrdersPage() {
                     </Card>
                 </div>
 
-                {/* Filters */}
-                <div className="flex items-center justify-between gap-4 mb-6">
-                    <div className="flex items-center gap-3">
-                        <div className="relative w-64">
+                {/* Filters — stack full-width on phones so the search + status controls
+                    never push the list panel wider than the viewport. */}
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full sm:w-auto">
+                        <div className="relative w-full sm:w-64">
                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                             <Input
                                 placeholder="Search PO number or vendor..."
@@ -194,7 +195,7 @@ export default function PurchaseOrdersPage() {
                         </div>
 
                         <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
-                            <SelectTrigger className="w-40 bg-card border-border">
+                            <SelectTrigger className="w-full sm:w-40 bg-card border-border">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>

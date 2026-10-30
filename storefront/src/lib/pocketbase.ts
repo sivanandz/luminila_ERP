@@ -443,9 +443,9 @@ export function formatWhatsAppCartMessage(
     coupon?: string,
     brandName?: string
 ): string {
-    const brand = (brandName || "Fashion Atelier").toUpperCase();
+    const brand = (brandName || "").trim().toUpperCase();
     const lines = [
-        `✨ *NEW ORDER - ${brand}* ✨`,
+        `✨ *NEW ORDER${brand ? ` - ${brand}` : ""}* ✨`,
         `───────────────────────`,
         `👤 *Customer:* ${customer.name}`,
         `📞 *Phone:* ${customer.phone}`,

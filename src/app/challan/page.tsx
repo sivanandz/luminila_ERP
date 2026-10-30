@@ -138,7 +138,7 @@ export default function ChallansPage() {
                         />
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                         <Filter size={16} className="text-moonstone" />
                         <select
                             value={typeFilter}
@@ -185,8 +185,51 @@ export default function ChallansPage() {
                         </Button>
                     </div>
                 ) : (
-                    <div className="bg-surface-navy rounded-xl border border-surface-hover overflow-hidden">
-                        <table className="w-full">
+                    <>
+                        {/* Phones: stacked cards — the 7-column table cannot fit 360px without clipping */}
+                        <div className="space-y-3 md:hidden">
+                            {filteredChallans.map((challan) => (
+                                <div
+                                    key={challan.id}
+                                    onClick={() => router.push(`/challan/detail?id=${challan.id}`)}
+                                    className="bg-surface-navy rounded-xl border border-surface-hover p-4 cursor-pointer transition-colors active:bg-bg-navy/30"
+                                >
+                                    <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0">
+                                            <p className="font-mono font-bold text-primary truncate">{challan.challan_number}</p>
+                                            <p className="text-xs text-moonstone mt-1">{formatDate(challan.challan_date)}</p>
+                                        </div>
+                                        <div className="shrink-0">{getStatusBadge(challan.status)}</div>
+                                    </div>
+                                    <div className="mt-3 flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <p className="text-white font-medium truncate">{challan.consignee_name}</p>
+                                            {challan.consignee_address && (
+                                                <p className="text-xs text-moonstone truncate">{challan.consignee_address}</p>
+                                            )}
+                                        </div>
+                                        <span className="shrink-0 font-mono font-bold text-white text-sm">{formatPrice(challan.total_value)}</span>
+                                    </div>
+                                    <div className="mt-3 flex items-center justify-between gap-2">
+                                        {getTypeBadge(challan.challan_type)}
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                router.push(`/challan/detail?id=${challan.id}`);
+                                            }}
+                                            className="inline-flex min-h-9 min-w-9 items-center justify-center p-2 rounded-lg hover:bg-surface-hover text-moonstone hover:text-white transition-colors"
+                                            aria-label={`View challan ${challan.challan_number}`}
+                                        >
+                                            <Eye size={16} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="hidden md:block bg-surface-navy rounded-xl border border-surface-hover overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="w-full">
                             <thead>
                                 <tr className="border-b border-surface-hover text-left text-xs font-bold text-moonstone uppercase">
                                     <th className="py-4 px-4">Challan #</th>
@@ -244,8 +287,10 @@ export default function ChallansPage() {
                                     </tr>
                                 ))}
                             </tbody>
-                        </table>
-                    </div>
+                                </table>
+                            </div>
+                        </div>
+                    </>
                 )}
             </div>
         </div>

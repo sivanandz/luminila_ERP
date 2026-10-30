@@ -3,19 +3,41 @@
  * IndexNow submission for the storefront.
  *
  * Reads INDEXNOW_KEY and NEXT_PUBLIC_SITE_URL from the environment or
- * .env.local, ensures public/<key>.txt exists, reads the URLs from
- * out/sitemap.xml (or the live sitemap), and POSTs them to the shared
- * IndexNow endpoint.
+ * .env.local, ensures public/<key>.txt exists, reads the URLs from the isolated
+ * export's sitemap.xml, and POSTs them to the shared IndexNow endpoint.
  *
- * A 200/202 means the endpoint received the submission; it does not mean the
- * URLs were indexed.
+ * Usage:
+ *   node scripts/indexnow.mjs [--out <dir>] [--dry-run]
+ *
+ * The default sitemap is the one scripts/build-static-isolated.mjs writes:
+ *   <os.tmpdir()>/niththigal-seo-build/out/sitemap.xml
+ * When that file does not exist, the live <SITE_URL>/sitemap.xml is fetched.
+ *
+ * Nothing is invented: a missing key, a missing https origin or an empty
+ * sitemap is an error. A 200/202 response means the endpoint received the
+ * submission; it does not mean the URLs were indexed.
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ISOLATED_OUT_DIR = path.join(os.tmpdir(), "niththigal-seo-build", "out");
+const ENDPOINT = "https://api.indexnow.org/indexnow";
+const KEY_PATTERN = /^[A-Za-z0-9-]{8,128}$/;
+const MAX_URLS = 10000;
+
+const args = process.argv.slice(2);
+const dryRun = args.includes("--dry-run");
+
+function flagValue(flag) {
+    const direct = args.indexOf(flag);
+    if (direct >= 0 && args[direct + 1]) return args[direct + 1];
+    const prefixed = args.find((value) => value.startsWith(`${flag}=`));
+    return prefixed ? prefixed.slice(flag.length + 1) : "";
+}
 
 function readEnvFile(file) {
     if (!fs.existsSync(file)) return {};
@@ -36,10 +58,19 @@ const siteUrl = String(
     .trim()
     .replace(/\/+$/, "");
 
-if (!/^[A-Za-z0-9-]{8,128}$/.test(key)) {
+if (!key) {
+    console.error("[seo:indexnow] INDEXNOW_KEY is required (8-128 characters: a-z, A-Z, 0-9, -).");
+    process.exit(1);
+}
+if (!KEY_PATTERN.test(key)) {
     console.error(
         "[seo:indexnow] INDEXNOW_KEY must be 8-128 characters using only a-z, A-Z, 0-9 and -."
     );
+    process.exit(1);
+}
+
+if (!siteUrl) {
+    console.error("[seo:indexnow] NEXT_PUBLIC_SITE_URL is required; no origin is invented.");
     process.exit(1);
 }
 
@@ -77,49 +108,103 @@ if (!fs.existsSync(keyFile) || fs.readFileSync(keyFile, "utf8").trim() !== key) 
     console.log(`[seo:indexnow] Wrote ${path.relative(projectRoot, keyFile)}.`);
 }
 
+function decodeXml(value) {
+    return value
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'");
+}
+
+function readLocalSitemap() {
+    const directories = [];
+    const requested = flagValue("--out");
+    if (requested) directories.push(path.resolve(requested));
+    directories.push(ISOLATED_OUT_DIR);
+    for (const directory of directories) {
+        const candidate = path.join(directory, "sitemap.xml");
+        if (fs.existsSync(candidate)) return { xml: fs.readFileSync(candidate, "utf8"), source: candidate };
+    }
+    return null;
+}
+
 async function readSitemap() {
-    const local = path.join(projectRoot, "out", "sitemap.xml");
-    if (fs.existsSync(local)) return fs.readFileSync(local, "utf8");
+    const local = readLocalSitemap();
+    if (local) return local;
     const response = await fetch(`${siteUrl}/sitemap.xml`, {
         headers: { Accept: "application/xml" },
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.text();
+    if (!response.ok) throw new Error(`live sitemap returned HTTP ${response.status}`);
+    return { xml: await response.text(), source: `${siteUrl}/sitemap.xml` };
 }
 
-const sitemap = await readSitemap();
-const urls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/gi)]
-    .map((match) => match[1].trim())
-    .filter((url) => {
-        try {
-            return new URL(url).host === parsed.host;
-        } catch {
-            return false;
-        }
-    })
-    .slice(0, 10000);
+let sitemap;
+try {
+    sitemap = await readSitemap();
+} catch (error) {
+    console.error(
+        `[seo:indexnow] Could not read a sitemap: ${error instanceof Error ? error.message : String(error)}`
+    );
+    process.exit(1);
+}
+
+const urls = [
+    ...new Set(
+        [...sitemap.xml.matchAll(/<loc>([^<]+)<\/loc>/gi)]
+            .map((match) => decodeXml(match[1]).trim())
+            .filter((url) => {
+                try {
+                    return new URL(url).host === parsed.host;
+                } catch {
+                    return false;
+                }
+            })
+    ),
+].slice(0, MAX_URLS);
 
 if (!urls.length) {
-    console.error("[seo:indexnow] No same-host URLs found in the sitemap.");
+    console.error(`[seo:indexnow] No same-host URLs found in ${sitemap.source}.`);
     process.exit(1);
 }
 
-const response = await fetch("https://api.indexnow.org/indexnow", {
-    method: "POST",
-    headers: { "Content-Type": "application/json; charset=utf-8" },
-    body: JSON.stringify({
-        host: parsed.host,
-        key,
-        keyLocation: `${siteUrl}/${key}.txt`,
-        urlList: urls,
-    }),
-});
+console.log(`[seo:indexnow] Read ${urls.length} URL(s) from ${sitemap.source}.`);
 
-console.log(
-    `[seo:indexnow] Submitted ${urls.length} URL(s); endpoint responded ${response.status}.`
-);
+if (dryRun) {
+    console.log("[seo:indexnow] Dry run; nothing was submitted.");
+    process.exit(0);
+}
+
+const keyLocation = `${siteUrl}/${key}.txt`;
+let response;
+try {
+    response = await fetch(ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+            host: parsed.host,
+            key,
+            keyLocation,
+            urlList: urls,
+        }),
+    });
+} catch (error) {
+    console.error(
+        `[seo:indexnow] Submission failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+    process.exit(1);
+}
+
+console.log(`[seo:indexnow] Endpoint responded ${response.status}.`);
 if (response.status !== 200 && response.status !== 202) {
     const body = await response.text().catch(() => "");
-    console.error(`[seo:indexnow] ${body}`.trim());
+    if (body.trim()) console.error(`[seo:indexnow] ${body.trim()}`);
+    console.error(
+        "[seo:indexnow] A 200/202 means the endpoint received the submission; this request failed."
+    );
     process.exit(1);
 }
+
+console.log(
+    "[seo:indexnow] Accepted (received, not necessarily indexed). Key location: " + keyLocation
+);

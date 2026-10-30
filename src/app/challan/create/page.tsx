@@ -521,23 +521,23 @@ export default function CreateChallanPage() {
                     {/* Right Column - Items */}
                     <div className="xl:col-span-2">
                         <div className="bg-surface-navy p-6 rounded-xl border border-surface-hover">
-                            <div className="flex items-center justify-between mb-6">
+                            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
                                 <h3 className="text-white font-bold text-lg flex items-center gap-2">
                                     <Package size={20} className="text-primary" />
                                     Items
                                 </h3>
-                                <div className="flex items-center gap-2">
+                                <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
                                     <Button
                                         type="button"
                                         variant="outline"
                                         size="sm"
                                         onClick={() => setShowBarcodeScanner(true)}
-                                        className="h-10 px-3 bg-bg-navy border-surface-hover hover:border-primary/50 text-primary flex items-center gap-1.5"
+                                        className="h-10 w-full justify-center px-3 bg-bg-navy border-surface-hover hover:border-primary/50 text-primary flex items-center gap-1.5 lg:w-auto"
                                     >
                                         <ScanBarcode size={16} />
                                         <span>Scan Barcode</span>
                                     </Button>
-                                    <div className="relative w-64">
+                                    <div className="relative w-full lg:w-64">
                                         <Plus size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone" />
                                         <input
                                             type="text"
@@ -547,7 +547,7 @@ export default function CreateChallanPage() {
                                             className="w-full h-10 pl-9 pr-4 bg-bg-navy border border-surface-hover rounded-lg text-white text-sm"
                                         />
                                     {showProductResults && productResults.length > 0 && (
-                                        <div className="absolute top-full right-0 mt-2 w-96 bg-surface-navy border border-surface-hover rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
+                                        <div className="absolute left-0 right-0 top-full mt-2 lg:left-auto lg:right-0 lg:w-96 bg-surface-navy border border-surface-hover rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
                                             {productResults.map(product => (
                                                 <div key={product.id}>
                                                     {product.variants.map((v, vIdx) => (

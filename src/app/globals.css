@@ -319,3 +319,24 @@
     animation: none !important;
   }
 }
+
+/*
+ * Floating mobile dock clearance.
+ *
+ * The dock overlays the page instead of taking layout space, so content has to
+ * scroll underneath it (that is what the frosted glass samples). The trailing
+ * space lives on the scroll containers, not on <main>: padding on <main> would
+ * end the scroll viewport above the dock and leave the page background showing
+ * as a dead band. 7rem covers the dock (0.75rem offset + 4rem bar + borders)
+ * plus the raised POS action, so the last row can always be scrolled clear.
+ */
+@media (max-width: 767px) {
+  .app-main {
+    --dock-clearance: calc(7rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .app-main .overflow-y-auto {
+    padding-bottom: var(--dock-clearance);
+    scroll-padding-bottom: var(--dock-clearance);
+  }
+}

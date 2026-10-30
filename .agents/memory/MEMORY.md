@@ -30,4 +30,5 @@
 - [whatsapp-session-tenancy] Multi-tenant WhatsApp session mapping in `getTenantWhatsAppSessionId()` must include user record IDs as well as login emails to ensure live sessions (like `luminila`) stay bound when accessed via user ID.
 - [vendor-wholesale-shorthand] In Indian jewelry wholesale messaging, price expressions frequently use shorthand like `500+&` (₹500 + shipping) or `350+ship`. Offer parsing regex must support `\+&` and `\+\s*ship(?:ping)?`.
 - [pocketbase-image-data-limit] When saving base64 image data into PocketBase collections, the `text` field `max` constraint must be explicitly set to 5MB (5242880) in `_collections` to prevent 5000-character constraint validation rejections.
+- [quick-add-series] Quick Add runs the SKU taxonomy engine with a remembered "series" (PB store_settings key `quick_add_memory`); series identity excludes colour, and clone parses architecture SKUs to recover taxonomy codes → tech-decisions.md
 

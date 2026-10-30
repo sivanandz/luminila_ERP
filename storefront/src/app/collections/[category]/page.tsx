@@ -14,11 +14,18 @@ import {
 } from "@/lib/seo";
 import "../../catalog.css";
 
+/**
+ * Collections are prerendered from the build catalogue and only for categories
+ * that actually contain products. An empty or unknown category is a 404 rather
+ * than an indexable page with no items.
+ */
 export const dynamicParams = false;
 
 export async function generateStaticParams() {
     const catalog = await getBuildCatalog();
-    return catalog.categories.map((category) => ({ category: category.slug }));
+    return catalog.categories
+        .filter((category) => category.count > 0)
+        .map((category) => ({ category: category.slug }));
 }
 
 export async function generateMetadata({
@@ -29,10 +36,12 @@ export async function generateMetadata({
     const { category: slug } = await params;
     const catalog = await getBuildCatalog();
     const category = catalog.categories.find((entry) => entry.slug === slug);
-    if (!category) return { title: "Collection not found" };
+    if (!category) {
+        return { title: "Collection not found", robots: { index: false, follow: false } };
+    }
 
     const title = `${category.name} — South Indian-inspired imitation jewellery | ${SITE_NAME}`;
-    const description = `Shop ${category.name.toLowerCase()} from ${SITE_NAME}: heritage-inspired imitation jewellery with gold-tone finishes, live prices and pan-India insured delivery.`;
+    const description = `Shop ${category.name.toLowerCase()} from ${SITE_NAME}: heritage-inspired imitation jewellery with live prices and pan-India insured delivery.`;
     const image = `${SITE_URL}/niththigal/hero.webp`;
 
     return {
@@ -72,6 +81,9 @@ export default async function CollectionPage({
         (product) =>
             (product.category || "").trim().toLowerCase() === category.name.toLowerCase()
     );
+    // A category with no renderable product must not publish an empty listing.
+    if (!products.length) notFound();
+
     const items = products
         .map((product) => {
             const productSlug = catalog.slugByProductId[product.id];
@@ -87,6 +99,10 @@ export default async function CollectionPage({
                 item !== null
         );
 
+    // One intro string feeds the visible copy and the CollectionPage
+    // description, so the markup never describes content the page omits.
+    const intro = `Heritage-inspired ${category.name.toLowerCase()} in gold-tone finishes, made for the saree days, the coffee dates and every version of you. Prices and stock are live; taxes are included.`;
+
     const breadcrumb = breadcrumbJsonLd([
         { name: "Home", url: "/" },
         { name: category.name, url: categoryPath(category.slug) },
@@ -94,7 +110,7 @@ export default async function CollectionPage({
     const collection = collectionPageJsonLd({
         url: categoryPath(category.slug),
         name: `${category.name} from ${SITE_NAME}`,
-        description: `Heritage-inspired ${category.name.toLowerCase()} in gold-tone finishes, made for everyday wear.`,
+        description: intro,
         items,
     });
 
@@ -111,11 +127,7 @@ export default async function CollectionPage({
                 <header className="collection-hero">
                     <div className="eyebrow">THE NITHTHIGAL COLLECTION</div>
                     <h1>{category.name}</h1>
-                    <p>
-                        Heritage-inspired {category.name.toLowerCase()} in gold-tone
-                        finishes, made for the saree days, the coffee dates and every
-                        version of you. Prices and stock are live; taxes are included.
-                    </p>
+                    <p>{intro}</p>
                     <nav className="collection-nav" aria-label="Other collections">
                         <Link href="/">All pieces</Link>
                         {catalog.categories

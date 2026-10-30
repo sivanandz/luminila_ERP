@@ -22,7 +22,7 @@ import {
     AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
-import { getStorefrontApiUrl } from "@/lib/api";
+import { useNiththigalContent } from "@/lib/niththigal-content";
 import { useCustomerAuth } from "@/context/CustomerAuthContext";
 
 export default function CheckoutPage() {
@@ -92,32 +92,16 @@ export default function CheckoutPage() {
         idempotencyKeyRef.current = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     };
 
-    // Dynamic CMS Branding & Config
-    const [cmsConfig, setCmsConfig] = useState<{
-        brandName: string;
-        whatsappPhone: string;
-        razorpayKey?: string;
-        themeColor?: string;
-    }>({
-        brandName: "Fashion Atelier",
-        whatsappPhone: process.env.NEXT_PUBLIC_WHATSAPP_PHONE || "919876543210",
-    });
-
-    useEffect(() => {
-        fetch(getStorefrontApiUrl("/api/storefront/content"))
-            .then((r) => r.json())
-            .then((data) => {
-                if (data) {
-                    setCmsConfig({
-                        brandName: data.branding?.wordmark?.text || data.hero?.brandName || "Fashion Atelier",
-                        whatsappPhone: data.socialAndContact?.whatsappPhone?.replace(/\D/g, "") || process.env.NEXT_PUBLIC_WHATSAPP_PHONE || "919876543210",
-                        razorpayKey: data.paymentGateway?.razorpayKeyId,
-                        themeColor: data.theme?.colors?.primary || "#000000",
-                    });
-                }
-            })
-            .catch(() => {});
-    }, []);
+    // Brand, contact and theme come from the CMS `niththigal` block — the same
+    // source the header, footer and Organization JSON-LD use. The WhatsApp
+    // number is optional operator data: when the store has not published one,
+    // there is no link to show. Never fall back to a fabricated number (the
+    // legacy NEXT_PUBLIC_WHATSAPP_PHONE setting carries a placeholder value).
+    const { content: siteContent } = useNiththigalContent();
+    const brandName = siteContent.brand.name;
+    const whatsappPhone = siteContent.contact.whatsappPhone.replace(/\D/g, "");
+    const hasWhatsapp = whatsappPhone.length > 0;
+    const brandColor = siteContent.theme.colors.green;
 
     // Auto-check Shiprocket when 6 digits are typed
     useEffect(() => {
@@ -212,6 +196,15 @@ export default function CheckoutPage() {
             toast.error(`Choose a size for "${missingVariant.product.name}" in your bag first.`);
             return;
         }
+        // WhatsApp concierge needs a real destination number from the CMS. With
+        // none configured there is no chat to open, so the order must not be
+        // left without a payment path.
+        if (paymentMethod === "whatsapp_concierge" && !hasWhatsapp) {
+            toast.error(
+                "WhatsApp ordering isn't available right now. Please pay online with Razorpay or choose Cash on Delivery."
+            );
+            return;
+        }
 
         const assignedCourier = shiprocketInfo
             ? `${shiprocketInfo.primaryCourier} (Shiprocket Express)`
@@ -263,10 +256,10 @@ export default function CheckoutPage() {
                     customerName,
                     customerPhone,
                     customerEmail,
-                    brandName: cmsConfig.brandName,
-                    razorpayKey: prepared.gateway.keyId || cmsConfig.razorpayKey,
-                    themeColor: cmsConfig.themeColor,
-                    description: `${cmsConfig.brandName} Order (${cartCount} items)`,
+                    brandName,
+                    razorpayKey: prepared.gateway.keyId,
+                    themeColor: brandColor,
+                    description: `${brandName} Order (${cartCount} items)`,
                     onSuccess: async (paymentId: string, signature?: string) => {
                         try {
                             const result = await confirmStorefrontPayment({
@@ -351,15 +344,15 @@ export default function CheckoutPage() {
                 setCompletedOrder({ txnId: result.txnId, courier: assignedCourier });
                 rotateIdempotencyKey();
 
-                if (paymentMethod === "whatsapp_concierge") {
+                if (paymentMethod === "whatsapp_concierge" && hasWhatsapp) {
                     const text = formatWhatsAppCartMessage(
                         cart,
                         { name: customerName, phone: customerPhone, address: shippingAddress, city: `${city}, ${stateVal}`, pincode },
                         finalTotal,
                         appliedCoupon?.code,
-                        cmsConfig.brandName
+                        brandName
                     );
-                    window.open(`https://wa.me/${cmsConfig.whatsappPhone}?text=${text}`, "_blank");
+                    window.open(`https://wa.me/${whatsappPhone}?text=${text}`, "_blank");
                 }
 
                 clearCart();
@@ -388,7 +381,7 @@ export default function CheckoutPage() {
                         Thank You, {customerName}!
                     </h1>
                     <p className="text-sm text-slate-600 max-w-md mx-auto">
-                        Your order with {cmsConfig.brandName} has been received and allocated for express courier dispatch.
+                        Your order with {brandName} has been received and allocated for express courier dispatch.
                     </p>
                 </div>
 
@@ -424,17 +417,19 @@ export default function CheckoutPage() {
                     >
                         Continue Shopping
                     </Link>
-                    <a
-                        href={`https://wa.me/${cmsConfig.whatsappPhone}?text=${encodeURIComponent(
-                            `Hi ${cmsConfig.brandName} Team, regarding my order ${completedOrder.txnId}, please share tracking updates! 💖`
-                        )}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-6 py-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-xs"
-                    >
-                        <MessageCircle className="w-4 h-4 text-emerald-600" />
-                        <span>Chat on WhatsApp</span>
-                    </a>
+                    {hasWhatsapp && (
+                        <a
+                            href={`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(
+                                `Hi ${brandName} Team, regarding my order ${completedOrder.txnId}, please share tracking updates! 💖`
+                            )}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-6 py-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-xs"
+                        >
+                            <MessageCircle className="w-4 h-4 text-emerald-600" />
+                            <span>Chat on WhatsApp</span>
+                        </a>
+                    )}
                 </div>
             </div>
         );
@@ -763,12 +758,15 @@ export default function CheckoutPage() {
                                 </div>
                             </label>
 
-                            {/* Option 2: WhatsApp Concierge */}
+                            {/* Option 2: WhatsApp Concierge — offered only when the
+                                store has published a WhatsApp number in the CMS. */}
                             <label
-                                className={`flex items-start gap-3.5 p-3.5 rounded-xl border cursor-pointer transition ${
-                                    paymentMethod === "whatsapp_concierge"
-                                        ? "bg-emerald-50/50 border-emerald-600 text-emerald-950"
-                                        : "bg-white border-[#eae5de] text-slate-700 hover:border-slate-300"
+                                className={`flex items-start gap-3.5 p-3.5 rounded-xl border transition ${
+                                    !hasWhatsapp
+                                        ? "bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed"
+                                        : paymentMethod === "whatsapp_concierge"
+                                        ? "bg-emerald-50/50 border-emerald-600 text-emerald-950 cursor-pointer"
+                                        : "bg-white border-[#eae5de] text-slate-700 hover:border-slate-300 cursor-pointer"
                                 }`}
                             >
                                 <input
@@ -777,17 +775,26 @@ export default function CheckoutPage() {
                                     value="whatsapp_concierge"
                                     checked={paymentMethod === "whatsapp_concierge"}
                                     onChange={() => setPaymentMethod("whatsapp_concierge")}
-                                    className="mt-1 text-emerald-600 focus:ring-0"
+                                    disabled={!hasWhatsapp}
+                                    className="mt-1 text-emerald-600 focus:ring-0 disabled:cursor-not-allowed"
                                 />
                                 <div className="space-y-1">
                                     <div className="flex items-center gap-2">
                                         <span className="text-xs font-bold">Order on WhatsApp (Pay via QR / Stylist Confirmation)</span>
-                                        <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
-                                            Assisted Shopping
+                                        <span
+                                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                                hasWhatsapp
+                                                    ? "bg-emerald-100 text-emerald-800"
+                                                    : "bg-slate-200 text-slate-500"
+                                            }`}
+                                        >
+                                            {hasWhatsapp ? "Assisted Shopping" : "Unavailable"}
                                         </span>
                                     </div>
                                     <p className="text-[11px] text-slate-500">
-                                        Connect directly with our jewelry stylist on WhatsApp to request product videos and pay via verified business UPI.
+                                        {hasWhatsapp
+                                            ? "Connect directly with our jewelry stylist on WhatsApp to request product videos and pay via verified business UPI."
+                                            : "Our WhatsApp concierge has not published a contact number yet. Please choose Razorpay or Cash on Delivery."}
                                     </p>
                                 </div>
                             </label>

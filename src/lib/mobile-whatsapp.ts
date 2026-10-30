@@ -5,6 +5,13 @@
  * 2. Falls back to native Android intent: `whatsapp://send` / `wa.me/` for 1-tap dispatch
  */
 
+import { getWppConnectSecret } from "@/lib/whatsapp";
+
+/** Resolve the sidecar bearer token (empty string when none is configured). */
+function resolveSidecarToken(): string {
+    return getWppConnectSecret();
+}
+
 export interface WhatsAppOrderMessageData {
     customerPhone: string;
     customerName?: string;
@@ -60,10 +67,15 @@ export class MobileWhatsApp {
     /**
      * Dispatch WhatsApp receipt
      * Tries remote WPPConnect first, falls back to native Android Intent
+     *
+     * The sidecar only exposes `/api/:session/<verb>`, so the session id must be
+     * part of the path, and `/api` is guarded by `requireSidecarAuth`, so the
+     * bearer token must be attached.
      */
     static async sendReceipt(
         data: WhatsAppOrderMessageData,
-        wppServerUrl?: string
+        wppServerUrl?: string,
+        sessionId = "luminila"
     ): Promise<{ method: 'sidecar' | 'intent'; success: boolean }> {
         const targetPhone = this.formatPhoneNumber(data.customerPhone);
         if (!targetPhone) {
@@ -72,18 +84,28 @@ export class MobileWhatsApp {
 
         const messageText = this.formatInvoiceMessage(data);
 
+        // Resolve the sidecar token the same way the main service layer does:
+        // desktop shell injects it at runtime, operators may store one, and a
+        // dev-only build value keeps `npm run dev` usable.
+        const token = resolveSidecarToken();
+
         // 1. Try remote WPPConnect sidecar if URL is configured
-        if (wppServerUrl) {
+        if (wppServerUrl && token) {
             try {
-                const response = await fetch(`${wppServerUrl.replace(/\/+$/, '')}/api/send-message`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        phone: targetPhone,
-                        message: messageText,
-                    }),
-                    signal: AbortSignal.timeout(3000), // 3s timeout
-                });
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                headers.Authorization = `Bearer ${token}`;
+                const response = await fetch(
+                    `${wppServerUrl.replace(/\/+$/, '')}/api/${encodeURIComponent(sessionId)}/send-message`,
+                    {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({
+                            phone: targetPhone,
+                            message: messageText,
+                        }),
+                        signal: AbortSignal.timeout(3000), // 3s timeout
+                    }
+                );
 
                 if (response.ok) {
                     return { method: 'sidecar', success: true };

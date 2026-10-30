@@ -159,8 +159,8 @@ export default function ActivityPage() {
                 </div>
 
                 {/* Filters */}
-                <div className="flex items-center gap-4 mb-6">
-                    <div className="relative flex-1 max-w-sm">
+                <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
+                    <div className="relative w-full sm:max-w-sm sm:flex-1">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                         <Input
                             placeholder="Search activity..."
@@ -172,7 +172,7 @@ export default function ActivityPage() {
                     </div>
 
                     <Select value={actionFilter} onValueChange={(v) => v && setActionFilter(v)}>
-                        <SelectTrigger className="w-40 bg-card">
+                        <SelectTrigger className="w-full bg-card sm:w-40">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -186,7 +186,7 @@ export default function ActivityPage() {
                     </Select>
 
                     <Select value={entityFilter} onValueChange={(v) => v && setEntityFilter(v)}>
-                        <SelectTrigger className="w-40 bg-card">
+                        <SelectTrigger className="w-full bg-card sm:w-40">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -199,7 +199,7 @@ export default function ActivityPage() {
                         </SelectContent>
                     </Select>
 
-                    <Button variant="outline" onClick={loadData}>
+                    <Button variant="outline" onClick={loadData} className="h-9 w-full sm:h-8 sm:w-auto">
                         <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
                         Refresh
                     </Button>
@@ -232,7 +232,7 @@ export default function ActivityPage() {
                                             </div>
 
                                             <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-2 mb-1">
+                                                <div className="mb-1 flex flex-wrap items-center gap-2">
                                                     <Badge variant="outline" className="text-xs capitalize">
                                                         {log.action.replace('_', ' ')}
                                                     </Badge>
@@ -241,7 +241,7 @@ export default function ActivityPage() {
                                                         {log.entity_type.replace('_', ' ')}
                                                     </Badge>
                                                 </div>
-                                                <p className="text-sm">{log.description}</p>
+                                                <p className="text-sm break-words">{log.description}</p>
                                                 {log.user_name && (
                                                     <p className="text-xs text-muted-foreground mt-1">
                                                         by {log.user_name}

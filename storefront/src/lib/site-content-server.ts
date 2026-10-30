@@ -162,16 +162,25 @@ export function storefrontApiEndpoint(endpoint: string): string | null {
     return `${origin}${clean}`;
 }
 
+/** Short, log-safe description of a failure (no DOMException dumps). */
+export function describeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * GET a JSON document with a hard timeout. Shared by the content and catalogue
  * build steps; callers decide how to degrade. Redirects are refused.
+ *
+ * The request deliberately leaves fetch caching at Next's default: an explicit
+ * `cache: "no-store"` marks the route dynamic, and a static export then bails
+ * out of prerendering (`NEXT_STATIC_GEN_BAILOUT`) instead of using the live
+ * ERP response.
  */
 export async function fetchJson(url: string): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
         const response = await fetch(url, {
-            cache: "no-store",
             redirect: "error",
             signal: controller.signal,
             headers: { Accept: "application/json" },
@@ -235,7 +244,9 @@ async function loadSiteContent(): Promise<SiteContentResult> {
             }
             console.warn(`[seo] ${url} returned no niththigal block.`);
         } catch (error) {
-            console.warn(`[seo] Could not load storefront content from ${url}.`, error);
+            console.warn(
+                `[seo] Could not load storefront content from ${url}: ${describeError(error)}`
+            );
         }
     }
 

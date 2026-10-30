@@ -14,10 +14,8 @@ import { WishlistProvider } from "@/hooks/use-wishlist";
 import { CartDrawer } from "@/components/CartDrawer";
 import { CustomerAuthModal } from "@/components/CustomerAuthModal";
 import { JsonLd } from "@/components/seo/JsonLd";
-import {
-    NiththigalContentProvider,
-    type NiththigalContent,
-} from "@/lib/niththigal-content";
+import { NiththigalContentProvider } from "@/lib/niththigal-content";
+import { trimBrandAssets } from "@/lib/niththigal-content-data";
 import { getSiteContent } from "@/lib/site-content-server";
 import { getBuildCatalog, INITIAL_CATALOG_LIMIT } from "@/lib/catalog-server";
 import { erpOrigin } from "@/lib/site-content-server";
@@ -48,23 +46,6 @@ const manrope = Manrope({
 export const viewport: Viewport = {
     themeColor: "#193d32",
 };
-
-/** A data-URL brand asset is not crawlable and would bloat the initial HTML. */
-function withoutDataUrl(value: string): string {
-    return typeof value === "string" && value.startsWith("data:") ? "" : value;
-}
-
-function trimBrandAssets(content: NiththigalContent): NiththigalContent {
-    return {
-        ...content,
-        brand: {
-            ...content.brand,
-            logoUrl: withoutDataUrl(content.brand.logoUrl),
-            wordmarkUrl: withoutDataUrl(content.brand.wordmarkUrl),
-            lockupUrl: withoutDataUrl(content.brand.lockupUrl),
-        },
-    };
-}
 
 function originOf(value: string | undefined): string | null {
     if (!value) return null;

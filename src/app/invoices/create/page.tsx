@@ -637,9 +637,9 @@ export default function CreateInvoicePage() {
 
                     {/* Items */}
                     <Card className="bg-card border-border">
-                        <CardHeader className="flex flex-row items-center justify-between">
+                        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <CardTitle>Items</CardTitle>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2">
                                 <Button
                                     type="button"
                                     variant="outline"

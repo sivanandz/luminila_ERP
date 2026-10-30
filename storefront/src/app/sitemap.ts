@@ -27,10 +27,11 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         lastModified: CONTENT_UPDATED,
     }));
 
+    // Collections are catalogue-derived like product pages. They carry no
+    // editorial revision date, so they must not claim CONTENT_UPDATED.
     for (const category of catalog.categories) {
         entries.push({
             url: absoluteUrl(categoryPath(category.slug)),
-            lastModified: CONTENT_UPDATED,
         });
     }
 

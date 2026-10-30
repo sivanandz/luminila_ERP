@@ -9,6 +9,7 @@
 
 import PocketBase from 'pocketbase';
 import { resolveTenantDatabase } from './tenant-db-manager';
+import { isSingleAccountMode } from './deployment-mode';
 
 export interface OperatorSession {
     ok: boolean;
@@ -46,7 +47,10 @@ export async function authenticateOperator(req: Request, hintEmail?: string): Pr
         return { ok: false, status: 401, error: 'Operator session token is required' };
     }
 
-    const target = (hintEmail || '').trim().toLowerCase();
+    // Single-account deployments have one database; the hint is ignored so a
+    // valid token can never be rejected for naming a different account, and the
+    // token is always verified against the primary instance.
+    const target = isSingleAccountMode() ? '' : (hintEmail || '').trim().toLowerCase();
     let pbUrl: string;
     try {
         const resolved = await resolveTenantDatabase(target || undefined, { activate: false });

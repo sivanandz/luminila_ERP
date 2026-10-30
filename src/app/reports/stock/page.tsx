@@ -82,72 +82,86 @@ export default function StockReportPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="Stock Report" subtitle="Inventory levels and valuation" />
 
-            <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-8 scroll-smooth">
                 {/* Actions */}
-                <div className="flex items-center justify-between mb-6">
-                    <Button variant="ghost" onClick={() => router.push("/reports")}>
+                <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-start lg:justify-between">
+                    <Button
+                        variant="ghost"
+                        onClick={() => router.push("/reports")}
+                        className="h-9 justify-start sm:h-8"
+                    >
                         <ArrowLeft className="w-4 h-4 mr-2" />
                         Back to Reports
                     </Button>
 
-                    <div className="flex items-center gap-4">
+                    <div className="flex flex-wrap items-center gap-2 lg:gap-4">
                         <Input
                             placeholder="Search products..."
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            className="w-64 bg-card"
+                            className="w-full bg-card sm:w-64"
                         />
-                        <Button
-                            variant={showLowStock ? "default" : "outline"}
-                            onClick={() => setShowLowStock(!showLowStock)}
-                            className={showLowStock ? "bg-yellow-600" : ""}
-                        >
-                            <AlertTriangle className="w-4 h-4 mr-2" />
-                            Low Stock Only
-                        </Button>
-                        <Button variant="outline" onClick={handleExport}>
-                            <Download className="w-4 h-4 mr-2" />
-                            Export
-                        </Button>
-                        <Button variant="outline" onClick={handlePrint}>
-                            <Printer className="w-4 h-4 mr-2" />
-                            Print
-                        </Button>
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                            <Button
+                                variant={showLowStock ? "default" : "outline"}
+                                onClick={() => setShowLowStock(!showLowStock)}
+                                className={`h-9 w-full sm:h-8 sm:w-auto ${showLowStock ? "bg-yellow-600" : ""}`}
+                            >
+                                <AlertTriangle className="w-4 h-4 mr-2" />
+                                Low Stock Only
+                            </Button>
+                            <Button
+                                variant="outline"
+                                onClick={handleExport}
+                                className="h-9 w-full sm:h-8 sm:w-auto"
+                            >
+                                <Download className="w-4 h-4 mr-2" />
+                                Export
+                            </Button>
+                            <Button
+                                variant="outline"
+                                onClick={handlePrint}
+                                className="h-9 w-full sm:h-8 sm:w-auto"
+                            >
+                                <Printer className="w-4 h-4 mr-2" />
+                                Print
+                            </Button>
+                        </div>
                     </div>
                 </div>
 
                 {/* Summary */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
                     <Card className="bg-card border-border">
-                        <CardContent className="pt-6 flex items-center gap-4">
+                        <CardContent className="pt-6 flex items-center gap-3 xl:gap-4">
                             <div className="p-3 rounded-lg bg-blue-500/10">
                                 <Package className="w-6 h-6 text-blue-400" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <p className="text-sm text-muted-foreground">Total Products</p>
-                                <p className="text-2xl font-semibold">{summary.totalProducts || 0}</p>
+                                <p className="text-lg font-semibold lg:text-xl xl:text-2xl break-words">{summary.totalProducts || 0}</p>
                             </div>
                         </CardContent>
                     </Card>
                     <Card className="bg-card border-border">
-                        <CardContent className="pt-6 flex items-center gap-4">
+                        <CardContent className="pt-6 flex items-center gap-3 xl:gap-4">
                             <div className="p-3 rounded-lg bg-yellow-500/10">
                                 <AlertTriangle className="w-6 h-6 text-yellow-400" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <p className="text-sm text-muted-foreground">Low Stock Items</p>
-                                <p className="text-2xl font-semibold text-yellow-400">{summary.lowStock || 0}</p>
+                                <p className="text-lg font-semibold text-yellow-400 lg:text-xl xl:text-2xl break-words">{summary.lowStock || 0}</p>
                             </div>
                         </CardContent>
                     </Card>
                     <Card className="bg-card border-border">
-                        <CardContent className="pt-6 flex items-center gap-4">
+                        <CardContent className="pt-6 flex items-center gap-3 xl:gap-4">
                             <div className="p-3 rounded-lg bg-primary/10">
                                 <Package className="w-6 h-6 text-primary" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <p className="text-sm text-muted-foreground">Total Value</p>
-                                <p className="text-2xl font-semibold text-primary">
+                                <p className="text-lg font-semibold text-primary lg:text-xl xl:text-2xl break-words">
                                     {formatINR(summary.totalValue || 0)}
                                 </p>
                                 <p className="text-[11px] text-muted-foreground">

@@ -57,7 +57,12 @@ function ChallanDetailContent() {
 
     const fetchChallan = useCallback(async () => {
         if (!id) {
-            router.push("/challan");
+            // The route is reachable without ?id= (bookmark, refresh, typed URL).
+            // Render the page's empty state instead of bouncing to the list, which
+            // made the route indistinguishable from /challan and left the back
+            // button pointing at the page the user just left.
+            setChallan(null);
+            setLoading(false);
             return;
         }
 
@@ -66,11 +71,11 @@ function ChallanDetailContent() {
         if (data) {
             setChallan(data);
         } else {
+            setChallan(null);
             toast.error("Challan not found");
-            router.push("/challan");
         }
         setLoading(false);
-    }, [id, router]);
+    }, [id]);
 
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchChallan flips `loading` synchronously before its first await so the spinner shows during refetches triggered by status updates; deferring it past the await would change what renders while the challan reloads
@@ -124,7 +129,29 @@ function ChallanDetailContent() {
     }
 
     if (!challan) {
-        return null;
+        // No ?id= (bookmark, refresh, typed URL) or an id that no longer resolves.
+        // Stay on the route and explain, matching the invoice detail page, instead
+        // of redirecting to the list.
+        return (
+            <div className="flex flex-col items-center justify-center h-full gap-3 p-6 text-center">
+                <FileText className="w-12 h-12 text-moonstone" />
+                <p className="text-white font-bold">
+                    {id ? "Challan not found" : "No challan selected"}
+                </p>
+                <p className="max-w-sm text-sm text-moonstone">
+                    {id
+                        ? "This challan may have been deleted."
+                        : "Open a delivery challan from the list to review its items, transport details and status."}
+                </p>
+                <Button
+                    variant="outline"
+                    onClick={() => router.push("/challan")}
+                    className="mt-1 min-h-9"
+                >
+                    View all challans
+                </Button>
+            </div>
+        );
     }
 
     const canIssue = challan.status === 'draft';
@@ -139,27 +166,33 @@ function ChallanDetailContent() {
                 title={`Challan ${challan.challan_number}`}
                 subtitle={CHALLAN_TYPE_LABELS[challan.challan_type]}
                 action={
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1.5 sm:gap-3">
                         <Button
                             variant="ghost"
                             onClick={() => router.back()}
+                            className="min-h-9 min-w-9 px-2 sm:px-2.5"
+                            aria-label="Back"
                         >
-                            <ChevronLeft size={18} className="mr-2" />
-                            Back
+                            <ChevronLeft size={18} className="sm:mr-2" />
+                            <span className="hidden sm:inline">Back</span>
                         </Button>
                         <Button
                             variant="outline"
                             onClick={() => setShowEwayDialog(true)}
+                            className="min-h-9 min-w-9 px-2 sm:px-2.5"
+                            aria-label="E-Way Bill"
                         >
-                            <Truck size={16} className="mr-2" />
-                            E-Way Bill
+                            <Truck size={16} className="sm:mr-2" />
+                            <span className="hidden sm:inline">E-Way Bill</span>
                         </Button>
                         <Button
                             variant="outline"
                             onClick={() => window.print()}
+                            className="min-h-9 min-w-9 px-2 sm:px-2.5"
+                            aria-label="Print challan"
                         >
-                            <Printer size={16} className="mr-2" />
-                            Print
+                            <Printer size={16} className="sm:mr-2" />
+                            <span className="hidden sm:inline">Print</span>
                         </Button>
                     </div>
                 }
@@ -316,7 +349,8 @@ function ChallanDetailContent() {
                                     Items ({challan.items?.length || 0})
                                 </h3>
                             </div>
-                            <table className="w-full">
+                            <div className="overflow-x-auto">
+                                <table className="w-full">
                                 <thead>
                                     <tr className="border-b border-surface-hover text-left text-xs font-bold text-moonstone uppercase">
                                         <th className="py-3 px-4">Sr</th>
@@ -370,6 +404,7 @@ function ChallanDetailContent() {
                                     </tr>
                                 </tfoot>
                             </table>
+                            </div>
                         </div>
 
                         {/* Notes */}

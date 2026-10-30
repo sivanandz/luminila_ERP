@@ -18,6 +18,11 @@
 /.next/
 /out/
 
+# storefront build output and optional local build snapshots
+storefront/out/
+storefront/catalog-snapshot.json
+storefront/content-snapshot.json
+
 # production
 /build
 

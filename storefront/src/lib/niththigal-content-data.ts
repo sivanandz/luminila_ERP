@@ -679,21 +679,28 @@ export const NITHTHIGAL_DEFAULTS: NiththigalContent = {
             {
                 title: "Find your favourite",
                 links: [
-                    { label: "Shop all jewellery", href: "#collection", action: "none", filter: "All pieces" },
-                    { label: "Earrings", href: "#collection", action: "none", filter: "Earrings" },
-                    { label: "Necklaces", href: "#collection", action: "none", filter: "Necklaces" },
-                    { label: "Bangles", href: "#collection", action: "none", filter: "Bangles" },
+                    { label: "Shop all jewellery", href: "/#collection", action: "none", filter: "All pieces" },
+                    { label: "Earrings", href: "/#collection", action: "none", filter: "Earrings" },
+                    { label: "Necklaces", href: "/#collection", action: "none", filter: "Necklaces" },
+                    { label: "Bangles", href: "/#collection", action: "none", filter: "Bangles" },
                 ],
             },
             {
                 title: "A little more about us",
                 links: [
-                    { label: "Our story", href: "/about", action: "none" },
+                    { label: "Our story", href: "/#story", action: "none" },
+                    { label: "The Niththigal feeling", href: "/#love", action: "none" },
+                ],
+            },
+            {
+                // Real, crawlable pages — never a dialog or a bare "#".
+                title: "The finer details",
+                links: [
+                    { label: "About Niththigal", href: "/about", action: "none" },
                     { label: "FAQ", href: "/faq", action: "none" },
                     { label: "Shipping & returns", href: "/shipping-returns", action: "none" },
                     { label: "Jewellery care", href: "/jewellery-care", action: "none" },
                     { label: "Privacy & terms", href: "/privacy", action: "none" },
-                    { label: "The Niththigal feeling", href: "#love", action: "none" },
                 ],
             },
         ],
@@ -795,6 +802,28 @@ export function mergeNiththigal(
         };
     }).sort((a, b) => a.order - b.order);
     return merged;
+}
+
+/** A data-URL brand asset is not crawlable and would bloat the initial HTML. */
+function withoutDataUrl(value: string): string {
+    return typeof value === "string" && value.startsWith("data:") ? "" : value;
+}
+
+/**
+ * Strip data-URL brand assets before content crosses to a client component.
+ * The client refresh restores the uploaded wordmark after hydration, but the
+ * initial RSC payload stays small and no page ships a 300 KB base64 string.
+ */
+export function trimBrandAssets(content: NiththigalContent): NiththigalContent {
+    return {
+        ...content,
+        brand: {
+            ...content.brand,
+            logoUrl: withoutDataUrl(content.brand.logoUrl),
+            wordmarkUrl: withoutDataUrl(content.brand.wordmarkUrl),
+            lockupUrl: withoutDataUrl(content.brand.lockupUrl),
+        },
+    };
 }
 
 /** Replace the `{count}` token in collection count copy. */

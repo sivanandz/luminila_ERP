@@ -5,6 +5,7 @@ import { JsonLd } from "@/components/seo/JsonLd";
 import { ProductGrid } from "@/components/product/ProductGrid";
 import { ProductPurchase } from "@/components/product/ProductPurchase";
 import { getBuildCatalog } from "@/lib/catalog-server";
+import type { StorefrontProduct } from "@/lib/pocketbase";
 import { getSiteContent } from "@/lib/site-content-server";
 import {
     SITE_NAME,
@@ -19,6 +20,41 @@ import {
 } from "@/lib/seo";
 import "../../catalog.css";
 
+/**
+ * Every product page is prerendered from the build catalogue. An unknown slug
+ * is a 404, never a client-rendered shell with empty Product markup.
+ */
+export const dynamicParams = false;
+
+/**
+ * Display labels for the catalogue's plating/metal/occasion codes. Mirrors the
+ * quick-view dialog (NtDialogs.tsx) so the same product cannot describe itself
+ * differently on two surfaces.
+ */
+const METAL_LABELS: Record<string, string> = {
+    brass: "Skin-safe brass alloy",
+    copper: "Skin-safe copper alloy",
+    red_copper: "Skin-safe red-copper alloy",
+    alloy: "Skin-safe alloy",
+    silver: "Sterling silver",
+};
+
+const PLATING_LABELS: Record<string, string> = {
+    micro_gold_1gm: "22K micron gold plating",
+    micro_gold: "Micro gold plating",
+    gold_plated: "Gold plating",
+    rhodium: "Rhodium finish",
+    antique_matte: "Antique matte finish",
+    oxidised: "Oxidised finish",
+};
+
+const OCCASION_LABELS: Record<string, string> = {
+    bridal: "Bridal & wedding",
+    festive: "Festive occasions",
+    daily: "Everyday wear",
+    party: "Evening occasions",
+};
+
 function money(value: number): string {
     return new Intl.NumberFormat("en-IN", {
         style: "currency",
@@ -31,6 +67,21 @@ function clean(value?: string | null): string {
     return (value || "").trim();
 }
 
+/** Humanise a catalogue code; unknown values keep their words, not a guess. */
+function humanize(value: string | undefined, labels: Record<string, string>): string {
+    const text = clean(value);
+    if (!text) return "";
+    return (
+        labels[text.toLowerCase()] ||
+        text.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+    );
+}
+
+/** First paragraph of a multi-paragraph CMS string. */
+function firstParagraph(value?: string | null): string {
+    return clean(value).split(/\n{2,}/)[0].trim();
+}
+
 /** Keep meta descriptions near the 150-160 character display range. */
 function metaDescription(value: string): string {
     const text = value.trim();
@@ -38,6 +89,19 @@ function metaDescription(value: string): string {
     const cut = text.slice(0, 157);
     const lastSpace = cut.lastIndexOf(" ");
     return `${cut.slice(0, lastSpace > 100 ? lastSpace : 157)}…`;
+}
+
+/** Visible availability text from the catalogue's real stock numbers. */
+function stockLabelFor(
+    product: Pick<StorefrontProduct, "stock_status" | "total_stock">
+): string {
+    if (product.stock_status === "out_of_stock" || product.total_stock <= 0) {
+        return "Sold out";
+    }
+    if (product.stock_status === "low_stock" || product.total_stock <= 3) {
+        return `Only ${product.total_stock} left`;
+    }
+    return "In stock";
 }
 
 export async function generateStaticParams() {
@@ -55,16 +119,23 @@ export async function generateMetadata({
     const { slug } = await params;
     const catalog = await getBuildCatalog();
     const product = catalog.productBySlug[slug];
-    if (!product) return { title: "Product not found" };
+    if (!product) {
+        return { title: "Product not found", robots: { index: false, follow: false } };
+    }
 
     const category = clean(product.category) || "Jewellery";
     const title = `${product.name} — ${category} | ${SITE_NAME}`;
     const description = metaDescription(
         clean(product.description) ||
-            `${product.name}, ${category.toLowerCase()} from ${SITE_NAME}: South Indian-inspired imitation jewellery with a gold-tone finish.`
+            `${product.name}, ${category.toLowerCase()} from ${SITE_NAME}: South Indian-inspired imitation jewellery with live price and availability.`
     );
-    const image =
-        absoluteAssetUrl(product.image_url) ?? `${SITE_URL}/niththigal/necklace.webp`;
+    // Only a crawlable product image may be advertised to social crawlers; a
+    // data URL is not shareable, so the brand campaign image stands in.
+    const productImage = absoluteAssetUrl(product.image_url);
+    const image = productImage ?? `${SITE_URL}/niththigal/hero.webp`;
+    const imageAlt = productImage
+        ? `${product.name}, ${category.toLowerCase()} from ${SITE_NAME}`
+        : `${SITE_NAME} campaign imagery`;
 
     return {
         title,
@@ -77,7 +148,7 @@ export async function generateMetadata({
             siteName: SITE_NAME,
             locale: "en_IN",
             url: `/products/${slug}`,
-            images: [{ url: image, alt: product.name }],
+            images: [{ url: image, alt: imageAlt }],
         },
         twitter: {
             card: "summary_large_image",
@@ -127,6 +198,8 @@ export default async function ProductPage({
         categoryId: googleProductCategoryId(categoryName),
         brandName: content.brand.name,
     };
+    // A lone sellable option is a plain Product; only two or more options form
+    // a ProductGroup, and every variant carries its own identifier.
     const productNode =
         variants.length > 1
             ? productGroupJsonLd({
@@ -144,11 +217,18 @@ export default async function ProductPage({
     const specs = [
         { label: "SKU", value: product.sku },
         { label: "Category", value: categoryName },
-        { label: "Base metal", value: product.base_metal },
-        { label: "Plating", value: product.plating_type },
-        { label: "Stone", value: product.stone_type },
-        { label: "Occasion", value: product.occasion },
+        { label: "Material", value: humanize(product.base_metal, METAL_LABELS) },
+        { label: "Plating", value: humanize(product.plating_type, PLATING_LABELS) },
+        { label: "Stone", value: clean(product.stone_type) },
+        { label: "Occasion", value: humanize(product.occasion, OCCASION_LABELS) },
     ].filter((entry) => clean(entry.value));
+
+    const stockLabel = stockLabelFor(product);
+    // Product-specific care first, then the visible CMS care copy. Neither is
+    // invented: both are catalogue/CMS text.
+    const careText =
+        clean(product.care_instructions).replace(/\s+/g, " ") ||
+        firstParagraph(content.info.care.body);
 
     const related = catalog.products
         .filter(
@@ -179,6 +259,7 @@ export default async function ProductPage({
                             alt={`${product.name}, ${categoryName.toLowerCase()} from Niththigal`}
                             width={1024}
                             height={1024}
+                            loading="eager"
                             fetchPriority="high"
                             decoding="async"
                         />
@@ -189,7 +270,8 @@ export default async function ProductPage({
                         </div>
                         <h1 id="product-title">{product.name}</h1>
                         <p className="product-detail-price">
-                            {money(product.website_price)} <small>Taxes included</small>
+                            {money(product.website_price)} <small>Taxes included</small>{" "}
+                            <small>{stockLabel}</small>
                         </p>
                         {clean(product.description) ? (
                             <p className="product-detail-description">
@@ -209,6 +291,13 @@ export default async function ProductPage({
                         ) : null}
 
                         <ProductPurchase product={product} />
+
+                        {careText ? (
+                            <p className="product-purchase-note">
+                                <strong>Care.</strong> {careText}{" "}
+                                <Link href="/jewellery-care">Full care guide</Link>
+                            </p>
+                        ) : null}
 
                         <p className="product-purchase-note">
                             Every piece ships in a keepsake pouch with care

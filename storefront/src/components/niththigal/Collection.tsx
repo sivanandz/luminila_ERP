@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { useCart } from "@/context/CartContext";
 import { useWishlist } from "@/hooks/use-wishlist";
@@ -10,7 +10,12 @@ import {
     type NiththigalContent,
 } from "@/lib/niththigal-content";
 import type { StorefrontProduct } from "@/lib/pocketbase";
-import { categoryPath, categorySlug, productPath, productSlug } from "@/lib/seo";
+import {
+    buildCategoryIndex,
+    categoryPath,
+    productPath,
+    productSlug,
+} from "@/lib/seo";
 import { ALL_PIECES, useNtCatalog } from "./NtCatalogContext";
 import { useNtUi } from "./NtUiContext";
 import { HeartIcon } from "./NtIcons";
@@ -65,6 +70,10 @@ export function Collection() {
         filtered.length
     );
 
+    // The same deterministic index the collection pages are generated from, so
+    // a duplicate-slug collision resolves to the page that actually exists.
+    const categoryLinks = useMemo(() => buildCategoryIndex(products), [products]);
+
     const add = (product: StorefrontProduct) => {
         const variants = Array.isArray(product.variants) ? product.variants : [];
         if (variants.length > 1) {
@@ -118,19 +127,19 @@ export function Collection() {
                 </span>
             </div>
 
-            {categories.length ? (
+            {categoryLinks.length ? (
                 <nav
                     className="filters"
                     aria-label="Browse collections"
                     style={{ marginTop: 10 }}
                 >
-                    {categories.map((category) => (
+                    {categoryLinks.map((entry) => (
                         <a
-                            key={category}
+                            key={entry.slug}
                             className="filter"
-                            href={categoryPath(categorySlug(category))}
+                            href={categoryPath(entry.slug)}
                         >
-                            {category} <span aria-hidden>↗</span>
+                            {entry.name} <span aria-hidden>↗</span>
                         </a>
                     ))}
                 </nav>
@@ -201,15 +210,28 @@ function ProductCard({
         ? copy.soldOutLabel.toUpperCase()
         : productLabel(product, copy.productBadgeFallback);
 
+    // Plain left clicks open the quick view; modifier clicks keep the real
+    // product URL so a new tab or a save works without JavaScript.
+    const onLinkClick = (event: MouseEvent<HTMLAnchorElement>) => {
+        if (
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.altKey ||
+            event.button !== 0
+        ) {
+            return;
+        }
+        event.preventDefault();
+        onOpen();
+    };
+
     return (
         <article className="product-card reveal">
             <div className="product-image">
                 <a
                     href={productPath(slug)}
-                    onClick={(event) => {
-                        event.preventDefault();
-                        onOpen();
-                    }}
+                    onClick={onLinkClick}
                     aria-label={`View ${product.name}`}
                 >
                     <img
@@ -241,13 +263,7 @@ function ProductCard({
                         {(product.category || "Jewellery").toUpperCase()} · {copy.productTypeSuffix}
                     </span>
                     <h3>
-                        <a
-                            href={productPath(slug)}
-                            onClick={(event) => {
-                                event.preventDefault();
-                                onOpen();
-                            }}
-                        >
+                        <a href={productPath(slug)} onClick={onLinkClick}>
                             {product.name}
                         </a>
                     </h3>

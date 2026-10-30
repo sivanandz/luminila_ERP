@@ -4,10 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Camera,
     Check,
+    ChevronDown,
+    History,
     ImagePlus,
     Link2,
     Loader2,
     PackagePlus,
+    Palette,
     Plus,
     SlidersHorizontal,
     Sparkles,
@@ -46,12 +49,37 @@ import {
     nextSku,
     sizePresetsForCategory,
 } from "@/lib/quick-product";
+import {
+    computeNextSkuSequence,
+    deriveHSNCode,
+    generateChildSKU,
+    generateParentSKU,
+    generateWholesaleSKU,
+    getSKUTaxonomies,
+    getSubcategoriesForCategory,
+    subscribeSKUTaxonomies,
+    type SKUTaxonomies,
+} from "@/lib/sku-generator";
+import {
+    autoPieceName,
+    COLOR_SWATCHES,
+    getQuickAddMemory,
+    rememberQuickAdd,
+    seriesKeyOf,
+    subscribeQuickAddMemory,
+    taxonomyFromProduct,
+    type ClonableProduct,
+    type QuickAddMemory,
+    type QuickAddSeriesEntry,
+} from "@/lib/quick-add-memory";
 
 interface QuickAddProductDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     categories: Category[];
     existingSkus: string[];
+    /** Optional product to seed a clone from; consumed on open, cleared by the parent on close. */
+    cloneSeed?: ClonableProduct | null;
     onCreated: (result: {
         productId: string;
         name: string;
@@ -72,6 +100,7 @@ export function QuickAddProductDialog({
     onOpenChange,
     categories,
     existingSkus,
+    cloneSeed,
     onCreated,
 }: QuickAddProductDialogProps) {
     const [name, setName] = useState("");
@@ -101,8 +130,27 @@ export function QuickAddProductDialog({
     const [baseMetal, setBaseMetal] = useState("");
     const [channelPrices, setChannelPrices] = useState<Record<string, number>>({});
 
+    // SKU series state (mirrors the inventory page's SKU Architect states).
+    const [seriesEnabled, setSeriesEnabled] = useState(false);
+    const [showFullTaxonomy, setShowFullTaxonomy] = useState(false);
+    const [skuGenre, setSkuGenre] = useState("TMP");
+    const [skuCategory, setSkuCategory] = useState("NEC");
+    const [skuSubcat, setSkuSubcat] = useState("CHK");
+    const [skuPlating, setSkuPlating] = useState("MG");
+    const [skuColor, setSkuColor] = useState("RB");
+    const [skuSize, setSkuSize] = useState("STD");
+    const [skuPackagingTier, setSkuPackagingTier] = useState("EA");
+    const [skuBaseMetal, setSkuBaseMetal] = useState("BR");
+    const [skuStone, setSkuStone] = useState("KP");
+    const [nextSeq, setNextSeq] = useState(1);
+    const [seqTick, setSeqTick] = useState(0);
+    const [hsnTouched, setHsnTouched] = useState(false);
+    const [taxonomies, setTaxonomies] = useState<SKUTaxonomies>(() => getSKUTaxonomies());
+    const [memory, setMemory] = useState<QuickAddMemory>(() => getQuickAddMemory());
+
     const galleryInputRef = useRef<HTMLInputElement>(null);
     const cameraInputRef = useRef<HTMLInputElement>(null);
+    const colourRowRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (!open) return;
@@ -123,9 +171,139 @@ export function QuickAddProductDialog({
         }
     }, [open]);
 
+    // Shared taxonomy + series-memory stores (house singleton pattern).
+    useEffect(() => {
+        const unsubscribeTaxonomies = subscribeSKUTaxonomies(setTaxonomies);
+        const unsubscribeMemory = subscribeQuickAddMemory(setMemory);
+        return () => {
+            unsubscribeTaxonomies();
+            unsubscribeMemory();
+        };
+    }, []);
+
+    /** Apply a series snapshot (recent chip, remembered last, or clone) to every field. */
+    const applySeriesEntry = useCallback((entry: Omit<QuickAddSeriesEntry, "usedAt">) => {
+        setSkuGenre(entry.skuGenre);
+        setSkuCategory(entry.skuCategory);
+        setSkuSubcat(entry.skuSubcat);
+        setSkuPlating(entry.skuPlating);
+        setSkuColor(entry.skuColor);
+        setSkuSize(entry.skuSize);
+        setSkuPackagingTier(entry.skuPackagingTier);
+        setSkuBaseMetal(entry.skuBaseMetal);
+        setSkuStone(entry.skuStone);
+        setCraft(entry.craft);
+        setPlating(entry.plating);
+        setOccasion(entry.occasion);
+        setBaseMetal(entry.baseMetal);
+        setCostPrice(entry.costPrice);
+        setChannelPrices(entry.channelPrices || {});
+        setHsnCode(entry.hsnCode || "71179010");
+        setLocation(entry.location || "Showcase Tray A");
+        setStock(entry.stock || "0");
+        if (entry.categoryName) setCategory(entry.categoryName);
+        setHsnTouched(false);
+        setSeriesEnabled(true);
+        // Per-piece fields always start clean.
+        setName("");
+        setSku("");
+        setDescription("");
+        setImageData("");
+        setImageUrl("");
+    }, []);
+
+    // On each open: clone seed wins, else the remembered last series, else defaults.
+    useEffect(() => {
+        if (!open) return;
+        if (cloneSeed) {
+            const { taxonomy } = taxonomyFromProduct(cloneSeed, getSKUTaxonomies());
+            applySeriesEntry({
+                ...taxonomy,
+                craft: cloneSeed.craft || "",
+                plating: cloneSeed.plating || "",
+                occasion: cloneSeed.occasion || "",
+                baseMetal: cloneSeed.base_metal || "",
+                costPrice: cloneSeed.cost_price ? String(cloneSeed.cost_price) : "",
+                channelPrices: cloneSeed.channel_prices || {},
+                hsnCode: cloneSeed.hsn_code || "71179010",
+                location: cloneSeed.location || "Showcase Tray A",
+                stock: "1",
+            });
+            return;
+        }
+        const remembered = getQuickAddMemory();
+        if (remembered.last) {
+            applySeriesEntry(remembered.last);
+        } else {
+            setSeriesEnabled(false);
+            setHsnTouched(false);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- applySeriesEntry is stable; only re-run per open/clone.
+    }, [open, cloneSeed]);
+
+    const enableSeries = () => setSeriesEnabled(true);
+
+    const handleSkuCategoryChange = (code: string | null) => {
+        if (!code) return;
+        setSkuCategory(code);
+        enableSeries();
+        const label = taxonomies.categories.find((entry) => entry.code === code)?.label;
+        setCategory(code === "GEN" ? "Uncategorized" : label || category);
+        const subs = getSubcategoriesForCategory(code, taxonomies.subcategories);
+        if (!subs.some((sub) => sub.code === skuSubcat)) {
+            setSkuSubcat(subs[0]?.code || "GEN");
+        }
+    };
+
+    // Live SKU preview: keep the gapless sequence synced with the database.
+    useEffect(() => {
+        if (!open || !seriesEnabled) return;
+        let cancelled = false;
+        const prefix = `${skuGenre}${skuCategory}${skuSubcat}`.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        computeNextSkuSequence(prefix)
+            .then((seq) => {
+                if (!cancelled) setNextSeq(seq);
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, [open, seriesEnabled, skuGenre, skuCategory, skuSubcat, seqTick]);
+
+    // Series drives the statutory HSN unless the merchant typed their own.
+    useEffect(() => {
+        if (!seriesEnabled || hsnTouched) return;
+        setHsnCode(deriveHSNCode(skuCategory, skuBaseMetal, skuStone));
+    }, [seriesEnabled, skuCategory, skuBaseMetal, skuStone, hsnTouched]);
+
     const effectiveCategory = customCategory.trim() || category;
     const sizePreset = sizePresetsForCategory(effectiveCategory);
     const cost = parseFloat(costPrice) || 0;
+
+    const seriesAutoBase = seriesEnabled
+        ? autoPieceName(taxonomies, { skuGenre, skuCategory, skuSubcat })
+        : "";
+    const colorLabel =
+        taxonomies.colors.find((entry) => entry.code === skuColor)?.label.split(" ")[0] || "";
+    const seriesAutoName =
+        seriesAutoBase && colorLabel ? `${seriesAutoBase} · ${colorLabel}` : seriesAutoBase;
+    const pieceName = name.trim() || seriesAutoName;
+
+    const parentSkuPreview = generateParentSKU(skuGenre, skuCategory, skuSubcat, nextSeq);
+    const childSkuPreview = generateChildSKU(parentSkuPreview, skuPlating, skuColor, skuSize);
+    const finalSkuPreview = generateWholesaleSKU(childSkuPreview, skuPackagingTier);
+    const derivedHsnPreview = deriveHSNCode(skuCategory, skuBaseMetal, skuStone);
+    const activeSeriesKey = seriesKeyOf({
+        skuGenre,
+        skuCategory,
+        skuSubcat,
+        skuPlating,
+        skuSize,
+        skuPackagingTier,
+        skuBaseMetal,
+        skuStone,
+    });
+    const subcategoryOptions = getSubcategoriesForCategory(skuCategory, taxonomies.subcategories);
 
     const shopChannel = channels.find((channel) => channel.id === "pos" || channel.id === "shop");
     const shopRulePrice = computeRulePrice(cost, shopChannel?.pricingRule);
@@ -166,28 +344,32 @@ export function QuickAddProductDialog({
             };
         });
 
+    /**
+     * Per-piece reset for "Save & add another": only the identity of the piece
+     * clears. The series taxonomy and commercial fields carry to the next piece.
+     */
     const resetPiece = useCallback(() => {
         setName("");
         setSku("");
-        setCostPrice("");
-        setSellingPrice("");
-        setStock("0");
         setDescription("");
         setImageData("");
         setImageUrl("");
-        setChannelPrices({});
     }, []);
 
     const resetAll = useCallback(() => {
         resetPiece();
         setCategory(categories[0]?.name || "Uncategorized");
         setCustomCategory("");
+        setCostPrice("");
+        setSellingPrice("");
+        setStock("0");
         setCraft("");
         setLocation("Showcase Tray A");
         setHsnCode("71179010");
         setPlating("");
         setOccasion("");
         setBaseMetal("");
+        setChannelPrices({});
         setShowCustomCategory(false);
         setShowImageUrl(false);
     }, [resetPiece, categories]);
@@ -202,6 +384,16 @@ export function QuickAddProductDialog({
             }
             return next;
         });
+    };
+
+    /** After adding another piece: phone users go straight to the camera, desktop focuses the colour row. */
+    const focusNextPieceEntry = () => {
+        if (typeof window === "undefined" || !window.matchMedia) return;
+        if (window.matchMedia("(pointer: coarse)").matches) {
+            setTimeout(() => cameraInputRef.current?.click(), 80);
+        } else {
+            colourRowRef.current?.focus();
+        }
     };
 
     const applyImageFile = useCallback(async (file: File) => {
@@ -247,13 +439,13 @@ export function QuickAddProductDialog({
     );
 
     const canSave =
-        name.trim().length > 0 &&
+        pieceName.length > 0 &&
         effectiveSelling > 0 &&
         !saving &&
         !imageBusy;
 
     const save = async (addAnother: boolean) => {
-        if (!name.trim()) {
+        if (!pieceName) {
             toast.error("Give the piece a name.");
             return;
         }
@@ -264,9 +456,10 @@ export function QuickAddProductDialog({
 
         setSaving(true);
         try {
+            const seriesSku = seriesEnabled ? finalSkuPreview : undefined;
             const result = await createDraftProduct({
-                name,
-                sku: sku.trim() || undefined,
+                name: pieceName,
+                sku: sku.trim() || seriesSku,
                 categoryName: effectiveCategory,
                 categories,
                 costPrice: cost,
@@ -285,8 +478,32 @@ export function QuickAddProductDialog({
                 existingSkus,
             });
 
+            if (seriesEnabled) {
+                rememberQuickAdd({
+                    skuGenre,
+                    skuCategory,
+                    skuSubcat,
+                    skuPlating,
+                    skuColor,
+                    skuSize,
+                    skuPackagingTier,
+                    skuBaseMetal,
+                    skuStone,
+                    craft,
+                    plating,
+                    occasion,
+                    baseMetal,
+                    costPrice,
+                    channelPrices,
+                    hsnCode,
+                    location,
+                    stock,
+                    categoryName: effectiveCategory,
+                });
+            }
+
             toast.success(`${result.name} saved as a draft`, {
-                description: "Publish it when the photo and price are ready.",
+                description: `SKU ${result.sku} · publish it when the photo and price are ready.`,
             });
             onCreated({
                 productId: result.productId,
@@ -295,8 +512,12 @@ export function QuickAddProductDialog({
                 categoryName: effectiveCategory,
             });
 
+            // The saved product now occupies the sequence; force a recompute.
+            setSeqTick((tick) => tick + 1);
+
             if (addAnother) {
                 resetPiece();
+                focusNextPieceEntry();
             } else {
                 resetAll();
                 onOpenChange(false);
@@ -310,6 +531,30 @@ export function QuickAddProductDialog({
             setSaving(false);
         }
     };
+
+    // Enter in a text field = save & add another; Ctrl/Cmd+Enter = save draft & close.
+    const saveRef = useRef(save);
+    useEffect(() => {
+        saveRef.current = save;
+    });
+
+    useEffect(() => {
+        if (!open) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.isComposing || event.key !== "Enter") return;
+            const target = event.target as HTMLElement | null;
+            if (!target) return;
+            // Radix select popovers handle their own keys; buttons submit natively.
+            const inPopover = Boolean(document.querySelector("[data-radix-popper-content-wrapper]"));
+            const isTextInput =
+                target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+            if (!isTextInput || inPopover) return;
+            event.preventDefault();
+            void saveRef.current(!(event.ctrlKey || event.metaKey));
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [open]);
 
     return (
         <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
@@ -342,6 +587,257 @@ export function QuickAddProductDialog({
                 </DialogHeader>
 
                 <div className="px-5 py-4 space-y-4">
+                    {/* SKU series */}
+                    <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 space-y-3">
+                        <div className="flex items-center justify-between">
+                            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-white">
+                                <History size={13} className="text-primary" />
+                                SKU series
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => setSeriesEnabled((value) => !value)}
+                                aria-pressed={seriesEnabled}
+                                className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors ${
+                                    seriesEnabled
+                                        ? "border-primary/40 bg-primary/15 text-primary"
+                                        : "border-surface-hover/60 bg-bg-navy/70 text-moonstone hover:text-white"
+                                }`}
+                            >
+                                {seriesEnabled ? "On" : "Off"}
+                            </button>
+                        </div>
+
+                        {!seriesEnabled ? (
+                            <p className="text-[10px] text-moonstone leading-relaxed">
+                                SKU will be generated from the category (e.g. EAR-0001).
+                                Turn the series on to use the jewellery SKU architecture
+                                and remember the last taxonomy.
+                            </p>
+                        ) : (
+                            <>
+                                {memory.recent.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {memory.recent.map((entry) => {
+                                            const key = seriesKeyOf(entry);
+                                            const active = key === activeSeriesKey;
+                                            const tooltip = taxonomies.genres.find((g) => g.code === entry.skuGenre)?.label
+                                                + " · " + (taxonomies.categories.find((c) => c.code === entry.skuCategory)?.label || entry.categoryName)
+                                                + " · " + (taxonomies.subcategories.find((s) => s.code === entry.skuSubcat)?.label || "");
+                                            return (
+                                                <button
+                                                    key={`${key}-${entry.usedAt}`}
+                                                    type="button"
+                                                    onClick={() => applySeriesEntry(entry)}
+                                                    title={tooltip}
+                                                    className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-mono transition-colors ${
+                                                        active
+                                                            ? "border-primary bg-primary/15 text-primary"
+                                                            : "border-surface-hover/60 bg-bg-navy/70 text-moonstone hover:text-white"
+                                                    }`}
+                                                >
+                                                    <span
+                                                        className="size-2 rounded-full border border-white/20"
+                                                        style={{ background: COLOR_SWATCHES[entry.skuColor] || "#64748b" }}
+                                                    />
+                                                    {entry.skuGenre}·{entry.skuCategory}·{entry.skuSubcat}
+                                                    <span className="text-moonstone/70">{entry.skuPlating}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div className="space-y-1">
+                                        <Label className="text-[10px] text-moonstone">Genre</Label>
+                                        <Select value={skuGenre} onValueChange={(value) => { if (!value) return; setSkuGenre(value); enableSeries(); }}>
+                                            <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {taxonomies.genres.map((option) => (
+                                                    <SelectItem key={option.code} value={option.code}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label className="text-[10px] text-moonstone">Category</Label>
+                                        <Select value={skuCategory} onValueChange={handleSkuCategoryChange}>
+                                            <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {taxonomies.categories.map((option) => (
+                                                    <SelectItem key={option.code} value={option.code}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label className="text-[10px] text-moonstone">Subcategory</Label>
+                                        <Select value={skuSubcat} onValueChange={(value) => { if (!value) return; setSkuSubcat(value); enableSeries(); }}>
+                                            <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {subcategoryOptions.map((option) => (
+                                                    <SelectItem key={`${option.categoryCode || ""}-${option.code}`} value={option.code}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-1.5">
+                                    <Label className="flex items-center gap-1 text-[10px] text-moonstone">
+                                        <Palette size={11} className="text-primary" />
+                                        Stone colour — the per-piece pick
+                                    </Label>
+                                    <div
+                                        ref={colourRowRef}
+                                        tabIndex={-1}
+                                        className="flex flex-wrap gap-1.5 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded-md"
+                                    >
+                                        {taxonomies.colors.map((option) => {
+                                            const selected = option.code === skuColor;
+                                            const swatch = COLOR_SWATCHES[option.code];
+                                            return (
+                                                <button
+                                                    key={option.code}
+                                                    type="button"
+                                                    onClick={() => { setSkuColor(option.code); enableSeries(); }}
+                                                    title={option.label}
+                                                    aria-pressed={selected}
+                                                    className={`size-7 rounded-full border flex items-center justify-center transition-transform ${
+                                                        selected
+                                                            ? "border-primary ring-2 ring-primary scale-110"
+                                                            : "border-white/15 hover:scale-105"
+                                                    }`}
+                                                    style={{ background: swatch || "#334155" }}
+                                                >
+                                                    {!swatch && (
+                                                        <span className="text-[8px] font-mono font-bold text-white">
+                                                            {option.code}
+                                                        </span>
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <button
+                                    type="button"
+                                    onClick={() => setShowFullTaxonomy((value) => !value)}
+                                    className="flex items-center gap-1 text-[10px] text-moonstone hover:text-white"
+                                >
+                                    <ChevronDown
+                                        size={11}
+                                        className={`transition-transform ${showFullTaxonomy ? "rotate-180" : ""}`}
+                                    />
+                                    {showFullTaxonomy ? "Hide full taxonomy" : "Full taxonomy (plating, size, packaging, HSN inputs)"}
+                                </button>
+
+                                {showFullTaxonomy && (
+                                    <div className="grid grid-cols-2 gap-2 rounded-md border border-surface-hover/50 bg-bg-navy/40 p-2">
+                                        <div className="space-y-1">
+                                            <Label className="text-[10px] text-moonstone">SKU plating code</Label>
+                                            <Select value={skuPlating} onValueChange={(value) => { if (!value) return; setSkuPlating(value); enableSeries(); }}>
+                                                <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {taxonomies.platings.map((option) => (
+                                                        <SelectItem key={option.code} value={option.code}>
+                                                            {option.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <Label className="text-[10px] text-moonstone">Size / sizing</Label>
+                                            <Select value={skuSize} onValueChange={(value) => { if (!value) return; setSkuSize(value); enableSeries(); }}>
+                                                <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {taxonomies.sizes.map((option) => (
+                                                        <SelectItem key={option.code} value={option.code}>
+                                                            {option.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <Label className="text-[10px] text-moonstone">Packaging tier</Label>
+                                            <Select value={skuPackagingTier} onValueChange={(value) => { if (!value) return; setSkuPackagingTier(value); enableSeries(); }}>
+                                                <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {taxonomies.packagingTiers.map((option) => (
+                                                        <SelectItem key={option.suffix} value={option.suffix}>
+                                                            {option.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <Label className="text-[10px] text-moonstone">Base metal (HSN)</Label>
+                                            <Select value={skuBaseMetal} onValueChange={(value) => { if (!value) return; setSkuBaseMetal(value); enableSeries(); }}>
+                                                <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {taxonomies.baseMetals.map((option) => (
+                                                        <SelectItem key={option.code} value={option.code}>
+                                                            {option.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1 col-span-2">
+                                            <Label className="text-[10px] text-moonstone">Stone / embellishment (HSN)</Label>
+                                            <Select value={skuStone} onValueChange={(value) => { if (!value) return; setSkuStone(value); enableSeries(); }}>
+                                                <SelectTrigger className="h-8 bg-bg-navy border-surface-hover text-[11px] text-white">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {taxonomies.stones.map((option) => (
+                                                        <SelectItem key={option.code} value={option.code}>
+                                                            {option.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="flex items-center justify-between gap-2 rounded-md border border-surface-hover/60 bg-bg-navy/60 px-2.5 py-1.5">
+                                    <span className="text-[11px] font-mono font-bold text-primary truncate" title="Live architecture SKU preview">
+                                        {finalSkuPreview}
+                                    </span>
+                                    <span className="text-[9px] font-mono text-amber-300/90 shrink-0" title="HSN derived from the series">
+                                        HSN {derivedHsnPreview}
+                                    </span>
+                                </div>
+                            </>
+                        )}
+                    </div>
+
                     {/* Photo */}
                     <div className="grid grid-cols-[128px_1fr] gap-3 items-start">
                         <div
@@ -470,9 +966,15 @@ export function QuickAddProductDialog({
                             autoFocus
                             value={name}
                             onChange={(event) => setName(event.target.value)}
-                            placeholder="e.g. Malar temple jhumkas"
+                            placeholder={seriesAutoName || "e.g. Malar temple jhumkas"}
                             className="h-10 bg-bg-navy border-surface-hover text-sm text-white"
                         />
+                        {seriesEnabled && seriesAutoName && (
+                            <p className="text-[10px] text-moonstone leading-tight">
+                                Left empty, the name is auto-generated from the series:
+                                <span className="text-white font-medium"> {seriesAutoName}</span>
+                            </p>
+                        )}
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
@@ -664,7 +1166,7 @@ export function QuickAddProductDialog({
                                     <Input
                                         value={sku}
                                         onChange={(event) => setSku(event.target.value.toUpperCase())}
-                                        placeholder={`Auto: ${nextSku(effectiveCategory, existingSkus)}`}
+                                        placeholder={seriesEnabled ? `Auto: ${finalSkuPreview}` : `Auto: ${nextSku(effectiveCategory, existingSkus)}`}
                                         className="h-9 bg-bg-navy border-surface-hover font-mono text-xs text-primary"
                                     />
                                 </div>
@@ -695,7 +1197,10 @@ export function QuickAddProductDialog({
                                     <Label className="text-[11px] text-moonstone">HSN code</Label>
                                     <Input
                                         value={hsnCode}
-                                        onChange={(event) => setHsnCode(event.target.value)}
+                                        onChange={(event) => {
+                                            setHsnTouched(true);
+                                            setHsnCode(event.target.value);
+                                        }}
                                         className="h-9 bg-bg-navy border-surface-hover font-mono text-xs text-amber-300"
                                     />
                                 </div>
@@ -792,10 +1297,14 @@ export function QuickAddProductDialog({
                     <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
                         <Sparkles size={13} className="text-primary mt-0.5 shrink-0" />
                         <p className="text-[10px] text-moonstone leading-relaxed">
-                            SKU is generated from the category. This piece stays hidden
-                            from the storefront until you publish it; the website and
-                            WhatsApp prices use {formatPrice(websitePrice)} and{" "}
-                            {formatPrice(whatsappPrice)}.
+                            {seriesEnabled
+                                ? "SKU follows the jewellery architecture and the series is remembered for the next piece — usually only the colour and photo change. This piece stays hidden from the storefront until you publish it."
+                                : "SKU is generated from the category. This piece stays hidden from the storefront until you publish it; the website and WhatsApp prices use"}{" "}
+                            {!seriesEnabled && (
+                                <>
+                                    {formatPrice(websitePrice)} and {formatPrice(whatsappPrice)}.
+                                </>
+                            )}
                         </p>
                     </div>
                 </div>
@@ -820,6 +1329,7 @@ export function QuickAddProductDialog({
                             onClick={() => void save(true)}
                             disabled={!canSave}
                             className="h-9 text-xs border-surface-hover/80 bg-transparent text-white hover:bg-surface-hover/40"
+                            title="Enter"
                         >
                             Save & add another
                         </Button>
@@ -828,6 +1338,7 @@ export function QuickAddProductDialog({
                             onClick={() => void save(false)}
                             disabled={!canSave}
                             className="h-9 text-xs font-bold bg-primary text-primary-foreground hover:bg-primary/90"
+                            title="Ctrl+Enter"
                         >
                             {saving ? (
                                 <>

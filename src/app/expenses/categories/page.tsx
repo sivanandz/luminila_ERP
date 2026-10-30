@@ -104,7 +104,7 @@ export default function ExpenseCategoriesPage() {
                     </Dialog>
                 </div>
 
-                <div className="bg-surface-navy rounded-xl border border-surface-hover overflow-hidden">
+                <div className="bg-surface-navy rounded-xl border border-surface-hover overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                         <thead>
                             <tr className="border-b border-surface-hover text-xs font-bold text-moonstone uppercase bg-bg-navy/30">

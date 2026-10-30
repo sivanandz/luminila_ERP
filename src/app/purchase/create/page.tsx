@@ -982,7 +982,7 @@ export default function CreatePurchaseOrderPage() {
                             {/* Totals */}
                             {items.length > 0 && (
                                 <div className="flex justify-end mt-6">
-                                    <div className="w-80 space-y-2 bg-muted/20 rounded-lg p-4">
+                                    <div className="w-full sm:w-80 space-y-2 bg-muted/20 rounded-lg p-4">
                                         <div className="flex justify-between text-sm">
                                             <span className="text-muted-foreground">Subtotal</span>
                                             <span className="font-mono">{formatINR(totals.subtotal)}</span>
@@ -1050,7 +1050,7 @@ export default function CreatePurchaseOrderPage() {
                     </Card>
 
                     {/* Actions */}
-                    <div className="flex justify-end gap-3">
+                    <div className="flex flex-wrap justify-end gap-3">
                         <Button variant="outline" onClick={() => router.push("/purchase")}>
                             Cancel
                         </Button>

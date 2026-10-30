@@ -1,8 +1,9 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import { useNtUi } from "@/components/niththigal/NtUiContext";
 import { useCart } from "@/context/CartContext";
 import { useWishlist } from "@/hooks/use-wishlist";
 import type { StorefrontProduct } from "@/lib/pocketbase";
@@ -44,11 +45,18 @@ export function ProductPurchase({ product }: { product: StorefrontProduct }) {
         () => (Array.isArray(product.variants) ? product.variants : []),
         [product.variants]
     );
-    const [variantId, setVariantId] = useState(variants[0]?.id || "");
+    // Default to something a customer can actually buy; a sold-out first
+    // variant must not be the only thing the page offers.
+    const firstSellable = useMemo(
+        () => variants.find((variant) => variant.stock_level > 0) || variants[0],
+        [variants]
+    );
+    const [variantId, setVariantId] = useState(firstSellable?.id || "");
     const [quantity, setQuantity] = useState(1);
-    const router = useRouter();
+    const [announcement, setAnnouncement] = useState("");
     const { addToCart } = useCart();
     const { isSaved, toggleSaved } = useWishlist();
+    const { openSaved } = useNtUi();
 
     const selected = variants.find((variant) => variant.id === variantId);
     const available = selected ? selected.stock_level : product.total_stock;
@@ -56,22 +64,42 @@ export function ProductPurchase({ product }: { product: StorefrontProduct }) {
         product.stock_status === "out_of_stock" || product.total_stock <= 0 || available <= 0;
     const saved = isSaved(product.id);
 
-    const selectVariant = useCallback(
-        (id: string) => {
-            setVariantId(id);
-            const params = new URLSearchParams(window.location.search);
-            params.set("variant", id);
-            router.replace(`${window.location.pathname}?${params.toString()}`, {
-                scroll: false,
-            });
-        },
-        [router]
-    );
+    // Switching to a smaller size must not leave the quantity above its stock.
+    useEffect(() => {
+        setQuantity((current) => Math.max(1, Math.min(current, Math.max(1, available))));
+    }, [available]);
+
+    const selectVariant = useCallback((id: string) => {
+        setVariantId(id);
+        setAnnouncement("");
+        if (typeof window === "undefined") return;
+        // Native history keeps the shareable ?variant= URL without asking the
+        // router for a new RSC payload, so the selection survives the update.
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.set("variant", id);
+            window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+        } catch {
+            /* the selection still works when the URL cannot be updated */
+        }
+    }, []);
 
     const add = () => {
         if (outOfStock) return;
         addToCart(product, Math.max(1, quantity), variants.length ? variantId : undefined);
-        toast.success(`${product.name} added to your bag`);
+        setAnnouncement(
+            `${product.name}${selected ? ` (${selected.label})` : ""} added to your bag.`
+        );
+    };
+
+    const save = () => {
+        const willSave = !saved;
+        toggleSaved(product.id);
+        toast.success(
+            willSave
+                ? "Saved with love. Find it in your favourites."
+                : "Removed from your favourites"
+        );
     };
 
     return (
@@ -114,6 +142,7 @@ export function ProductPurchase({ product }: { product: StorefrontProduct }) {
                     id="product-quantity"
                     className="product-purchase-qty"
                     type="number"
+                    inputMode="numeric"
                     min={1}
                     max={Math.max(1, available)}
                     value={quantity}
@@ -147,24 +176,28 @@ export function ProductPurchase({ product }: { product: StorefrontProduct }) {
                 <button
                     type="button"
                     className="product-purchase-save"
-                    onClick={() => {
-                        const willSave = !saved;
-                        toggleSaved(product.id);
-                        toast.success(
-                            willSave
-                                ? "Saved with love. Find it in your favourites."
-                                : "Removed from your favourites"
-                        );
-                    }}
+                    onClick={save}
                     aria-pressed={saved}
                 >
                     {saved ? "Saved ♥" : "Save this piece ♡"}
                 </button>
+                {saved ? (
+                    <button
+                        type="button"
+                        className="product-purchase-save"
+                        onClick={openSaved}
+                    >
+                        View saved pieces
+                    </button>
+                ) : null}
             </div>
 
             <p className="product-purchase-note">
                 {money(product.website_price)} · Taxes included. Delivery is calculated at
                 checkout.
+                <span role="status" aria-live="polite">
+                    {announcement ? ` ${announcement}` : ""}
+                </span>
             </p>
         </div>
     );

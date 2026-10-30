@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { EditorialPage } from "@/components/seo/EditorialPage";
 import { getSiteContent } from "@/lib/site-content-server";
 import { faqPageJsonLd } from "@/lib/seo";
@@ -45,6 +46,11 @@ export default async function FaqPage() {
                     </details>
                 ))}
             </div>
+
+            <p className="product-purchase-note">
+                <Link href="/#collection">Explore the collection</Link> ·{" "}
+                <Link href="/shipping-returns">Shipping &amp; returns</Link>.
+            </p>
         </EditorialPage>
     );
 }
