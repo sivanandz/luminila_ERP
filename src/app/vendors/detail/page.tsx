@@ -59,6 +59,8 @@ interface ProductVariant {
         id: string;
         name: string;
         sku: string;
+        cost_price?: number;
+        base_price?: number;
     };
 }
 
@@ -72,6 +74,8 @@ interface PBVariant {
             id: string;
             name: string;
             sku: string;
+            cost_price?: number;
+            base_price?: number;
         };
     };
 }
@@ -129,6 +133,8 @@ function VendorDetailContent() {
                         id: v.expand.product.id,
                         name: v.expand.product.name,
                         sku: v.expand.product.sku,
+                        cost_price: v.expand.product.cost_price,
+                        base_price: v.expand.product.base_price,
                     } : { id: '', name: '', sku: '' },
                 }));
             setAvailableProducts(available);
@@ -428,7 +434,19 @@ function VendorDetailContent() {
                     <div className="space-y-4">
                         <div className="space-y-2">
                             <Label>Select Product *</Label>
-                            <Select value={selectedVariant} onValueChange={(v) => v && setSelectedVariant(v)}>
+                            <Select
+                                value={selectedVariant}
+                                onValueChange={(v) => {
+                                    if (!v) return;
+                                    setSelectedVariant(v);
+                                    // What the vendor charges is the procurement cost, not the
+                                    // retail tag; fall back to the retail price only when the
+                                    // catalog has no cost yet (INV-24).
+                                    const picked = availableProducts.find((p) => p.id === v);
+                                    const suggested = Number(picked?.product.cost_price) || Number(picked?.product.base_price) || 0;
+                                    setVendorPrice(suggested > 0 ? String(suggested) : "");
+                                }}
+                            >
                                 <SelectTrigger>
                                     <SelectValue />
                                 </SelectTrigger>

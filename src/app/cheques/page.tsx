@@ -26,6 +26,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { formatINR } from "@/lib/gst";
+import { getBankAccounts, type BankAccount } from "@/lib/banking";
 import {
     addCheque,
     advanceCheque,
@@ -52,6 +53,8 @@ function today(): string {
 
 export default function ChequeRegisterPage() {
     const [cheques, setCheques] = useState<ChequeRecord[]>([]);
+    const [accounts, setAccounts] = useState<BankAccount[]>([]);
+    const [depositAccountId, setDepositAccountId] = useState("");
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
 
@@ -69,7 +72,10 @@ export default function ChequeRegisterPage() {
     const load = async () => {
         try {
             setLoading(true);
-            setCheques(await listCheques());
+            const [chequeList, accountList] = await Promise.all([listCheques(), getBankAccounts()]);
+            setCheques(chequeList);
+            setAccounts(accountList);
+            setDepositAccountId((prev) => prev || accountList[0]?.id || "");
         } catch (error) {
             console.error(error);
             toast.error("Could not load the cheque register");
@@ -117,12 +123,17 @@ export default function ChequeRegisterPage() {
     };
 
     const handleDeposit = async (cheque: ChequeRecord) => {
-        const account = window.prompt("Bank account name for this deposit", "Current Account");
-        if (!account) return;
+        // Deposit against a real bank account, never a fabricated acc_* id
+        // (FIN-04).
+        const account = accounts.find((candidate) => candidate.id === depositAccountId);
+        if (!account) {
+            toast.error("Add a bank account before depositing a cheque");
+            return;
+        }
         try {
             const { cheques: next, result } = await advanceCheque(cheque.id, "deposited", {
-                targetBankAccountId: `acc_${account.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
-                targetBankAccountName: account,
+                targetBankAccountId: account.id,
+                targetBankAccountName: account.account_name,
             });
             setCheques(next);
             toast.success(result.ledgerEffect.description || "Cheque deposited");
@@ -284,8 +295,26 @@ export default function ChequeRegisterPage() {
                 </Card>
 
                 <Card className="bg-card">
-                    <CardHeader>
+                    <CardHeader className="flex flex-row items-center justify-between gap-3">
                         <CardTitle className="text-base">Register</CardTitle>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">Deposit to</span>
+                            <Select
+                                value={depositAccountId}
+                                onValueChange={(value) => value && setDepositAccountId(value)}
+                            >
+                                <SelectTrigger className="h-8 w-[190px]">
+                                    <SelectValue placeholder="Bank account" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {accounts.map((account) => (
+                                        <SelectItem key={account.id} value={account.id}>
+                                            {account.account_name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
                     </CardHeader>
                     <CardContent>
                         {loading ? (

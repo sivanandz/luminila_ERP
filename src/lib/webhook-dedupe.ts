@@ -7,10 +7,24 @@
  * parts separated so they can be tested without a database.
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 
 const SETTINGS_KEY = 'razorpay_webhook_events';
 const MAX_REMEMBERED = 200;
+
+/** Dedupe records are per tenant; a shared key would skip another store's events (SF-23). */
+function settingsFilter(db: typeof pb): string {
+    const record = db.authStore.record as { email?: string; account_email?: string } | null;
+    const tenant = String(record?.account_email || record?.email || accountScopeEmail() || '').trim().toLowerCase();
+    return tenant
+        ? `key="${SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
+        : `key="${SETTINGS_KEY}"`;
+}
+
+function tenantEmail(db: typeof pb): string {
+    const record = db.authStore.record as { email?: string; account_email?: string } | null;
+    return String(record?.account_email || record?.email || accountScopeEmail() || '').trim().toLowerCase();
+}
 
 /** A stable key for the event, using the payment or link id as the subject. */
 export function webhookEventKey(event: string, entityId?: string): string | null {
@@ -46,7 +60,7 @@ export async function loadProcessedEvents(db: typeof pb = pb): Promise<string[]>
     const pb = db;
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(`key="${SETTINGS_KEY}"`)
+        .getFirstListItem(settingsFilter(pb))
         .catch(() => null);
     if (!row) return [];
 
@@ -63,13 +77,14 @@ export async function saveProcessedEvents(events: string[], db: typeof pb = pb):
     const value = JSON.stringify(events);
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(`key="${SETTINGS_KEY}"`)
+        .getFirstListItem(settingsFilter(pb))
         .catch(() => null);
 
     if (row) {
         await pb.collection('store_settings').update(row.id, { value });
     } else {
         await pb.collection('store_settings').create({
+            account_email: tenantEmail(pb),
             key: SETTINGS_KEY,
             value,
             category: 'payments',

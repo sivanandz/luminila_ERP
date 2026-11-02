@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { Bell, Search, RefreshCw, Plus, Wifi, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
@@ -31,7 +31,24 @@ export function Header({ title, subtitle, action, children, hideSearch }: Header
     const [hasNotifications] = useState(false);
     const [isServerModalOpen, setIsServerModalOpen] = useState(false);
     const [serverStatus, setServerStatus] = useState<ServerHealthResult | null>(null);
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const router = useRouter();
+
+    // The global field is a shortcut into the inventory search, the only list
+    // that already understands `?search=`. Pages with their own search pass
+    // hideSearch (AI-SYS-23).
+    const submitSearch = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        const query = searchQuery.trim();
+        if (!query) return;
+        router.push(`/inventory?search=${encodeURIComponent(query)}`);
+    };
+
+    const handleRefresh = () => {
+        setIsRefreshing(true);
+        // Give the spin one frame before the reload replaces the document.
+        window.setTimeout(() => window.location.reload(), 60);
+    };
 
     useEffect(() => {
         const verifyConnection = async () => {
@@ -71,20 +88,21 @@ export function Header({ title, subtitle, action, children, hideSearch }: Header
                       Desktop: title, flexible search, then the action cluster.
                     */}
                     {!hideSearch && (
-                    <div className="relative group order-3 w-full min-w-0 md:order-2 md:w-auto md:max-w-md md:flex-1">
+                    <form onSubmit={submitSearch} className="relative group order-3 w-full min-w-0 md:order-2 md:w-auto md:max-w-md md:flex-1">
                         <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-muted-foreground group-focus-within:text-primary">
                             <Search size={18} />
                         </div>
                         <input
                             suppressHydrationWarning
                             className="bg-card border border-border text-foreground text-base md:text-sm rounded-lg block w-full pl-9 py-2 md:py-2.5 pr-4 focus:ring-1 focus:ring-primary placeholder-muted-foreground transition-all"
-                            placeholder="Search..."
-                            type="text"
+                            placeholder="Search products..."
+                            type="search"
                             enterKeyHint="search"
+                            aria-label="Search products"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                         />
-                    </div>
+                    </form>
                     )}
                     <div className="order-2 flex min-w-0 flex-wrap items-center justify-end gap-1.5 md:order-3 md:gap-3">
                     {/* Server Connection Status Pill */}
@@ -146,11 +164,13 @@ export function Header({ title, subtitle, action, children, hideSearch }: Header
                     <Button
                         variant="outline"
                         size="icon"
-                        onClick={() => window.location.reload()}
+                        onClick={handleRefresh}
+                        disabled={isRefreshing}
                         title="Click to Refresh Data"
+                        aria-label="Refresh data"
                         className="size-9 md:size-10"
                     >
-                        <RefreshCw size={16} className="animate-spin-slow" style={{ animationDuration: '3s' }} />
+                        <RefreshCw size={16} className={isRefreshing ? "animate-spin" : undefined} />
                     </Button>
 
                     {children}

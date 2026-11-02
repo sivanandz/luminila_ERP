@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { format, startOfMonth, endOfMonth } from "date-fns";
 import {
 
     TrendingUp,
@@ -12,6 +14,7 @@ import {
 
 import { Header } from "@/components/layout/Header";
 import { Card, CardContent } from "@/components/ui/card";
+import { getSalesReport, exportToCSV } from "@/lib/reports";
 
 const reports = [
     {
@@ -45,6 +48,47 @@ const reports = [
 
 export default function ReportsPage() {
     const router = useRouter();
+    const [busyExport, setBusyExport] = useState<"invoices" | "summary" | null>(null);
+
+    // Both Quick Export cards are wired here; they used to be styled as
+    // clickable but did nothing (FIN-24).
+    const handleExportInvoices = async () => {
+        setBusyExport("invoices");
+        try {
+            const now = new Date();
+            const start = format(startOfMonth(now), "yyyy-MM-dd");
+            const end = format(endOfMonth(now), "yyyy-MM-dd");
+            const { rows } = await getSalesReport(start, end);
+            exportToCSV(rows, `invoices_${format(now, "yyyy-MM")}`);
+        } catch (error) {
+            console.error(error);
+            alert("Failed to export invoices");
+        } finally {
+            setBusyExport(null);
+        }
+    };
+
+    const handleExportMonthlySummary = async () => {
+        setBusyExport("summary");
+        try {
+            const now = new Date();
+            const start = format(startOfMonth(now), "yyyy-MM-dd");
+            const end = format(endOfMonth(now), "yyyy-MM-dd");
+            const { summary } = await getSalesReport(start, end);
+            exportToCSV([
+                { metric: "Period", value: `${start} to ${end}` },
+                { metric: "Total Sales", value: summary.totalSales },
+                { metric: "Total Tax", value: summary.totalTax },
+                { metric: "Total Orders", value: summary.totalOrders },
+                { metric: "Total Items", value: summary.totalItems },
+            ], `monthly_summary_${format(now, "yyyy-MM")}`);
+        } catch (error) {
+            console.error(error);
+            alert("Failed to export the monthly summary");
+        } finally {
+            setBusyExport(null);
+        }
+    };
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
@@ -82,20 +126,32 @@ export default function ReportsPage() {
                     <div className="mt-12">
                         <h3 className="text-lg font-semibold mb-4 text-primary">Quick Exports</h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <Card className="bg-muted border-border hover:bg-card cursor-pointer transition-colors">
+                            <Card
+                                className="bg-muted border-border hover:bg-card cursor-pointer transition-colors"
+                                onClick={handleExportInvoices}
+                                aria-busy={busyExport === "invoices"}
+                            >
                                 <CardContent className="pt-6 flex items-center gap-4">
                                     <FileSpreadsheet className="w-6 h-6 text-muted-foreground" />
                                     <div>
-                                        <p className="font-medium">Export All Invoices</p>
+                                        <p className="font-medium">
+                                            {busyExport === "invoices" ? "Exporting..." : "Export All Invoices"}
+                                        </p>
                                         <p className="text-xs text-muted-foreground">CSV format for this month</p>
                                     </div>
                                 </CardContent>
                             </Card>
-                            <Card className="bg-muted border-border hover:bg-card cursor-pointer transition-colors">
+                            <Card
+                                className="bg-muted border-border hover:bg-card cursor-pointer transition-colors"
+                                onClick={handleExportMonthlySummary}
+                                aria-busy={busyExport === "summary"}
+                            >
                                 <CardContent className="pt-6 flex items-center gap-4">
                                     <Calendar className="w-6 h-6 text-muted-foreground" />
                                     <div>
-                                        <p className="font-medium">Monthly Summary</p>
+                                        <p className="font-medium">
+                                            {busyExport === "summary" ? "Exporting..." : "Monthly Summary"}
+                                        </p>
                                         <p className="text-xs text-muted-foreground">Revenue, tax, and orders</p>
                                     </div>
                                 </CardContent>

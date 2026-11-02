@@ -55,6 +55,8 @@ import {
     HSN_CODES,
 } from "@/lib/gst";
 import { getSellableVariants, resolveBarcodeProduct } from "@/lib/products";
+import { pb, getCurrentTenantEmail } from "@/lib/pocketbase";
+import { applyChannelStock, toStockDb } from "@/lib/channel-stock";
 
 interface ProductVariant {
     id: string;
@@ -223,14 +225,22 @@ export default function CreateInvoicePage() {
         }
 
         const isGstRegistered = storeSettings?.is_gst_registered !== false && Boolean(storeSettings?.store_gstin);
-        const effectiveGstRate = isGstRegistered ? GST_RATES.JEWELRY : 0;
+        // Read the product's rate/HSN instead of forcing 3%/7113 onto every
+        // manual line (POS-08).
+        const productFields = variant.product as unknown as {
+            gst_rate?: number;
+            hsn_code?: string;
+        };
+        const effectiveGstRate = isGstRegistered
+            ? (productFields.gst_rate ?? GST_RATES.JEWELRY)
+            : 0;
         const unitPrice = (variant.product.base_price || 0) + (variant.price_adjustment || 0);
         const newItem: Omit<InvoiceItem, "id" | "invoice_id"> = {
             sr_no: items.length + 1,
             variant_id: variant.id,
             stock_level: variant.stock_level,
             description: `${variant.product.name}${variant.variant_name ? ` - ${variant.variant_name}` : ""}`,
-            hsn_code: HSN_CODES.DEFAULT,
+            hsn_code: productFields.hsn_code || HSN_CODES.DEFAULT,
             quantity: 1,
             unit: "PCS",
             unit_price: unitPrice,
@@ -238,9 +248,9 @@ export default function CreateInvoicePage() {
             discount_amount: 0,
             taxable_amount: unitPrice,
             gst_rate: effectiveGstRate,
-            cgst_rate: isGstRegistered ? 1.5 : 0,
+            cgst_rate: isGstRegistered ? effectiveGstRate / 2 : 0,
             cgst_amount: 0,
-            sgst_rate: isGstRegistered ? 1.5 : 0,
+            sgst_rate: isGstRegistered ? effectiveGstRate / 2 : 0,
             sgst_amount: 0,
             igst_rate: 0,
             igst_amount: 0,
@@ -469,7 +479,50 @@ export default function CreateInvoicePage() {
             };
 
             const created = await createInvoice(invoice);
-            router.push(`/invoices/detail?id=${created.id}`);
+            const createdId = created.id as string;
+
+            // A manual invoice is a sale, so it must consume stock like every
+            // other channel. Credit/debit notes do not.
+            if (invoiceType === 'regular') {
+                const stockLines = created.items
+                    .filter((item) => Boolean(item.variant_id))
+                    .map((item) => {
+                        const variant = products.find((v) => v.id === item.variant_id);
+                        return {
+                            productId: variant?.product?.id || '',
+                            variantId: item.variant_id,
+                            quantity: Number(item.quantity) || 0,
+                            name: item.description,
+                        };
+                    })
+                    .filter((line) => line.productId && line.quantity > 0);
+
+                if (stockLines.length > 0) {
+                    try {
+                        await applyChannelStock(toStockDb(pb), stockLines, {
+                            accountEmail: getCurrentTenantEmail(),
+                            channel: 'pos',
+                            referenceId: createdId,
+                            notes: `Manual invoice ${created.invoice_number || createdId}`,
+                            oversell: 'reject',
+                        });
+                    } catch (stockError) {
+                        // Compensate: an invoice that could not reserve stock
+                        // must not remain as a claim on inventory.
+                        const itemRows = await pb
+                            .collection('invoice_items')
+                            .getFullList({ filter: `invoice="${createdId}"` })
+                            .catch(() => []);
+                        for (const row of itemRows) {
+                            await pb.collection('invoice_items').delete(row.id).catch(() => {});
+                        }
+                        await pb.collection('invoices').delete(createdId).catch(() => {});
+                        throw stockError;
+                    }
+                }
+            }
+
+            router.push(`/invoices/detail?id=${createdId}`);
         } catch (error) {
             console.error("Error creating invoice:", error);
             alert("Failed to create invoice. Please try again.");

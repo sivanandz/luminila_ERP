@@ -7,7 +7,6 @@ import {
     Store,
     Database,
     MessageCircle,
-    Shield,
     Bell,
 
     Save,
@@ -59,8 +58,9 @@ import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { getStoreSettings, saveStoreSettings, getDefaultStoreSettings, type StoreSettings } from "@/lib/settings";
 import { isSingleAccountMode, SINGLE_ACCOUNT_STORE_NAME } from "@/lib/deployment-mode";
-import { getPocketBaseUrl } from "@/lib/pocketbase";
+import { getPocketBaseUrl, getTenantStorageKey } from "@/lib/pocketbase";
 import { collectDatabaseSnapshot } from "@/lib/database-snapshot";
+import { usePermissions } from "@/hooks/usePermissions";
 import { getDetailedSessionStatus, getBusinessProfile, editBusinessProfile, getTenantWhatsAppSessionId, type DetailedSessionStatus, type BusinessProfile } from "@/lib/whatsapp";
 
 interface SettingSection {
@@ -81,15 +81,43 @@ const sections: SettingSection[] = [
     { id: "ai", title: "AI Providers", icon: <Bot size={20} /> },
     { id: "whatsapp", title: "WhatsApp", icon: <MessageCircle size={20} /> },
     { id: "notifications", title: "Notifications", icon: <Bell size={20} /> },
-    { id: "security", title: "Security", icon: <Shield size={20} /> },
 ];
+
+/**
+ * Tabs that persist through their own controls (or inline CRUD). Showing the
+ * page-level "Save Changes" there implied it was needed and could overwrite the
+ * tab's own state (AI-SYS-22).
+ */
+const SELF_SAVING_TABS = new Set([
+    "channels",
+    "sku_taxonomies",
+    "ewaybill",
+    "categories",
+    "attributes",
+    "ai",
+    "notifications",
+]);
+
+const NOTIFICATION_ITEMS = [
+    { key: "lowStock", label: "Low Stock Alerts", desc: "When product stock falls below threshold" },
+    { key: "newOrder", label: "New Order", desc: "When a new online order is received" },
+    { key: "syncError", label: "Sync Errors", desc: "When synchronization with external services fails" },
+];
+
+const DEFAULT_NOTIFICATION_PREFS: Record<string, boolean> = {
+    lowStock: true,
+    newOrder: true,
+    syncError: true,
+};
 
 export default function SettingsPage() {
     const router = useRouter();
     const { user } = useAuth();
+    const { isAdmin, hasPermission, loading: permissionsLoading } = usePermissions();
     const [activeSection, setActiveSection] = useState("store");
     const [isSaving, setIsSaving] = useState(false);
     const [isExportingSnapshot, setIsExportingSnapshot] = useState(false);
+    const [notificationPrefs, setNotificationPrefs] = useState<Record<string, boolean>>(DEFAULT_NOTIFICATION_PREFS);
 
     useEffect(() => {
         if (typeof window !== "undefined") {
@@ -210,6 +238,34 @@ export default function SettingsPage() {
                 .finally(() => setCheckingWa(false));
         }
     }, [activeSection]);
+
+    // Notification switches are tenant-scoped browser preferences; they persist
+    // as they are toggled, so the page-level Save button is hidden on that tab.
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        try {
+            const raw = localStorage.getItem(getTenantStorageKey("luminila_notifications"));
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") {
+                setNotificationPrefs({ ...DEFAULT_NOTIFICATION_PREFS, ...(parsed as Record<string, boolean>) });
+            }
+        } catch {
+            /* unreadable local preference: keep defaults */
+        }
+    }, []);
+
+    const toggleNotification = (key: string) => {
+        setNotificationPrefs((prev) => {
+            const next = { ...prev, [key]: !prev[key] };
+            try {
+                localStorage.setItem(getTenantStorageKey("luminila_notifications"), JSON.stringify(next));
+            } catch {
+                /* storage unavailable: the switch still reflects this session */
+            }
+            return next;
+        });
+    };
 
     const handleSyncFromWhatsApp = async () => {
         setIsSyncingWaProfile(true);
@@ -357,29 +413,63 @@ export default function SettingsPage() {
         }
     };
 
+    const showSave = !SELF_SAVING_TABS.has(activeSection);
+
+    if (permissionsLoading) {
+        return (
+            <div className="flex flex-col h-full overflow-hidden">
+                <Header title="Settings" subtitle="Checking permissions" />
+                <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+                    Checking permissions…
+                </div>
+            </div>
+        );
+    }
+
+    if (!isAdmin && !hasPermission("settings", "update")) {
+        return (
+            <div className="flex flex-col h-full overflow-hidden">
+                <Header title="Settings" subtitle="Administrator access required" />
+                <div className="flex-1 flex items-center justify-center p-6">
+                    <Card className="max-w-md w-full">
+                        <CardContent className="py-8 text-center space-y-2">
+                            <h2 className="text-base font-semibold text-foreground">Administrator access required</h2>
+                            <p className="text-sm text-muted-foreground">
+                                Store settings include tax, payment and integration credentials. Ask an administrator
+                                for access.
+                            </p>
+                        </CardContent>
+                    </Card>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="flex flex-col h-full overflow-hidden">
             <Header
                 title="Settings"
                 subtitle="Configure your Luminila workspace"
                 action={
-                    <Button
-                        onClick={handleSave}
-                        disabled={isSaving}
-                        className="min-w-[140px]"
-                    >
-                        {isSaving ? (
-                            <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                Saving...
-                            </>
-                        ) : (
-                            <>
-                                <Save className="mr-2 h-4 w-4" />
-                                Save Changes
-                            </>
-                        )}
-                    </Button>
+                    showSave ? (
+                        <Button
+                            onClick={handleSave}
+                            disabled={isSaving}
+                            className="min-w-[140px]"
+                        >
+                            {isSaving ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Saving...
+                                </>
+                            ) : (
+                                <>
+                                    <Save className="mr-2 h-4 w-4" />
+                                    Save Changes
+                                </>
+                            )}
+                        </Button>
+                    ) : undefined
                 }
             />
 
@@ -1419,20 +1509,23 @@ export default function SettingsPage() {
                                     </div>
 
                                     <div className="space-y-4">
-                                        {[
-                                            { key: "lowStock", label: "Low Stock Alerts", desc: "When product stock falls below threshold" },
-                                            { key: "newOrder", label: "New Order", desc: "When a new online order is received" },
-                                            { key: "syncError", label: "Sync Errors", desc: "When synchronization with external services fails" },
-                                        ].map((item) => (
+                                        {NOTIFICATION_ITEMS.map((item) => (
                                             <div key={item.key} className="flex items-center justify-between p-4 bg-background border border-border rounded-xl">
                                                 <div>
                                                     <p className="font-bold text-foreground text-sm">{item.label}</p>
                                                     <p className="text-xs text-muted-foreground mt-1">{item.desc}</p>
                                                 </div>
-                                                <Switch defaultChecked />
+                                                <Switch
+                                                    checked={notificationPrefs[item.key] !== false}
+                                                    onCheckedChange={() => toggleNotification(item.key)}
+                                                    aria-label={item.label}
+                                                />
                                             </div>
                                         ))}
                                     </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        Preferences are stored in this browser for the current account. They save as you toggle them.
+                                    </p>
                                 </div>
                             )}
 
@@ -1449,7 +1542,7 @@ export default function SettingsPage() {
                             )}
 
                             {/* Save Button */}
-                            {activeSection !== "sku_taxonomies" && activeSection !== "channels" && (
+                            {showSave && (
                                 <div className="mt-8 pt-6 border-t border-border flex justify-end">
                                     <Button
                                         onClick={handleSave}

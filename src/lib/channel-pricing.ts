@@ -6,7 +6,7 @@
  * browser components and server routes.
  */
 
-import { pb } from "./pocketbase";
+import { accountScopeEmail, getTenantStorageKey, pb, sanitizeFilter } from "./pocketbase";
 import {
     DEFAULT_SALES_CHANNELS,
     normalizeChannelDefinitions,
@@ -77,7 +77,7 @@ export function subscribeConfiguredChannels(
 }
 
 export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]> {
-    const currentUserEmail = pb.authStore.model?.email;
+    const currentUserEmail = accountScopeEmail() || pb.authStore.model?.email;
     if (!currentUserEmail) {
         if (typeof window !== "undefined") {
             try {
@@ -100,7 +100,7 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
     try {
         const record = await pb
             .collection("store_settings")
-            .getFirstListItem(`key="${PB_KEY}" && account_email="${currentUserEmail}"`)
+            .getFirstListItem(`key="${PB_KEY}" && account_email="${sanitizeFilter(currentUserEmail)}"`)
             .catch(() => null);
 
         if (record && record.value) {
@@ -158,7 +158,7 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
 export async function saveConfiguredChannels(
     channels: SalesChannelDefinition[]
 ): Promise<void> {
-    const currentUserEmail = pb.authStore.model?.email;
+    const currentUserEmail = accountScopeEmail() || pb.authStore.model?.email;
     currentChannels = [...channels];
     if (typeof window !== "undefined") {
         localStorage.setItem(getStorageKey(), JSON.stringify(currentChannels));
@@ -170,7 +170,7 @@ export async function saveConfiguredChannels(
     try {
         const existing = await pb
             .collection("store_settings")
-            .getFirstListItem(`key="${PB_KEY}" && account_email="${currentUserEmail}"`)
+            .getFirstListItem(`key="${PB_KEY}" && account_email="${sanitizeFilter(currentUserEmail)}"`)
             .catch(() => null);
 
         if (existing) {
@@ -355,12 +355,17 @@ export function calculateRealizedMargin(
 export const DEFAULT_UPI_DISCOUNT_THRESHOLD = 2000;
 const UPI_DISCOUNT_STORAGE_KEY = "luminila_upi_surcharge_discount_enabled";
 
+/** Per-tenant key: a toggle in one store must not change another's pricing (POS-21). */
+function upiDiscountStorageKey(): string {
+    return getTenantStorageKey(UPI_DISCOUNT_STORAGE_KEY);
+}
+
 /**
  * Checks if the UPI < ₹2,000 surcharge discount feature is enabled
  */
 export function isUpiDiscountEnabled(): boolean {
     if (typeof window === "undefined") return true;
-    const stored = localStorage.getItem(UPI_DISCOUNT_STORAGE_KEY);
+    const stored = localStorage.getItem(upiDiscountStorageKey());
     return stored === null ? true : stored === "true"; // Default enabled
 }
 
@@ -369,7 +374,7 @@ export function isUpiDiscountEnabled(): boolean {
  */
 export function setUpiDiscountEnabled(enabled: boolean): void {
     if (typeof window === "undefined") return;
-    localStorage.setItem(UPI_DISCOUNT_STORAGE_KEY, enabled ? "true" : "false");
+    localStorage.setItem(upiDiscountStorageKey(), enabled ? "true" : "false");
     window.dispatchEvent(new CustomEvent("luminila:upi-discount-toggled", { detail: { enabled } }));
 }
 

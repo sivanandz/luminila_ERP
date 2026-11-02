@@ -45,6 +45,18 @@ interface GSTR1Summary {
     invoiceCount?: number;
 }
 
+// Table 5 vs Table 7: only an inter-state unregistered sale above ₹2,50,000
+// belongs in B2CL. IGST > 0 identifies an inter-state supply, so the page can
+// classify without re-reading the store state - the upstream report labels
+// every B2C row "B2C Large" (FIN-21).
+const B2C_LARGE_THRESHOLD = 250000;
+
+function classifyB2c(row: GSTR1Row): "B2C Large" | "B2C Small" {
+    return row.igstAmount > 0 && row.invoiceValue > B2C_LARGE_THRESHOLD
+        ? "B2C Large"
+        : "B2C Small";
+}
+
 export default function GSTReportPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
@@ -345,9 +357,11 @@ export default function GSTReportPage() {
                                                     <TableHead>Date</TableHead>
                                                     <TableHead>Buyer Name</TableHead>
                                                     <TableHead>Place</TableHead>
+                                                    <TableHead>Type</TableHead>
                                                     <TableHead className="text-right">Taxable</TableHead>
                                                     <TableHead className="text-right">CGST</TableHead>
                                                     <TableHead className="text-right">SGST</TableHead>
+                                                    <TableHead className="text-right">IGST</TableHead>
                                                     <TableHead className="text-right">Total</TableHead>
                                                 </TableRow>
                                             </TableHeader>
@@ -358,9 +372,11 @@ export default function GSTReportPage() {
                                                         <TableCell>{row.invoiceDate}</TableCell>
                                                         <TableCell>{row.buyerName}</TableCell>
                                                         <TableCell>{row.placeOfSupply}</TableCell>
+                                                        <TableCell className="text-xs">{classifyB2c(row)}</TableCell>
                                                         <TableCell className="text-right font-mono">{formatINR(row.taxableValue)}</TableCell>
                                                         <TableCell className="text-right font-mono text-muted-foreground">{formatINR(row.cgstAmount)}</TableCell>
                                                         <TableCell className="text-right font-mono text-muted-foreground">{formatINR(row.sgstAmount)}</TableCell>
+                                                        <TableCell className="text-right font-mono text-muted-foreground">{formatINR(row.igstAmount)}</TableCell>
                                                         <TableCell className="text-right font-mono font-semibold">{formatINR(row.invoiceValue)}</TableCell>
                                                     </TableRow>
                                                 ))}

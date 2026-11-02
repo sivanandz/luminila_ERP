@@ -152,14 +152,31 @@ export function executeInwardQcInspection(
         totalDeductions: deductions,
         netRefundCreditAmount: netRefund,
         inventoryActions,
-        creditNotePayload: {
-            creditNoteNumber,
-            originalInvoiceNumber: req.originalInvoiceNumber,
-            customerName: req.customerName,
-            taxableValue: Math.round((netRefund / 1.03) * 100) / 100,
-            taxAmount: Math.round((netRefund - netRefund / 1.03) * 100) / 100,
-            grandTotal: netRefund,
-        },
+        creditNotePayload: (() => {
+            // Derive the tax split from each line's own rate. The old fixed
+            // 1.03 assumed every return was a 3% jewellery line and treated a
+            // pre-tax unit price as tax-inclusive (ORD-23).
+            const grossReturn = req.returnedItems.reduce(
+                (sum, item) => sum + (Number(item.unitPrice) || 0) * (Number(item.quantityReturned) || 0),
+                0
+            );
+            const taxableGross = req.returnedItems.reduce((sum, item) => {
+                const rate = Number(item.taxRate) || 0;
+                const lineGross = (Number(item.unitPrice) || 0) * (Number(item.quantityReturned) || 0);
+                return sum + (rate > 0 ? lineGross / (1 + rate / 100) : lineGross);
+            }, 0);
+            const ratio = grossReturn > 0 ? netRefund / grossReturn : 0;
+            const taxableValue = Math.round(taxableGross * ratio * 100) / 100;
+            const taxAmount = Math.round((netRefund - taxableValue) * 100) / 100;
+            return {
+                creditNoteNumber,
+                originalInvoiceNumber: req.originalInvoiceNumber,
+                customerName: req.customerName,
+                taxableValue,
+                taxAmount,
+                grandTotal: netRefund,
+            };
+        })(),
         inspectorSummary: summary,
     };
 }

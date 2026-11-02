@@ -6,7 +6,7 @@
  * Supports dynamic addition and removal of custom taxonomies with PocketBase & local persistence.
  */
 
-import { pb, getCurrentTenantEmail, getTenantStorageKey } from './pocketbase';
+import { accountScopeEmail, pb, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from './pocketbase';
 
 export interface GenreOption {
     code: string;
@@ -382,8 +382,12 @@ export async function computeNextSkuSequence(prefix: string, fallbackSeq: number
     try {
         let nextSeq = 1;
         const cleanPrefix = prefix.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        // Sequences are per tenant: another shop's SKUs must not advance this one's
+        // counter (INV-16).
+        const tenant = accountScopeEmail();
+        const tenantFilter = tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
         const rows = await pb.collection('products').getFullList({
-            filter: pb.filter("sku ~ {:prefix}", { prefix: cleanPrefix }),
+            filter: `sku ~ "${sanitizeFilter(cleanPrefix)}"${tenantFilter}`,
             fields: 'sku',
         });
         const seq5Regex = new RegExp(`^${cleanPrefix}(\\d{5})`);

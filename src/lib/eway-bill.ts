@@ -10,7 +10,7 @@ import { isValidGstin as isValidGstinChecksum } from './gstin';
  * - Configure credentials in store_settings
  */
 
-import { pb } from './pocketbase';
+import { getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
 import { getStoreSettings, type Invoice, type InvoiceItem } from './invoice';
 import CryptoJS from 'crypto-js';
 
@@ -200,6 +200,19 @@ export const STATE_CODES: Record<string, number> = {
 let authToken: string | null = null;
 let tokenExpiry: Date | null = null;
 let sessionEncryptionKey: string | null = null;
+// NIC tokens are per GSTIN/tenant. A single module-level token would let one
+// store reuse another store's session (ORD-13).
+let sessionTenant: string | null = null;
+
+function ensureTenantSession(): void {
+    const tenant = getCurrentTenantEmail();
+    if (sessionTenant !== tenant) {
+        authToken = null;
+        tokenExpiry = null;
+        sessionEncryptionKey = null;
+        sessionTenant = tenant;
+    }
+}
 
 // ============================================
 // HELPER FUNCTIONS
@@ -217,7 +230,9 @@ export interface EwayBillSettings {
 async function getEwayBillConfig(): Promise<EwayBillConfig | null> {
     try {
         const settings = await getStoreSettings();
-        const ewaySettings = await pb.collection('store_settings').getFirstListItem<EwayBillSettings>('key="eway_bill"').catch(() => null);
+        const ewaySettings = await pb.collection('store_settings').getFirstListItem<EwayBillSettings>(
+            `key="eway_bill" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`
+        ).catch(() => null);
 
         if (!ewaySettings) {
             console.warn('E-way Bill settings not configured');
@@ -279,6 +294,7 @@ function decryptWithSEK(encryptedData: string, sek: string): string {
 // ============================================
 
 export async function authenticateEwayBill(): Promise<boolean> {
+    ensureTenantSession();
     // Check if we have a valid token
     if (authToken && tokenExpiry && new Date() < tokenExpiry) {
         return true;
@@ -326,6 +342,7 @@ export async function authenticateEwayBill(): Promise<boolean> {
 
             authToken = decryptedData.authtoken;
             sessionEncryptionKey = decryptedData.sek;
+            sessionTenant = getCurrentTenantEmail();
             // Token valid for 6 hours
             tokenExpiry = new Date(Date.now() + 6 * 60 * 60 * 1000);
 

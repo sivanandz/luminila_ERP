@@ -4,8 +4,25 @@
  */
 
 import type PocketBase from 'pocketbase';
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { enqueueTask } from './concurrency';
+
+/** Tenant owning rows for a caller-supplied client, falling back to the module client (POS-22). */
+function dbTenant(db: PocketBase = pb): string {
+    const store = db.authStore as unknown as {
+        record?: { email?: string; account_email?: string } | null;
+        model?: { email?: string; account_email?: string } | null;
+    };
+    const record = store.record || store.model;
+    return String(record?.account_email || record?.email || accountScopeEmail() || '')
+        .trim()
+        .toLowerCase();
+}
+
+function tenantClause(db: PocketBase = pb): string {
+    const tenant = dbTenant(db);
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 // =============================================
 // Types
@@ -101,7 +118,9 @@ const DEFAULT_LOYALTY_SETTINGS: LoyaltySettings = {
  */
 export async function getLoyaltySettings(db: PocketBase = pb): Promise<LoyaltySettings> {
     try {
-        return await db.collection('loyalty_settings').getFirstListItem<LoyaltySettings>('is_active=true');
+        return await db.collection('loyalty_settings').getFirstListItem<LoyaltySettings>(
+            `is_active=true${tenantClause(db)}`
+        );
     } catch {
         return DEFAULT_LOYALTY_SETTINGS;
     }
@@ -114,6 +133,7 @@ export async function getLoyaltySettings(db: PocketBase = pb): Promise<LoyaltySe
 export async function getLoyaltyTiers(db: PocketBase = pb): Promise<LoyaltyTier[]> {
     try {
         const records = await db.collection('loyalty_tiers').getFullList<LoyaltyTier>({
+            filter: `id != ""${tenantClause(db)}`,
             sort: 'min_points',
         });
         return records;
@@ -126,7 +146,7 @@ export async function getLoyaltyTiers(db: PocketBase = pb): Promise<LoyaltyTier[
 export async function getTierByPoints(points: number, db: PocketBase = pb): Promise<LoyaltyTier | null> {
     try {
         const record = await db.collection('loyalty_tiers').getFirstListItem<LoyaltyTier>(
-            `min_points <= ${points} && (max_points = 0 || max_points >= ${points})`,
+            `min_points <= ${points} && (max_points = 0 || max_points >= ${points})${tenantClause(db)}`,
             { sort: '-min_points' }
         );
         return record;
@@ -143,7 +163,7 @@ export async function getTierByPoints(points: number, db: PocketBase = pb): Prom
 export async function getLoyaltyAccount(customerId: string, db: PocketBase = pb): Promise<LoyaltyAccount | null> {
     try {
         const record = await db.collection('loyalty_accounts').getFirstListItem<LoyaltyAccount>(
-            `customer="${customerId}"`,
+            `customer="${sanitizeFilter(customerId)}"${tenantClause(db)}`,
             {
                 expand: 'tier,customer'
             }
@@ -162,6 +182,7 @@ export async function createLoyaltyAccount(customerId: string, db: PocketBase = 
 
     try {
         const record = await db.collection('loyalty_accounts').create({
+            account_email: dbTenant(db),
             customer: customerId,
             tier: bronzeTier?.id,
             total_points_earned: signupBonus,
@@ -254,6 +275,7 @@ async function recordTransaction(
 ): Promise<LoyaltyTransaction | null> {
     try {
         const record = await db.collection('loyalty_transactions').create({
+            account_email: dbTenant(db),
             account: accountId,
             type,
             points,
@@ -448,7 +470,7 @@ export async function getTransactionHistory(
             options.offset ? (options.offset / (options.limit || 10)) + 1 : 1, // page
             options.limit || 10,
             {
-                filter: `account="${account.id}"`,
+                filter: `account="${sanitizeFilter(account.id)}"${tenantClause()}`,
                 sort: '-created'
             }
         );
@@ -476,8 +498,12 @@ export async function getLoyaltyStats(): Promise<{
         // just fetch list with fields only (lightweight-ish).
         // For MVP, just counts.
 
-        const totalMembersResult = await pb.collection('loyalty_accounts').getList(1, 1);
-        const activeMembersResult = await pb.collection('loyalty_accounts').getList(1, 1, { filter: 'is_active=true' });
+        const totalMembersResult = await pb.collection('loyalty_accounts').getList(1, 1, {
+            filter: `id != ""${tenantClause()}`,
+        });
+        const activeMembersResult = await pb.collection('loyalty_accounts').getList(1, 1, {
+            filter: `is_active=true${tenantClause()}`,
+        });
 
         // Sums are hard. Let's assume 0 for now or implement aggressive fetching if needed.
         // Or write a small backend hook in PB (later).
@@ -503,7 +529,7 @@ export async function getLoyaltyStats(): Promise<{
 export async function getTopMembers(limit: number = 10): Promise<LoyaltyAccount[]> {
     try {
         const records = await pb.collection('loyalty_accounts').getList<LoyaltyAccount>(1, limit, {
-            filter: 'is_active=true',
+            filter: `is_active=true${tenantClause()}`,
             sort: '-total_points_earned',
             expand: 'tier,customer'
         });

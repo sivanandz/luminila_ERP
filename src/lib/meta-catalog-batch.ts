@@ -103,6 +103,7 @@ export function buildMetaBatchRequests(
         cost_price?: number;
         channel_prices?: Record<string, number>;
         stock_quantity?: number;
+        total_stock?: number;
         image_url?: string;
         is_active?: boolean;
     }>,
@@ -120,7 +121,10 @@ export function buildMetaBatchRequests(
     phone: string = '917092122334',
     action: 'CREATE' | 'UPDATE' | 'DELETE' = 'UPDATE',
     brandName: string = 'Niththigal Jewellery',
-    channels: SalesChannelDefinition[] = DEFAULT_SALES_CHANNELS
+    channels: SalesChannelDefinition[] = DEFAULT_SALES_CHANNELS,
+    /** Tenant whose image proxy the feed links to; without it every image fell
+     * back to the generic placeholder (SF-19). */
+    tenantEmail: string = ''
 ): MetaBatchRequest[] {
     const variantsByProduct = new Map<string, typeof variants>();
     for (const v of variants) {
@@ -147,7 +151,7 @@ export function buildMetaBatchRequests(
         const cleanDesc = (p.description || p.name || 'Fine Jewelry').replace(/[\r\n]+/g, ' ').slice(0, 5000);
         const imageLink = (p.image_url && p.image_url.startsWith('http'))
             ? p.image_url
-            : `${origin}/api/catalog/image?id=${p.id}`;
+            : `${origin}/api/catalog/image?id=${p.id}&account_email=${encodeURIComponent(tenantEmail)}`;
 
         if (action === 'DELETE' || p.is_active === false) {
             // Mark out of stock or delete
@@ -193,7 +197,7 @@ export function buildMetaBatchRequests(
 
         if (pVariants.length === 0) {
             const sku = p.sku || `PROD-${p.id}`;
-            const stock = Number(p.stock_quantity) || 0;
+            const stock = Number(p.total_stock ?? p.stock_quantity) || 0;
             const chatLink = `https://wa.me/${phone}?text=${encodeURIComponent(`Hello, I want to order ${p.name} (SKU: ${sku})`)}`;
 
             requests.push({

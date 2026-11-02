@@ -12,8 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { createShipment } from "@/lib/shipments";
-import { getDispatchableOrders, markSalesOrderShipped } from "@/lib/orders";
+import { createShipmentForOrder } from "@/lib/shipments";
+import { getDispatchableOrders } from "@/lib/orders";
+import { getCurrentTenantEmail, pb } from "@/lib/pocketbase";
 import { dispatchOrderMilestoneWhatsApp } from "@/lib/order-milestones";
 import { CourierCarrier, fetchStCourierLiveTracking } from "@/lib/logistics-engine";
 import { MobileScanner } from "@/lib/mobile-scanner";
@@ -270,24 +271,18 @@ export function BarcodeScanDispatchModal({
                 notes: "Dispatched via Barcode Scan Station",
             });
 
-            // 2. Update order status to 'shipped' in PocketBase
-            try {
-                await markSalesOrderShipped(selectedOrder.id);
-            } catch (updateErr) {
-                console.warn("Could not update sales_orders status directly:", updateErr);
-            }
-
-            // 3. Register shipment in shipments collection if exists
-            try {
-                await createShipment({
-                    orderId: selectedOrder.id,
-                    carrier,
-                    awbNumber: cleanAwb,
-                    trackingUrl,
-                    weightGrams: 100,
-                });
-            } catch {
-                // shipments collection optional
+            // 2. Register the shipment and move the order to shipped through
+            // the canonical path, which enforces the paid/COD and status guards
+            // instead of writing `shipped` from the UI (ORD-08).
+            const shipment = await createShipmentForOrder(pb, getCurrentTenantEmail(), {
+                orderId: selectedOrder.id,
+                carrier,
+                awbNumber: cleanAwb,
+                trackingUrl,
+                weightGrams: 100,
+            });
+            if (!shipment.success) {
+                throw new Error(shipment.error || "Could not create the shipment.");
             }
 
             playSuccessTone();

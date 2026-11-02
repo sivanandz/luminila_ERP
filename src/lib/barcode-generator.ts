@@ -91,7 +91,7 @@ export function generateDumbbellLabelHTML(product: {
                 justify-content: center;
                 overflow: hidden;
             ">
-                <img src="${codeUrl}" alt="${product.sku}" style="
+                <img src="${codeUrl}" alt="${escapeHtml(product.sku)}" style="
                     max-width: ${symbology === '1D_CODE128_POINTER' ? '18mm' : '9mm'};
                     max-height: 9mm;
                     object-fit: contain;
@@ -267,10 +267,10 @@ export function generateSmallLabelHTML(product: {
             page-break-inside: avoid;
         ">
             <div style="font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                ${product.name}
+                ${escapeHtml(product.name)}
             </div>
             <img src="${barcodeUrl}" alt="" style="width: 34mm; height: 10mm; margin: 1mm 0;" />
-            <div style="font-size: 7px; font-family: monospace;">${product.sku}</div>
+            <div style="font-size: 7px; font-family: monospace;">${escapeHtml(product.sku)}</div>
             <div style="font-size: 10px; font-weight: bold;">₹${formattedPrice}</div>
         </div>
     `;

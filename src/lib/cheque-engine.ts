@@ -231,7 +231,9 @@ export function transitionChequeStatus(
         }
     }
     // 3. Bounced
-    else if (newStatus === 'bounced') {
+    // Re-marking an already bounced cheque must not re-apply the receivable
+    // reinstatement or the penalty (FIN-16).
+    else if (newStatus === 'bounced' && fromStatus !== 'bounced') {
         const penalty = Math.max(0, Number(options.bouncePenaltyCharge) || 0);
         bouncePenaltyApplied = penalty;
 

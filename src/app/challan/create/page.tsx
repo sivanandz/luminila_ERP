@@ -25,6 +25,7 @@ import {
     CHALLAN_TYPE_LABELS
 } from "@/lib/challan";
 import { getStoreSettings, type StoreSettings } from "@/lib/invoice";
+import { calculateGST } from "@/lib/gst";
 import { searchCustomers, type Customer } from "@/lib/customers";
 import {
     resolveBarcodeProduct,
@@ -150,9 +151,11 @@ export default function CreateChallanPage() {
     const handleAddItem = (product: ProductSearchResult, variant: ProductVariantOption) => {
         const price = product.base_price + (variant.price_adjustment || 0);
         const taxRate = 3; // Default GST for jewelry
-        const taxableValue = price;
-        const cgstAmount = (taxableValue * (taxRate / 2)) / 100;
-        const sgstAmount = (taxableValue * (taxRate / 2)) / 100;
+        const sellerState = storeSettings?.store_state_code || '';
+        // Consignee state decides CGST+SGST vs IGST; the old code always wrote
+        // intra-state halves even on an inter-state challan (ORD-22).
+        const buyerState = selectedConsignee?.state_code || sellerState;
+        const gst = calculateGST(price, sellerState, buyerState, taxRate);
 
         const newItem: Omit<ChallanItem, 'id' | 'challan_id'> = {
             sr_no: items.length + 1,
@@ -163,15 +166,15 @@ export default function CreateChallanPage() {
             quantity: 1,
             unit: 'PCS',
             unit_price: price,
-            taxable_value: taxableValue,
+            taxable_value: gst.taxableAmount,
             gst_rate: taxRate,
-            cgst_rate: taxRate / 2,
-            cgst_amount: cgstAmount,
-            sgst_rate: taxRate / 2,
-            sgst_amount: sgstAmount,
-            igst_rate: 0,
-            igst_amount: 0,
-            total: taxableValue + cgstAmount + sgstAmount
+            cgst_rate: gst.cgstRate,
+            cgst_amount: gst.cgstAmount,
+            sgst_rate: gst.sgstRate,
+            sgst_amount: gst.sgstAmount,
+            igst_rate: gst.igstRate,
+            igst_amount: gst.igstAmount,
+            total: gst.grandTotal
         };
 
         setItems([...items, newItem]);

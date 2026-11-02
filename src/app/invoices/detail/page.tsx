@@ -59,6 +59,7 @@ import {
 import { exportToJSON } from "@/lib/reports";
 import { formatINR, generateEWayBillJSON, type EWayBillDetails } from "@/lib/gst";
 import { escapeHtml } from "@/lib/utils";
+import { getTenantStorageKey } from "@/lib/pocketbase";
 import { useAuth } from "@/contexts/AuthContext";
 import {
     InvoiceTemplateRenderer,
@@ -110,7 +111,9 @@ function InvoiceDetailContent() {
                     ? data.balance_due
                     : Math.max(0, (data.grand_total || data.total || 0) - (data.paid_amount || 0));
                 setPaymentAmount(balance > 0 ? balance.toString() : "0");
-                setSupplierGstin(settings?.store_gstin || "29AAACN1234F1Z8");
+                // Never invent a GSTIN: an unconfigured store must show empty,
+                // not a fake number that could be filed (POS-15).
+                setSupplierGstin(settings?.store_gstin || "");
             }
         } catch (error) {
             console.error("Error loading invoice:", error);
@@ -233,7 +236,7 @@ function InvoiceDetailContent() {
     // localStorage; the QR dialog renders a live scannable code from it.
     const handleGenerateQR = () => {
         if (!invoice) return;
-        setUpiId(window.localStorage.getItem("merchant_upi_id") || "");
+        setUpiId(window.localStorage.getItem(getTenantStorageKey("merchant_upi_id")) || "");
         setShowQRPopup(true);
     };
 
@@ -775,7 +778,7 @@ function InvoiceDetailContent() {
                                 value={upiId}
                                 onChange={(e) => {
                                     setUpiId(e.target.value);
-                                    window.localStorage.setItem("merchant_upi_id", e.target.value);
+                                    window.localStorage.setItem(getTenantStorageKey("merchant_upi_id"), e.target.value);
                                 }}
                                 placeholder="e.g. yourstore@okicici"
                                 className="h-8 text-xs font-mono"

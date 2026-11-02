@@ -133,8 +133,14 @@ export async function getCustomer(id: string): Promise<Customer | null> {
 
 export async function createCustomer(customer: Omit<Customer, 'id' | 'loyalty_points' | 'total_spent' | 'total_orders' | 'created' | 'updated'>): Promise<Customer> {
     try {
+        // Store one canonical phone shape so lookups by 10-digit suffix and
+        // exact matches agree (CRM-06).
+        const rawPhone = String((customer as { phone?: string }).phone || '');
+        const digits = rawPhone.replace(/\D/g, '');
+        const phone = digits.length >= 10 ? `+91${digits.slice(-10)}` : rawPhone;
         const record = await pb.collection('customers').create({
             ...customer,
+            phone,
             account_email: accountScopeEmail(),
         });
         return record as unknown as Customer;

@@ -102,6 +102,7 @@ function CustomerDetailContent() {
         customer_type: "retail" as CustomerType,
         gstin: "",
         address: "",
+        shipping_address: "",
         ring_size: "",
         bangle_size: "",
         preferred_metal: "Rose Gold",
@@ -134,6 +135,7 @@ function CustomerDetailContent() {
                 customer_type: data.customer_type,
                 gstin: data.gstin || "",
                 address: data.billing_address || "",
+                shipping_address: data.shipping_address || "",
                 ring_size: (data as any).ring_size || "",
                 bangle_size: (data as any).bangle_size || "",
                 preferred_metal: (data as any).preferred_metal || "Rose Gold",
@@ -167,7 +169,9 @@ function CustomerDetailContent() {
                 customer_type: editForm.customer_type,
                 gstin: editForm.gstin || undefined,
                 billing_address: editForm.address || undefined,
-                shipping_address: editForm.address || undefined,
+                // Keep the shipping address separate; the old code overwrote it
+                // with the billing address on every save (CRM-21).
+                shipping_address: (editForm.shipping_address || editForm.address) || undefined,
                 date_of_birth: editForm.date_of_birth || undefined,
                 anniversary: editForm.anniversary || undefined,
             });
@@ -634,6 +638,34 @@ function CustomerDetailContent() {
                                 onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
                                 className="h-9 text-xs"
                             />
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <Label className="text-xs font-semibold">Shipping Address</Label>
+                            <Input
+                                value={editForm.shipping_address}
+                                onChange={(e) => setEditForm({ ...editForm, shipping_address: e.target.value })}
+                                className="h-9 text-xs"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                                <Label className="text-xs font-semibold">GSTIN</Label>
+                                <Input
+                                    value={editForm.gstin}
+                                    onChange={(e) => setEditForm({ ...editForm, gstin: e.target.value.toUpperCase() })}
+                                    className="h-9 text-xs"
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs font-semibold">Bangle Size</Label>
+                                <Input
+                                    value={editForm.bangle_size}
+                                    onChange={(e) => setEditForm({ ...editForm, bangle_size: e.target.value })}
+                                    className="h-9 text-xs"
+                                />
+                            </div>
                         </div>
 
                         <div className="flex justify-end gap-2 pt-2 border-t border-border">

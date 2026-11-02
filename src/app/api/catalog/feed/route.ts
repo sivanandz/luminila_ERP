@@ -79,7 +79,10 @@ export async function GET(req: NextRequest) {
 
         // 2. Fetch variants with relational active guard + tenant scope
         const variantFilter = accountEmail
-            ? `product.is_active = true && account_email = "${safeEmail}"`
+            // Legacy variant rows predate account_email and would otherwise be
+            // excluded, making every parent product look like a standalone
+            // product with zero stock (SF-20).
+            ? `product.is_active = true && (account_email = "${safeEmail}" || account_email = "")`
             : `product.is_active = true`;
         const rawVariants = await client.collection('product_variants').getFullList({
             filter: variantFilter
@@ -146,7 +149,10 @@ export async function GET(req: NextRequest) {
             if (pVariants.length === 0) {
                 // Standalone product
                 const sku = p.sku || `PROD-${p.id}`;
-                const stock = Number(p.stock_quantity) || 0;
+                const stock = Number(
+                    (p as unknown as { total_stock?: number; stock_quantity?: number }).total_stock
+                    ?? (p as unknown as { stock_quantity?: number }).stock_quantity
+                ) || 0;
                 const availability = stock > 0 ? 'in stock' : 'out of stock';
                 const priceFormatted = `${channelPrice.toFixed(2)} INR`;
                 const chatLink = `https://wa.me/${phone}?text=${encodeURIComponent(`Hello, I want to order ${p.name} (SKU: ${sku})`)}`;

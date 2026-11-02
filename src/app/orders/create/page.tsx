@@ -23,6 +23,8 @@ import { formatPrice } from "@/lib/utils";
 import { createOrder, OrderType, OrderStatus, OrderItemInput } from "@/lib/orders";
 import { searchCustomers, Customer } from "@/lib/customers";
 import { resolveBarcodeProduct, searchProductsForDocuments } from "@/lib/products";
+import { resolveVariantForProduct } from "@/lib/channel-orders";
+import { pb } from "@/lib/pocketbase";
 import { type Product, type ProductVariant } from "@/lib/products";
 
 // Product search dropdown result: Product/ProductVariant records narrowed
@@ -82,16 +84,21 @@ export default function CreateOrderPage() {
         let disc = 0;
 
         items.forEach(item => {
-            sub += item.quantity * item.unit_price;
-            tax += (item.quantity * item.unit_price) * ((item.tax_rate || 0) / 100);
-            disc += item.discount_amount || 0;
+            const lineGross = item.quantity * item.unit_price;
+            const lineDiscount = item.discount_amount || 0;
+            sub += lineGross;
+            // GST applies to the post-discount value, matching
+            // generateInvoiceFromOrder; charging it on the pre-discount gross
+            // overstated the order total (ORD-15).
+            tax += Math.max(0, lineGross - lineDiscount) * ((item.tax_rate || 0) / 100);
+            disc += lineDiscount;
         });
 
         // eslint-disable-next-line react-hooks/set-state-in-effect -- totals are intentionally mirrored into state from items for save and display; deriving them during render would be a state-flow refactor, not a lint fix
-        setSubtotal(sub);
-        setTaxTotal(tax);
-        setDiscountTotal(disc);
-        setTotal(sub + tax - disc);
+        setSubtotal(Math.round(sub * 100) / 100);
+        setTaxTotal(Math.round(tax * 100) / 100);
+        setDiscountTotal(Math.round(disc * 100) / 100);
+        setTotal(Math.round((sub + tax - disc) * 100) / 100);
     }, [items]);
 
     // Search Customers
@@ -149,7 +156,7 @@ export default function CreateOrderPage() {
         setShowResults(false);
     };
 
-    const handleAddItem = (product: ProductSearchResult, variant: ProductVariantOption) => {
+    const handleAddItem = async (product: ProductSearchResult, variant: ProductVariantOption) => {
         const price = product.base_price + (variant.price_adjustment || 0);
         const newItem: OrderItemInput = {
             product_id: product.id,
@@ -167,9 +174,20 @@ export default function CreateOrderPage() {
         setShowProductResults(false);
     };
 
-    const handleScannedItem = (payload: ScannedItemPayload) => {
+    const handleScannedItem = async (payload: ScannedItemPayload) => {
         if (!payload.product) {
             toast.error(`Barcode "${payload.barcode}" not found in catalog`);
+            return;
+        }
+
+        // sales_order_items.variant is a required relation. Scanning a product
+        // without an explicit variant used to send `variant_id: 'default'`,
+        // which made the item create fail after the order header was already
+        // written (ORD-09). Resolve the real variant first.
+        const variantId = payload.variant?.id
+            || await resolveVariantForProduct(pb, payload.product.id);
+        if (!variantId) {
+            toast.error(`"${payload.product.name}" has no variant and cannot be added to an order.`);
             return;
         }
 
@@ -177,16 +195,13 @@ export default function CreateOrderPage() {
             id: payload.product.id,
             name: payload.product.name,
             base_price: payload.product.base_price,
-            variants: payload.variant ? [{
-                id: payload.variant.id,
+            variants: [{
+                id: variantId,
                 sku_suffix: '',
-                size: payload.variant.size,
-                color: payload.variant.color,
-                material: payload.variant.material,
-                price_adjustment: payload.variant.price_adjustment || 0
-            }] : [{
-                id: 'default',
-                price_adjustment: 0
+                size: payload.variant?.size,
+                color: payload.variant?.color,
+                material: payload.variant?.material,
+                price_adjustment: payload.variant?.price_adjustment || 0
             }]
         };
 

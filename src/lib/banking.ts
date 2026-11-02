@@ -3,7 +3,7 @@
  * Handles bank accounts and transactions using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { enqueueTask } from './concurrency';
 
 // ==========================================
@@ -20,6 +20,7 @@ export interface BankAccount {
     opening_balance: number;
     current_balance: number;
     is_active: boolean;
+    account_email?: string;
     created: string;
     updated: string;
 }
@@ -66,13 +67,37 @@ export type NewBankTransaction = {
 };
 
 // ==========================================
+// TENANT SCOPING (FIN-01)
+// ==========================================
+
+/** `account_email="…"` filter for the signed-in tenant; always non-empty. */
+function tenantFilter(): string {
+    return `account_email="${sanitizeFilter(accountScopeEmail())}"`;
+}
+
+function joinFilter(...parts: string[]): string {
+    return parts.filter(Boolean).join(' && ');
+}
+
+/**
+ * Ownership check for records read by id (getOne/update cannot take a filter).
+ * Legacy rows without a stamp are treated as the single account's, matching
+ * the collection rules.
+ */
+function recordBelongsToScope(record: { account_email?: string } | null | undefined): boolean {
+    if (!record) return false;
+    const recordTenant = String(record.account_email || '').trim().toLowerCase();
+    return !recordTenant || recordTenant === accountScopeEmail();
+}
+
+// ==========================================
 // ACCOUNTS
 // ==========================================
 
 export async function getBankAccounts(): Promise<BankAccount[]> {
     try {
         const records = await pb.collection('bank_accounts').getFullList<BankAccount>({
-            filter: 'is_active=true',
+            filter: joinFilter('is_active=true', tenantFilter()),
             sort: 'account_name'
         });
         return records;
@@ -85,6 +110,9 @@ export async function getBankAccounts(): Promise<BankAccount[]> {
 export async function getBankAccount(id: string): Promise<BankAccount | null> {
     try {
         const record = await pb.collection('bank_accounts').getOne<BankAccount>(id);
+        // getOne has no filter, so ownership is verified in memory before the
+        // account can be read, debited or credited (FIN-01).
+        if (!recordBelongsToScope(record)) return null;
         return record;
     } catch (error) {
         console.error('Error fetching bank account:', error);
@@ -98,6 +126,7 @@ export async function createBankAccount(account: NewBankAccount): Promise<BankAc
         const current = account.current_balance !== undefined ? Number(account.current_balance) || 0 : opening;
         const payload = {
             ...account,
+            account_email: accountScopeEmail(),
             opening_balance: opening,
             current_balance: current,
             is_active: account.is_active ?? true,
@@ -111,7 +140,13 @@ export async function createBankAccount(account: NewBankAccount): Promise<BankAc
 
 export async function updateBankAccount(id: string, updates: Partial<BankAccount>): Promise<BankAccount> {
     try {
+        // Refuse updates to an account owned by another tenant (FIN-01).
+        const existing = await getBankAccount(id);
+        if (!existing) {
+            throw new Error('Bank account not found');
+        }
         const payload: Record<string, unknown> = { ...updates };
+        delete payload.account_email;
         if (updates.opening_balance !== undefined) {
             payload.opening_balance = Number(updates.opening_balance) || 0;
         }
@@ -128,6 +163,10 @@ export async function updateBankAccount(id: string, updates: Partial<BankAccount
 export async function deleteBankAccount(id: string): Promise<void> {
     // Soft delete
     try {
+        const existing = await getBankAccount(id);
+        if (!existing) {
+            throw new Error('Bank account not found');
+        }
         await pb.collection('bank_accounts').update(id, { is_active: false });
     } catch (error) {
         throw error;
@@ -143,7 +182,10 @@ export async function getBankTransactions(
     limit: number = 50
 ): Promise<BankTransaction[]> {
     try {
-        const filter = accountId ? `account="${accountId}"` : '';
+        const filter = joinFilter(
+            tenantFilter(),
+            accountId ? `account="${sanitizeFilter(accountId)}"` : ''
+        );
         const records = await pb.collection('bank_transactions').getList<BankTransaction>(1, limit, {
             filter,
             sort: '-transaction_date,-created',
@@ -181,7 +223,10 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
         let destCredited = false;
         let sourceUpdated = false;
         try {
-            record = await pb.collection('bank_transactions').create<BankTransaction>(transaction);
+            record = await pb.collection('bank_transactions').create<BankTransaction>({
+                ...transaction,
+                account_email: accountScopeEmail(),
+            });
 
             const balanceUpdate: Record<string, number> = {};
             if (transaction.type === 'deposit') {
@@ -220,7 +265,8 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
                     description: `Transfer from ${account.account_name}${transaction.description ? `: ${transaction.description}` : ''}`,
                     reference_number: transaction.reference_number,
                     related_entity_type: 'bank_account',
-                    related_entity_id: transaction.account
+                    related_entity_id: transaction.account,
+                    account_email: accountScopeEmail(),
                 });
             }
 

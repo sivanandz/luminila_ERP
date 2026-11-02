@@ -4,7 +4,7 @@
  * and automatically drains/replays when connectivity is restored.
  */
 
-import { pb } from './pocketbase';
+import { getCurrentTenantEmail, getTenantStorageKey, pb } from './pocketbase';
 
 export interface PendingMutation {
     id: string;
@@ -17,7 +17,12 @@ export interface PendingMutation {
     error?: string;
 }
 
-const STORAGE_KEY = 'luminila_offline_mutations';
+const STORAGE_KEY_BASE = 'luminila_offline_mutations';
+
+/** Tenant-scoped key: one store's pending mutations must never replay into another (POS-10). */
+function storageKey(): string {
+    return getTenantStorageKey(STORAGE_KEY_BASE);
+}
 
 export class OfflineQueue {
     private static isFlushing = false;
@@ -28,7 +33,7 @@ export class OfflineQueue {
     static getQueue(): PendingMutation[] {
         if (typeof window === 'undefined') return [];
         try {
-            const raw = localStorage.getItem(STORAGE_KEY);
+            const raw = localStorage.getItem(storageKey());
             return raw ? JSON.parse(raw) : [];
         } catch (e) {
             console.error('Failed to parse offline queue:', e);
@@ -41,7 +46,7 @@ export class OfflineQueue {
      */
     private static saveQueue(queue: PendingMutation[]) {
         if (typeof window === 'undefined') return;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+        localStorage.setItem(storageKey(), JSON.stringify(queue));
         window.dispatchEvent(new CustomEvent('offline-queue:changed', { detail: { count: queue.length } }));
     }
 
@@ -61,7 +66,11 @@ export class OfflineQueue {
             collection,
             action,
             recordId,
-            data,
+            // Stamp the tenant at enqueue time: replaying after a different
+            // account signs in must not create rows under that account.
+            data: action === 'create'
+                ? { account_email: getCurrentTenantEmail(), ...(data || {}) }
+                : data,
             retries: 0,
         };
 
@@ -108,6 +117,9 @@ export class OfflineQueue {
                 console.warn(`Failed to process mutation ${mutation.id}:`, err);
                 mutation.retries++;
                 mutation.error = err instanceof Error ? err.message || 'Replay failed' : String(err);
+                // Persist the retry counter before any later `remove()` re-reads
+                // storage; otherwise the increment is lost (POS-10).
+                this.saveQueue(queue);
                 failed++;
                 // If network is completely unreachable, stop draining early
                 if (

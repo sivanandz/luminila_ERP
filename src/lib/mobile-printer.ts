@@ -4,6 +4,8 @@
  * and ESC/POS thermal receipt formatting for 58mm / 80mm POS printers.
  */
 
+import { escapeHtml } from './utils';
+
 export interface ReceiptItem {
     name: string;
     quantity: number;
@@ -104,18 +106,21 @@ export class MobilePrinter {
      * Format thermal receipt HTML for 80mm POS printers
      */
     static generate80mmReceiptHtml(data: ReceiptData): string {
+        // Receipt fields include free-text (store/customer/item names, SKUs,
+        // footer) and are written into an iframe document; escape every one of
+        // them or a stored name becomes stored XSS (POS-14).
         return `
-            <div class="text-center font-bold" style="font-size: 15px;">${data.storeName}</div>
-            ${data.storeAddress ? `<div class="text-center" style="font-size: 10px;">${data.storeAddress}</div>` : ''}
-            ${data.storePhone ? `<div class="text-center" style="font-size: 10px;">Tel: ${data.storePhone}</div>` : ''}
-            ${data.storeGstin ? `<div class="text-center font-bold" style="font-size: 10px;">GSTIN: ${data.storeGstin}</div>` : ''}
+            <div class="text-center font-bold" style="font-size: 15px;">${escapeHtml(data.storeName)}</div>
+            ${data.storeAddress ? `<div class="text-center" style="font-size: 10px;">${escapeHtml(data.storeAddress)}</div>` : ''}
+            ${data.storePhone ? `<div class="text-center" style="font-size: 10px;">Tel: ${escapeHtml(data.storePhone)}</div>` : ''}
+            ${data.storeGstin ? `<div class="text-center font-bold" style="font-size: 10px;">GSTIN: ${escapeHtml(data.storeGstin)}</div>` : ''}
             
             <div class="border-b"></div>
             
-            <div class="flex"><span>Invoice:</span><span class="font-bold">${data.invoiceNo}</span></div>
-            <div class="flex"><span>Date:</span><span>${data.date}</span></div>
-            ${data.cashierName ? `<div class="flex"><span>Cashier:</span><span>${data.cashierName}</span></div>` : ''}
-            ${data.customerName ? `<div class="flex"><span>Customer:</span><span>${data.customerName}</span></div>` : ''}
+            <div class="flex"><span>Invoice:</span><span class="font-bold">${escapeHtml(data.invoiceNo)}</span></div>
+            <div class="flex"><span>Date:</span><span>${escapeHtml(data.date)}</span></div>
+            ${data.cashierName ? `<div class="flex"><span>Cashier:</span><span>${escapeHtml(data.cashierName)}</span></div>` : ''}
+            ${data.customerName ? `<div class="flex"><span>Customer:</span><span>${escapeHtml(data.customerName)}</span></div>` : ''}
 
             <div class="border-b"></div>
 
@@ -131,9 +136,9 @@ export class MobilePrinter {
                 .map(
                     (it) => `
                 <div class="my-1">
-                    <div class="font-bold">${it.name}</div>
+                    <div class="font-bold">${escapeHtml(it.name)}</div>
                     <div class="flex" style="font-size: 11px; opacity: 0.9;">
-                        <span>${it.sku || ''}</span>
+                        <span>${escapeHtml(it.sku || '')}</span>
                         <span>${it.quantity} x ₹${it.unitPrice.toFixed(2)}</span>
                         <span class="text-right">₹${it.total.toFixed(2)}</span>
                     </div>
@@ -155,10 +160,10 @@ export class MobilePrinter {
                 <span>GRAND TOTAL:</span>
                 <span>₹${data.grandTotal.toFixed(2)}</span>
             </div>
-            <div class="flex font-bold"><span>Payment:</span><span>${data.paymentMethod.toUpperCase()}</span></div>
+            <div class="flex font-bold"><span>Payment:</span><span>${escapeHtml(data.paymentMethod.toUpperCase())}</span></div>
 
             <div class="border-t"></div>
-            <div class="text-center font-bold" style="margin-top: 8px;">${data.footerMessage || 'Thank you for shopping with Luminila!'}</div>
+            <div class="text-center font-bold" style="margin-top: 8px;">${escapeHtml(data.footerMessage || 'Thank you for shopping with Luminila!')}</div>
             <div class="text-center" style="font-size: 9px; opacity: 0.8; margin-top: 4px;">Fashion Jewelry ERP Powered by Luminila</div>
         `;
     }

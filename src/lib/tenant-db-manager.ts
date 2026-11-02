@@ -10,7 +10,7 @@ import { spawn, execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
-import { readRegistrySecret } from './tenant-secrets';
+import { readRegistrySecret, encryptSecret, parseRegistryKey } from './tenant-secrets';
 import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from './deployment-mode';
 
 export interface TenantDbRecord {
@@ -352,6 +352,15 @@ export async function provisionTenantDatabase(params: {
     const registry = readTenantRegistry();
     const now = new Date().toISOString();
 
+    // Never persist the tenant superuser password in clear text when a registry
+    // key is configured; legacy plaintext keeps working via readRegistrySecret
+    // (A-07).
+    const registryKey = parseRegistryKey(process.env.TENANT_REGISTRY_KEY);
+    const storedPassword = registryKey ? encryptSecret(params.password, registryKey) : params.password;
+    if (!registryKey) {
+        console.warn('[TenantDB] TENANT_REGISTRY_KEY is not set; storing the tenant admin password in plaintext (legacy).');
+    }
+
     // Legacy primary admin uses primary pb_data on 8090/8091
     if (tenantSlug === 'primary') {
         const primaryPort = await resolvePrimaryPocketBasePort();
@@ -365,7 +374,7 @@ export async function provisionTenantDatabase(params: {
             port: primaryPort,
             dataDir: PB_DEFAULT_DATA_DIR,
             storeName: params.storeName,
-            adminPassword: params.password,
+            adminPassword: storedPassword,
             createdAt: registry.tenants[cleanEmail]?.createdAt || now,
             updatedAt: now,
         };

@@ -43,6 +43,8 @@ interface ReturnItem {
     max_qty: number;
     quantity: number;
     unit_price: number;
+    /** Original line's tax-inclusive value per unit (taxable + all tax components). */
+    tax_inclusive_unit: number;
 }
 
 const reasons: { value: ReturnReason; label: string }[] = [
@@ -95,6 +97,14 @@ function CreateReturnContent() {
                         max_qty: item.quantity,
                         quantity: 0,
                         unit_price: item.unit_price,
+                        // POS lines already include GST; adding 3% again
+                        // over-estimated the refund (POS-17).
+                        tax_inclusive_unit: (
+                            Number(item.taxable_amount || 0)
+                            + Number(item.cgst_amount || 0)
+                            + Number(item.sgst_amount || 0)
+                            + Number(item.igst_amount || 0)
+                        ) / Math.max(1, Number(item.quantity) || 1),
                     }))
                 );
             }
@@ -124,7 +134,7 @@ function CreateReturnContent() {
 
     const selectedItems = returnItems.filter((item) => item.quantity > 0);
     const totalValue = selectedItems.reduce(
-        (sum, item) => sum + item.unit_price * item.quantity * 1.03, // Include 3% GST estimate
+        (sum, item) => sum + item.tax_inclusive_unit * item.quantity,
         0
     );
 

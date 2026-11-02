@@ -3,7 +3,7 @@
  * Uses perceptual hashing for reverse image search with PocketBase
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 
 interface MatchResult {
     product: {
@@ -96,9 +96,13 @@ export async function findMatchingProducts(imageDataUrl: string, threshold = 0.6
         const inputHash = await generateImageHash(imageDataUrl);
         console.log('[ImageMatcher] Input hash:', inputHash);
 
-        // Fetch all products with images
+        // Fetch active products that actually have a photo, scoped to this tenant.
+        // `image_data` (base64 gallery/camera captures) is as valid a source as
+        // `image_url`; matching only image_url silently skipped those (INV-14).
+        const tenant = accountScopeEmail();
+        const tenantClause = tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
         const products = await pb.collection('products').getFullList({
-            filter: 'image_url != ""',
+            filter: `is_active = true && (image_url != "" || image_data != "")${tenantClause}`,
         });
 
         const results: MatchResult[] = [];

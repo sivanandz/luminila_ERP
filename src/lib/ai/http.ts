@@ -250,28 +250,56 @@ export async function readJsonBody<T>(req: Request): Promise<{ ok: true; body: T
     }
 }
 
-const conversationLocks = new Map<string, number>();
+interface ConversationLock {
+    expiresAt: number;
+    token: string;
+}
+
+const conversationLocks = new Map<string, ConversationLock>();
+let conversationLockCounter = 0;
+
+/** Drop locks whose TTL elapsed so the map cannot grow without bound. */
+function pruneExpiredConversationLocks(now: number): void {
+    for (const [conversationId, lock] of conversationLocks) {
+        if (now >= lock.expiresAt) conversationLocks.delete(conversationId);
+    }
+}
 
 /**
  * One writer per conversation. A second concurrent turn gets a 409 instead of
- * interleaving event sequences; stale locks expire after 10 minutes.
+ * interleaving event sequences; stale locks expire after 10 minutes and are
+ * pruned on every acquire (AI-SYS-24).
  */
 export function acquireConversationLock(conversationId: string): boolean {
-    const now = Date.now();
-    const existing = conversationLocks.get(conversationId);
-    if (existing !== undefined && now - existing < CONVERSATION_LOCK_TTL_MS) return false;
-    conversationLocks.set(conversationId, now);
-    return true;
+    return acquireConversationLockWithToken(conversationId) !== null;
 }
 
-export function releaseConversationLock(conversationId: string): void {
+/**
+ * Acquire the lock and return its owner token. The token lets the request that
+ * owns the lock release exactly that lock, so a late abort from an old request
+ * cannot free a newer turn's lock.
+ */
+export function acquireConversationLockWithToken(conversationId: string): string | null {
+    const now = Date.now();
+    pruneExpiredConversationLocks(now);
+    const existing = conversationLocks.get(conversationId);
+    if (existing && now < existing.expiresAt) return null;
+    const token = `lock_${++conversationLockCounter}_${now}`;
+    conversationLocks.set(conversationId, { expiresAt: now + CONVERSATION_LOCK_TTL_MS, token });
+    return token;
+}
+
+export function releaseConversationLock(conversationId: string, token?: string): void {
+    const existing = conversationLocks.get(conversationId);
+    if (!existing) return;
+    if (token && existing.token !== token) return;
     conversationLocks.delete(conversationId);
 }
 
 export function isConversationLocked(conversationId: string): boolean {
     const existing = conversationLocks.get(conversationId);
-    if (existing === undefined) return false;
-    if (Date.now() - existing >= CONVERSATION_LOCK_TTL_MS) {
+    if (!existing) return false;
+    if (Date.now() >= existing.expiresAt) {
         conversationLocks.delete(conversationId);
         return false;
     }

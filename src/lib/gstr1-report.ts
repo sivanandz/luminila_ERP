@@ -7,7 +7,7 @@
  * runs them through the real compiler.
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { getStoreSettings } from './invoice';
 import {
     compileGstr1Payload,
@@ -98,6 +98,11 @@ export interface Gstr1BuildResult {
     };
 }
 
+/** `account_email="…"` filter for the signed-in tenant (FIN-01). */
+function tenantFilter(): string {
+    return `account_email="${sanitizeFilter(accountScopeEmail())}"`;
+}
+
 /** GST filing period is MMYYYY. */
 export function toFinancialPeriod(date: Date): string {
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -136,9 +141,9 @@ async function loadItemsByParent(
     if (parentIds.length === 0) return map;
 
     for (const ids of chunk(parentIds, 40)) {
-        const filter = ids.map((id) => `${parentField}="${id}"`).join(' || ');
+        const parentFilter = ids.map((id) => `${parentField}="${sanitizeFilter(id)}"`).join(' || ');
         const rows = await pb.collection(collection).getFullList<InvoiceItemRow & CreditNoteItemRow>({
-            filter,
+            filter: `${tenantFilter()} && (${parentFilter})`,
         });
         for (const row of rows) {
             const parent = (row as InvoiceItemRow).invoice || (row as CreditNoteItemRow).credit_note || '';
@@ -173,12 +178,15 @@ export async function buildGstr1OfficialPayload(
     // A showroom database is small enough to filter in memory, which avoids
     // string-comparison surprises between "2026-10-01" and ISO timestamps.
     const allRegular = await pb.collection('invoices').getFullList<InvoiceRow>({
-        filter: 'invoice_type="regular"',
+        filter: `${tenantFilter()} && invoice_type="regular"`,
         sort: 'invoice_date',
     });
 
+    // Drafts are not filed. Cancelled invoices stay in the set so Table 13 can
+    // count them; the compiler omits them from the transaction tables (FIN-08,
+    // FIN-18).
     const periodInvoices = allRegular.filter(
-        (invoice) => invoice.status !== 'cancelled' && inRange(invoice.invoice_date, start, end)
+        (invoice) => invoice.status !== 'draft' && inRange(invoice.invoice_date, start, end)
     );
 
     const invoiceItems = await loadItemsByParent(
@@ -188,11 +196,14 @@ export async function buildGstr1OfficialPayload(
     );
 
     const allNotes = await pb.collection('credit_notes').getFullList<CreditNoteRow>({
-        filter: 'status != "cancelled" && status != "pending"',
+        filter: tenantFilter(),
         sort: 'created',
     });
 
-    const periodNotes = allNotes.filter((note) => inRange(note.created, start, end));
+    // Pending notes are not filed yet; cancelled notes stay for Table 13.
+    const periodNotes = allNotes.filter(
+        (note) => note.status !== 'draft' && note.status !== 'pending' && inRange(note.created, start, end)
+    );
 
     const noteItems = await loadItemsByParent(
         'credit_note_items',
@@ -218,7 +229,11 @@ export async function buildGstr1OfficialPayload(
             cgst_amount: invoice.cgst_amount || 0,
             sgst_amount: invoice.sgst_amount || 0,
             igst_amount: invoice.igst_amount || 0,
-            status: invoice.status === 'draft' ? ('draft' as const) : ('paid' as const),
+            status: invoice.status === 'cancelled'
+                ? ('cancelled' as const)
+                : invoice.status === 'draft'
+                    ? ('draft' as const)
+                    : ('paid' as const),
             items: ((invoiceItems.get(invoice.id) || []) as InvoiceItemRow[]).map((item) => ({
                 description: item.description,
                 hsn_code: item.hsn_code,
@@ -251,7 +266,7 @@ export async function buildGstr1OfficialPayload(
                 igst_amount: note.igst_amount || 0,
                 original_invoice_number: original?.invoice_number,
                 original_invoice_date: original?.invoice_date,
-                status: 'paid' as const,
+                status: note.status === 'cancelled' ? ('cancelled' as const) : ('paid' as const),
                 items: ((noteItems.get(note.id) || []) as CreditNoteItemRow[]).map((item) => ({
                     description: item.description,
                     hsn_code: item.hsn_code,
@@ -275,7 +290,9 @@ export async function buildGstr1OfficialPayload(
 
     const sumTurnover = (from: Date, to: Date) =>
         allRegular.reduce((sum, invoice) => {
-            if (invoice.status === 'cancelled') return sum;
+            // Drafts are not filed sales; cancelled invoices are excluded from
+            // turnover too (FIN-08).
+            if (invoice.status === 'cancelled' || invoice.status === 'draft') return sum;
             const date = parseDate(invoice.invoice_date);
             if (!date || date < from || date > to) return sum;
             return sum + (invoice.grand_total ?? invoice.total ?? 0);
@@ -296,8 +313,8 @@ export async function buildGstr1OfficialPayload(
         meta: {
             gstin,
             financialPeriod: toFinancialPeriod(end),
-            invoices: periodInvoices.length,
-            creditNotes: periodNotes.length,
+            invoices: periodInvoices.filter((invoice) => invoice.status !== 'cancelled').length,
+            creditNotes: periodNotes.filter((note) => note.status !== 'cancelled').length,
         },
     };
 }

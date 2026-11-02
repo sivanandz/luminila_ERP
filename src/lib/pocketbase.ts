@@ -6,6 +6,19 @@ import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from './deployment-mode';
 // Determine default URL
 const DEFAULT_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090';
 
+/** Last account that resolved a database; lets the URL override be scoped (A-21). */
+const TENANT_HINT_KEY = 'PB_TENANT_HINT';
+
+function tenantScopedUrlKey(): string | null {
+    if (typeof window === "undefined") return null;
+    try {
+        const hint = localStorage.getItem(TENANT_HINT_KEY);
+        return hint ? `PB_CUSTOM_URL_${hint}` : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Get active PocketBase base URL.
  *
@@ -15,9 +28,19 @@ const DEFAULT_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL
  */
 export function getPocketBaseUrl(): string {
     if (typeof window !== "undefined") {
+        // A per-account override wins over the legacy shared key; the legacy
+        // value is still read for installs upgraded before scoping (A-21).
+        const scopedKey = tenantScopedUrlKey();
+        let storedUrl: string | null = null;
+        try {
+            storedUrl = (scopedKey ? localStorage.getItem(scopedKey) : null)
+                || localStorage.getItem("PB_CUSTOM_URL");
+        } catch {
+            storedUrl = null;
+        }
         return resolvePocketBaseBaseUrl({
             envUrl: process.env.NEXT_PUBLIC_POCKETBASE_URL,
-            storedUrl: localStorage.getItem("PB_CUSTOM_URL") || undefined,
+            storedUrl: storedUrl || undefined,
             protocol: window.location.protocol,
             hostname: window.location.hostname,
             origin: window.location.origin,
@@ -250,10 +273,19 @@ export async function ensureServerAuth(preferredTenantEmail?: string): Promise<b
 export function setPocketBaseUrl(url: string): string {
     const sanitized = url.trim().replace(/\/+$/, "");
     if (typeof window !== "undefined") {
-        if (sanitized && sanitized !== DEFAULT_URL) {
-            localStorage.setItem("PB_CUSTOM_URL", sanitized);
-        } else {
-            localStorage.removeItem("PB_CUSTOM_URL");
+        // The legacy key stays in sync, but the scoped key is what a returning
+        // account prefers (A-21).
+        const scopedKey = tenantScopedUrlKey();
+        try {
+            if (sanitized && sanitized !== DEFAULT_URL) {
+                localStorage.setItem("PB_CUSTOM_URL", sanitized);
+                if (scopedKey) localStorage.setItem(scopedKey, sanitized);
+            } else {
+                localStorage.removeItem("PB_CUSTOM_URL");
+                if (scopedKey) localStorage.removeItem(scopedKey);
+            }
+        } catch {
+            // Storage unavailable (private mode): keep the in-memory URL.
         }
     }
 
@@ -373,6 +405,15 @@ export async function resolveTenantPocketBase(email?: string): Promise<string> {
 
     try {
         const cleanEmail = (email || pb.authStore.model?.email || "").trim().toLowerCase();
+        if (typeof window !== "undefined" && cleanEmail) {
+            // Remember which account resolved this URL so the stored override is
+            // scoped on the next load (A-21).
+            try {
+                localStorage.setItem(TENANT_HINT_KEY, cleanEmail);
+            } catch {
+                // ignore
+            }
+        }
         const endpoint = cleanEmail
             ? `/api/system/tenant-db?email=${encodeURIComponent(cleanEmail)}`
             : "/api/system/tenant-db";

@@ -9,6 +9,7 @@ import { Customer } from "./customers";
 import { computeRFMAnalysis, getDaysUntilMilestone } from "./crm-rfm";
 import { getHumanizedJitterDelayMs } from "./whatsapp-broadcast";
 import { isWhatsAppOptedOut } from "./whatsapp-crm";
+import { getConsentState } from "./consent-ledger";
 
 export type LifecycleFlowId =
     | "birthday_reward"
@@ -78,6 +79,27 @@ export const DEFAULT_LIFECYCLE_FLOWS: LifecycleFlowConfig[] = [
 ];
 
 let cachedFlowConfigs: LifecycleFlowConfig[] = [...DEFAULT_LIFECYCLE_FLOWS];
+// Configuration is per tenant; switching accounts must not carry the previous
+// tenant's toggles/templates into this session (CRM-19).
+let cachedFlowConfigsTenant = "";
+
+function ensureFlowTenant(): void {
+    const tenant = getCurrentTenantEmail();
+    if (tenant === cachedFlowConfigsTenant) return;
+    cachedFlowConfigsTenant = tenant;
+    cachedFlowConfigs = [...DEFAULT_LIFECYCLE_FLOWS];
+    if (typeof window !== "undefined") {
+        try {
+            const stored = localStorage.getItem(getLifecycleStorageKey());
+            if (stored) {
+                const parsed = JSON.parse(stored);
+                if (Array.isArray(parsed) && parsed.length > 0) cachedFlowConfigs = parsed;
+            }
+        } catch {
+            // ignore
+        }
+    }
+}
 
 function persistFlowConfigs(configs: LifecycleFlowConfig[]) {
     cachedFlowConfigs = [...configs];
@@ -91,6 +113,7 @@ function persistFlowConfigs(configs: LifecycleFlowConfig[]) {
 }
 
 export function getLifecycleConfigs(): LifecycleFlowConfig[] {
+    ensureFlowTenant();
     if (typeof window !== "undefined") {
         try {
             const stored = localStorage.getItem(getLifecycleStorageKey());
@@ -133,11 +156,35 @@ export interface EligibleRecipient {
 export async function getEligibleRecipientsForFlow(
     flowId: LifecycleFlowId
 ): Promise<EligibleRecipient[]> {
+    ensureFlowTenant();
     const flow = cachedFlowConfigs.find((f) => f.id === flowId);
     if (!flow) return [];
 
     const { customers } = await computeRFMAnalysis();
     const results: EligibleRecipient[] = [];
+    const tenant = getCurrentTenantEmail();
+
+    // A post-delivery review is triggered by a delivered order, not by an RFM
+    // cohort. Preload the phones with a delivery inside the flow's window so
+    // the branch below can match them without an N+1 query (CRM-13).
+    let deliveredPhones = new Set<string>();
+    if (flowId === "post_delivery_review") {
+        const since = new Date(
+            Date.now() - Math.max(1, flow.triggerDaysOffset) * 24 * 60 * 60 * 1000
+        ).toISOString();
+        const delivered = await pb
+            .collection("sales_orders")
+            .getFullList<{ customer_phone?: string }>({
+                filter: `status="delivered" && account_email="${tenant}" && updated>="${since}"`,
+                fields: "customer_phone",
+            })
+            .catch(() => []);
+        deliveredPhones = new Set(
+            delivered
+                .map((order) => String(order.customer_phone || "").replace(/\D/g, "").slice(-10))
+                .filter(Boolean)
+        );
+    }
 
     for (const c of customers) {
         if (!c.phone || (c.opt_in_marketing === false)) continue;
@@ -166,9 +213,22 @@ export async function getEligibleRecipientsForFlow(
                 daysDelta = c.recencyDays;
                 reason = `Last purchase was ${c.recencyDays} days ago`;
             }
+        } else if (flowId === "post_delivery_review") {
+            const phone10 = c.phone.replace(/\D/g, "").slice(-10);
+            if (phone10 && deliveredPhones.has(phone10)) {
+                isEligible = true;
+                daysDelta = 0;
+                reason = "Order delivered recently";
+            }
         }
 
         if (isEligible) {
+            // Consent and the WhatsApp opt-out ledger are checked before a
+            // customer is even offered as a recipient, not only at dispatch
+            // (CRM-09).
+            if (await isWhatsAppOptedOut(c.phone)) continue;
+            const consent = await getConsentState(pb, { phone: c.phone });
+            if (consent.marketing === false) continue;
             const msg = flow.template
                 .replace(/\{\{customer_name\}\}/gi, c.name || "Valued Customer")
                 .replace(/\{\{first_name\}\}/gi, (c.name || "Customer").split(" ")[0])
@@ -199,11 +259,19 @@ export async function scanAndDispatchLifecycleTriggers(): Promise<{
     let queuedCount = 0;
     let skippedCount = 0;
 
+    ensureFlowTenant();
     const enabledFlows = cachedFlowConfigs.filter((f) => f.enabled);
+    const tenant = getCurrentTenantEmail();
+    // Birthday and anniversary flows must be allowed to fire again next year,
+    // so the duplicate window is 30 days, not "ever" (CRM-09).
+    const dedupeSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
     for (const flow of enabledFlows) {
         const recipients = await getEligibleRecipientsForFlow(flow.id);
         let slotOffset = 0;
+        // Per-flow counter: accumulating into the outer variable added every
+        // previous flow's sends to this flow's total (CRM-14).
+        let flowQueuedCount = 0;
 
         for (const r of recipients) {
             // Verify opt-out
@@ -216,7 +284,8 @@ export async function scanAndDispatchLifecycleTriggers(): Promise<{
             const campaignTag = `Lifecycle: ${flow.name}`;
             try {
                 const recent = await pb.collection("broadcast_messages").getFirstListItem(
-                    `campaign="${campaignTag}" && recipient_phone~"${r.phone.slice(-10)}"`
+                    `campaign="${campaignTag}" && recipient_phone~"${r.phone.slice(-10)}"` +
+                    ` && account_email="${tenant}" && created>="${dedupeSince}"`
                 );
                 if (recent) {
                     skippedCount++;
@@ -230,6 +299,7 @@ export async function scanAndDispatchLifecycleTriggers(): Promise<{
             slotOffset += getHumanizedJitterDelayMs();
             try {
                 await pb.collection("broadcast_messages").create({
+                    account_email: tenant,
                     campaign: campaignTag,
                     customer: r.customer.id,
                     recipient_phone: r.phone,
@@ -239,6 +309,7 @@ export async function scanAndDispatchLifecycleTriggers(): Promise<{
                     created_by: "system_lifecycle_automation",
                 });
                 queuedCount++;
+                flowQueuedCount++;
             } catch (err) {
                 console.warn("[lifecycle-trigger] Failed to queue entry:", err);
             }
@@ -246,7 +317,7 @@ export async function scanAndDispatchLifecycleTriggers(): Promise<{
 
         // Update flow stats
         flow.lastRunAt = new Date().toISOString();
-        flow.totalSentCount = (flow.totalSentCount || 0) + queuedCount;
+        flow.totalSentCount = (flow.totalSentCount || 0) + flowQueuedCount;
     }
 
     persistFlowConfigs(cachedFlowConfigs);

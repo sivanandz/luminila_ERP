@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import {
-    acquireConversationLock,
+    acquireConversationLockWithToken,
     authenticateAiRequest,
     jsonError,
     readJsonBody,
@@ -161,14 +161,26 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    if (!acquireConversationLock(conversationId)) {
+    const isResume = body.approvals !== undefined;
+    if (isResume && !conversation) {
+        return jsonError(400, 'Approvals must name the conversation that raised them.', 'approval_without_conversation');
+    }
+    const lockToken = acquireConversationLockWithToken(conversationId);
+    if (!lockToken) {
         return jsonError(409, 'A turn is already running in this conversation.', 'conversation_busy');
     }
+    // A dropped connection must free the lock immediately instead of holding the
+    // conversation for the full 10-minute TTL (AI-SYS-24). Only this request's
+    // token can release it.
+    const releaseLock = () => releaseConversationLock(conversationId, lockToken);
+    req.signal.addEventListener('abort', releaseLock, { once: true });
 
     try {
-        // Resume/approval turns inherit the persisted profile; only a turn that
-        // explicitly switches profile can change it.
-        const profile = getHarnessProfile(body.profileId ?? conversation?.profileId ?? undefined);
+        // A resume must continue under the harness profile the paused turn was
+        // persisted with; body.profileId may not override it (AI-SYS-10).
+        const profile = getHarnessProfile(
+            isResume ? conversation?.profileId : body.profileId ?? conversation?.profileId ?? undefined
+        );
         const events = await loadEvents(
             context.adminClient,
             conversationId,
@@ -264,10 +276,10 @@ export async function POST(req: NextRequest) {
                     model: provider.provider.model,
                 });
             },
-            releaseLock: () => releaseConversationLock(conversationId),
+            releaseLock,
         });
     } catch (error) {
-        releaseConversationLock(conversationId);
+        releaseLock();
         return jsonError(
             500,
             error instanceof Error ? error.message : 'The AI turn could not start.',

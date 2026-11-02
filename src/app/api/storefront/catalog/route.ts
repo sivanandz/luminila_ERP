@@ -93,10 +93,25 @@ export async function GET(req: NextRequest) {
             expand: "category",
         });
 
-        const variants = await client
-            .collection("product_variants")
-            .getFullList<{ id: string; product: string; variant_name?: string; stock_level?: number; price_adjustment?: number }>()
-            .catch(() => []);
+        const productIds = products.map((rec) => rec.id);
+        const variants = productIds.length === 0
+            ? []
+            : await client
+                .collection("product_variants")
+                .getFullList<{ id: string; product: string; variant_name?: string; stock_level?: number; price_adjustment?: number }>({
+                    // Scope the variant read to this tenant's products; the
+                    // unfiltered list pulled every store's stock (SF-14).
+                    filter: client.filter(
+                        `account_email = {:tenant} && product.is_active = true && (${productIds
+                            .map((_, index) => `product = {:p${index}}`)
+                            .join(" || ")})`,
+                        {
+                            tenant: boundAdminEmail,
+                            ...Object.fromEntries(productIds.map((id, index) => [`p${index}`, id])),
+                        }
+                    ),
+                })
+                .catch(() => []);
 
         const catalogue: CatalogProduct[] = products.map((rec) => {
             const own = variants.filter((v) => v.product === rec.id);

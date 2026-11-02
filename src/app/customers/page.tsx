@@ -86,6 +86,7 @@ import {
 import {
     getCampaignAnalyticsOverview,
     createMarketingCampaign,
+    updateCampaignQueueCounts,
     type MarketingCampaign,
     type CampaignAnalyticsOverview,
     type CampaignCategory,
@@ -345,6 +346,7 @@ export default function CustomersPage() {
                 template: `${newCampaignForm.template}${newCampaignForm.promo_code ? `\n\nUse Code: *${newCampaignForm.promo_code}* for ${newCampaignForm.discount_percent}% off.` : ""}`,
                 segment: (newCampaignForm.target_segment as any) || "all_active",
             });
+            await updateCampaignQueueCounts(created.id, queueRes.queued);
 
             toast.success(`Campaign "${created.title}" launched! ${queueRes.queued} messages queued with anti-ban jitter.`);
             setShowNewCampaignDialog(false);
@@ -765,8 +767,8 @@ export default function CustomersPage() {
                                                 {!((c as any).ring_size || (c as any).bangle_size || (c as any).preferred_metal) && (
                                                     <span className="italic text-muted-foreground/60">No jewelry specs</span>
                                                 )}
-                                                {birthday && <span>🎂 {birthday.slice(5)}</span>}
-                                                {anniversary && <span>💍 {anniversary.slice(5)}</span>}
+                                                {String(birthday ?? "").trim() && <span>🎂 {String(birthday).slice(5)}</span>}
+                                                {String(anniversary ?? "").trim() && <span>💍 {String(anniversary).slice(5)}</span>}
                                             </div>
 
                                             <div>

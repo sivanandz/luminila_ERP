@@ -26,7 +26,9 @@ export default function ExpenseCategoriesPage() {
 
     const loadData = async () => {
         setLoading(true);
-        const data = await getCategories();
+        // Include disabled categories so they remain visible and can be
+        // re-enabled (FIN-11).
+        const data = await getCategories(true);
         setCategories(data);
         setLoading(false);
     };

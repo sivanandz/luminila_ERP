@@ -4,7 +4,7 @@
  * Supports disabling the flag when replacements arrive to restore sellable inventory.
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 
 export type DiscrepancyType = 'damaged' | 'missing' | 'vendor_replacement';
 export type DiscrepancyStatus = 'active' | 'resolved';
@@ -87,7 +87,7 @@ export async function markStockDiscrepancy(input: MarkDiscrepancyInput): Promise
     });
 
     // 3. Create discrepancy record
-    const accountEmail = (pb.authStore.model as any)?.email || '';
+    const accountEmail = accountScopeEmail();
     const derivedSku = input.sku || variant.variant_name || variant.sku || 'SKU-UNKNOWN';
     const derivedProductName = input.product_name || derivedSku;
     const record = await pb.collection('stock_discrepancies').create({
@@ -122,12 +122,16 @@ export async function markStockDiscrepancy(input: MarkDiscrepancyInput): Promise
 /**
  * Resolve a stock discrepancy. When replacement arrives from vendor, staff resolves the flag
  * and the quantity is automatically credited back to available inventory.
+ *
+ * Partial recovery keeps the flag active: the restored units are credited, the stored
+ * `quantity` is decremented by the same amount, and only the units that are still
+ * quarantined stay on the active list.
  */
 export async function resolveStockDiscrepancy(
     discrepancyId: string,
     resolution: ResolveDiscrepancyInput
 ): Promise<StockDiscrepancy> {
-    const discrepancy = await pb.collection('stock_discrepancies').getOne(discrepancyId);
+    const discrepancy = await pb.collection('stock_discrepancies').getOne<StockDiscrepancy>(discrepancyId);
 
     if (discrepancy.status === 'resolved') {
         throw new Error('This discrepancy has already been resolved.');
@@ -135,7 +139,9 @@ export async function resolveStockDiscrepancy(
 
     const action = resolution.action || resolution.resolution_action || 'replacement_received';
     const rawQty = resolution.received_quantity ?? resolution.quantity_received ?? discrepancy.quantity;
-    const qtyToRestore = Math.min(rawQty, discrepancy.quantity);
+    const requestedQty = Math.max(0, Math.min(Number(rawQty) || 0, discrepancy.quantity));
+    const remainingQty = Math.max(0, discrepancy.quantity - requestedQty);
+    const isFullyResolved = remainingQty === 0;
 
     // Verify relation integrity before update to avoid PocketBase 400 validation error on orphaned relations
     let validVariantId: string | null = discrepancy.variant || null;
@@ -146,18 +152,12 @@ export async function resolveStockDiscrepancy(
             await pb.collection('product_variants').getOne(validVariantId);
         } catch {
             validVariantId = null;
-            // Attempt to find current active variant by SKU if original record was deleted/reseeded
-            if (discrepancy.sku) {
-                try {
-                    const matched = await pb.collection('product_variants').getFirstListItem(`sku = "${discrepancy.sku}"`);
-                    if (matched) {
-                        validVariantId = matched.id;
-                    }
-                } catch {
-                    // No matching variant found
-                }
-            }
         }
+    }
+    // `product_variants` has no `sku` column; the SKU lives on the parent product,
+    // so look the product up first and take its stockiest variant.
+    if (!validVariantId && discrepancy.sku) {
+        validVariantId = await findVariantIdByProductSku(discrepancy.sku);
     }
 
     if (validProductId) {
@@ -171,15 +171,23 @@ export async function resolveStockDiscrepancy(
     // Claim the flag before touching stock: the collection update rule only allows
     // updates while status is still "active", so of two concurrent resolves exactly
     // one wins and the loser fails here (404) instead of crediting stock twice.
+    // A partial resolve keeps the record active, so that guard cannot serialise it;
+    // the quantity decrement below is the best available claim in that case.
     let updated: StockDiscrepancy;
     try {
         const updatePayload: Record<string, any> = {
-            status: 'resolved',
-            resolved_at: new Date().toISOString(),
             resolved_by: resolution.resolved_by || 'Staff',
-            resolution_action: action,
             resolution_note: resolution.resolution_note || '',
         };
+
+        if (isFullyResolved) {
+            updatePayload.status = 'resolved';
+            updatePayload.resolved_at = new Date().toISOString();
+            updatePayload.resolution_action = action;
+        } else {
+            // Partially recovered: only the restored units leave quarantine.
+            updatePayload.quantity = remainingQty;
+        }
 
         // If the stored relation points to a deleted entity, sanitize or link to recovered variant
         if (validVariantId !== discrepancy.variant) {
@@ -197,14 +205,14 @@ export async function resolveStockDiscrepancy(
         throw err;
     }
 
-    const accountEmail = (pb.authStore.model as any)?.email || '';
+    const accountEmail = accountScopeEmail();
 
     // If replacement arrived or item repaired, restore to available inventory stock
     if (action === 'replacement_received' || action === 'repaired') {
-        if (qtyToRestore > 0 && validVariantId) {
+        if (requestedQty > 0 && validVariantId) {
             try {
                 await pb.collection('product_variants').update(validVariantId, {
-                    'stock_level+': qtyToRestore,
+                    'stock_level+': requestedQty,
                 });
             } catch (err) {
                 // The claimed flag can no longer be reverted via the API (the update
@@ -217,12 +225,12 @@ export async function resolveStockDiscrepancy(
                 account_email: accountEmail,
                 variant: validVariantId,
                 movement_type: 'restock',
-                quantity: qtyToRestore,
+                quantity: requestedQty,
                 reference_id: discrepancyId,
                 source: 'replacement_arrival',
-                notes: `Replacement received (${qtyToRestore} units) for SKU ${discrepancy.sku}. Flag resolved by ${resolution.resolved_by || 'Staff'}. Note: ${resolution.resolution_note || 'Returned to sellable stock'}`,
+                notes: `Replacement received (${requestedQty} units) for SKU ${discrepancy.sku}. ${isFullyResolved ? 'Flag resolved' : `Flag still active for ${remainingQty} quarantined units`} by ${resolution.resolved_by || 'Staff'}. Note: ${resolution.resolution_note || 'Returned to sellable stock'}`,
             }).catch(err => console.warn('Failed to log stock movement for replacement:', err));
-        } else if (qtyToRestore > 0 && !validVariantId) {
+        } else if (requestedQty > 0 && !validVariantId) {
             console.warn(`Discrepancy ${discrepancyId} resolved, but associated SKU ${discrepancy.sku} has no matching inventory variant to restore stock to.`);
         }
     } else if (action === 'written_off') {
@@ -234,12 +242,32 @@ export async function resolveStockDiscrepancy(
                 quantity: 0,
                 reference_id: discrepancyId,
                 source: 'discrepancy_write_off',
-                notes: `Discrepancy written off permanently (${discrepancy.quantity} units of ${discrepancy.sku}). Reason: ${resolution.resolution_note || 'Damaged beyond repair'}`,
+                notes: `Discrepancy written off permanently (${requestedQty} units of ${discrepancy.sku}${isFullyResolved ? '' : `, ${remainingQty} units still quarantined`}). Reason: ${resolution.resolution_note || 'Damaged beyond repair'}`,
             }).catch(err => console.warn('Failed to log stock movement for write off:', err));
         }
     }
 
     return updated;
+}
+
+/** Resolve the parent product by SKU, then return one of its variants (prefers stocked). */
+async function findVariantIdByProductSku(sku: string): Promise<string | null> {
+    const tenant = accountScopeEmail();
+    const tenantFilter = tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+    const safeSku = sanitizeFilter(sku);
+    try {
+        const product = await pb
+            .collection('products')
+            .getFirstListItem<{ id: string }>(`sku = "${safeSku}"${tenantFilter}`);
+        const variant = await pb
+            .collection('product_variants')
+            .getFirstListItem<{ id: string }>(`product = "${sanitizeFilter(product.id)}"${tenantFilter}`, {
+                sort: '-stock_level',
+            });
+        return variant?.id || null;
+    } catch {
+        return null;
+    }
 }
 
 /**

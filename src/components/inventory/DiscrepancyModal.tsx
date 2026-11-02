@@ -275,18 +275,25 @@ export function DiscrepancyModal({
 
         setSubmittingResolve(true);
         try {
-            await resolveStockDiscrepancy(resolvingItem.id, {
+            const updated = await resolveStockDiscrepancy(resolvingItem.id, {
                 action: resolveAction,
                 received_quantity: numQty,
                 resolution_note: resolveNote,
             });
+            const remaining = Number(updated?.quantity) || 0;
 
             if (resolveAction === "replacement_received" || resolveAction === "repaired") {
                 toast.success(
-                    `Restored ${numQty} unit(s) of ${resolvingItem.sku} to active sellable inventory!`
+                    remaining > 0
+                        ? `Restored ${numQty} unit(s) of ${resolvingItem.sku}; ${remaining} unit(s) stay quarantined.`
+                        : `Restored ${numQty} unit(s) of ${resolvingItem.sku} to active sellable inventory!`
                 );
             } else {
-                toast.info(`Flag for ${resolvingItem.sku} closed as written-off.`);
+                toast.info(
+                    remaining > 0
+                        ? `Wrote off ${numQty} unit(s) of ${resolvingItem.sku}; ${remaining} unit(s) stay flagged.`
+                        : `Flag for ${resolvingItem.sku} closed as written-off.`
+                );
             }
 
             setResolvingItem(null);
@@ -484,9 +491,6 @@ export function DiscrepancyModal({
                                                         {v.name}
                                                     </option>
                                                 ))}
-                                                <option value="Rajkot Heritage Jewellers">Rajkot Heritage Jewellers</option>
-                                                <option value="Surat Kemp Studio">Surat Kemp Studio</option>
-                                                <option value="Jaipur Polki Workshop">Jaipur Polki Workshop</option>
                                             </select>
                                         </div>
                                         <p className="text-[10px] text-slate-400">

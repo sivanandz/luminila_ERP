@@ -176,6 +176,12 @@ fn sidecar_token() -> &'static str {
     SIDECAR_TOKEN.get_or_init(generate_sidecar_token).as_str()
 }
 
+/// Owns the WPPConnect sidecar child so restart/health-monitor/path exits cannot
+/// leave duplicate processes behind (AI-SYS-14).
+#[cfg(desktop)]
+#[derive(Default)]
+struct SidecarProcess(Mutex<Option<CommandChild>>);
+
 /// Check if WPPConnect sidecar is healthy
 #[cfg(desktop)]
 async fn check_sidecar_health() -> bool {
@@ -185,10 +191,26 @@ async fn check_sidecar_health() -> bool {
     }
 }
 
-/// Start the WPPConnect sidecar process
+/// Stop the sidecar child process and clear the running flag.
 #[cfg(desktop)]
-fn start_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
+fn stop_sidecar(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<SidecarProcess>() {
+        if let Ok(mut slot) = state.0.lock() {
+            if let Some(child) = slot.take() {
+                let _ = child.kill();
+            }
+        }
+    }
+    SIDECAR_RUNNING.store(false, Ordering::SeqCst);
+}
+
+/// Start the WPPConnect sidecar process, replacing any process already owned.
+#[cfg(desktop)]
+fn start_sidecar(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
+
+    // Never spawn a second sidecar over a live one.
+    stop_sidecar(app);
 
     let sidecar = app
         .shell()
@@ -220,8 +242,15 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
         }
     });
 
+    // Keep the child handle in managed state; dropping it leaked the process.
+    if let Some(state) = app.try_state::<SidecarProcess>() {
+        if let Ok(mut slot) = state.0.lock() {
+            *slot = Some(child);
+        }
+    }
+
     SIDECAR_RUNNING.store(true, Ordering::SeqCst);
-    Ok(child)
+    Ok(())
 }
 
 /// Health monitoring loop - restarts sidecar if it crashes
@@ -481,13 +510,11 @@ async fn restart_sidecar(_app: tauri::AppHandle) -> Result<String, String> {
 
     #[cfg(desktop)]
     {
-        SIDECAR_RUNNING.store(false, Ordering::SeqCst);
-
-        // Give it a moment to stop
+        // start_sidecar() stops and reaps the process it replaces.
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         match start_sidecar(&_app) {
-            Ok(_) => Ok("Sidecar restarted".to_string()),
+            Ok(()) => Ok("Sidecar restarted".to_string()),
             Err(e) => Err(e),
         }
     }
@@ -522,7 +549,20 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder
         .manage(PocketBaseProcess::default())
-        .manage(NextServerProcess::default());
+        .manage(NextServerProcess::default())
+        .manage(SidecarProcess::default())
+        // The sidecar token must exist on every document, including after the
+        // webview is navigated to the bundled Next server. Injecting it from a
+        // page-load hook (rather than a one-off eval before navigation, which
+        // the navigation wiped) keeps it available to the app (AI-SYS-15).
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                let script = format!("window.__WPPCONNECT_SECRET__ = {:?};", sidecar_token());
+                if let Err(e) = webview.eval(script) {
+                    log::warn!("Could not inject the sidecar token into the webview: {}", e);
+                }
+            }
+        });
 
     let app = builder
         .setup(|app| {
@@ -540,17 +580,8 @@ pub fn run() {
                 // Start sidecar on app launch
                 let app_handle = app.handle().clone();
                 match start_sidecar(&app_handle) {
-                    Ok(_) => log::info!("WPPConnect sidecar started"),
+                    Ok(()) => log::info!("WPPConnect sidecar started"),
                     Err(e) => log::warn!("Failed to start sidecar: {} (will retry)", e),
-                }
-
-                // Hand the per-launch token to the webview. It is not part of
-                // the bundle, so extracting the app image does not reveal it.
-                if let Some(window) = app.get_webview_window("main") {
-                    let script = format!("window.__WPPCONNECT_SECRET__ = {:?};", sidecar_token());
-                    if let Err(e) = window.eval(&script) {
-                        log::warn!("Could not inject the sidecar token into the webview: {}", e);
-                    }
                 }
 
                 // Start health monitoring loop
@@ -601,6 +632,7 @@ pub fn run() {
     app.run(|app_handle, event| {
         #[cfg(desktop)]
         if let RunEvent::Exit = event {
+            stop_sidecar(app_handle);
             stop_pocketbase(app_handle);
             stop_next_server(app_handle);
         }

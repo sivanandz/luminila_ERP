@@ -1,4 +1,5 @@
 import { isValidGstin as isValidGstinChecksum } from './gstin';
+import { getStateCode } from './gst';
 /**
  * Official Statutory GSTR-1 Return Exports Engine
  * Reverse-engineered from Vyapar BizLogic (GSTR1ReportObject.js, GSTR1HsnReportObject.js, GSTRUnits.js)
@@ -198,15 +199,16 @@ export function isValidGstin(gstin?: string): boolean {
 }
 
 /**
- * Normalizes 2-digit State Code from GSTIN or State name
+ * Normalizes 2-digit State Code from GSTIN, state code or state name.
+ * Handles "29", "29-Karnataka" and "Karnataka" alike (FIN-09).
  */
 export function extractStateCode(gstinOrCode?: string): string {
-    if (!gstinOrCode) return '';
-    const clean = gstinOrCode.trim();
+    const clean = String(gstinOrCode ?? '').trim();
+    if (!clean) return '';
     if (/^\d{2}/.test(clean)) {
         return clean.substring(0, 2);
     }
-    return '';
+    return getStateCode(clean);
 }
 
 /**
@@ -250,7 +252,9 @@ export function compileGstr1Payload(
     options: Gstr1CompileOptions
 ): Gstr1OfficialPayload {
     const supplierGstin = (options.supplierGstin || '').trim().toUpperCase();
-    const supplierState = options.supplierStateCode || extractStateCode(supplierGstin);
+    // store_state_code may arrive as "29" or "Karnataka"; normalise both before
+    // comparing with the place of supply (FIN-09).
+    const supplierState = extractStateCode(options.supplierStateCode) || extractStateCode(supplierGstin);
     const b2cThreshold = options.b2cLargeThreshold || 250000;
 
     const b2bMap = new Map<string, Gstr1B2BInvoice[]>();
@@ -263,19 +267,29 @@ export function compileGstr1Payload(
     const regularInvoices = invoices.filter(inv => inv.invoice_type !== 'credit_note' && inv.invoice_type !== 'debit_note');
     const creditNotes = invoices.filter(inv => inv.invoice_type === 'credit_note' || inv.invoice_type === 'debit_note');
 
-    // Document numbers tracker
-    const invoiceNumbers = regularInvoices.map(i => i.invoice_number).filter(Boolean).sort();
-    const creditNoteNumbers = creditNotes.map(i => i.invoice_number).filter(Boolean).sort();
-    const cancelledInvoices = regularInvoices.filter(i => i.status === 'cancelled').length;
-    const cancelledCreditNotes = creditNotes.filter(i => i.status === 'cancelled').length;
+    // Document numbers tracker. Drafts were never issued; cancelled documents
+    // stay in the range so Table 13 can report them (FIN-18).
+    const sortInvoiceNumbers = (numbers: string[]) =>
+        [...numbers].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const issuedInvoices = regularInvoices.filter(i => i.status !== 'draft');
+    const issuedNotes = creditNotes.filter(i => i.status !== 'draft');
+    const invoiceNumbers = sortInvoiceNumbers(issuedInvoices.map(i => i.invoice_number).filter(Boolean));
+    const creditNoteNumbers = sortInvoiceNumbers(issuedNotes.map(i => i.invoice_number).filter(Boolean));
+    const cancelledInvoices = issuedInvoices.filter(i => i.status === 'cancelled').length;
+    const cancelledCreditNotes = issuedNotes.filter(i => i.status === 'cancelled').length;
 
     // Process Regular Invoices
     for (const inv of regularInvoices) {
-        if (inv.status === 'cancelled') continue; // Cancelled docs omitted from transaction tables
+        // Cancelled/draft docs are omitted from the transaction tables.
+        if (inv.status === 'cancelled' || inv.status === 'draft') continue;
 
-        const buyerGstin = (inv.buyer_gstin || '').trim().toUpperCase();
+        // Runtime values may be null despite the types; normalise before
+        // trimming or classifying (FIN-09).
+        const buyerGstin = String(inv.buyer_gstin ?? '').trim().toUpperCase();
         const hasValidBuyerGstin = isValidGstin(buyerGstin);
-        const pos = inv.place_of_supply || inv.buyer_state_code || (hasValidBuyerGstin ? buyerGstin.substring(0, 2) : supplierState);
+        const pos = extractStateCode(inv.place_of_supply)
+            || extractStateCode(inv.buyer_state_code)
+            || (hasValidBuyerGstin ? buyerGstin.substring(0, 2) : supplierState);
         const isInterState = pos !== supplierState;
         const invDate = formatGstnDate(inv.invoice_date);
         const invValue = round2(inv.grand_total);
@@ -401,27 +415,94 @@ export function compileGstr1Payload(
 
     // Process Credit & Debit Notes (Table 9B)
     for (const cn of creditNotes) {
-        if (cn.status === 'cancelled') continue;
+        if (cn.status === 'cancelled' || cn.status === 'draft') continue;
 
-        const buyerGstin = (cn.buyer_gstin || '').trim().toUpperCase();
+        const buyerGstin = String(cn.buyer_gstin ?? '').trim().toUpperCase();
         const hasValidBuyerGstin = isValidGstin(buyerGstin);
-        const pos = cn.place_of_supply || cn.buyer_state_code || (hasValidBuyerGstin ? buyerGstin.substring(0, 2) : supplierState);
+        const pos = extractStateCode(cn.place_of_supply)
+            || extractStateCode(cn.buyer_state_code)
+            || (hasValidBuyerGstin ? buyerGstin.substring(0, 2) : supplierState);
         const cnDate = formatGstnDate(cn.invoice_date);
         const origDate = formatGstnDate(cn.original_invoice_date || cn.invoice_date);
         const cnValue = round2(cn.grand_total);
         const ntty: 'C' | 'D' = cn.invoice_type === 'debit_note' ? 'D' : 'C';
 
-        const cnItems: Gstr1InvoiceItem[] = [{
-            num: 1,
-            itm_det: {
-                rt: 3.0,
-                txval: round2(cn.taxable_value || (cnValue / 1.03)),
+        // Aggregate the note's own lines by GST rate instead of assuming a
+        // single 3% line (FIN-06). Notes without item rows fall back to the
+        // header amounts, deriving the rate actually carried.
+        const cnRateGroups = new Map<number, Gstr1ItemDetail>();
+        const cnSourceItems = cn.items && cn.items.length > 0 ? cn.items : [];
+
+        if (cnSourceItems.length > 0) {
+            for (const itm of cnSourceItems) {
+                const rt = Number(itm.gst_rate) || 0;
+                const txval = round2(itm.taxable_amount || 0);
+                const iamt = round2(itm.igst_amount || 0);
+                const camt = round2(itm.cgst_amount || 0);
+                const samt = round2(itm.sgst_amount || 0);
+
+                if (!cnRateGroups.has(rt)) {
+                    cnRateGroups.set(rt, { rt, txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0 });
+                }
+                const grp = cnRateGroups.get(rt)!;
+                grp.txval = round2(grp.txval + txval);
+                grp.iamt = round2(grp.iamt + iamt);
+                grp.camt = round2(grp.camt + camt);
+                grp.samt = round2(grp.samt + samt);
+            }
+        } else {
+            const taxTotal = round2((cn.igst_amount || 0) + (cn.cgst_amount || 0) + (cn.sgst_amount || 0));
+            const txval = round2(cn.taxable_value ?? Math.max(0, round2(cnValue - taxTotal)));
+            const rt = txval > 0 ? round2((taxTotal / txval) * 100) : 0;
+            cnRateGroups.set(rt, {
+                rt,
+                txval,
                 iamt: round2(cn.igst_amount || 0),
                 camt: round2(cn.cgst_amount || 0),
                 samt: round2(cn.sgst_amount || 0),
                 csamt: 0,
+            });
+        }
+
+        const cnItems: Gstr1InvoiceItem[] = Array.from(cnRateGroups.values()).map((grp, idx) => ({
+            num: idx + 1,
+            itm_det: grp,
+        }));
+
+        // Table 12 is a net-of-returns summary: credit notes reduce the HSN
+        // totals, debit notes increase them (FIN-06).
+        for (const itm of cnSourceItems) {
+            const hsnCode = itm.hsn_code || '7113';
+            const uqc = normalizeUqc(itm.unit);
+            const hsnKey = `${hsnCode}_${uqc}`;
+            const txval = round2(itm.taxable_amount || 0);
+            const iamt = round2(itm.igst_amount || 0);
+            const camt = round2(itm.cgst_amount || 0);
+            const samt = round2(itm.sgst_amount || 0);
+            const itemTotalVal = round2(txval + iamt + camt + samt);
+            const sign = ntty === 'C' ? -1 : 1;
+
+            if (!hsnMap.has(hsnKey)) {
+                hsnMap.set(hsnKey, {
+                    desc: itm.description?.split(' - ')[0] || 'Articles of jewellery & parts thereof',
+                    uqc,
+                    qty: 0,
+                    val: 0,
+                    txval: 0,
+                    iamt: 0,
+                    camt: 0,
+                    samt: 0,
+                    csamt: 0,
+                });
             }
-        }];
+            const hEntry = hsnMap.get(hsnKey)!;
+            hEntry.qty = Math.round((hEntry.qty + sign * (Number(itm.quantity) || 0)) * 1000) / 1000;
+            hEntry.val = round2(hEntry.val + sign * itemTotalVal);
+            hEntry.txval = round2(hEntry.txval + sign * txval);
+            hEntry.iamt = round2(hEntry.iamt + sign * iamt);
+            hEntry.camt = round2(hEntry.camt + sign * camt);
+            hEntry.samt = round2(hEntry.samt + sign * samt);
+        }
 
         if (hasValidBuyerGstin) {
             if (!cdnrMap.has(buyerGstin)) cdnrMap.set(buyerGstin, []);

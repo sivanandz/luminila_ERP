@@ -300,18 +300,50 @@ export async function getLocationStock(
     return match ? match.quantity : 0;
 }
 
+/** Live stock for a variant/product id, used only to seed a first per-location entry. */
+async function readGlobalStock(itemId: string): Promise<number> {
+    try {
+        const variant = await pb.collection("product_variants").getOne<{ stock_level?: number }>(itemId);
+        return Math.max(0, Number(variant.stock_level) || 0);
+    } catch {
+        return 0;
+    }
+}
+
 /**
  * Adjust stock at a specific location (e.g. after POS sale or manual count)
+ *
+ * When the item has no per-location balance yet, the existing global stock is
+ * attributed to the default location before the delta is applied. Without that
+ * seed the first outbound transfer starts from 0 and wipes the ledger (INV-10).
  */
 export async function adjustLocationStock(
     itemId: string,
     locationId: string,
     delta: number,
-    reason: string = "POS Sale"
+    reason: string = "POS Sale",
+    globalStock?: number
 ): Promise<{ newLocationStock: number; newTotalStock: number }> {
     const stockMap = getLocalStockMap();
-    if (!stockMap[itemId]) {
+    if (!stockMap[itemId] || Object.keys(stockMap[itemId]).length === 0) {
+        const locations = await getInventoryLocations();
+        const defaultLoc = locations.find((l) => l.is_default) || locations[0];
+        const seedTotal = globalStock !== undefined
+            ? Math.max(0, Number(globalStock) || 0)
+            : await readGlobalStock(itemId);
+
         stockMap[itemId] = {};
+        if (defaultLoc) {
+            stockMap[itemId][defaultLoc.id] = seedTotal;
+            if (delta < 0 && locationId !== defaultLoc.id) {
+                // The whole balance sits on the default location; move the outgoing
+                // quantity across (up to what is tracked) so the deduction lands on
+                // real units instead of clamping the target counter to zero.
+                const moved = Math.min(seedTotal, -delta);
+                stockMap[itemId][defaultLoc.id] = seedTotal - moved;
+                stockMap[itemId][locationId] = moved;
+            }
+        }
     }
 
     const currentLocQty = Number(stockMap[itemId][locationId] || 0);

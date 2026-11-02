@@ -7,8 +7,16 @@
  */
 
 import { z } from 'zod';
-import type { AiTool } from './registry';
-import { accountFilter, asNumber, asText, escapeFilterValue, findFirstRecord, listRecords } from './pb-util';
+import type { AiTool, AiToolContext } from './registry';
+import {
+    accountFilter,
+    asNumber,
+    asText,
+    containsClause,
+    escapeFilterValue,
+    findFirstRecord,
+    listRecords,
+} from './pb-util';
 
 const createCustomerInput = z.object({
     name: z.string().trim().min(2).max(120).describe('Customer full name.'),
@@ -27,6 +35,43 @@ function normalizePhone(phone: string): string {
     return phone.replace(/[^\d+]/g, '');
 }
 
+/** Last 10 digits, so `+91 98765 43210` and `9876543210` dedupe together. */
+function phoneDedupeKey(phone: string): string {
+    const digits = String(phone || '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+/**
+ * AI mutations are ERP writes: they must leave the same audit trail as a manual
+ * edit (AI-SYS-11). A failed audit insert never fails the tool call.
+ */
+async function logAiMutation(
+    context: AiToolContext,
+    action: 'create' | 'update',
+    entityType: 'customer' | 'order',
+    entityId: string,
+    description: string,
+    newValues: Record<string, unknown>
+): Promise<void> {
+    try {
+        await context.client.collection('activity_logs').create({
+            action,
+            entity_type: entityType,
+            entity_id: entityId,
+            description,
+            new_values: newValues,
+            // `activity_logs` stores its payload in `metadata`; keep new_values
+            // too for readers that follow the AuditLog shape.
+            metadata: { new_values: newValues },
+            user_id: context.userId || '',
+            user_name: context.sessionEmail || '',
+            account_email: context.accountEmail,
+        });
+    } catch (error) {
+        console.warn('AI activity log could not be written:', error);
+    }
+}
+
 export const writeTools: AiTool[] = [
     {
         name: 'create_customer',
@@ -40,16 +85,21 @@ export const writeTools: AiTool[] = [
         execute: async (context, rawArgs) => {
             const args = createCustomerInput.parse(rawArgs);
             const phone = normalizePhone(args.phone);
-            if (!phone) throw new Error('A phone number is required to create a customer.');
+            const dedupeKey = phoneDedupeKey(args.phone);
+            if (!phone || !dedupeKey) throw new Error('A phone number is required to create a customer.');
 
-            const existing = await findFirstRecord(
-                context.client,
-                'customers',
-                `phone = "${escapeFilterValue(phone)}"`,
-                context.accountEmail
+            // Match on the last 10 digits so a number saved with or without the
+            // country code is recognised as the same customer (AI-SYS-11).
+            const candidates = await listRecords(context.client, 'customers', {
+                filter: `${accountFilter(context.accountEmail)} && ${containsClause('phone', dedupeKey)}`,
+                perPage: 10,
+                fields: 'id,name,phone',
+            }).catch(() => []);
+            const existing = candidates.find(
+                (candidate) => phoneDedupeKey(asText((candidate as Record<string, unknown>).phone)) === dedupeKey
             );
             if (existing) {
-                const record = existing as Record<string, unknown>;
+                const record = existing as unknown as Record<string, unknown>;
                 return {
                     summary: `Customer already exists: ${asText(record.name) || phone} (id ${asText(record.id)}). No new record was created.`,
                     data: { created: false, customerId: asText(record.id) },
@@ -70,7 +120,15 @@ export const writeTools: AiTool[] = [
                 source: 'ai_assistant',
                 account_email: context.accountEmail,
             } as Record<string, unknown>);
-            const record = created as Record<string, unknown>;
+            const record = created as unknown as Record<string, unknown>;
+            await logAiMutation(
+                context,
+                'create',
+                'customer',
+                asText(record.id),
+                `Customer created by AI assistant: ${args.name}`,
+                { name: args.name, phone, source: 'ai_assistant' }
+            );
             return {
                 summary: `Created customer ${args.name} (id ${asText(record.id)}) with phone ${phone}.`,
                 data: { created: true, customerId: asText(record.id), name: args.name, phone },
@@ -107,6 +165,14 @@ export const writeTools: AiTool[] = [
                 throw new Error('This order already carries an excessive amount of internal notes; edit the order notes manually.');
             }
             await context.client.collection('sales_orders').update(asText(record.id), { internal_notes: next });
+            await logAiMutation(
+                context,
+                'update',
+                'order',
+                asText(record.id),
+                `Internal note appended by AI assistant to ${args.orderNumber}`,
+                { order_number: args.orderNumber, note: args.note }
+            );
             return {
                 summary: `Appended a note to order ${args.orderNumber}.`,
                 data: { updated: true, orderId: asText(record.id), orderNumber: args.orderNumber, note: args.note },

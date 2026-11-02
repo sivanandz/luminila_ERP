@@ -103,11 +103,34 @@ export default function ExportInvoicePage() {
             toast.error("Add at least one line with quantity and price");
             return;
         }
-        const blob = new Blob([JSON.stringify(invoice, null, 2)], { type: "application/json" });
+        // Download only complete lines: the preview keeps blank rows for
+        // editing, but the statutory file must not carry zero-value lines
+        // (FIN-19).
+        const downloadInvoice = compileLutExportInvoice({
+            invoiceNumber,
+            invoiceDate,
+            buyerName,
+            buyerCountry,
+            buyerAddress,
+            currency,
+            exchangeRateToInr: effectiveRate,
+            isLutExport: isLut,
+            lutArnNumber: lutArn,
+            portCode,
+            shippingBillNumber: shippingBill,
+            items: validItems.map((item) => ({
+                sku: item.sku || "SKU",
+                description: item.description || "Jewellery item",
+                hsnCode: item.hsnCode || "7113",
+                quantity: Number(item.quantity),
+                unitPriceInr: Number(item.unitPriceInr),
+            })),
+        });
+        const blob = new Blob([JSON.stringify(downloadInvoice, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = `${invoice.invoiceNumber || "export-invoice"}.json`;
+        link.download = `${downloadInvoice.invoiceNumber || "export-invoice"}.json`;
         link.click();
         URL.revokeObjectURL(url);
         toast.success("Export invoice downloaded");
@@ -231,6 +254,16 @@ export default function ExportInvoicePage() {
                                 <div className="flex justify-between">
                                     <span className="text-muted-foreground">Foreign subtotal</span>
                                     <span className="font-mono">{invoice.totals.foreignSubtotal.toFixed(2)} {invoice.currency}</span>
+                                </div>
+                                {!isLut && (
+                                    <div className="flex justify-between">
+                                        <span className="text-muted-foreground">IGST 3% (foreign)</span>
+                                        <span className="font-mono">{invoice.totals.foreignGstTotal.toFixed(2)} {invoice.currency}</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Foreign grand total</span>
+                                    <span className="font-mono">{invoice.totals.foreignGrandTotal.toFixed(2)} {invoice.currency}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-muted-foreground">INR subtotal</span>

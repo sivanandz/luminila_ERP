@@ -45,7 +45,7 @@ interface MobileDrawerProps {
 }
 
 /** Pages that only administrators should see in the drawer. */
-const ADMIN_ONLY_HREFS = new Set(["/users", "/settings"]);
+const ADMIN_ONLY_HREFS = new Set(["/users", "/settings", "/backup"]);
 
 const navSections = [
     {

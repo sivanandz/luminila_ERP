@@ -108,8 +108,10 @@ export async function upsertChannelCustomer(
         merge('gstin', input.gstin);
         merge('company_name', input.companyName);
         merge('billing_address', input.billingAddress);
-        if (input.marketingConsent === true && !existing.opt_in_marketing) {
-            updates.opt_in_marketing = true;
+        // Both directions matter: unchecking marketing consent must clear the
+        // profile flag, not leave a stale opt-in (CRM-10).
+        if (typeof input.marketingConsent === 'boolean' && existing.opt_in_marketing !== input.marketingConsent) {
+            updates.opt_in_marketing = input.marketingConsent;
         }
         if (Object.keys(updates).length > 0) {
             await client.collection('customers').update(existing.id, updates).catch(() => {});
@@ -433,7 +435,19 @@ export async function resolveVariantForProduct(
     // first variant of a multi-variant product if the upstream ambiguity guard
     // were ever bypassed (CO-22).
     const variants = await client.collection('product_variants').getList(1, 2, {
-        filter: client.filter('product = {:product}', { product: productId }),
+        // Ghost variants of a soft-deleted product, or another tenant's row,
+        // must not be chosen for an order line (ORD-18).
+        filter: client.filter(
+            'product = {:product} && product.is_active = true && (account_email = {:tenant} || account_email = "")',
+            {
+                product: productId,
+                tenant: String(
+                    (client.authStore.record as { account_email?: string; email?: string } | null)?.account_email
+                    || (client.authStore.record as { email?: string } | null)?.email
+                    || ''
+                ).trim().toLowerCase(),
+            }
+        ),
     });
     if (variants.items.length > 1) {
         const err = new Error('Product has multiple variants; a variant must be chosen for the order line');

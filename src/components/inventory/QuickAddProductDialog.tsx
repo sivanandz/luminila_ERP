@@ -34,6 +34,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import type { Category } from "@/lib/categories";
+import { getTenantStorageKey } from "@/lib/pocketbase";
 import {
     computeRulePrice,
     getConfiguredChannels,
@@ -92,8 +93,9 @@ function formatPrice(value: number): string {
     return `₹${Math.round(value).toLocaleString("en-IN")}`;
 }
 
-/** Remembers whether the user prefers the expanded form across sessions. */
+/** Remembers whether the user prefers the expanded form across sessions (per tenant). */
 const FULL_FORM_STORAGE_KEY = "luminila_quick_add_full_form";
+const getFullFormStorageKey = () => getTenantStorageKey(FULL_FORM_STORAGE_KEY);
 
 export function QuickAddProductDialog({
     open,
@@ -165,7 +167,7 @@ export function QuickAddProductDialog({
     useEffect(() => {
         if (!open) return;
         try {
-            setExpanded(localStorage.getItem(FULL_FORM_STORAGE_KEY) === "true");
+            setExpanded(localStorage.getItem(getFullFormStorageKey()) === "true");
         } catch {
             // Storage can be unavailable in private modes; default to compact.
         }
@@ -378,7 +380,7 @@ export function QuickAddProductDialog({
         setExpanded((value) => {
             const next = !value;
             try {
-                localStorage.setItem(FULL_FORM_STORAGE_KEY, String(next));
+                localStorage.setItem(getFullFormStorageKey(), String(next));
             } catch {
                 // Preference is a convenience; failing to persist is harmless.
             }

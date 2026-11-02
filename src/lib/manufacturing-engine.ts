@@ -178,8 +178,13 @@ export function reconcileMetalBalance(
         metalMaterials.reduce((sum, m) => sum + (Number(m.quantity) || 0), 0)
     );
 
+    // Weights on a finished line are per unit; a batch of N pieces consumes N x the
+    // recorded net weight (INV-09).
     const totalFinishedNetMetalGrams = roundGrams(
-        finishedItems.reduce((sum, item) => sum + (Number(item.netWeightGrams) || 0), 0)
+        finishedItems.reduce(
+            (sum, item) => sum + (Number(item.netWeightGrams) || 0) * Math.max(0, Number(item.quantityProduced) || 0),
+            0
+        )
     );
 
     const totalScrapRecoveredGrams = roundGrams(
@@ -256,7 +261,11 @@ export function validateManufacturingOrder(order: ManufacturingOrder): { valid: 
         m => m.materialType !== 'diamond' && m.materialType !== 'gemstone'
     );
     const totalInput = metalMaterials.reduce((sum, m) => sum + (Number(m.quantity) || 0), 0);
-    const totalOutputMetal = (order.finishedItems || []).reduce((sum, i) => sum + (Number(i.netWeightGrams) || 0), 0);
+    // Finished weights are per unit, so a batch multiplies them by quantityProduced.
+    const totalOutputMetal = (order.finishedItems || []).reduce(
+        (sum, i) => sum + (Number(i.netWeightGrams) || 0) * Math.max(0, Number(i.quantityProduced) || 0),
+        0
+    );
     const totalScrap = (order.scrapRecoveries || []).reduce((sum, s) => sum + (Number(s.recoveredWeightGrams) || 0), 0);
 
     if (roundGrams(totalOutputMetal + totalScrap) > roundGrams(totalInput)) {
@@ -353,13 +362,18 @@ export function executeManufacturingAssembly(order: ManufacturingOrder): Manufac
     }));
 
     // Inventory Additions (Finished Goods)
-    // Weight-proportional cost allocation if multiple different finished products
-    const totalFinishedWeight = order.finishedItems.reduce((sum, item) => sum + item.grossWeightGrams, 0);
+    // Weight-proportional cost allocation if multiple different finished products.
+    // Gross weight is per unit, so the share uses units x weight (INV-09).
+    const totalFinishedWeight = order.finishedItems.reduce(
+        (sum, item) => sum + (Number(item.grossWeightGrams) || 0) * Math.max(0, Number(item.quantityProduced) || 0),
+        0
+    );
 
     const finishedGoodsAdditions = order.finishedItems.map(item => {
         let allocatedCost: number;
+        const lineWeight = (Number(item.grossWeightGrams) || 0) * Math.max(0, Number(item.quantityProduced) || 0);
         if (totalFinishedWeight > 0) {
-            const weightShare = item.grossWeightGrams / totalFinishedWeight;
+            const weightShare = lineWeight / totalFinishedWeight;
             allocatedCost = Math.round((netProductionCost * weightShare) * 100) / 100;
         } else {
             allocatedCost = Math.round((netProductionCost / order.finishedItems.length) * 100) / 100;

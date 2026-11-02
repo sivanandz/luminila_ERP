@@ -33,6 +33,7 @@ import {
     Trash2,
     ExternalLink,
 } from "lucide-react";
+import { resolvePOSBarcodeVariant } from "@/lib/products";
 
 interface StockTransferModalProps {
     open: boolean;
@@ -111,7 +112,7 @@ export function StockTransferModal({
         }
     };
 
-    const handleAddItem = (e?: React.FormEvent) => {
+    const handleAddItem = async (e?: React.FormEvent) => {
         if (e) e.preventDefault();
         const trimmed = skuInput.trim();
         if (!trimmed) {
@@ -119,19 +120,32 @@ export function StockTransferModal({
             return;
         }
 
+        // Transfers must reference catalog rows: fabricated ids would write a
+        // manifest that no location ledger or product page can resolve (INV-10).
+        const variant = await resolvePOSBarcodeVariant(trimmed).catch(() => null);
+        const product = variant?.expand?.product;
+        if (!variant || !product) {
+            toast.error(`No catalog item found for "${trimmed.toUpperCase()}"`);
+            return;
+        }
+
+        const fullSku = product.sku
+            ? `${product.sku}${variant.sku_suffix ? `-${variant.sku_suffix}` : ""}`
+            : trimmed.toUpperCase();
+
         setTransferItems((prev) => [
             ...prev,
             {
-                productId: `prod_${Date.now()}`,
-                variantId: `var_${Date.now()}`,
-                sku: trimmed.toUpperCase(),
-                name: `Item (${trimmed.toUpperCase()})`,
+                productId: product.id,
+                variantId: variant.id,
+                sku: fullSku,
+                name: variant.variant_name ? `${product.name} (${variant.variant_name})` : product.name,
                 quantity: Math.max(1, qtyInput),
             },
         ]);
         setSkuInput("");
         setQtyInput(1);
-        toast.success(`Added ${trimmed.toUpperCase()} to transfer manifest`);
+        toast.success(`Added ${fullSku} to transfer manifest`);
     };
 
     const handleRemoveItem = (index: number) => {

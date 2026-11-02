@@ -250,7 +250,7 @@ export function ShippingLabelPrintModal({
                                 </div>
                             </div>
                             <div style={{ fontSize: "16px", fontWeight: "900", border: "2px solid #000", padding: "2px 6px", background: "#f0f0f0" }}>
-                                {labelData.routingCode || labelData.consignee.pincode.slice(0, 3)}
+                                {labelData.routingCode || String(labelData.consignee.pincode ?? "").trim().slice(0, 3)}
                             </div>
                         </div>
 

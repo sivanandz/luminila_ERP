@@ -3,7 +3,7 @@
  * Handles challan CRUD operations for material outward tracking using PocketBase
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
 import { ClientResponseError } from 'pocketbase';
 import { toast } from 'sonner';
 import { getStoreSettings } from './invoice';
@@ -197,6 +197,7 @@ export async function createChallan(
             async (allocatedNumber) => {
                 allocatedChallanNumber = allocatedNumber;
                 return pb.collection('delivery_challans').create({
+                    account_email: getCurrentTenantEmail(),
                     challan_number: allocatedNumber,
                     challan_date: challan.challan_date,
                     challan_type: challan.challan_type,
@@ -240,6 +241,7 @@ export async function createChallan(
         // Insert items
         for (const item of items) {
             await pb.collection('delivery_challan_items').create({
+                account_email: getCurrentTenantEmail(),
                 challan: data.id,
                 product: item.product_id || '',
                 variant: item.variant_id || '',
@@ -278,8 +280,11 @@ export async function createChallan(
 export async function getChallan(id: string): Promise<DeliveryChallan | null> {
     try {
         const data = await pb.collection('delivery_challans').getOne(id);
+        const tenant = getCurrentTenantEmail();
+        const owner = (data as unknown as { account_email?: string }).account_email;
+        if (owner && owner !== tenant) return null;
         const items = await pb.collection('delivery_challan_items').getFullList<DeliveryChallanItemRecord>({
-            filter: `challan="${id}"`,
+            filter: `challan="${sanitizeFilter(id)}" && account_email="${sanitizeFilter(tenant)}"`,
             sort: 'sr_no',
         });
 
@@ -362,7 +367,7 @@ export async function getChallans(filters?: {
     consigneeName?: string;
 }): Promise<DeliveryChallan[]> {
     try {
-        const filterParts: string[] = [];
+        const filterParts: string[] = [`account_email="${sanitizeFilter(getCurrentTenantEmail())}"`];
 
         // Use delivery_date instead of challan_date (actual field name in collection)
         const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
@@ -375,10 +380,17 @@ export async function getChallans(filters?: {
         if (filters?.status) {
             filterParts.push(`status="${filters.status}"`);
         }
-        // Note: challan_type and consignee_name may not exist in this collection schema
+        // These were documented as unsupported and silently ignored, so a
+        // challan-type or consignee search returned the whole register (ORD-21).
+        if (filters?.challanType) {
+            filterParts.push(`challan_type="${filters.challanType}"`);
+        }
+        if (filters?.consigneeName) {
+            filterParts.push(`consignee_name~"${sanitizeFilter(filters.consigneeName)}"`);
+        }
 
         const data = await pb.collection('delivery_challans').getFullList<DeliveryChallanRecord>({
-            filter: filterParts.length > 0 ? filterParts.join(' && ') : undefined,
+            filter: filterParts.join(' && '),
             sort: '-created', // Use created instead of challan_date which doesn't exist
         });
 

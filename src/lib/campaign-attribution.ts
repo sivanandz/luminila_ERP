@@ -3,7 +3,7 @@
  * Tracks WhatsApp marketing campaigns, 7-day multi-touch order attribution, funnel analytics, and ROI.
  */
 
-import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey } from "./pocketbase";
+import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
 import { normalizeE164 } from "./whatsapp-crm";
 
 export const ATTRIBUTION_WINDOW_DAYS = 7;
@@ -64,6 +64,17 @@ export interface CampaignAnalyticsOverview {
 
 // In-memory / LocalStorage cache fallback
 let memoryCampaigns: MarketingCampaign[] = [];
+// Switching accounts in one browser session must not reuse the previous
+// tenant's campaign cache (CRM-19).
+let memoryCampaignsTenant = "";
+
+function ensureCampaignTenant(): void {
+    const tenant = getCurrentTenantEmail();
+    if (tenant !== memoryCampaignsTenant) {
+        memoryCampaignsTenant = tenant;
+        memoryCampaigns = [];
+    }
+}
 
 function persistLocalCampaigns(campaigns: MarketingCampaign[]) {
     memoryCampaigns = [...campaigns];
@@ -81,13 +92,14 @@ function persistLocalCampaigns(campaigns: MarketingCampaign[]) {
  */
 export async function getMarketingCampaigns(): Promise<MarketingCampaign[]> {
     ensureAuth();
+    ensureCampaignTenant();
     const userEmail = getCurrentTenantEmail();
     const storageKey = getStorageKey();
 
     try {
         // Attempt to fetch from PocketBase collection
         const records = await pb.collection(CAMPAIGNS_COLLECTION).getFullList<MarketingCampaign>({
-            filter: `account_email = "${userEmail}"`,
+            filter: `account_email = "${sanitizeFilter(userEmail)}"`,
             sort: "-created",
         });
         if (records.length > 0) {
@@ -155,6 +167,28 @@ export async function createMarketingCampaign(
 }
 
 /**
+ * Persist the number of recipients the broadcast engine actually queued.
+ * Without this the campaign list reported 0 recipients forever (CRM-11).
+ */
+export async function updateCampaignQueueCounts(
+    campaignId: string,
+    totalRecipients: number
+): Promise<void> {
+    ensureCampaignTenant();
+    const updated = memoryCampaigns.map((campaign) =>
+        campaign.id === campaignId
+            ? { ...campaign, total_recipients: totalRecipients }
+            : campaign
+    );
+    persistLocalCampaigns(updated);
+    if (!campaignId.startsWith("cmp_")) {
+        await pb.collection(CAMPAIGNS_COLLECTION).update(campaignId, {
+            total_recipients: totalRecipients,
+        }).catch((err: unknown) => console.warn("[campaigns] recipient count update failed:", err));
+    }
+}
+
+/**
  * Attribute an order to campaigns using Hybrid Attribution
  * 1. Checks campaign promo code match
  * 2. Checks recipient phone dispatch within 7-day rolling window
@@ -189,12 +223,15 @@ export async function attributeOrderToCampaign(order: {
 
         // Find campaign created/active within the 7-day window
         for (const c of campaigns) {
-            const cmpDate = new Date(c.created_at);
+            // PB rows expose `created`, not `created_at`; an undefined value
+            // produced Invalid Date and silently skipped attribution (CRM-15).
+            const cmpDate = new Date(c.created_at || (c as { created?: string }).created || 0);
             if (cmpDate >= windowStart && cmpDate <= orderDate) {
                 // Check if this recipient was in broadcast messages
                 try {
                     const hit = await pb.collection("broadcast_messages").getFirstListItem(
-                        `campaign="${c.title}" && recipient_phone~"${orderPhone.slice(-10)}"`
+                        `campaign="${sanitizeFilter(c.title)}" && recipient_phone~"${orderPhone.slice(-10)}"` +
+                        ` && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`
                     );
                     if (hit) {
                         await recordCampaignConversion(c.id, order.total);

@@ -210,7 +210,7 @@ export async function getSalesReport(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
             sort: '-invoice_date',
             expand: 'customer',
         });
@@ -253,7 +253,7 @@ export async function getGSTR1Report(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
             sort: 'invoice_date',
         });
 
@@ -287,7 +287,12 @@ export async function getGSTR1Report(
             if (inv.buyer_gstin && isValidGstinChecksum(inv.buyer_gstin)) {
                 b2b.push(row);
             } else {
-                row.invoiceType = 'B2C Large';
+                // Only an inter-state invoice above ₹2.5L is B2C Large; the old
+                // code labelled every unregistered buyer that way (FIN-21).
+                const sellerState = String((inv as { seller_state_code?: string }).seller_state_code || '').substring(0, 2);
+                const pos = String(row.placeOfSupply || '').substring(0, 2);
+                const isInterState = Boolean(sellerState) && Boolean(pos) && pos !== sellerState;
+                row.invoiceType = isInterState && row.invoiceValue > 250000 ? 'B2C Large' : 'B2C Small';
                 b2c.push(row);
             }
         });
@@ -400,7 +405,7 @@ export async function getStockReport(db: typeof pb = pb, tenant: string = accoun
     try {
         const [data, landedCostByVariant, categories] = await Promise.all([
             db.collection('product_variants').getFullList<ProductVariant>({
-                filter: `account_email="${tenant}"`,
+                filter: `account_email="${tenant}" && product.is_active = true`,
                 sort: 'stock_level',
                 expand: 'product',
             }),
@@ -413,9 +418,7 @@ export async function getStockReport(db: typeof pb = pb, tenant: string = accoun
 
         const rows: StockReportRow[] = data.map((v) => {
             const product = v.expand?.product;
-            const costPrice = (product?.cost_price && product.cost_price > 0)
-                ? product.cost_price
-                : (product?.base_price || 0);
+            const costPrice = Number(product?.cost_price) || 0;
             const stockLevel = v.stock_level || 0;
             const landedCost = landedCostByVariant.get(v.id);
             const categoryId = String(product?.category || '');
@@ -480,7 +483,7 @@ export async function getHSNSummary(
         const { start, end } = normalizeDateRange(startDate, endDate);
         // Fetch invoice items with date filter through invoice
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
         });
 
         const invoiceIds = invoices.map(inv => inv.id);
@@ -572,7 +575,7 @@ export async function generateGSTR1JSON(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
             sort: 'invoice_number',
         });
 
@@ -637,8 +640,9 @@ export async function generateGSTR1JSON(
                     rchrg: inv.is_reverse_charge ? 'Y' : 'N',
                     etin: '',
                     inv_typ: 'R',
-                    itms: items.map(item => ({
-                        num: 1,
+                    itms: items.map((item, index) => ({
+                        // GSTN item numbers are 1-based and unique per invoice.
+                        num: index + 1,
                         itm_det: {
                             rt: item.rt,
                             txval: item.txval,
@@ -662,8 +666,8 @@ export async function generateGSTR1JSON(
                     idt: invDate,
                     val: invValue,
                     etin: '',
-                    itms: items.map(item => ({
-                        num: 1,
+                    itms: items.map((item, index) => ({
+                        num: index + 1,
                         itm_det: {
                             rt: item.rt,
                             txval: item.txval,
@@ -680,7 +684,10 @@ export async function generateGSTR1JSON(
                 }
             } else {
                 items.forEach(item => {
-                    const type = inv.buyer_gstin ? 'E' : 'OE';
+                    // B2CS `typ` is OE (other than e-commerce) or E (e-commerce
+                    // operator). Conflating it with "has a GSTIN" emitted E with
+                    // no etin, which GSTN rejects (FIN-07).
+                    const type = 'OE';
                     const entry = b2cs.find(b => b.pos === pos && b.rt === item.rt && b.typ === type);
 
                     if (entry) {
@@ -706,20 +713,23 @@ export async function generateGSTR1JSON(
         });
 
         const fp = format(new Date(endDate), 'MMyyyy');
+        const grossTotal = invoices.reduce((sum, inv) => sum + (inv.grand_total || inv.total || 0), 0);
 
         return {
             gstin: gstin,
             fp: fp,
-            gt: 0,
-            cur_gt: 0,
+            gt: grossTotal,
+            cur_gt: grossTotal,
             version: "GST3.0.4",
-            hash: "hash",
+            // The portal computes this hash; emitting a literal "hash" was a
+            // fake value that could never validate (FIN-07).
+            hash: "",
             b2b: b2b,
             b2cl: b2cl,
             b2cs: b2cs,
             hsn: {
-                data: hsnData.map(h => ({
-                    num: 1,
+                data: hsnData.map((h, index) => ({
+                    num: index + 1,
                     hsn_sc: h.hsnCode,
                     desc: h.description,
                     uqc: 'GMS',

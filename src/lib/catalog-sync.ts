@@ -49,6 +49,11 @@ export async function syncCatalog() {
 
     // 1. Create Sync Log scoped to current tenant
     const tenantEmail = getCurrentTenantEmail();
+    // Fail closed: a missing/'default' tenant used to omit the filter and sync
+    // every store's catalogue (SF-24).
+    if (!tenantEmail || tenantEmail === 'default') {
+        return { success: false, error: 'No authenticated tenant for catalog sync' };
+    }
     let logData;
     try {
         logData = await pb.collection('catalog_sync_logs').create({
@@ -73,13 +78,9 @@ export async function syncCatalog() {
     try {
         // 2. Fetch PocketBase Products strictly scoped to current tenant
         const rawProducts = await pb.collection('products').getFullList({
-            filter: tenantEmail && tenantEmail !== 'default'
-                ? `account_email = "${sanitizeFilter(tenantEmail)}"`
-                : undefined,
+            filter: `account_email = "${sanitizeFilter(tenantEmail)}"`,
         });
-        const dbProducts = rawProducts.filter(
-            (p) => !p.account_email || p.account_email === tenantEmail
-        );
+        const dbProducts = rawProducts.filter((p) => p.account_email === tenantEmail);
 
         // 3. Fetch WhatsApp Catalog
         let waProducts: WhatsAppProduct[] = [];

@@ -14,6 +14,7 @@ import {
     generateBarcodeURL,
 } from "@/lib/barcode-generator";
 import { getProducts } from "@/lib/products";
+import { getTenantStorageKey } from "@/lib/pocketbase";
 import { getChannelPrice, getConfiguredChannels, loadConfiguredChannels, type SalesChannelDef } from "@/lib/channel-pricing";
 import { formatImitationSpec, PLATING_DEFINITIONS } from "@/lib/imitation-jewelry-engine";
 
@@ -360,10 +361,20 @@ function LabelsContent() {
 
     const handleLabelChannelChange = (channelId: string) => {
         setSelectedChannel(channelId);
-        setAvailableProducts(prev => prev.map(p => ({
-            ...p,
-            price: getChannelPrice({ base_price: p.base_price, cost_price: p.cost_price, channel_prices: p.channel_prices }, channelId),
-        })));
+        // Queue lines carry only a printed price, so a channel switch has to
+        // re-price them from the catalog row; otherwise the tag keeps the
+        // previous channel's rate (INV-19).
+        const priceOf = (p: DBProduct) =>
+            getChannelPrice(
+                { base_price: p.base_price, cost_price: p.cost_price, channel_prices: p.channel_prices },
+                channelId
+            );
+        setAvailableProducts(availableProducts.map(p => ({ ...p, price: priceOf(p) })));
+        const priceBySku = new Map(availableProducts.map(p => [p.sku, priceOf(p)]));
+        setSelectedProducts(prev => prev.map(item => {
+            const nextPrice = priceBySku.get(item.sku);
+            return nextPrice === undefined || nextPrice === item.price ? item : { ...item, price: nextPrice };
+        }));
     };
 
     // Load products from PocketBase or localStorage
@@ -389,7 +400,7 @@ function LabelsContent() {
                     })));
                     return;
                 }
-                const stored = localStorage.getItem('luminila_products');
+                const stored = localStorage.getItem(getTenantStorageKey('luminila_products'));
                 if (stored) {
                     const products = JSON.parse(stored);
                     setAvailableProducts(products.map((p: any) => ({
@@ -401,7 +412,7 @@ function LabelsContent() {
                 }
             } catch (e) {
                 console.error('Failed to load products from PB:', e);
-                const stored = localStorage.getItem('luminila_products');
+                const stored = localStorage.getItem(getTenantStorageKey('luminila_products'));
                 if (stored) {
                     try { setAvailableProducts(JSON.parse(stored)); } catch { }
                 }
@@ -417,6 +428,8 @@ function LabelsContent() {
         const sku = searchParams.get('sku');
         const name = searchParams.get('name');
         const price = searchParams.get('price');
+        const requestedQty = parseInt(searchParams.get('qty') || '', 10);
+        const addQty = Number.isFinite(requestedQty) && requestedQty > 0 ? requestedQty : 1;
 
         if (sku && name && price) {
             const productPart = {
@@ -431,11 +444,11 @@ function LabelsContent() {
                     const next = [...prev];
                     next[existingIndex] = {
                         ...next[existingIndex],
-                        quantity: next[existingIndex].quantity + 1
+                        quantity: next[existingIndex].quantity + addQty
                     };
                     return next;
                 }
-                return [...prev, { ...productPart, quantity: 1 }];
+                return [...prev, { ...productPart, quantity: addQty }];
             });
 
             setAddedNotice(name);

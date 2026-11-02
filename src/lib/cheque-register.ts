@@ -10,6 +10,7 @@
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { enqueueTask } from './concurrency';
+import { createBankTransaction } from './banking';
 import {
     aggregateChequePortfolio,
     getPdcMaturityInfo,
@@ -177,6 +178,24 @@ export async function advanceCheque(
         const result = transitionChequeStatus(cheques[index], status, options);
         if (!result.success) throw new Error(result.error || 'That status change is not allowed.');
 
+        // Clearing / bouncing / reopening a cleared cheque moves real money.
+        // Post it to the bank ledger before committing the register change, so
+        // the balance and its audit row can never disagree (FIN-04).
+        const { bankBalanceDelta, bankAccountId, description } = result.ledgerEffect;
+        if (bankBalanceDelta !== 0 && bankAccountId) {
+            const transactionDate = (options.transitionDate || new Date().toISOString()).slice(0, 10);
+            await createBankTransaction({
+                account: bankAccountId,
+                transaction_date: transactionDate,
+                type: bankBalanceDelta > 0 ? 'deposit' : 'withdrawal',
+                amount: Math.abs(bankBalanceDelta),
+                description: description || `Cheque #${result.cheque.chequeNumber}`,
+                reference_number: result.cheque.chequeNumber,
+                related_entity_type: 'cheque',
+                related_entity_id: result.cheque.id,
+            });
+        }
+
         cheques[index] = result.cheque;
         await writeCheques(cheques);
         return { cheques: sortCheques(cheques), result };
@@ -184,14 +203,18 @@ export async function advanceCheque(
 }
 
 export async function deleteCheque(id: string): Promise<ChequeRecord[]> {
-    const cheques = await readCheques();
-    const target = cheques.find((cheque) => cheque.id === id);
-    if (!target) throw new Error('Cheque not found.');
-    if (target.status === 'cleared') {
-        throw new Error('A cleared cheque is part of the bank audit trail and cannot be deleted.');
-    }
-    await writeCheques(cheques.filter((cheque) => cheque.id !== id));
-    return listCheques();
+    // Same read-modify-write serialization as add/advance (FIN-17).
+    return enqueueTask('cheque_register', async () => {
+        const cheques = await readCheques();
+        const target = cheques.find((cheque) => cheque.id === id);
+        if (!target) throw new Error('Cheque not found.');
+        if (target.status === 'cleared') {
+            throw new Error('A cleared cheque is part of the bank audit trail and cannot be deleted.');
+        }
+        const remaining = cheques.filter((cheque) => cheque.id !== id);
+        await writeCheques(remaining);
+        return sortCheques(remaining);
+    });
 }
 
 export function summariseCheques(

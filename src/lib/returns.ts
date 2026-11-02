@@ -3,7 +3,9 @@
  * Handles product returns and credit note generation using PocketBase
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
+import { applyPurchaseReversal } from './channel-orders';
+import { adjustPoints } from './loyalty';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
 import { calculateGST, GST_RATES } from './gst';
@@ -160,7 +162,7 @@ export async function getCreditNotes(filters?: {
     endDate?: string;
 }): Promise<CreditNote[]> {
     try {
-        const filterParts: string[] = [];
+        const filterParts: string[] = [`account_email="${sanitizeFilter(getCurrentTenantEmail())}"`];
 
         if (filters?.status) {
             filterParts.push(`status="${filters.status}"`);
@@ -210,8 +212,11 @@ export async function getCreditNotes(filters?: {
 export async function getCreditNote(id: string): Promise<CreditNote | null> {
     try {
         const cn = await pb.collection('credit_notes').getOne<CreditNoteRecord>(id);
+        const tenant = getCurrentTenantEmail();
+        const owner = (cn as unknown as { account_email?: string }).account_email;
+        if (owner && owner !== tenant) return null;
         const items = await pb.collection('credit_note_items').getFullList<CreditNoteItemRecord>({
-            filter: `credit_note="${id}"`,
+            filter: `credit_note="${sanitizeFilter(id)}" && account_email="${sanitizeFilter(tenant)}"`,
         });
 
         return {
@@ -266,7 +271,7 @@ export async function createCreditNote(
     items: Omit<CreditNoteItem, 'id' | 'credit_note_id'>[]
 ): Promise<CreditNote> {
     let allocatedCnNumber = '';
-    const accountEmail = (pb.authStore.model as any)?.email || '';
+    const accountEmail = getCurrentTenantEmail();
     const cn = await createWithUniqueRetry(
         generateCreditNoteNumber,
         (allocatedNumber) => {
@@ -550,11 +555,53 @@ export async function processRefund(
         refunded_at: new Date().toISOString(),
     });
 
-    // The order came back, so the coupon use goes back to the pool too.
+    // The money came back, so the customer's lifetime spend and loyalty earned
+    // on that sale must come back too. Previously a refund left the CRM
+    // reporting revenue and points for goods that were returned (ORD-19).
     const linkage = await pb.collection('credit_notes').getOne<{
         original_invoice?: string;
         original_sale?: string;
     }>(id).catch(() => null);
+    try {
+        let refundCustomerId = '';
+        let originalAmount = amount;
+        let referenceId = '';
+        if (linkage?.original_sale) {
+            referenceId = linkage.original_sale;
+            const sale = await pb.collection('sales').getOne(linkage.original_sale).catch(() => null);
+            refundCustomerId = String((sale as { customer?: string } | null)?.customer || '');
+            originalAmount = Number((sale as { total?: number } | null)?.total) || amount;
+        } else if (linkage?.original_invoice) {
+            referenceId = linkage.original_invoice;
+            const invoice = await pb.collection('invoices').getOne(linkage.original_invoice).catch(() => null);
+            refundCustomerId = String((invoice as { customer?: string } | null)?.customer || '');
+            originalAmount = Number(
+                (invoice as { grand_total?: number; total?: number } | null)?.grand_total
+                ?? (invoice as { total?: number } | null)?.total
+            ) || amount;
+        }
+
+        if (refundCustomerId) {
+            await applyPurchaseReversal(pb, refundCustomerId, originalAmount);
+            if (referenceId) {
+                const earned = await pb.collection('loyalty_transactions').getFirstListItem(
+                    `type="earn" && reference_id="${sanitizeFilter(referenceId)}"`
+                ).catch(() => null);
+                const points = Number((earned as { points?: number } | null)?.points || 0);
+                if (points > 0) {
+                    await adjustPoints(
+                        refundCustomerId,
+                        -points,
+                        `Refund reversal for credit note ${cn.credit_note_number || id}`
+                    ).catch((err) => console.warn('Loyalty reversal failed:', err));
+                }
+            }
+        }
+    } catch (reversalErr) {
+        console.warn('Refund aggregate/loyalty reversal failed:', reversalErr);
+    }
+
+    // The order came back, so the coupon use goes back to the pool too.
     await reverseDiscountUsage({
         invoiceId: linkage?.original_invoice,
         saleId: linkage?.original_sale,
@@ -681,12 +728,16 @@ export async function createReturnFromInvoice(
     const creditNoteItems: Omit<CreditNoteItem, 'id' | 'credit_note_id'>[] = itemsToReturn.map((item) => {
         const returnItem = returnItems.find(ri => ri.invoice_item_id === item.id)!;
         const qty = returnItem.quantity;
+        // Prorate each component and round to paise: raw float division left
+        // IEEE-754 tails in the credit note totals (POS-18).
+        const roundToTwo = (value: number) => Math.round((Number(value) || 0) * 100) / 100;
+        const originalQty = Math.max(1, Number(item.quantity) || 1);
 
-        const itemTaxable = (item.taxable_amount / item.quantity) * qty;
-        const itemCgst = ((item.cgst_amount || 0) / item.quantity) * qty;
-        const itemSgst = ((item.sgst_amount || 0) / item.quantity) * qty;
-        const itemIgst = ((item.igst_amount || 0) / item.quantity) * qty;
-        const itemTotal = itemTaxable + itemCgst + itemSgst + itemIgst;
+        const itemTaxable = roundToTwo((item.taxable_amount / originalQty) * qty);
+        const itemCgst = roundToTwo(((item.cgst_amount || 0) / originalQty) * qty);
+        const itemSgst = roundToTwo(((item.sgst_amount || 0) / originalQty) * qty);
+        const itemIgst = roundToTwo(((item.igst_amount || 0) / originalQty) * qty);
+        const itemTotal = roundToTwo(itemTaxable + itemCgst + itemSgst + itemIgst);
 
         taxableValue += itemTaxable;
         cgstAmount += itemCgst;
@@ -701,7 +752,7 @@ export async function createReturnFromInvoice(
             quantity: qty,
             unit_price: item.unit_price,
             discount_percent: item.discount_percent,
-            discount_amount: ((item.discount_amount || 0) / item.quantity) * qty,
+            discount_amount: roundToTwo(((item.discount_amount || 0) / originalQty) * qty),
             taxable_amount: itemTaxable,
             gst_rate: item.gst_rate || 0,
             cgst_amount: itemCgst,
@@ -711,8 +762,8 @@ export async function createReturnFromInvoice(
         };
     });
 
-    const totalTax = cgstAmount + sgstAmount + igstAmount;
-    const grandTotal = taxableValue + totalTax;
+    const totalTax = Math.round((cgstAmount + sgstAmount + igstAmount) * 100) / 100;
+    const grandTotal = Math.round((taxableValue + totalTax) * 100) / 100;
 
     return createCreditNote(
         {
@@ -749,7 +800,9 @@ export async function getReturnsStats(): Promise<{
         thisMonth.setDate(1);
         thisMonth.setHours(0, 0, 0, 0);
 
-        const allCNs = await pb.collection('credit_notes').getFullList<CreditNoteRecord>();
+        const allCNs = await pb.collection('credit_notes').getFullList<CreditNoteRecord>({
+            filter: `account_email="${sanitizeFilter(getCurrentTenantEmail())}"`,
+        });
         const totalReturns = allCNs.length;
         const pendingCount = allCNs.filter((cn) => cn.status === 'pending').length;
         const totalValue = allCNs
@@ -973,21 +1026,25 @@ export async function processExchange(
     }
 
     // 2. FINANCIAL SETTLEMENT (pure computation): Replacement unit prices are
-    // pre-tax base prices (the same taxable base used for invoicing), while
-    // creditNote.grand_total is tax-inclusive — apply the standard jewelry GST
-    // rate to the replacement value before comparing, so an even exchange
-    // settles to zero instead of refunding the GST amount.
-    const replacementTaxable = newItems.reduce(
-        (sum, item) => sum + (item.unit_price * item.quantity),
-        0
-    );
-    const replacementGst = calculateGST(
-        replacementTaxable,
-        creditNote.buyer_state_code || '',
-        creditNote.buyer_state_code || '',
-        GST_RATES.JEWELRY
-    );
-    const replacementTotal = replacementGst.grandTotal; // tax-inclusive, comparable to the credit value
+    // pre-tax base prices, while creditNote.grand_total is tax-inclusive. Use
+    // the same registration flag and per-line split as the invoice, otherwise
+    // an unregistered store is charged GST and the aggregate rounding differs
+    // from the document (POS-09).
+    const store = await getStoreSettings();
+    const gstEnabled = store.is_gst_registered !== false;
+    const replacementRate = gstEnabled ? GST_RATES.JEWELRY : 0;
+    const replacementState = creditNote.buyer_state_code || store.store_state_code || '';
+    let replacementTotalPaise = 0;
+    for (const item of newItems) {
+        const split = splitExclusiveLine(
+            toPaise(item.unit_price * item.quantity),
+            replacementRate,
+            store.store_state_code || replacementState,
+            replacementState
+        );
+        replacementTotalPaise += split.totalPaise;
+    }
+    const replacementTotal = toRupees(replacementTotalPaise); // tax-inclusive
     const creditValue = creditNote.grand_total;
     const balanceDue = replacementTotal - creditValue; // Positive = customer pays more, Negative = store refunds customer
 
@@ -1084,6 +1141,7 @@ export async function processExchange(
 
             if (balanceDue > 0) {
                 const pRecord = await pb.collection('invoice_payments').create({
+                    account_email: getCurrentTenantEmail(),
                     invoice: exchange.invoiceId,
                     amount: balanceDue,
                     payment_date: new Date().toISOString(),
@@ -1092,6 +1150,14 @@ export async function processExchange(
                     notes: `Exchange balance collected (${paymentMethod.toUpperCase()}). Exchange invoice ${exchange.invoiceNumber}`,
                 });
                 invoicePaymentId = pRecord.id;
+                // The credit note covers the rest of the replacement, so the
+                // exchange invoice is fully settled once the balance is paid;
+                // leaving it "pending" contradicted the payment row (POS-09).
+                await pb.collection('invoices').update(exchange.invoiceId, {
+                    status: 'paid',
+                    is_paid: true,
+                    paid_amount: exchange.grandTotal,
+                }).catch((err) => console.warn('Could not mark exchange invoice paid:', err));
             }
         }
 
@@ -1164,7 +1230,7 @@ export async function processExchange(
 export async function getExchangeEligibleCreditNotes(): Promise<CreditNote[]> {
     try {
         const records = await pb.collection('credit_notes').getFullList<CreditNoteRecord>({
-            filter: 'status="approved"',
+            filter: `status="approved" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`,
             sort: '-created',
         });
 

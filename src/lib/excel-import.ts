@@ -4,7 +4,7 @@
  */
 
 import ExcelJS from 'exceljs';
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 import { calculateLandedUnitCosts, reconcilePOWithInwardBatch, decodePOMetadata } from './purchase';
 
 export interface InventoryImportRow {
@@ -500,8 +500,12 @@ export async function parseInventoryImportFile(
         throw new Error('Unable to find a valid header row in the sheet. Please use the official Luminila Excel template.');
     }
 
-    // Column mapping helpers
+    // Column mapping helpers. An exact normalized header always wins over a
+    // substring match, so "price" cannot claim "Cost Price" and "weight" cannot
+    // claim "Net Weight" when the real column exists further right (INV-13).
     const getColIndex = (keywords: string[]): number | undefined => {
+        const exact = headers.find(h => keywords.includes(h.normalized));
+        if (exact) return exact.index;
         for (const kw of keywords) {
             const found = headers.find(h => h.normalized.includes(kw));
             if (found) return found.index;
@@ -708,7 +712,7 @@ export async function commitBulkInventoryImport(
     const poRecordMap = new Map<string, any>();
     for (const poRef of allPoRefs) {
         try {
-            let po = await pbClient.collection('purchase_orders').getFirstListItem(`po_number="${poRef}"`).catch(() => null);
+            let po = await pbClient.collection('purchase_orders').getFirstListItem(`po_number="${sanitizeFilter(poRef)}"`).catch(() => null);
             if (!po) {
                 po = await pbClient.collection('purchase_orders').getOne(poRef).catch(() => null);
             }

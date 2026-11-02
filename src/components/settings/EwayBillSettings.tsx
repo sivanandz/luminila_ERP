@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { ensureAuth } from "@/lib/pocketbase";
-import { getEwayBillConfig, saveEwayBillConfig } from "@/lib/eway-bill-settings";
+import { getEwayBillConfig, saveEwayBillConfig, testEwayBillConnection } from "@/lib/eway-bill-settings";
 import { Loader2, FileText, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
 
 interface EwayBillSettings {
@@ -40,6 +40,7 @@ export function EwayBillSettings() {
     const [isSaving, setIsSaving] = useState(false);
     const [isTesting, setIsTesting] = useState(false);
     const [testResult, setTestResult] = useState<"success" | "error" | null>(null);
+    const [testMessage, setTestMessage] = useState<string | null>(null);
 
     useEffect(() => {
         loadSettings();
@@ -89,23 +90,28 @@ export function EwayBillSettings() {
     const testConnection = async () => {
         setIsTesting(true);
         setTestResult(null);
+        setTestMessage(null);
 
         try {
-            // For now, just validate that credentials are provided
-            if (!settings.client_id || !settings.client_secret || !settings.username || !settings.password) {
-                setTestResult("error");
-                toast.error("Please fill in all credentials");
-                return;
+            const result = await testEwayBillConnection({
+                clientId: settings.client_id,
+                clientSecret: settings.client_secret,
+                username: settings.username,
+                password: settings.password,
+                isProduction: settings.is_production,
+            });
+            setTestResult(result.ok ? "success" : "error");
+            setTestMessage(result.message);
+            if (result.ok) {
+                toast.success(result.message);
+            } else if (result.notConfigured) {
+                toast.warning(result.message);
+            } else {
+                toast.error(result.message);
             }
-
-            // In production, this would call the actual API
-            // For now, simulate a test
-            await new Promise(resolve => setTimeout(resolve, 1500));
-
-            setTestResult("success");
-            toast.success("Connection test successful (sandbox)");
         } catch {
             setTestResult("error");
+            setTestMessage("Connection test failed");
             toast.error("Connection test failed");
         } finally {
             setIsTesting(false);
@@ -223,12 +229,12 @@ export function EwayBillSettings() {
                         {testResult === "success" ? (
                             <>
                                 <CheckCircle className="w-5 h-5 text-green-500" />
-                                <span className="text-sm text-green-500">Connection successful</span>
+                                <span className="text-sm text-green-500">{testMessage || "Connection successful"}</span>
                             </>
                         ) : (
                             <>
                                 <XCircle className="w-5 h-5 text-red-500" />
-                                <span className="text-sm text-red-500">Connection failed</span>
+                                <span className="text-sm text-red-500">{testMessage || "Connection failed"}</span>
                             </>
                         )}
                     </div>

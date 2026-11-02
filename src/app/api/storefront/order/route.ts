@@ -11,6 +11,9 @@ import {
     findExistingChannelOrder,
     resolveVariantForProduct,
     loadChannelStoreTaxContext,
+    computeCartHash,
+    cartHashMarker,
+    readCartHash,
     AGGREGATES_MARKER,
     type ChannelTaxLine,
 } from "@/lib/channel-orders";
@@ -439,6 +442,27 @@ export async function POST(req: Request) {
 
             const existing = await findExistingChannelOrder(client, txnId, boundAdminEmail, cleanPhoneDigits);
             if (existing) {
+                // The idempotency key proves "same checkout session"; the cart
+                // hash proves the payload is unchanged. A retry with edited
+                // lines must not silently return the old order (ORD-17).
+                const expectedCartHash = computeCartHash(
+                    (body.items || []).map((item) => ({
+                        productId: String(item.productId || ''),
+                        quantity: Number(item.quantity) || 1,
+                    })),
+                    Number(body.total ?? (body as { subtotal?: number }).subtotal ?? 0)
+                );
+                const storedCartHash = readCartHash(existing.internal_notes);
+                if (storedCartHash && storedCartHash !== expectedCartHash) {
+                    return NextResponse.json(
+                        {
+                            success: false,
+                            error: "This order was already submitted with a different cart. Start a new checkout.",
+                            code: "CART_CHANGED",
+                        },
+                        { status: 409, headers: CORS_HEADERS }
+                    );
+                }
                 // A retried prepare request must return the same gateway order,
                 // not create a second one (CO-05 idempotency).
                 if (body.paymentMethod === "razorpay_online" && body.prepareGateway) {
@@ -670,6 +694,7 @@ export async function POST(req: Request) {
 
             // Server-side discount calculation: recompute from verifiedSubtotal and active discounts
             let verifiedDiscount = 0;
+            let appliedDiscountId = '';
             if (body.couponCode && typeof body.couponCode === "string" && body.couponCode.trim()) {
                 const code = body.couponCode.trim().toUpperCase();
                 const discountRec = await client.collection("discounts").getFirstListItem(
@@ -677,15 +702,33 @@ export async function POST(req: Request) {
                 ).catch(() => null);
 
                 if (discountRec) {
-                    const discVal = Number(discountRec.value) || 0;
-                    const discType = discountRec.discount_type || (discountRec as any).type || "percentage";
-                    if (discType === "percentage") {
-                        verifiedDiscount = Math.round((calculatedSubtotal * discVal) / 100);
-                        if (discountRec.max_discount && verifiedDiscount > Number(discountRec.max_discount)) {
-                            verifiedDiscount = Number(discountRec.max_discount);
+                    // A coupon is only valid inside its window, above its
+                    // minimum and below its usage cap (SF-18).
+                    const nowMs = Date.now();
+                    const validFromRaw = discountRec.valid_from || discountRec.start_date;
+                    const validUntilRaw = discountRec.valid_until || discountRec.end_date;
+                    const startsOk = !validFromRaw || new Date(validFromRaw).getTime() <= nowMs;
+                    const endsOk = !validUntilRaw || new Date(validUntilRaw).getTime() >= nowMs;
+                    const minOrder = Number(
+                        discountRec.min_order_value ?? discountRec.min_purchase ?? 0
+                    );
+                    const usageLimit = Number(discountRec.usage_limit ?? discountRec.max_uses ?? 0);
+                    const usedCount = Number(discountRec.used_count || 0);
+                    const usageOk = usageLimit <= 0 || usedCount < usageLimit;
+                    const minOk = !Number.isFinite(minOrder) || minOrder <= calculatedSubtotal;
+
+                    if (startsOk && endsOk && usageOk && minOk) {
+                        const discVal = Number(discountRec.value) || 0;
+                        const discType = discountRec.discount_type || (discountRec as any).type || "percentage";
+                        if (discType === "percentage") {
+                            verifiedDiscount = Math.round((calculatedSubtotal * discVal) / 100);
+                            if (discountRec.max_discount && verifiedDiscount > Number(discountRec.max_discount)) {
+                                verifiedDiscount = Number(discountRec.max_discount);
+                            }
+                        } else {
+                            verifiedDiscount = discVal;
                         }
-                    } else {
-                        verifiedDiscount = discVal;
+                        appliedDiscountId = String(discountRec.id || '');
                     }
                 } else if (code === "FESTIVE10" && calculatedSubtotal >= 1499) {
                     // Server port of the storefront UI rule (P0-6): minimum
@@ -761,6 +804,13 @@ export async function POST(req: Request) {
             // Create official Sales Order bound to single admin account.
             // A lost order-number race (A22) surfaces as a unique-constraint
             // error; the client retries idempotently rather than 500-ing.
+            const orderCartHash = computeCartHash(
+                (body.items || []).map((item) => ({
+                    productId: String(item.productId || ''),
+                    quantity: Number(item.quantity) || 1,
+                })),
+                Number(body.total ?? (body as { subtotal?: number }).subtotal ?? 0)
+            );
             let salesOrder;
             try {
                 salesOrder = await client.collection("sales_orders").create({
@@ -794,7 +844,7 @@ export async function POST(req: Request) {
                         body.assignedCourier || "Smart Routing"
                     }. Coupon: ${body.couponCode || "None"}. Txn: ${body.razorpayPaymentId || "N/A"}. Campaign: ${
                         body.campaign || "direct"
-                    }. Marketing consent: ${body.marketingConsent ? "yes" : "no"}. GST ${tax.blendedRate}% inclusive, taxable ₹${tax.taxableValue.toFixed(2)}.`,
+                    }. Marketing consent: ${body.marketingConsent ? "yes" : "no"}. GST ${tax.blendedRate}% inclusive, taxable ₹${tax.taxableValue.toFixed(2)}. ${cartHashMarker(orderCartHash)}`,
                     notes: `Storefront Web Order ${txnId}`,
                 });
             } catch (createErr: any) {
@@ -925,38 +975,36 @@ export async function POST(req: Request) {
                 }
             }
 
-            // Also create POS sales record for unified daily revenue reporting.
-            // The mirror stores narrow enums: channel `storefront`, payment
-            // projected onto cash/upi/phonepe; UTM lives in notes because
-            // `sales.campaign` is a relation, not text (P0-4). This is a
-            // reporting projection, not the source of truth: a failure here is
-            // logged and must not turn a durable, stock-committed order into a
-            // 503 (CO-20). `sales` has no payment-id column, so the gateway
-            // reference stays on the order notes (CO-23).
-            await client
-                .collection("sales")
-                .create({
-                    channel: "storefront",
-                    channel_order_id: txnId,
-                    customer: customerId,
-                    customer_name: body.customerName,
-                    customer_phone: cleanPhoneDigits,
-                    customer_address: shippingAddressLine,
-                    subtotal: calculatedSubtotal,
-                    discount: verifiedDiscount,
-                    total: calculatedTotal,
-                    payment_method: body.paymentMethod === "cod" ? "cash" : "upi",
-                    status: "pending",
-                    campaign: campaign?.id || undefined,
-                    campaign_name: campaignName,
-                    notes: `Storefront Web Order ${txnId} [Domain: ${boundDomain}] UTM: ${
-                        body.campaign || "direct"
-                    } Txn: ${body.razorpayPaymentId || "N/A"}`,
-                    account_email: boundAdminEmail,
-                })
-                .catch((mirrorErr) => {
-                    console.warn("[Storefront Order] sales mirror write failed (order is durable):", mirrorErr);
-                });
+            // Also create the POS-reporting mirror, but only for orders that are
+            // already settled at intake. An online order that is abandoned at
+            // the gateway must not leave a phantom `sales` row; its mirror is
+            // written by settleCapturedOrder after capture (SF-16).
+            if (body.paymentMethod !== "razorpay_online") {
+                await client
+                    .collection("sales")
+                    .create({
+                        channel: "storefront",
+                        channel_order_id: txnId,
+                        customer: customerId,
+                        customer_name: body.customerName,
+                        customer_phone: cleanPhoneDigits,
+                        customer_address: shippingAddressLine,
+                        subtotal: calculatedSubtotal,
+                        discount: verifiedDiscount,
+                        total: calculatedTotal,
+                        payment_method: body.paymentMethod === "cod" ? "cash" : "upi",
+                        status: "pending",
+                        campaign: campaign?.id || undefined,
+                        campaign_name: campaignName,
+                        notes: `Storefront Web Order ${txnId} [Domain: ${boundDomain}] UTM: ${
+                            body.campaign || "direct"
+                        } Txn: ${body.razorpayPaymentId || "N/A"}`,
+                        account_email: boundAdminEmail,
+                    })
+                    .catch((mirrorErr) => {
+                        console.warn("[Storefront Order] sales mirror write failed (order is durable):", mirrorErr);
+                    });
+            }
 
             // CO-05 prepare phase: the order (and its lines) now exist. Create
             // the Razorpay order that carries this order id in its notes and
@@ -1036,6 +1084,26 @@ export async function POST(req: Request) {
                 } catch (markErr) {
                     console.warn("[order] aggregate marker write failed:", markErr);
                 }
+            }
+
+            // Count the coupon use only after the order and its lines exist, so
+            // a rolled-back checkout does not burn the code (SF-18).
+            if (appliedDiscountId) {
+                await client
+                    .collection("discounts")
+                    .update(appliedDiscountId, { "used_count+": 1 })
+                    .catch((err: unknown) => console.warn("[order] coupon counter update failed:", err));
+                await client
+                    .collection("discount_usage")
+                    .create({
+                        account_email: boundAdminEmail,
+                        discount: appliedDiscountId,
+                        discount_amount: verifiedDiscount,
+                        amount_saved: verifiedDiscount,
+                        order_value: calculatedSubtotal,
+                        order: persistedOrderId,
+                    })
+                    .catch((err: unknown) => console.warn("[order] coupon usage row failed:", err));
             }
 
             pbSyncSuccess = true;

@@ -58,7 +58,9 @@ export function parseCSV<T extends Record<string, string>>(csvString: string): P
 }
 
 /**
- * Parse a single CSV line, handling quoted fields
+ * Parse a single CSV line, handling quoted fields and RFC 4180 escaped
+ * (`""`) quotes. Quote characters are consumed, never appended, so a literal
+ * quote survives while the enclosing quotes do not.
  */
 function parseCSVLine(line: string): string[] {
     const result: string[] = [];
@@ -69,7 +71,12 @@ function parseCSVLine(line: string): string[] {
         const char = line[i];
 
         if (char === '"') {
-            inQuotes = !inQuotes;
+            if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++; // Skip the escaped second quote
+            } else {
+                inQuotes = !inQuotes;
+            }
         } else if (char === "," && !inQuotes) {
             result.push(current);
             current = "";
@@ -79,7 +86,7 @@ function parseCSVLine(line: string): string[] {
     }
     result.push(current);
 
-    return result.map((v) => v.replace(/^"|"$/g, ""));
+    return result;
 }
 
 /**
@@ -141,15 +148,15 @@ export function exportProductsToCSV(products: {
     products.forEach((product) => {
         product.variants.forEach((variant) => {
             rows.push([
-                product.sku,
+                escapeCSVField(product.sku),
                 escapeCSVField(product.name),
-                product.category,
+                escapeCSVField(product.category),
                 product.basePrice.toString(),
                 product.costPrice.toString(),
-                variant.name,
-                variant.material || "",
-                variant.size || "",
-                variant.color || "",
+                escapeCSVField(variant.name),
+                escapeCSVField(variant.material || ""),
+                escapeCSVField(variant.size || ""),
+                escapeCSVField(variant.color || ""),
                 variant.stock.toString(),
                 variant.priceAdjustment.toString(),
             ]);
@@ -160,11 +167,15 @@ export function exportProductsToCSV(products: {
 }
 
 /**
- * Escape field for CSV output and neutralize spreadsheet formula injection
+ * Escape field for CSV output and neutralize spreadsheet formula injection.
+ *
+ * The formula-start class deliberately lists `-` last: written as `@-|` it is a
+ * character *range* from `@` to `|`, which prefixes most uppercase and some
+ * lowercase fields with `'` and corrupts ordinary SKUs and names.
  */
 function escapeCSVField(field: string): string {
     let sanitized = field;
-    if (/^[=+@-|\t\r]/.test(sanitized)) {
+    if (/^[=+@|\t\r-]/.test(sanitized)) {
         sanitized = `'${sanitized}`;
     }
     if (sanitized.includes(",") || sanitized.includes('"') || sanitized.includes("\n") || sanitized.includes("\r")) {
@@ -272,12 +283,12 @@ export function exportInventoryReport(products: {
                     : "IN STOCK";
 
             rows.push([
-                product.sku,
+                escapeCSVField(product.sku),
                 escapeCSVField(product.name),
-                product.category,
-                variant.name,
+                escapeCSVField(product.category),
+                escapeCSVField(variant.name),
                 variant.stock.toString(),
-                status,
+                escapeCSVField(status),
             ]);
         });
     });

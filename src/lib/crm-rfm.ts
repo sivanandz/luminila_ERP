@@ -55,7 +55,12 @@ export interface CohortSummary {
 export function getDaysUntilMilestone(dateStr?: string | null): number {
     if (!dateStr) return -1;
     try {
-        const target = new Date(dateStr);
+        // Parse date-only values as local midnight; `new Date("YYYY-MM-DD")`
+        // is UTC and shifts the calendar day in IST (CRM-20).
+        const match = String(dateStr).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        const target = match
+            ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+            : new Date(dateStr);
         if (isNaN(target.getTime())) return -1;
 
         const now = new Date();

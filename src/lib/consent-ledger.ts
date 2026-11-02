@@ -57,6 +57,16 @@ export async function recordConsentEvent(db: typeof pb, input: ConsentEventInput
             occurred_at: input.occurredAt || new Date().toISOString(),
             notes: input.notes || '',
         });
+        // Keep the customer profile in step with the newest decision. Without
+        // this call the ledger and `opt_in_marketing` drifted apart (CRM-10).
+        if (input.customerId) {
+            await syncCustomerConsentFlags(db, input.customerId, {
+                marketing: input.purpose === 'marketing' ? input.granted : undefined,
+                whatsappOptOut: input.purpose === 'whatsapp_service' && input.granted === false
+                    ? true
+                    : undefined,
+            });
+        }
     } catch (err) {
         console.warn('[consent-ledger] Could not record consent event:', err);
     }

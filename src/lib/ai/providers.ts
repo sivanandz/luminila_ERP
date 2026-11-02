@@ -60,6 +60,12 @@ export const providerInputSchema = z.object({
     supportsTools: z.boolean().optional(),
     enabled: z.boolean().optional(),
     isDefault: z.boolean().optional(),
+    /**
+     * Saved provider being edited/tested. Only used by "test before save" so the
+     * stored key can be resolved by id instead of guessing from URL + model
+     * (AI-SYS-20); save ignores it.
+     */
+    providerId: z.string().trim().min(1).max(40).optional(),
 });
 
 export type ValidatedProviderInput = z.infer<typeof providerInputSchema>;
@@ -378,6 +384,21 @@ export async function deleteProvider(
 ): Promise<void> {
     const row = await getProviderRow(adminClient, accountEmail, providerId);
     await adminClient.collection(PROVIDERS_COLLECTION).delete(row.id);
+
+    // Never leave the tenant without a default: promote the next usable
+    // provider when the deleted row was the default (AI-SYS-19).
+    if (row.is_default === true) {
+        const remaining = (await listProviderRows(adminClient, accountEmail)).filter(
+            (candidate) => candidate.enabled !== false && candidate.base_url && candidate.model
+        );
+        const promoted = remaining[0];
+        if (promoted) {
+            await adminClient
+                .collection(PROVIDERS_COLLECTION)
+                .update(promoted.id, { is_default: true })
+                .catch(() => null);
+        }
+    }
 }
 
 export async function markProviderTested(
@@ -420,7 +441,11 @@ export function providerFromInputForTest(
             };
         }
         const rows = await listProviderRows(adminClient, accountEmail);
-        const row = rows.find((candidate) => candidate.base_url === input.baseUrl && candidate.model === input.model);
+        // Prefer the id of the row being edited: URL/model may have changed in
+        // the form, and matching on them tests the wrong stored key (AI-SYS-20).
+        const row = input.providerId
+            ? rows.find((candidate) => candidate.id === input.providerId)
+            : rows.find((candidate) => candidate.base_url === input.baseUrl && candidate.model === input.model);
         if (!row) throw new AiConfigError('Provide an API key to test this provider.', 'missing_api_key');
         const stored = rowToProvider(row, env);
         return {
@@ -429,6 +454,10 @@ export function providerFromInputForTest(
             baseUrl: input.baseUrl,
             model: input.model,
             customHeaders: input.customHeaders ?? stored.customHeaders,
+            temperature: input.temperature ?? stored.temperature,
+            maxTokens: input.maxTokens ?? stored.maxTokens,
+            maxTokensParam: input.maxTokensParam ?? stored.maxTokensParam,
+            supportsTools: input.supportsTools ?? stored.supportsTools,
             timeoutMs: 30_000,
         };
     })();

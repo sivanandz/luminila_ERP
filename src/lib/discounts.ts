@@ -3,7 +3,13 @@
  * Coupon validation, discount calculations, and management using PocketBase
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+
+/** `&& account_email = "…"` for tenant-scoped reads (POS-22). */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 // ===========================================
 // TYPES
@@ -129,7 +135,7 @@ function mapDiscountRecord(d: DiscountRecord): Discount {
 
 export async function getDiscounts(activeOnly: boolean = false): Promise<Discount[]> {
     try {
-        const filter = activeOnly ? 'is_active=true' : '';
+        const filter = `${activeOnly ? 'is_active=true' : 'id != ""'}${tenantClause()}`;
         const records = await pb.collection('discounts').getFullList<DiscountRecord>({
             filter,
             sort: '-created',
@@ -145,6 +151,9 @@ export async function getDiscounts(activeOnly: boolean = false): Promise<Discoun
 export async function getDiscount(id: string): Promise<Discount | null> {
     try {
         const d = await pb.collection('discounts').getOne<DiscountRecord>(id);
+        const tenant = accountScopeEmail();
+        const owner = (d as DiscountRecord & { account_email?: string }).account_email;
+        if (tenant && owner && owner !== tenant) return null;
         return mapDiscountRecord(d);
     } catch {
         return null;
@@ -154,7 +163,7 @@ export async function getDiscount(id: string): Promise<Discount | null> {
 export async function getDiscountByCode(code: string): Promise<Discount | null> {
     try {
         const d = await pb.collection('discounts').getFirstListItem<DiscountRecord>(
-            `code="${sanitizeFilter(code.toUpperCase())}"`
+            `code="${sanitizeFilter(code.toUpperCase())}"${tenantClause()}`
         );
         return mapDiscountRecord(d);
     } catch {
@@ -164,6 +173,7 @@ export async function getDiscountByCode(code: string): Promise<Discount | null> 
 
 export async function createDiscount(discount: Omit<Discount, 'id' | 'used_count' | 'created_at'>): Promise<Discount> {
     const d = await pb.collection('discounts').create<DiscountRecord>({
+        account_email: accountScopeEmail(),
         code: discount.code.toUpperCase(),
         name: discount.name,
         description: discount.description || '',
@@ -273,7 +283,7 @@ export async function validateDiscount(
     if (customerId && discount.per_customer_limit > 0) {
         try {
             const usages = await pb.collection('discount_usage').getFullList({
-                filter: `discount="${discount.id}" && customer="${customerId}"`,
+                filter: `discount="${sanitizeFilter(discount.id || '')}" && customer="${sanitizeFilter(customerId || '')}"${tenantClause()}`,
             });
 
             if (usages.length >= discount.per_customer_limit) {
@@ -351,6 +361,11 @@ export async function recordDiscountUsage(
     }
 ): Promise<void> {
     const discount = await pb.collection('discounts').getOne<DiscountRecord>(discountId);
+    const tenant = accountScopeEmail();
+    const owner = (discount as DiscountRecord & { account_email?: string }).account_email;
+    if (tenant && owner && owner !== tenant) {
+        throw new Error('Discount does not belong to this store.');
+    }
 
     // Reserve the slot first: a check followed by an increment lets two
     // concurrent checkouts both pass the limit.
@@ -363,6 +378,7 @@ export async function recordDiscountUsage(
     }
 
     const payload: Record<string, unknown> = {
+        account_email: tenant,
         discount: discountId,
         discount_amount: discountAmount,
         amount_saved: discountAmount,
@@ -386,7 +402,7 @@ export async function recordDiscountUsage(
     // extra use rather than trusting the pre-check.
     if (options?.customerId && (discount.per_customer_limit || 0) > 0) {
         const usages = await pb.collection('discount_usage').getFullList({
-            filter: `discount="${discountId}" && customer="${sanitizeFilter(options.customerId)}"`,
+            filter: `discount="${sanitizeFilter(discountId)}" && customer="${sanitizeFilter(options.customerId)}"${tenantClause()}`,
         });
         if (usages.length > (discount.per_customer_limit || 0)) {
             await pb.collection('discount_usage').delete(usageId).catch(() => {});
@@ -412,7 +428,7 @@ export async function reverseDiscountUsage(options: {
     if (filters.length === 0) return 0;
 
     const usages = await pb.collection('discount_usage').getFullList({
-        filter: filters.join(' || '),
+        filter: `(${filters.join(' || ')})${tenantClause()}`,
     });
 
     let reversed = 0;
@@ -435,11 +451,15 @@ export async function getDiscountStats(): Promise<{
     usageCount: number;
 }> {
     try {
-        const allDiscounts = await pb.collection('discounts').getFullList<DiscountRecord>();
+        const allDiscounts = await pb.collection('discounts').getFullList<DiscountRecord>({
+            filter: `id != ""${tenantClause()}`,
+        });
         const totalDiscounts = allDiscounts.length;
         const activeCount = allDiscounts.filter((d) => d.is_active).length;
 
-        const usageRecords = await pb.collection('discount_usage').getFullList();
+        const usageRecords = await pb.collection('discount_usage').getFullList({
+            filter: `id != ""${tenantClause()}`,
+        });
         const totalSavings = usageRecords.reduce((sum: number, u) => sum + (u.discount_amount || u.amount_saved || 0), 0);
         const usageCount = usageRecords.length;
 

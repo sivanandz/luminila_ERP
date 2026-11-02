@@ -1,4 +1,4 @@
-import { pb, createTenantClient } from '@/lib/pocketbase';
+import { pb, createTenantClient, sanitizeFilter } from '@/lib/pocketbase';
 import { getRazorpayConfig, verifyWebhookSignature } from '@/lib/razorpay';
 import { sendPaidOrderInvoice, sendLoyaltyMilestoneAlert } from '@/lib/whatsapp-notifications';
 import { applyChannelStock, toStockDb } from '@/lib/channel-stock';
@@ -163,6 +163,48 @@ async function settleCapturedOrderInner(
         }
     } catch (invoiceErr) {
         console.warn(`[settlement] Invoice generation failed for ${orderId}:`, invoiceErr);
+    }
+
+    // Mirror the now-paid order into `sales` for unified reporting. Online
+    // intake deliberately skips this, so an abandoned checkout never creates a
+    // phantom revenue row (SF-16).
+    try {
+        const placed = updatedOrder as unknown as {
+            order_number?: string;
+            customer?: string;
+            customer_name?: string;
+            customer_phone?: string;
+            subtotal?: number;
+            discount_total?: number;
+            total?: number;
+            payment_method?: string;
+            account_email?: string;
+        };
+        const orderNumber = String(placed.order_number || orderId);
+        const existingMirror = await pb
+            .collection('sales')
+            .getFirstListItem(
+                `channel="storefront" && channel_order_id="${sanitizeFilter(orderNumber)}"`
+            )
+            .catch(() => null);
+        if (!existingMirror) {
+            await pb.collection('sales').create({
+                channel: 'storefront',
+                channel_order_id: orderNumber,
+                customer: placed.customer || undefined,
+                customer_name: placed.customer_name || '',
+                customer_phone: placed.customer_phone || '',
+                subtotal: Number(placed.subtotal || 0),
+                discount: Number(placed.discount_total || 0),
+                total: Number(placed.total || 0),
+                payment_method: placed.payment_method === 'cod' ? 'cash' : 'upi',
+                status: 'confirmed',
+                notes: `Paid storefront order ${orderNumber} (settled ${new Date().toISOString()})`,
+                account_email: placed.account_email || options.tenantEmail || '',
+            });
+        }
+    } catch (mirrorErr) {
+        console.warn(`[settlement] sales mirror write failed for ${orderId}:`, mirrorErr);
     }
 
     await sendPaidOrderInvoice(orderId, db);

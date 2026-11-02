@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X, Loader2, CheckCircle2, XCircle, Phone, ExternalLink } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import { initiatePayment, checkPaymentStatus, toPaise } from "@/lib/phonepe";
@@ -29,6 +29,12 @@ export function PhonePePayment({
     const [transactionId, setTransactionId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [pollCount, setPollCount] = useState(0);
+    // Poll bookkeeping lives in refs: the count used to be a dependency, so
+    // every tick tore down and rebuilt the interval, and a success could
+    // schedule multiple onSuccess calls (POS-11).
+    const pollCountRef = useRef(0);
+    const completedRef = useRef(false);
+    const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Reset state when modal opens
     useEffect(() => {
@@ -39,6 +45,12 @@ export function PhonePePayment({
             setTransactionId(null);
             setError(null);
             setPollCount(0);
+            pollCountRef.current = 0;
+            completedRef.current = false;
+            if (successTimeoutRef.current) {
+                clearTimeout(successTimeoutRef.current);
+                successTimeoutRef.current = null;
+            }
         }
     }, [isOpen]);
 
@@ -46,30 +58,36 @@ export function PhonePePayment({
 
     // Poll for payment status when pending
     useEffect(() => {
-        if (status !== 'pending' || !transactionId) return;
+        if (status !== 'pending' || !transactionId || completedRef.current) return;
 
         const pollInterval = setInterval(async () => {
+            if (completedRef.current) return;
             try {
                 const data = await checkPaymentStatus(transactionId);
 
                 if (data.success) {
                     if (data.code === 'PAYMENT_SUCCESS') {
+                        completedRef.current = true;
                         setStatus('success');
                         clearInterval(pollInterval);
-                        setTimeout(() => {
+                        successTimeoutRef.current = setTimeout(() => {
                             onSuccess(transactionId, data.transactionId);
                         }, 2000);
+                        return;
                     } else if (data.code === 'PAYMENT_ERROR' || data.code === 'PAYMENT_DECLINED') {
+                        completedRef.current = true;
                         setStatus('failed');
                         setError(data.message || 'Payment failed');
                         clearInterval(pollInterval);
                     }
                 }
 
-                setPollCount(prev => prev + 1);
+                pollCountRef.current += 1;
+                setPollCount(pollCountRef.current);
 
                 // Stop polling after 2 minutes (40 polls at 3s interval)
-                if (pollCount >= 40) {
+                if (pollCountRef.current >= 40) {
+                    completedRef.current = true;
                     clearInterval(pollInterval);
                     setError('Payment verification timed out. Please check your payment status manually.');
                 }
@@ -79,7 +97,14 @@ export function PhonePePayment({
         }, 3000);
 
         return () => clearInterval(pollInterval);
-    }, [status, transactionId, pollCount, onSuccess]);
+    }, [status, transactionId, onSuccess]);
+
+    // Clear a pending success dispatch only when the component unmounts; doing
+    // it in the polling effect's cleanup would cancel the 2s hand-off as soon
+    // as `status` flips to success.
+    useEffect(() => () => {
+        if (successTimeoutRef.current) clearTimeout(successTimeoutRef.current);
+    }, []);
 
     const handleInitiatePayment = async () => {
         setStatus('initiating');

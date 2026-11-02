@@ -3,7 +3,7 @@
  * Audit trail for all system operations using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, accountScopeEmail, ensureAuth, sanitizeFilter } from './pocketbase';
 import { normalizeDateBounds } from './utils';
 import { OfflineQueue } from './offline-queue';
 
@@ -81,16 +81,23 @@ export async function getActivityLogs(
     offset: number = 0
 ): Promise<{ logs: ActivityLog[]; total: number }> {
     try {
-        const filterParts: string[] = [];
+        ensureAuth();
+        const tenant = accountScopeEmail();
+        if (!tenant) {
+            // Fail closed: an unresolved tenant must not read every account's log.
+            return { logs: [], total: 0 };
+        }
+
+        const filterParts: string[] = [`account_email="${sanitizeFilter(tenant)}"`];
 
         if (filters?.action) {
-            filterParts.push(`action="${filters.action}"`);
+            filterParts.push(`action="${sanitizeFilter(filters.action)}"`);
         }
         if (filters?.entity_type) {
-            filterParts.push(`entity_type="${filters.entity_type}"`);
+            filterParts.push(`entity_type="${sanitizeFilter(filters.entity_type)}"`);
         }
         if (filters?.entity_id) {
-            filterParts.push(`entity_id="${filters.entity_id}"`);
+            filterParts.push(`entity_id="${sanitizeFilter(filters.entity_id)}"`);
         }
         const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
         if (start) {
@@ -99,14 +106,21 @@ export async function getActivityLogs(
         if (end) {
             filterParts.push(`created<="${end}"`);
         }
+        // Search in the query, not on one fetched page (AI-SYS-17).
+        if (filters?.search) {
+            const search = sanitizeFilter(filters.search);
+            filterParts.push(
+                `(description~"${search}" || entity_type~"${search}" || action~"${search}")`
+            );
+        }
 
         const page = Math.floor(offset / limit) + 1;
         const result = await pb.collection('activity_logs').getList<ActivityLogRecord>(page, limit, {
-            filter: filterParts.join(' && ') || '',
+            filter: filterParts.join(' && '),
             sort: '-created',
         });
 
-        let logs = result.items.map((log) => ({
+        const logs = result.items.map((log) => ({
             id: log.id,
             action: log.action,
             entity_type: log.entity_type,
@@ -118,16 +132,6 @@ export async function getActivityLogs(
             user_name: log.user_name,
             created_at: log.created,
         }));
-
-        // Client-side search
-        if (filters?.search) {
-            const search = filters.search.toLowerCase();
-            logs = logs.filter((log: ActivityLog) =>
-                log.description?.toLowerCase().includes(search) ||
-                log.entity_type?.toLowerCase().includes(search) ||
-                log.action?.toLowerCase().includes(search)
-            );
-        }
 
         return { logs, total: result.totalItems };
     } catch (error) {
@@ -151,6 +155,9 @@ export async function logActivity(
         userName?: string;
     }
 ): Promise<void> {
+    ensureAuth();
+    const model = pb.authStore.model as { id?: string; name?: string } | null;
+    const tenant = accountScopeEmail();
     const payload = {
         action,
         entity_type: entityType,
@@ -158,7 +165,9 @@ export async function logActivity(
         description,
         old_values: options?.oldValues,
         new_values: options?.newValues,
-        user_name: options?.userName || '',
+        user_id: model?.id || '',
+        user_name: options?.userName || model?.name || '',
+        account_email: tenant,
     };
 
     try {
@@ -218,6 +227,17 @@ export async function getActivityStats(): Promise<{
     byAction: Record<ActivityAction, number>;
 }> {
     try {
+        ensureAuth();
+        const tenant = accountScopeEmail();
+        if (!tenant) {
+            return {
+                todayCount: 0,
+                weekCount: 0,
+                byAction: {} as Record<ActivityAction, number>,
+            };
+        }
+        const tenantClause = `account_email="${sanitizeFilter(tenant)}"`;
+
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
@@ -225,11 +245,11 @@ export async function getActivityStats(): Promise<{
         weekAgo.setDate(weekAgo.getDate() - 7);
 
         const todayLogs = await pb.collection('activity_logs').getList(1, 1, {
-            filter: `created>="${today.toISOString()}"`,
+            filter: `${tenantClause} && created>="${today.toISOString()}"`,
         });
 
         const weekLogs = await pb.collection('activity_logs').getFullList<ActivityLogRecord>({
-            filter: `created>="${weekAgo.toISOString()}"`,
+            filter: `${tenantClause} && created>="${weekAgo.toISOString()}"`,
         });
 
         const byAction: Record<string, number> = {};

@@ -1261,10 +1261,11 @@ export function calculateInvoiceTotals(
     totalTax: number;
     grandTotal: number;
 } {
+    const round2 = (value: number) => Math.round((Number(value) || 0) * 100) / 100;
     const calculatedItems = items.map((item, index) => {
         const lineSubtotal = item.quantity * item.unit_price;
-        const discountAmount = lineSubtotal * (item.discount_percent / 100);
-        const taxableAmount = lineSubtotal - discountAmount;
+        const discountAmount = round2(lineSubtotal * (item.discount_percent / 100));
+        const taxableAmount = round2(lineSubtotal - discountAmount);
         const effectiveRate = isGstRegistered ? (item.gst_rate ?? GST_RATES.JEWELRY) : 0;
 
         const gst = calculateGST(taxableAmount, sellerStateCode, buyerStateCode, effectiveRate);
@@ -1273,23 +1274,23 @@ export function calculateInvoiceTotals(
             ...item,
             sr_no: index + 1,
             discount_amount: discountAmount,
-            taxable_amount: gst.taxableAmount,
+            taxable_amount: round2(gst.taxableAmount),
             cgst_rate: gst.cgstRate,
-            cgst_amount: gst.cgstAmount,
+            cgst_amount: round2(gst.cgstAmount),
             sgst_rate: gst.sgstRate,
-            sgst_amount: gst.sgstAmount,
+            sgst_amount: round2(gst.sgstAmount),
             igst_rate: gst.igstRate,
-            igst_amount: gst.igstAmount,
-            total_amount: gst.grandTotal,
+            igst_amount: round2(gst.igstAmount),
+            total_amount: round2(gst.grandTotal),
         };
     });
 
-    const taxableValue = calculatedItems.reduce((sum, i) => sum + i.taxable_amount, 0);
-    const cgstAmount = calculatedItems.reduce((sum, i) => sum + i.cgst_amount, 0);
-    const sgstAmount = calculatedItems.reduce((sum, i) => sum + i.sgst_amount, 0);
-    const igstAmount = calculatedItems.reduce((sum, i) => sum + i.igst_amount, 0);
-    const totalTax = cgstAmount + sgstAmount + igstAmount;
-    const grandTotal = taxableValue + totalTax;
+    const taxableValue = round2(calculatedItems.reduce((sum, i) => sum + i.taxable_amount, 0));
+    const cgstAmount = round2(calculatedItems.reduce((sum, i) => sum + i.cgst_amount, 0));
+    const sgstAmount = round2(calculatedItems.reduce((sum, i) => sum + i.sgst_amount, 0));
+    const igstAmount = round2(calculatedItems.reduce((sum, i) => sum + i.igst_amount, 0));
+    const totalTax = round2(cgstAmount + sgstAmount + igstAmount);
+    const grandTotal = round2(taxableValue + totalTax);
 
     return {
         items: calculatedItems,

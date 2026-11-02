@@ -3,10 +3,33 @@
  * Handles business expenses, categories, and statistics using PocketBase
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { toast } from 'sonner';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
+
+// ==========================================
+// TENANT SCOPING (FIN-01)
+// ==========================================
+
+/** `account_email="…"` filter for the signed-in tenant; always non-empty. */
+function tenantFilter(): string {
+    return `account_email="${sanitizeFilter(accountScopeEmail())}"`;
+}
+
+function joinFilter(...parts: string[]): string {
+    return parts.filter(Boolean).join(' && ');
+}
+
+/**
+ * Ownership check for records read by id (getOne/update/delete cannot take a
+ * filter). Legacy rows without a stamp are treated as the single account's.
+ */
+function recordBelongsToScope(record: { account_email?: string } | null | undefined): boolean {
+    if (!record) return false;
+    const recordTenant = String(record.account_email || '').trim().toLowerCase();
+    return !recordTenant || recordTenant === accountScopeEmail();
+}
 
 // ==========================================
 // TYPES
@@ -58,6 +81,7 @@ interface ExpenseRecord {
     description?: string;
     receipt_url?: string;
     reference_number?: string;
+    account_email?: string;
     created?: string;
     updated?: string;
     expand?: {
@@ -71,6 +95,7 @@ interface ExpenseCategoryRecord {
     name: string;
     description?: string;
     is_active: boolean;
+    account_email?: string;
     created?: string;
 }
 
@@ -108,7 +133,7 @@ export async function getExpenses(filters?: {
             filterParts.push(`expense_date<="${end}"`);
         }
         if (filters?.categoryId && filters.categoryId !== 'all') {
-            filterParts.push(`category="${filters.categoryId}"`);
+            filterParts.push(`category="${sanitizeFilter(filters.categoryId)}"`);
         }
         if (filters?.search) {
             // Search text reaches a PocketBase filter, so it must be stripped of
@@ -123,7 +148,7 @@ export async function getExpenses(filters?: {
         }
 
         const records = await pb.collection('expenses').getFullList<ExpenseRecord>({
-            filter: filterParts.join(' && ') || '',
+            filter: joinFilter(tenantFilter(), filterParts.join(' && ')),
             sort: '-expense_date,-created',
             expand: 'category',
         });
@@ -156,9 +181,11 @@ export async function getExpenses(filters?: {
 
 export async function getExpense(id: string): Promise<Expense | null> {
     try {
-        const e = await pb.collection('expenses').getOne(id, {
+        const e = await pb.collection('expenses').getOne<ExpenseRecord>(id, {
             expand: 'category',
         });
+        // getOne has no filter; verify the tenant stamp in memory (FIN-01).
+        if (!recordBelongsToScope(e)) return null;
 
         return {
             id: e.id,
@@ -203,6 +230,7 @@ export async function createExpense(expense: Omit<Expense, 'id' | 'expense_numbe
                     description: expense.description || '',
                     receipt_url: expense.receipt_url || '',
                     reference_number: expense.reference_number || '',
+                    account_email: accountScopeEmail(),
                 });
             }
         );
@@ -230,7 +258,13 @@ export async function createExpense(expense: Omit<Expense, 'id' | 'expense_numbe
 
 export async function updateExpense(id: string, updates: Partial<Expense>): Promise<Expense | null> {
     try {
+        // Updates are addressed by id, so confirm ownership first (FIN-01).
+        const existing = await getExpense(id);
+        if (!existing) {
+            throw new Error('Expense not found');
+        }
         const cleanUpdates: Record<string, unknown> = { ...updates };
+        delete cleanUpdates.account_email;
 
         // Map category_id to category (PocketBase relation field name)
         if (cleanUpdates.category_id) {
@@ -273,6 +307,11 @@ export async function updateExpense(id: string, updates: Partial<Expense>): Prom
 
 export async function deleteExpense(id: string): Promise<boolean> {
     try {
+        // Deletes are addressed by id, so confirm ownership first (FIN-01).
+        const existing = await getExpense(id);
+        if (!existing) {
+            throw new Error('Expense not found');
+        }
         await pb.collection('expenses').delete(id);
         toast.success('Expense deleted');
         return true;
@@ -287,10 +326,17 @@ export async function deleteExpense(id: string): Promise<boolean> {
 // CATEGORY CRUD
 // ==========================================
 
-export async function getCategories(): Promise<ExpenseCategory[]> {
+/**
+ * Expense categories, tenant-scoped.
+ * `includeInactive` keeps disabled categories in the list so the categories
+ * page can show and re-enable them (FIN-11); pickers keep the default.
+ */
+export async function getCategories(includeInactive: boolean = false): Promise<ExpenseCategory[]> {
     try {
+        const categoryFilter = () => joinFilter(tenantFilter(), includeInactive ? '' : 'is_active=true');
+
         let records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
-            filter: 'is_active=true',
+            filter: categoryFilter(),
             sort: 'name',
         });
 
@@ -298,7 +344,9 @@ export async function getCategories(): Promise<ExpenseCategory[]> {
             // Seed only when the collection is truly empty (any status), not
             // merely when no ACTIVE rows exist — otherwise disabling every
             // category would re-seed the defaults on top of the disabled ones.
-            const anyRows = await pb.collection('expense_categories').getList(1, 1);
+            const anyRows = await pb.collection('expense_categories').getList(1, 1, {
+                filter: tenantFilter(),
+            });
             if (anyRows.totalItems === 0) {
                 // Deterministic per-tenant record ids make the seed idempotent:
                 // React dev StrictMode double-mounts this fetch, and two
@@ -308,7 +356,7 @@ export async function getCategories(): Promise<ExpenseCategory[]> {
                 // concurrent seed collides on the same ids and is swallowed by
                 // the catch below, while different tenants get their own rows.
                 const seedId = (name: string): string => {
-                    const tenant = String((pb.authStore.model as { email?: string } | null)?.email || 'default').toLowerCase();
+                    const tenant = accountScopeEmail() || 'default';
                     let h = 5381;
                     const input = `${tenant}:${name}`;
                     for (let i = 0; i < input.length; i++) h = ((h * 33) ^ input.charCodeAt(i)) >>> 0;
@@ -328,11 +376,12 @@ export async function getCategories(): Promise<ExpenseCategory[]> {
                             name: cat.name,
                             description: cat.description,
                             is_active: true,
+                            account_email: accountScopeEmail(),
                         });
                     } catch { }
                 }
                 records = await pb.collection('expense_categories').getFullList<ExpenseCategoryRecord>({
-                    filter: 'is_active=true',
+                    filter: categoryFilter(),
                     sort: 'name',
                 });
             }
@@ -357,6 +406,7 @@ export async function createCategory(name: string, description?: string): Promis
             name,
             description: description || '',
             is_active: true,
+            account_email: accountScopeEmail(),
         });
 
         return {
@@ -374,6 +424,11 @@ export async function createCategory(name: string, description?: string): Promis
 
 export async function toggleCategoryStatus(id: string, currentlyActive: boolean): Promise<boolean> {
     try {
+        // getOne is unfiltered, so verify the tenant stamp before writing (FIN-01).
+        const existing = await pb.collection('expense_categories').getOne<ExpenseCategoryRecord>(id);
+        if (!recordBelongsToScope(existing)) {
+            throw new Error('Category not found');
+        }
         await pb.collection('expense_categories').update(id, { is_active: !currentlyActive });
         return true;
     } catch (error) {
@@ -394,7 +449,7 @@ export async function getExpenseStats(startDate?: string, endDate?: string): Pro
         if (end) filterParts.push(`expense_date<="${end}"`);
 
         const expenses = await pb.collection('expenses').getFullList<ExpenseRecord>({
-            filter: filterParts.join(' && ') || '',
+            filter: joinFilter(tenantFilter(), filterParts.join(' && ')),
             expand: 'category',
         });
 

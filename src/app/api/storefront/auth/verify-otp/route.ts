@@ -70,7 +70,9 @@ export async function POST(req: Request) {
             try {
                 customerRecord = await client.collection("customers").create({
                     name: customerName || `Client ${phoneSuffix.slice(-4)}`,
-                    phone: cleanDigits,
+                    // Canonical form; OTP and POS paths both dedupe on the last
+                    // ten digits, but the stored value should be consistent (CRM-06).
+                    phone: `+91${phoneSuffix}`,
                     customer_type: "retail",
                     source: "website_otp",
                     account_email: boundAdminEmail,

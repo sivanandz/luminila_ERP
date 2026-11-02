@@ -398,8 +398,9 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
     try {
         const tenantEmail = accountScopeEmail();
         const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
+        const term = sanitizeFilter(query);
         const records = await pb.collection('product_variants').getList<ProductVariant>(1, 20, {
-            filter: `(product.name~"${query}" || product.sku~"${query}" || variant_name~"${query}" || sku_suffix~"${query}") && product.is_active=true${tenantFilter}`,
+            filter: `(product.name~"${term}" || product.sku~"${term}" || variant_name~"${term}" || sku_suffix~"${term}") && product.is_active=true${tenantFilter}`,
             expand: 'product',
             sort: 'product.name'
         });

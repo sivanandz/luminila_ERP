@@ -542,7 +542,8 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
  */
 export async function getOrders(type?: OrderType, status?: OrderStatus) {
     try {
-        const filterParts: string[] = [];
+        const tenant = accountScopeEmail();
+        const filterParts: string[] = [tenant ? `account_email="${sanitizeFilter(tenant)}"` : 'id != ""'];
         if (type) filterParts.push(`order_type="${type}"`);
         if (status) filterParts.push(`status="${status}"`);
 
@@ -576,10 +577,13 @@ export type OrderDetail = SalesOrderRecord & {
 export async function getOrderDetails(id: string): Promise<OrderDetail | null> {
     try {
         const order = await pb.collection('sales_orders').getOne<SalesOrderRecord>(id);
+        const tenant = accountScopeEmail();
+        const owner = (order as unknown as { account_email?: string }).account_email;
+        if (tenant && owner && owner !== tenant) return null;
 
         // Fetch items separately as reverse expand is tricky in getOne sometimes if not configured
         const items = await pb.collection('sales_order_items').getFullList<OrderDetailItem>({
-            filter: `order="${id}"`,
+            filter: `order="${sanitizeFilter(id)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
             expand: 'product,variant'
         });
 
@@ -606,14 +610,26 @@ export interface DispatchableOrder {
 
 /** Sales orders that can still be dispatched. */
 export async function getDispatchableOrders(): Promise<DispatchableOrder[]> {
+    const tenant = accountScopeEmail();
     const records = await pb.collection('sales_orders').getList(1, 30, {
-        filter: 'status != "delivered" && status != "cancelled"',
+        // Only real sales orders that reached a fulfilable state and are either
+        // paid or cash-on-delivery. Estimates, drafts and unpaid online orders
+        // were previously returned and could be marked shipped (ORD-08/ORD-10).
+        filter:
+            `order_type = "sales_order" && (status = "confirmed" || status = "invoiced")` +
+            ` && (payment_status = "PAID" || payment_method = "cash" || payment_method = "cod" || payment_method = "cash_on_delivery")` +
+            `${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ' && id != ""'}`,
         sort: '-created',
     });
     return records.items;
 }
 
 export async function markSalesOrderShipped(orderId: string): Promise<void> {
+    const order = await pb.collection('sales_orders').getOne(orderId);
+    const tenant = accountScopeEmail();
+    if (tenant && order.account_email && order.account_email !== tenant) {
+        throw new Error('Order does not belong to this store.');
+    }
     await pb.collection('sales_orders').update(orderId, { status: 'shipped' });
 }
 /**

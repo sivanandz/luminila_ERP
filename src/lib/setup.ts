@@ -99,8 +99,12 @@ export const DEFAULT_SETUP_ROLES = [
 /** True when this instance already has at least one application user. */
 export async function isSetupComplete(): Promise<boolean> {
     try {
-        const users = await pb.collection("users").getList(1, 1);
-        return users.totalItems > 0;
+        // Users listRule requires an authenticated caller; the server route
+        // checks with its tenant client (A-18).
+        const res = await fetch('/api/setup/status', { cache: 'no-store' });
+        if (!res.ok) return false;
+        const data = await res.json();
+        return data?.complete === true;
     } catch {
         return false;
     }

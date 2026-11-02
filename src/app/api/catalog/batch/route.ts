@@ -135,7 +135,7 @@ export async function POST(req: NextRequest) {
                 return NextResponse.json({ error: 'Invalid productIds array' }, { status: 400 });
             }
             products = await client.collection('products').getFullList({
-                filter: `(${idClauses}) && account_email = "${safeTenantEmail}"`
+                filter: `(${idClauses}) && is_active = true && account_email = "${safeTenantEmail}"`
             });
         } else {
             return NextResponse.json({
@@ -185,7 +185,8 @@ export async function POST(req: NextRequest) {
             phone,
             action,
             brandName,
-            channelDefinitions
+            channelDefinitions,
+            tenantEmail
         );
 
         // 8. Check if Access Token is configured

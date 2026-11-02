@@ -43,9 +43,9 @@ export function OrderMilestoneBar({
     onMilestoneDispatched,
 }: OrderMilestoneBarProps) {
     const [selectedMilestone, setSelectedMilestone] = useState<OrderMilestoneType>("packed");
-    const [huid, setHuid] = useState("LUM-QC994");
+    const [huid, setHuid] = useState("");
     const [courierName, setCourierName] = useState("ST Courier");
-    const [trackingNumber, setTrackingNumber] = useState("64437374632");
+    const [trackingNumber, setTrackingNumber] = useState("");
     const [trackingUrl, setTrackingUrl] = useState("/tracking/st-courier?awb=");
     const [photoUrl, setPhotoUrl] = useState<string>("");
     const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -102,7 +102,11 @@ export function OrderMilestoneBar({
                 huid: selectedMilestone === 'quality_checked' ? huid : undefined,
                 courierName: selectedMilestone === 'shipped' ? courierName : undefined,
                 trackingNumber: selectedMilestone === 'shipped' ? trackingNumber : undefined,
-                trackingUrl: selectedMilestone === 'shipped' ? `${trackingUrl}${trackingNumber}` : undefined,
+                trackingUrl: selectedMilestone === 'shipped'
+                    ? (trackingUrl.startsWith('http')
+                        ? `${trackingUrl}${trackingNumber}`
+                        : `${typeof window !== 'undefined' ? window.location.origin : ''}${trackingUrl}${trackingNumber}`)
+                    : undefined,
             });
 
             if (res.success) {

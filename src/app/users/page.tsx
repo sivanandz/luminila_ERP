@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
+import { ProtectedRoute, Can } from "@/components/auth/ProtectedRoute";
 
 import {
     getUsers,
@@ -183,10 +183,12 @@ function UsersContent() {
                 title="User Management"
                 subtitle="Manage users and roles"
                 action={
-                    <Button onClick={() => setShowAddUser(true)} className="gap-2">
-                        <Plus size={20} />
-                        Add User
-                    </Button>
+                    <Can do="create" on="users">
+                        <Button onClick={() => setShowAddUser(true)} className="gap-2">
+                            <Plus size={20} />
+                            Add User
+                        </Button>
+                    </Can>
                 }
             />
 
@@ -323,24 +325,28 @@ function UsersContent() {
                                             </TableCell>
                                             <TableCell className="text-right">
                                                 <div className="flex items-center justify-end gap-2">
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        onClick={() => handleEditRoles(user)}
-                                                    >
-                                                        <Shield className="w-4 h-4" />
-                                                    </Button>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        onClick={() => handleToggleActive(user)}
-                                                    >
-                                                        {user.is_active ? (
-                                                            <UserX className="w-4 h-4 text-red-400" />
-                                                        ) : (
-                                                            <UserCheck className="w-4 h-4 text-green-400" />
-                                                        )}
-                                                    </Button>
+                                                    <Can do="update" on="users">
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            onClick={() => handleEditRoles(user)}
+                                                        >
+                                                            <Shield className="w-4 h-4" />
+                                                        </Button>
+                                                    </Can>
+                                                    <Can do="update" on="users">
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            onClick={() => handleToggleActive(user)}
+                                                        >
+                                                            {user.is_active ? (
+                                                                <UserX className="w-4 h-4 text-red-400" />
+                                                            ) : (
+                                                                <UserCheck className="w-4 h-4 text-green-400" />
+                                                            )}
+                                                        </Button>
+                                                    </Can>
                                                 </div>
                                             </TableCell>
                                         </TableRow>

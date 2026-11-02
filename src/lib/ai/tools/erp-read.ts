@@ -129,7 +129,7 @@ export const readTools: AiTool[] = [
                     perPage: 500,
                 }).catch(() => []),
                 listRecords(context.client, 'product_variants', {
-                    filter: tenant,
+                    filter: `${tenant} && product.is_active = true`,
                     fields: 'id,stock_level,low_stock_threshold',
                     perPage: 500,
                 }).catch(() => []),
@@ -265,7 +265,7 @@ export const readTools: AiTool[] = [
         execute: async (context, rawArgs) => {
             const args = lowStockInput.parse(rawArgs);
             const variants = await listRecords(context.client, 'product_variants', {
-                filter: `${accountFilter(context.accountEmail)} && stock_level <= ${args.threshold}`,
+                filter: `${accountFilter(context.accountEmail)} && product.is_active = true && stock_level <= ${args.threshold}`,
                 sort: 'stock_level',
                 perPage: args.limit,
                 expand: 'product',

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createTenantClient } from '@/lib/pocketbase';
+import { createTenantClient, sanitizeFilter } from '@/lib/pocketbase';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,14 +22,21 @@ export async function GET(req: NextRequest) {
         // when two requests interleave.
         const client = await createTenantClient(accountEmail);
 
-        const product = await client.collection('products').getOne(id).catch(() => null);
+        // Scope the lookup itself instead of fetching by id and judging afterwards:
+        // a row belonging to another tenant or a deactivated product never matches.
+        // Empty account_email is kept for legacy rows (same rule as api-auth).
+        const product = await client
+            .collection('products')
+            .getFirstListItem(
+                `id = "${sanitizeFilter(id)}" && is_active = true && (account_email = "${sanitizeFilter(accountEmail)}" || account_email = "")`
+            )
+            .catch(() => null);
 
         if (!product) {
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
         }
 
-        // Refuse to serve a row that belongs to a different tenant, even if the
-        // id was guessed correctly.
+        // Defence in depth for legacy rows whose account_email was never stamped.
         if (product.account_email && String(product.account_email).toLowerCase() !== accountEmail) {
             return NextResponse.redirect(DEFAULT_JEWELRY_IMAGE);
         }

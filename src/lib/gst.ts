@@ -185,8 +185,11 @@ export function amountToWords(amount: number, currency: string = 'Rupees'): stri
 
     if (absAmount === 0) return `Zero ${currency} Only`;
 
-    const rupees = Math.floor(absAmount);
-    const paise = Math.round((absAmount - rupees) * 100);
+    // Round to the smallest unit first: 99.996 must become 100 rupees and 0
+    // paise, not "Ninety Nine Rupees and One Hundred Paise" (POS-16).
+    const totalPaise = Math.round(absAmount * 100);
+    const rupees = Math.floor(totalPaise / 100);
+    const paise = totalPaise % 100;
 
     let result = '';
 
@@ -242,6 +245,15 @@ export function validateGSTIN(gstin: string): { valid: boolean; message: string 
     }
 
     return { valid: true, message: '' };
+}
+
+/**
+ * Boolean form of validateGSTIN for call sites that only need a yes/no answer.
+ * Delegates to the same Mod-36 check digit used by validateGSTIN, so no
+ * regex-only GSTIN check survives in this module (POS-23).
+ */
+export function isValidGSTIN(gstin: string): boolean {
+    return validateGSTIN(gstin).valid;
 }
 
 // ===========================================
@@ -460,7 +472,13 @@ export function generateEWayBillJSON(
     const toGstin = (isChallan ? document.consignee_gstin : document.buyer_gstin) || 'URP';
     const toAddr1 = (isChallan ? document.consignee_address : document.buyer_address) || '';
     const toPlace = (isChallan ? (document.consignee_city || document.place_of_supply) : (document.buyer_city || document.place_of_supply)) || '';
-    const toPincode = Number((isChallan ? (document.consignee_pincode || document.pincode) : (document.buyer_pincode || document.pincode)) || 0) || 560001;
+    const toPincodeRaw = Number((isChallan ? (document.consignee_pincode || document.pincode) : (document.buyer_pincode || document.pincode)) || 0);
+    // Never substitute a mock destination pincode: NIC rejects it and the
+    // e-way bill would carry a false address (POS-15).
+    if (!Number.isInteger(toPincodeRaw) || toPincodeRaw < 100000 || toPincodeRaw > 999999) {
+        throw new Error('A valid 6-digit destination pincode is required to generate an E-Way Bill.');
+    }
+    const toPincode = toPincodeRaw;
     const toStateCode = Number((isChallan ? document.consignee_state_code : document.buyer_state_code) || 0);
 
     const fromAddr1 = (isChallan ? document.consignor_address : document.seller_address) || '';
@@ -479,7 +497,9 @@ export function generateEWayBillJSON(
         const totalTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0);
 
         let rate = 0;
-        if (taxable > 0) rate = Math.round((totalTax / taxable) * 100);
+        // Preserve fractional rates (0.25% on rough diamonds) instead of
+        // rounding them down to 0 (ORD-24).
+        if (taxable > 0) rate = roundToTwo((totalTax / taxable) * 100);
 
         return {
             productName: item.description || 'Jewelry',

@@ -69,7 +69,8 @@ import {
     type ExchangeItem,
 } from "@/lib/returns";
 import type { QcDispositionGrade } from "@/lib/returns-qc-engine";
-import { formatINR } from "@/lib/gst";
+import { formatINR, GST_RATES } from "@/lib/gst";
+import { getStoreSettings } from "@/lib/invoice";
 
 const statusConfig: Record<CreditNoteStatus, { label: string; color: string; icon: LucideIcon }> = {
     pending: { label: "Pending Approval", color: "bg-yellow-500/20 text-yellow-400", icon: Clock },
@@ -114,9 +115,20 @@ function CreditNoteDetailContent() {
     const [exchangePaymentMethod, setExchangePaymentMethod] = useState("cash");
     const [exchangeReference, setExchangeReference] = useState("");
     const [exchangeNotes, setExchangeNotes] = useState("");
+    // Exchange replacement prices are pre-tax; the preview must add the same
+    // GST the settlement/invoice does, and only when the store is registered
+    // (ORD-14).
+    const [replacementGstRate, setReplacementGstRate] = useState(0);
 
     useEffect(() => {
         loadCreditNote();
+        getStoreSettings()
+            .then((settings) => {
+                setReplacementGstRate(
+                    settings.is_gst_registered !== false ? GST_RATES.JEWELRY : 0
+                );
+            })
+            .catch(() => setReplacementGstRate(0));
         // eslint-disable-next-line react-hooks/exhaustive-deps -- loadCreditNote is re-created every render, so adding it to deps would refetch in a loop; the effect intentionally reloads only when id changes
     }, [id]);
 
@@ -759,7 +771,7 @@ function CreditNoteDetailContent() {
                         {/* Financial Ledger Calculation Summary */}
                         {(() => {
                             const replacementTotal = exchangeItems.reduce(
-                                (sum, it) => sum + it.unit_price * it.quantity,
+                                (sum, it) => sum + it.unit_price * it.quantity * (1 + replacementGstRate / 100),
                                 0
                             );
                             const balanceDue = replacementTotal - creditNote.grand_total;

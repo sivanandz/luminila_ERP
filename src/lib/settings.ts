@@ -1,4 +1,4 @@
-import { pb, ensureAuth } from "./pocketbase";
+import { pb, ensureAuth, accountScopeEmail, sanitizeFilter } from "./pocketbase";
 import { ClientResponseError } from "pocketbase";
 
 export interface StoreSettings {
@@ -74,48 +74,115 @@ export function getDefaultStoreSettings(userName?: string, userEmail?: string): 
     };
 }
 
+/** Coerce a loaded value to a trimmed string (AI-SYS-07: `[safe-primitives]`). */
+function asTrimmedString(value: unknown): string {
+    if (typeof value === "string") return value.trim();
+    if (value === null || value === undefined) return "";
+    return String(value).trim();
+}
+
+/**
+ * Merge a parsed settings blob over the defaults, forcing the string fields the
+ * rest of the app calls `.trim()` on to be strings.
+ */
+function normalizeLoadedSettings(parsed: Record<string, unknown>, defaults: StoreSettings): StoreSettings {
+    const gstin = asTrimmedString(parsed.gstin);
+    const pincode = asTrimmedString(parsed.pincode);
+    const phone = asTrimmedString(parsed.phone);
+    const whatsappPhone = asTrimmedString(parsed.whatsappPhone);
+    const isGstRegistered = parsed.isGstRegistered !== undefined
+        ? Boolean(parsed.isGstRegistered)
+        : gstin !== "";
+    return {
+        ...defaults,
+        ...(parsed as Partial<StoreSettings>),
+        gstin,
+        pincode,
+        phone,
+        whatsappPhone,
+        isGstRegistered,
+    };
+}
+
+/**
+ * Tenant scope for settings. The owning account's email (not the signed-in
+ * staff member's) is the settings key, so staff edits land on the tenant's
+ * `store_config` row instead of a personal copy (AI-SYS-08).
+ */
+function tenantScopeEmail(): string {
+    ensureAuth();
+    return accountScopeEmail();
+}
+
+function tenantClause(tenant: string): string {
+    return `account_email="${sanitizeFilter(tenant)}"`;
+}
+
+function readLocalSettings(storageId: string): Record<string, unknown> | null {
+    if (typeof window === "undefined") return null;
+    try {
+        const raw = localStorage.getItem(`luminila_settings_${storageId}`);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    } catch {
+        return null;
+    }
+}
+
 export async function getStoreSettings(userId?: string, userName?: string, userEmail?: string): Promise<StoreSettings> {
     ensureAuth();
-    const currentUserEmail = userEmail || pb.authStore.model?.email;
-    const defaults = getDefaultStoreSettings(userName, currentUserEmail);
-    const effectiveUserId = userId || pb.authStore.model?.id;
-    const key = effectiveUserId ? `store_settings_${effectiveUserId}` : "store_settings_default";
+    const tenant = tenantScopeEmail();
+    const defaults = getDefaultStoreSettings(userName, userEmail || tenant);
+    const storageId = tenant || userId || "default";
 
-    // 1. Try to load from PocketBase store_settings collection scoped to tenant
-    try {
-        const filter = currentUserEmail 
-            ? `key="${key}" && account_email="${currentUserEmail}"`
-            : `key="${key}"`;
-        const record = await pb.collection("store_settings").getFirstListItem(filter);
-        if (record && record.value) {
-            const parsed = typeof record.value === "string" ? JSON.parse(record.value) : record.value;
-            // Update local cache namespaced by tenant/user
-            if (typeof window !== "undefined") {
-                const storageId = currentUserEmail || effectiveUserId || "default";
-                localStorage.setItem(`luminila_settings_${storageId}`, JSON.stringify(parsed));
+    // 1. Try to load the tenant's canonical settings row from PocketBase.
+    if (tenant) {
+        const scope = tenantClause(tenant);
+        try {
+            const tenantKey = `store_settings_${tenant}`;
+            let record = await pb
+                .collection("store_settings")
+                .getFirstListItem(`key="${sanitizeFilter(tenantKey)}" && ${scope}`)
+                .catch(() => null);
+
+            // Existing installs key the row by the owner's user id. Prefer the
+            // oldest store_config row (the original owner config) over a staff
+            // copy created by the old per-user keying (AI-SYS-08).
+            if (!record) {
+                record = await pb
+                    .collection("store_settings")
+                    .getFirstListItem(`category="store_config" && ${scope}`, { sort: "created" })
+                    .catch(() => null);
             }
-            const isGstRegistered = parsed.isGstRegistered !== undefined 
-                ? Boolean(parsed.isGstRegistered) 
-                : Boolean(parsed.gstin && parsed.gstin.trim() !== "");
-            return { ...defaults, ...parsed, isGstRegistered };
+
+            // Last resort: the legacy per-user key of the signing-in user.
+            if (!record && userId) {
+                record = await pb
+                    .collection("store_settings")
+                    .getFirstListItem(`key="store_settings_${sanitizeFilter(userId)}" && ${scope}`)
+                    .catch(() => null);
+            }
+
+            const rawValue = (record as { value?: unknown } | null)?.value;
+            if (rawValue) {
+                const parsed = typeof rawValue === "string" ? JSON.parse(rawValue) : rawValue;
+                if (parsed && typeof parsed === "object") {
+                    if (typeof window !== "undefined") {
+                        localStorage.setItem(`luminila_settings_${storageId}`, JSON.stringify(parsed));
+                    }
+                    return normalizeLoadedSettings(parsed as Record<string, unknown>, defaults);
+                }
+            }
+        } catch {
+            // Record might not exist yet (or be unreadable); fall back to local.
         }
-    } catch {
-        // Record might not exist yet in PB
     }
 
-    // 2. Try localStorage namespaced by user/tenant ID
-    if (typeof window !== "undefined") {
-        const storageId = currentUserEmail || effectiveUserId || "default";
-        const userScoped = localStorage.getItem(`luminila_settings_${storageId}`);
-        if (userScoped) {
-            try {
-                const parsed = JSON.parse(userScoped);
-                const isGstRegistered = parsed.isGstRegistered !== undefined 
-                    ? Boolean(parsed.isGstRegistered) 
-                    : Boolean(parsed.gstin && parsed.gstin.trim() !== "");
-                return { ...defaults, ...parsed, isGstRegistered };
-            } catch { /* ignore */ }
-        }
+    // 2. Try localStorage namespaced by tenant.
+    const local = readLocalSettings(storageId) ?? (userId ? readLocalSettings(userId) : null);
+    if (local) {
+        return normalizeLoadedSettings(local, defaults);
     }
 
     return defaults;
@@ -123,89 +190,108 @@ export async function getStoreSettings(userId?: string, userName?: string, userE
 
 export async function saveStoreSettings(settings: StoreSettings, userId?: string): Promise<void> {
     ensureAuth();
-    const currentUserEmail = pb.authStore.model?.email;
-    const effectiveUserId = userId || pb.authStore.model?.id;
-    const key = effectiveUserId ? `store_settings_${effectiveUserId}` : "store_settings_default";
-    const storageId = currentUserEmail || effectiveUserId || "default";
+    const tenant = tenantScopeEmail();
+    const storageId = tenant || userId || "default";
 
-    // 1. Save to local storage namespaced by tenant
+    // 1. Save to local storage namespaced by tenant.
     if (typeof window !== "undefined") {
         localStorage.setItem(`luminila_settings_${storageId}`, JSON.stringify(settings));
     }
 
-    // 2. Persist to PocketBase store_settings collection scoped to tenant
+    if (!tenant) {
+        // Without a resolved tenant every PocketBase filter would be unscoped.
+        console.warn("Settings not persisted: no tenant account could be resolved.");
+        return;
+    }
+
+    const scope = tenantClause(tenant);
+
+    // 2. Persist to the tenant's canonical settings row, choosing the same row
+    // the load path reads.
     try {
-        let existingId: string | null = null;
-        try {
-            const filter = currentUserEmail 
-                ? `key="${key}" && account_email="${currentUserEmail}"`
-                : `key="${key}"`;
-            const existing = await pb.collection("store_settings").getFirstListItem(filter);
-            existingId = existing.id;
-        } catch {
-            existingId = null;
+        const tenantKey = `store_settings_${tenant}`;
+        let existing = await pb
+            .collection("store_settings")
+            .getFirstListItem(`key="${sanitizeFilter(tenantKey)}" && ${scope}`)
+            .catch(() => null);
+
+        if (!existing) {
+            existing = await pb
+                .collection("store_settings")
+                .getFirstListItem(`category="store_config" && ${scope}`, { sort: "created" })
+                .catch(() => null);
+        }
+        if (!existing && userId) {
+            existing = await pb
+                .collection("store_settings")
+                .getFirstListItem(`key="store_settings_${sanitizeFilter(userId)}" && ${scope}`)
+                .catch(() => null);
         }
 
-        if (existingId) {
+        const existingRecord = existing as { id: string; key?: string; account_email?: string } | null;
+        const key = existingRecord?.key || `store_settings_${tenant}`;
+        const shouldClaim = !existingRecord || !existingRecord.account_email;
+        const payload = {
+            key,
+            value: settings,
+            category: "store_config",
+            ...(shouldClaim ? { account_email: tenant } : {}),
+        };
+
+        if (existingRecord) {
             try {
-                await pb.collection("store_settings").update(existingId, {
-                    value: settings,
-                    category: "store_config",
-                    ...(currentUserEmail ? { account_email: currentUserEmail } : {})
-                });
+                await pb.collection("store_settings").update(existingRecord.id, payload);
             } catch (updateErr) {
                 if (updateErr instanceof ClientResponseError && updateErr.status === 404) {
-                    await pb.collection("store_settings").create({
-                        key,
-                        value: settings,
-                        category: "store_config",
-                        ...(currentUserEmail ? { account_email: currentUserEmail } : {})
-                    });
+                    await pb.collection("store_settings").create({ ...payload, account_email: tenant });
                 } else {
                     throw updateErr;
                 }
             }
         } else {
-            await pb.collection("store_settings").create({
-                key,
-                value: settings,
-                category: "store_config",
-                ...(currentUserEmail ? { account_email: currentUserEmail } : {})
-            });
+            await pb.collection("store_settings").create({ ...payload, account_email: tenant });
         }
 
-        // Also sync individual flat keys for legacy and multi-component lookups strictly scoped to tenant
+        // 3. Sync the individual flat keys legacy and multi-component lookups
+        // read, strictly scoped to the tenant.
         try {
+            const upsertFlat = async (flatKey: string, value: string, category: string) => {
+                const filter = `key="${sanitizeFilter(flatKey)}" && ${scope}`;
+                const row = await pb.collection("store_settings").getFirstListItem(filter).catch(() => null);
+                const rowRecord = row as { id: string; account_email?: string } | null;
+                if (rowRecord) {
+                    await pb.collection("store_settings").update(rowRecord.id, {
+                        value,
+                        ...(!rowRecord.account_email ? { account_email: tenant } : {}),
+                    });
+                } else {
+                    await pb.collection("store_settings").create({
+                        key: flatKey,
+                        value,
+                        category,
+                        account_email: tenant,
+                    });
+                }
+            };
+
             const isRegVal = settings.isGstRegistered !== false ? "true" : "false";
-            const regFilter = currentUserEmail 
-                ? `key="is_gst_registered" && account_email="${currentUserEmail}"`
-                : `key="is_gst_registered"`;
-            const singleKey = await pb.collection("store_settings").getFirstListItem(regFilter).catch(() => null);
-            if (singleKey) {
-                await pb.collection("store_settings").update(singleKey.id, { 
-                    value: isRegVal,
-                    ...(currentUserEmail ? { account_email: currentUserEmail } : {})
-                });
-            } else {
-                await pb.collection("store_settings").create({ 
-                    key: "is_gst_registered", 
-                    value: isRegVal, 
-                    category: "tax",
-                    ...(currentUserEmail ? { account_email: currentUserEmail } : {})
-                });
-            }
+            await upsertFlat("is_gst_registered", isRegVal, "tax");
 
             if (settings.isGstRegistered === false) {
-                const gstinFilter = currentUserEmail ? `key="gstin" && account_email="${currentUserEmail}"` : `key="gstin"`;
-                const gstinKey = await pb.collection("store_settings").getFirstListItem(gstinFilter).catch(() => null);
-                if (gstinKey) await pb.collection("store_settings").update(gstinKey.id, { value: "" }).catch(() => null);
+                const gstinKey = await pb
+                    .collection("store_settings")
+                    .getFirstListItem(`key="gstin" && ${scope}`)
+                    .catch(() => null);
+                if (gstinKey) await pb.collection("store_settings").update((gstinKey as { id: string }).id, { value: "" }).catch(() => null);
 
-                const storeGstinFilter = currentUserEmail ? `key="store_gstin" && account_email="${currentUserEmail}"` : `key="store_gstin"`;
-                const storeGstinKey = await pb.collection("store_settings").getFirstListItem(storeGstinFilter).catch(() => null);
-                if (storeGstinKey) await pb.collection("store_settings").update(storeGstinKey.id, { value: "" }).catch(() => null);
+                const storeGstinKey = await pb
+                    .collection("store_settings")
+                    .getFirstListItem(`key="store_gstin" && ${scope}`)
+                    .catch(() => null);
+                if (storeGstinKey) await pb.collection("store_settings").update((storeGstinKey as { id: string }).id, { value: "" }).catch(() => null);
             }
 
-            // Sync flat address and store details
+            // Sync flat address and store details.
             const flatSyncKeys: Record<string, string> = {
                 store_name: settings.storeName || "",
                 storeName: settings.storeName || "",
@@ -226,28 +312,16 @@ export async function saveStoreSettings(settings: StoreSettings, userId?: string
                 store_email: settings.email || "",
             };
 
-            for (const [k, v] of Object.entries(flatSyncKeys)) {
+            for (const [flatKey, value] of Object.entries(flatSyncKeys)) {
                 try {
-                    const kFilter = currentUserEmail 
-                        ? `key="${k}" && account_email="${currentUserEmail}"`
-                        : `key="${k}"`;
-                    const row = await pb.collection("store_settings").getFirstListItem(kFilter).catch(() => null);
-                    if (row) {
-                        await pb.collection("store_settings").update(row.id, { 
-                            value: v,
-                            ...(currentUserEmail ? { account_email: currentUserEmail } : {})
-                        });
-                    } else {
-                        await pb.collection("store_settings").create({ 
-                            key: k, 
-                            value: v, 
-                            category: "general",
-                            ...(currentUserEmail ? { account_email: currentUserEmail } : {})
-                        });
-                    }
-                } catch { /* ignore individual key errors */ }
+                    await upsertFlat(flatKey, value, "general");
+                } catch {
+                    /* ignore individual key errors */
+                }
             }
-        } catch { /* ignore optional individual key sync */ }
+        } catch {
+            /* ignore optional individual key sync */
+        }
     } catch (err) {
         console.warn("Failed to persist settings to PocketBase:", err);
         throw err;

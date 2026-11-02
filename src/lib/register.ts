@@ -3,10 +3,16 @@
  * Handles cash drawer operations, shift tracking, and tender calculations using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { enqueueTask } from './concurrency';
 import { normalizeDateBounds } from './utils';
 import { ClientResponseError } from 'pocketbase';
+
+/** `&& account_email = "…"` for tenant-scoped reads/writes (POS-22). */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 // =============================================
 // Types
@@ -87,6 +93,7 @@ export async function openShift(
 
     try {
         const record = await pb.collection('cash_register_shifts').create({
+            account_email: accountScopeEmail(),
             user: userId,
             terminal_id: terminalId,
             opening_balance: openingBalance,
@@ -108,6 +115,7 @@ export async function openShift(
         // and silently swallowed, leaving no audit row at all.
         if (openingBalance > 0) {
             await pb.collection('cash_drawer_operations').create({
+                account_email: accountScopeEmail(),
                 shift: record.id,
                 operation_type: 'add',
                 amount: openingBalance,
@@ -134,7 +142,7 @@ export async function openShift(
 export async function getCurrentShift(userId: string): Promise<CashRegisterShift | null> {
     try {
         const record = await pb.collection('cash_register_shifts').getFirstListItem<CashRegisterShift>(
-            `user="${userId}" && status="open"`,
+            `user="${sanitizeFilter(userId)}" && status="open"${tenantClause()}`,
             {
                 sort: '-created', // PocketBase uses 'created' instead of 'opened_at' usually, but we have opened_at.
                 expand: 'user'
@@ -155,6 +163,9 @@ export async function getShift(shiftId: string): Promise<CashRegisterShift | nul
         const record = await pb.collection('cash_register_shifts').getOne<CashRegisterShift>(shiftId, {
             expand: 'user'
         });
+        const tenant = accountScopeEmail();
+        const owner = (record as CashRegisterShift & { account_email?: string }).account_email;
+        if (tenant && owner && owner !== tenant) return null;
         return record;
     } catch (error) {
         console.error('Error getting shift:', error);
@@ -255,6 +266,7 @@ export async function addCashToDrawer(
         try {
             // Record operation
             await pb.collection('cash_drawer_operations').create({
+                account_email: accountScopeEmail(),
                 shift: shiftId,
                 operation_type: 'add',
                 amount,
@@ -290,6 +302,7 @@ export async function removeCashFromDrawer(
         try {
             // Record operation
             await pb.collection('cash_drawer_operations').create({
+                account_email: accountScopeEmail(),
                 shift: shiftId,
                 operation_type: 'remove',
                 amount,
@@ -340,6 +353,7 @@ export async function recordCashRefund(
 
             try {
                 await pb.collection('cash_drawer_operations').create({
+                    account_email: accountScopeEmail(),
                     shift: shiftId,
                     operation_type: 'refund',
                     amount,
@@ -365,7 +379,7 @@ export async function recordCashRefund(
 export async function getShiftOperations(shiftId: string): Promise<DrawerOperation[]> {
     try {
         const records = await pb.collection('cash_drawer_operations').getFullList<DrawerOperation>({
-            filter: `shift="${shiftId}"`,
+            filter: `shift="${sanitizeFilter(shiftId)}"${tenantClause()}`,
             sort: 'performed_at'
         });
         return records;
@@ -433,9 +447,11 @@ export async function getShiftHistory(
 ): Promise<CashRegisterShift[]> {
     try {
         let filter = '';
-        const conditions: string[] = [];
+        const conditions: string[] = ['id != ""'];
+        const scope = tenantClause().replace(/^ && /, '');
+        if (scope) conditions.push(scope);
 
-        if (options.userId) conditions.push(`user="${options.userId}"`);
+        if (options.userId) conditions.push(`user="${sanitizeFilter(options.userId)}"`);
         if (options.status) conditions.push(`status="${options.status}"`);
         const { start, end } = normalizeDateBounds(options.startDate, options.endDate);
         if (start) conditions.push(`opened_at>="${start}"`);
@@ -468,7 +484,7 @@ export async function getShiftSummary(shiftId: string): Promise<ShiftSummary | n
     // But we can fetch with limit 1 and get totalItems
     try {
         const salesResult = await pb.collection('sales').getList(1, 1, {
-            filter: `register_shift_id="${shiftId}"`
+            filter: `register_shift_id="${sanitizeFilter(shiftId)}"${tenantClause()}`
         });
 
         const count = salesResult.totalItems;
@@ -505,7 +521,7 @@ export async function getTodayShift(userId: string): Promise<CashRegisterShift |
 
     try {
         const record = await pb.collection('cash_register_shifts').getFirstListItem<CashRegisterShift>(
-            `user="${userId}" && opened_at>="${todayStr}"`,
+            `user="${sanitizeFilter(userId)}" && opened_at>="${todayStr}"${tenantClause()}`,
             {
                 sort: '-opened_at',
                 expand: 'user'

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,11 +25,23 @@ export function VendorForm({ vendor, onSuccess, onCancel }: VendorFormProps) {
         address: vendor?.address || "",
     });
 
+    // The dialog swaps `vendor` after an async fetch; keep the controlled fields
+    // in step so editing one vendor never shows the previous one's values (INV-25).
+    useEffect(() => {
+        setFormData({
+            name: vendor?.name || "",
+            contact_name: vendor?.contact_name || "",
+            phone: vendor?.phone || "",
+            email: vendor?.email || "",
+            address: vendor?.address || "",
+        });
+    }, [vendor]);
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
         if (!formData.name.trim()) {
-            alert("Please enter vendor name");
+            toast.error("Please enter vendor name");
             return;
         }
 
@@ -43,7 +56,7 @@ export function VendorForm({ vendor, onSuccess, onCancel }: VendorFormProps) {
             onSuccess();
         } catch (error) {
             console.error("Error saving vendor:", error);
-            alert("Failed to save vendor. Please try again.");
+            toast.error("Failed to save vendor. Please try again.");
         } finally {
             setLoading(false);
         }

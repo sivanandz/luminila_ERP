@@ -194,6 +194,8 @@ export function AiProvidersSettings() {
                     models: provider.models,
                     temperature: provider.temperature,
                     maxTokens: provider.maxTokens,
+                    // Omitting this reset the stored parameter to max_tokens (AI-SYS-19).
+                    maxTokensParam: provider.maxTokensParam,
                     supportsTools: provider.supportsTools,
                     enabled: true,
                     isDefault: true,
@@ -234,13 +236,27 @@ export function AiProvidersSettings() {
         setModelDraft('');
     };
 
+    /**
+     * The payload for "test" and "fetch models". When editing a saved provider
+     * we send both its id and the form values: the server resolves the stored
+     * key by id and tests the edited URL/model, not the stale saved pair
+     * (AI-SYS-20).
+     */
+    const testPayload = () => {
+        const providerInput = {
+            ...toInput(),
+            ...(editingId ? { providerId: editingId } : {}),
+        };
+        return editingId
+            ? { id: editingId, provider: providerInput }
+            : { provider: providerInput };
+    };
+
     const handleTestForm = async () => {
         setBusy('test');
         setTestMessage(null);
         try {
-            const result = await testAiProvider(
-                editingId && !form.apiKey.trim() ? { id: editingId } : { provider: toInput() }
-            );
+            const result = await testAiProvider(testPayload());
             if (result.ok) {
                 setTestMessage(
                     `Connected in ${result.latencyMs} ms${result.models?.length ? ` · ${result.models.length} models` : ''}.`
@@ -266,9 +282,7 @@ export function AiProvidersSettings() {
     const handleFetchModels = async () => {
         setBusy('models');
         try {
-            const found = await listAiProviderModels(
-                editingId && !form.apiKey.trim() ? { id: editingId } : { provider: toInput() }
-            );
+            const found = await listAiProviderModels(testPayload());
             setModels((current) => Array.from(new Set([...current, ...found])));
             toast.success(found.length > 0 ? `${found.length} models found.` : 'The provider returned no models.');
         } catch (error) {

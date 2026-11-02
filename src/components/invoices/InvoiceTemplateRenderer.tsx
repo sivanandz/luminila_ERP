@@ -8,6 +8,16 @@ import { ShieldCheck } from "lucide-react";
 
 export type InvoiceTemplateType = "retail" | "wholesale" | "estimate" | "thermal";
 
+/**
+ * A stored invoice date can be empty or malformed; date-fns throws on an
+ * invalid Date, which blanks the whole template (POS-24).
+ */
+function formatInvoiceDate(value: string | undefined, pattern: string): string {
+    if (!value) return "-";
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? "-" : format(parsed, pattern);
+}
+
 interface InvoiceTemplateRendererProps {
     invoice: Invoice;
     template: InvoiceTemplateType;
@@ -188,7 +198,7 @@ export function InvoiceTemplateRenderer({
                 <div className="py-2 border-b border-dashed border-slate-400 space-y-0.5">
                     <div className="flex justify-between font-bold">
                         <span>RCV: #{invoice.invoice_number}</span>
-                        <span>{invoice.invoice_date ? format(new Date(invoice.invoice_date), "dd/MM/yy HH:mm") : "-"}</span>
+                        <span>{formatInvoiceDate(invoice.invoice_date, "dd/MM/yy HH:mm")}</span>
                     </div>
                     <div className="flex justify-between">
                         <span>Customer: {invoice.buyer_name || "Walk-in"}</span>
@@ -300,7 +310,7 @@ export function InvoiceTemplateRenderer({
                             INVOICE #{invoice.invoice_number}
                         </div>
                         <div className="mt-2 text-xs space-y-0.5 text-slate-700">
-                            <div><span className="text-slate-500">Date:</span> <span className="font-semibold">{invoice.invoice_date ? format(new Date(invoice.invoice_date), "dd-MMM-yyyy") : "-"}</span></div>
+                            <div><span className="text-slate-500">Date:</span> <span className="font-semibold">{formatInvoiceDate(invoice.invoice_date, "dd-MMM-yyyy")}</span></div>
                             <div><span className="text-slate-500">Place of Supply:</span> <span className="font-semibold">{invoice.place_of_supply || s.store_state} ({invoice.buyer_state_code || s.store_state_code})</span></div>
                             <div><span className="text-slate-500">Reverse Charge:</span> <span className="font-semibold">{invoice.is_reverse_charge ? "Yes" : "No"}</span></div>
                         </div>
@@ -512,7 +522,7 @@ export function InvoiceTemplateRenderer({
                     </div>
                     <div className="text-right">
                         <div className="font-mono text-sm font-bold text-amber-950">EST-#{invoice.invoice_number}</div>
-                        <p className="text-xs text-slate-600 mt-1">Date: {invoice.invoice_date ? format(new Date(invoice.invoice_date), "dd-MMM-yyyy") : "-"}</p>
+                        <p className="text-xs text-slate-600 mt-1">Date: {formatInvoiceDate(invoice.invoice_date, "dd-MMM-yyyy")}</p>
                         <p className="text-xs text-amber-800 font-semibold">Valid for: 7 Days (Subject to Gold Rate)</p>
                         <div className="mt-2">{renderPaymentStamp()}</div>
                     </div>
@@ -622,7 +632,7 @@ export function InvoiceTemplateRenderer({
                         #{invoice.invoice_number}
                     </div>
                     <div className="text-xs text-slate-600 mt-2 space-y-0.5">
-                        <p><span className="text-slate-500">Date:</span> <span className="font-semibold text-slate-900">{invoice.invoice_date ? format(new Date(invoice.invoice_date), "dd MMM yyyy") : "-"}</span></p>
+                        <p><span className="text-slate-500">Date:</span> <span className="font-semibold text-slate-900">{formatInvoiceDate(invoice.invoice_date, "dd MMM yyyy")}</span></p>
                         <p><span className="text-slate-500">State Code:</span> <span className="font-semibold text-slate-900">{s.store_state_code} ({s.store_state})</span></p>
                     </div>
                     <div className="mt-3">{renderPaymentStamp()}</div>

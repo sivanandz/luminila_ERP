@@ -118,7 +118,9 @@ export async function createShipmentForOrder(
         if (['cancelled', 'refunded'].includes(String(order.status || ''))) {
             return { success: false, error: 'A cancelled/refunded order cannot be shipped.' };
         }
-        if (String(order.payment_status || '').toUpperCase() !== 'PAID' && String(order.payment_method || '') !== 'cash') {
+        const method = String(order.payment_method || '').toLowerCase();
+        const isCashOnDelivery = ['cash', 'cod', 'cash_on_delivery'].includes(method);
+        if (String(order.payment_status || '').toUpperCase() !== 'PAID' && !isCashOnDelivery) {
             return { success: false, error: 'Only paid orders (or COD) can be dispatched.' };
         }
 

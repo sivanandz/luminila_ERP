@@ -131,10 +131,11 @@ function historyContentForToolResult(event: Extract<AiEvent, { type: 'tool/resul
 /**
  * Fold the log into OpenAI-compatible messages.
  *
- * Unresolved tool calls (a turn waiting for approval) truncate the history
- * before that assistant message: an assistant tool-call message without its
- * results would be rejected by providers, and the paused turn never asks the
- * model for another step anyway.
+ * A paused turn (unresolved tool calls in the *final* turn) truncates the
+ * history before that assistant message: the provider would reject an assistant
+ * tool-call message without results. Orphaned tool calls left behind by an
+ * earlier turn are closed with a synthetic error result instead, so the turns
+ * after them are not dropped from the model's context (AI-SYS-21).
  */
 export function deriveModelHistory(
     events: AiEventRecord[],
@@ -146,15 +147,47 @@ export function deriveModelHistory(
         if (record.event.type === 'tool/result') resolvedCallIds.add(record.event.callId);
     }
 
+    let finalTurnStart = -1;
+    for (let index = 0; index < ordered.length; index += 1) {
+        if (ordered[index].event.type === 'turn/start') finalTurnStart = index;
+    }
+
     const messages: AiModelMessage[] = [];
-    for (const record of ordered) {
+    for (let index = 0; index < ordered.length; index += 1) {
+        const record = ordered[index];
         const event = record.event;
         if (event.type === 'user/message') {
             messages.push({ role: 'user', content: event.text });
             continue;
         }
         if (event.type === 'assistant/message') {
-            if (event.toolCalls.some((call) => !resolvedCallIds.has(call.id))) break;
+            const unresolved = event.toolCalls.filter((call) => !resolvedCallIds.has(call.id));
+            if (unresolved.length > 0) {
+                if (index >= finalTurnStart) {
+                    // The tail turn is waiting for approval; it never asks the
+                    // model for another step, so stop before the open call.
+                    break;
+                }
+                // Historical orphan: keep the turn and close the call so the
+                // assistant message is valid for the provider.
+                messages.push({
+                    role: 'assistant',
+                    content: event.text ? event.text : null,
+                    tool_calls: event.toolCalls,
+                });
+                for (const call of unresolved) {
+                    messages.push({
+                        role: 'tool',
+                        tool_call_id: call.id,
+                        name: call.name,
+                        content: wrapToolResultForModel(
+                            call.name,
+                            JSON.stringify({ ok: false, error: 'Tool call was not completed in a previous turn.' })
+                        ),
+                    });
+                }
+                continue;
+            }
             messages.push({
                 role: 'assistant',
                 content: event.text ? event.text : event.toolCalls.length > 0 ? null : '',

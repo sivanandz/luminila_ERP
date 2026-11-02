@@ -48,6 +48,7 @@ function TransactionsContent() {
     const [accounts, setAccounts] = useState<BankAccount[]>([]);
     const [loading, setLoading] = useState(true);
     const [selectedAccount, setSelectedAccount] = useState(initialAccountId);
+    const [searchQuery, setSearchQuery] = useState("");
 
     // Add Transaction State
     const [showAddDialog, setShowAddDialog] = useState(false);
@@ -145,10 +146,21 @@ function TransactionsContent() {
     const getColor = (type: string) => {
         switch (type) {
             case 'deposit': return 'text-green-400';
-            case 'withdrawal': return 'text-red-400';
+            case 'withdrawal':
+            case 'transfer': return 'text-red-400';
             default: return 'text-white';
         }
     };
+
+    // The search box is a client-side filter over the loaded ledger; it used to
+    // be an unbound input that did nothing (FIN-20).
+    const searchTerm = searchQuery.trim().toLowerCase();
+    const visibleTransactions = searchTerm
+        ? transactions.filter((tx) =>
+            (tx.description || '').toLowerCase().includes(searchTerm)
+            || (tx.reference_number || '').toLowerCase().includes(searchTerm)
+        )
+        : transactions;
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
@@ -196,6 +208,8 @@ function TransactionsContent() {
                             className="bg-surface-navy border border-surface-hover text-white text-sm rounded-lg block w-full pl-10 py-2 focus:ring-1 focus:ring-primary placeholder-moonstone transition-all"
                             placeholder="Search description..."
                             type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
                         />
                     </div>
                 </div>
@@ -204,7 +218,7 @@ function TransactionsContent() {
                 <div className="bg-surface-navy rounded-xl border border-surface-hover overflow-hidden">
                     {loading ? (
                         <div className="p-8 text-center text-moonstone">Loading transactions...</div>
-                    ) : transactions.length === 0 ? (
+                    ) : visibleTransactions.length === 0 ? (
                         <div className="p-12 text-center flex flex-col items-center justify-center gap-4">
                             <div className="w-16 h-16 bg-surface-hover rounded-full flex items-center justify-center text-moonstone">
                                 <HistoryIcon size={32} />
@@ -226,7 +240,7 @@ function TransactionsContent() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-surface-hover">
-                                {transactions.map((tx) => (
+                                {visibleTransactions.map((tx) => (
                                     <tr key={tx.id} className="hover:bg-bg-navy/30 transition-colors">
                                         <td className="py-4 px-6 text-sm text-moonstone">
                                             {formatDate(tx.transaction_date)}
@@ -249,7 +263,7 @@ function TransactionsContent() {
                                             {tx.reference_number || '-'}
                                         </td>
                                         <td className={`py-4 px-6 text-right font-bold ${getColor(tx.type)}`}>
-                                            {tx.type === 'withdrawal' ? '-' : '+'}{formatPrice(tx.amount)}
+                                            {tx.type === 'withdrawal' || tx.type === 'transfer' ? '-' : '+'}{formatPrice(tx.amount)}
                                         </td>
                                     </tr>
                                 ))}

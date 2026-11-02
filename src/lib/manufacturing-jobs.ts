@@ -8,7 +8,7 @@
  * under `manufacturing_jobs`, so no migration is needed.
  */
 
-import { pb } from './pocketbase';
+import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
 import {
     calculateRawMaterialsCost,
     calculateTotalAdditionalCosts,
@@ -19,6 +19,14 @@ import {
 } from './manufacturing-engine';
 
 const SETTINGS_KEY = 'manufacturing_jobs';
+
+/** `store_settings` row key for the signed-in tenant (INV-08). */
+function settingsFilter(): string {
+    const tenant = getCurrentTenantEmail();
+    return tenant
+        ? `key="${SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
+        : `key="${SETTINGS_KEY}"`;
+}
 
 export interface KarigarJobInput {
     karigarName: string;
@@ -112,7 +120,7 @@ export function computeKarigarJobCost(input: KarigarJobInput): KarigarJobCost {
     const scrapCredit = round(
         Math.max(0, input.scrapGrams) * Math.max(0, input.ratePerGram)
     );
-    const netProductionCost = round(grossProductionCost - scrapCredit);
+    const netProductionCost = Math.max(0, round(grossProductionCost - scrapCredit));
     const perGramCost = input.finishedNetGrams > 0
         ? round(netProductionCost / input.finishedNetGrams)
         : 0;
@@ -153,7 +161,7 @@ function parseJobs(value: unknown): KarigarJobRecord[] {
 async function readJobs(): Promise<KarigarJobRecord[]> {
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(`key="${SETTINGS_KEY}"`)
+        .getFirstListItem(settingsFilter())
         .catch(() => null);
     if (!row) return [];
     return parseJobs(row.value);
@@ -163,7 +171,7 @@ async function writeJobs(jobs: KarigarJobRecord[]): Promise<void> {
     const value = JSON.stringify(jobs);
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(`key="${SETTINGS_KEY}"`)
+        .getFirstListItem(settingsFilter())
         .catch(() => null);
 
     if (row) {
@@ -173,6 +181,7 @@ async function writeJobs(jobs: KarigarJobRecord[]): Promise<void> {
             key: SETTINGS_KEY,
             value,
             category: 'manufacturing',
+            account_email: getCurrentTenantEmail(),
         });
     }
 }

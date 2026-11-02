@@ -90,6 +90,7 @@ export interface StatutoryExportInvoice {
     }>;
     totals: {
         foreignSubtotal: number;
+        foreignGstTotal: number;
         foreignGrandTotal: number;
         inrSubtotal: number;
         inrGstTotal: number;
@@ -147,6 +148,7 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
         : `SUPPLY MEANT FOR EXPORT ON PAYMENT OF INTEGRATED TAX (IGST).`;
 
     let foreignSubtotal = 0;
+    let foreignGstTotal = 0;
     let inrSubtotal = 0;
     let inrGstTotal = 0;
 
@@ -157,8 +159,10 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
 
         const gstRate = req.isLutExport ? 0 : 3.0;
         const gstAmtInr = req.isLutExport ? 0 : Math.round((lineTotalInr * (gstRate / 100)) * 100) / 100;
+        const gstAmtForeign = req.isLutExport ? 0 : Math.round((lineForeign * (gstRate / 100)) * 100) / 100;
 
         foreignSubtotal += lineForeign;
+        foreignGstTotal += gstAmtForeign;
         inrSubtotal += lineTotalInr;
         inrGstTotal += gstAmtInr;
 
@@ -177,6 +181,7 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
     });
 
     foreignSubtotal = Math.round(foreignSubtotal * 100) / 100;
+    foreignGstTotal = Math.round(foreignGstTotal * 100) / 100;
     inrSubtotal = Math.round(inrSubtotal * 100) / 100;
     inrGstTotal = Math.round(inrGstTotal * 100) / 100;
 
@@ -201,7 +206,10 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
         lineItems,
         totals: {
             foreignSubtotal,
-            foreignGrandTotal: foreignSubtotal,
+            foreignGstTotal,
+            // IGST-paid exports carry GST in the foreign-currency grand total;
+            // the old code dropped it entirely (FIN-19).
+            foreignGrandTotal: Math.round((foreignSubtotal + foreignGstTotal) * 100) / 100,
             inrSubtotal,
             inrGstTotal,
             inrGrandTotal: Math.round((inrSubtotal + inrGstTotal) * 100) / 100,
