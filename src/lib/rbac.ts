@@ -62,7 +62,14 @@ export interface UserProfile {
 
 export async function getRoles(): Promise<Role[]> {
     try {
+        const tenant = accountScopeEmail();
+        // System roles and legacy unscoped rows are shared; custom roles are
+        // visible only to the tenant that created them (A-02 residual).
+        const filter = tenant
+            ? `is_system = true || account_email = "" || account_email = "${sanitizeFilter(tenant)}"`
+            : `is_system = true || account_email = ""`;
         const records = await pb.collection('roles').getFullList({
+            filter,
             sort: 'name',
         });
         return records.map(r => ({
@@ -80,9 +87,18 @@ export async function getRoles(): Promise<Role[]> {
     }
 }
 
+/** System/legacy roles are shared; custom roles belong to one tenant (A-02). */
+function roleAllowedForTenant(
+    role: { is_system?: boolean; account_email?: string },
+    tenant: string
+): boolean {
+    return Boolean(role.is_system) || !role.account_email || role.account_email === tenant;
+}
+
 export async function getRole(id: string): Promise<Role | null> {
     try {
         const record = await pb.collection('roles').getOne(id);
+        if (!roleAllowedForTenant(record as { is_system?: boolean; account_email?: string }, accountScopeEmail())) return null;
         return {
             id: record.id,
             name: record.name,
@@ -106,7 +122,8 @@ export async function createRole(
         name,
         description,
         permissions,
-        is_system: false
+        is_system: false,
+        account_email: accountScopeEmail(),
     });
     return {
         id: record.id,
@@ -123,6 +140,14 @@ export async function updateRole(
     id: string,
     updates: Partial<Omit<Role, 'id' | 'is_system' | 'created' | 'updated'>>
 ): Promise<Role> {
+    const existing = await pb.collection('roles').getOne<{ is_system?: boolean; account_email?: string }>(id);
+    if (existing.is_system) {
+        throw new Error('System roles cannot be modified.');
+    }
+    const tenant = accountScopeEmail();
+    if (tenant && existing.account_email && existing.account_email !== tenant) {
+        throw new Error('Role does not belong to this store.');
+    }
     const record = await pb.collection('roles').update(id, updates);
     return {
         id: record.id,
@@ -136,6 +161,14 @@ export async function updateRole(
 }
 
 export async function deleteRole(id: string): Promise<void> {
+    const existing = await pb.collection('roles').getOne<{ is_system?: boolean; account_email?: string }>(id);
+    if (existing.is_system) {
+        throw new Error('System roles cannot be deleted.');
+    }
+    const tenant = accountScopeEmail();
+    if (tenant && existing.account_email && existing.account_email !== tenant) {
+        throw new Error('Role does not belong to this store.');
+    }
     await pb.collection('roles').delete(id);
 }
 
@@ -192,6 +225,14 @@ export async function setUserRoles(userId: string, roleIds: string[]): Promise<v
     // user_roles rows are tenant-scoped by account_email; stamp the acting
     // tenant so the assignment stays visible to this store only.
     const accountEmail = accountScopeEmail();
+    // A role id from another tenant must not be assignable even though the
+    // join row itself would carry this tenant's stamp.
+    for (const roleId of roleIds) {
+        const role = await pb.collection('roles').getOne<{ is_system?: boolean; account_email?: string }>(roleId);
+        if (!roleAllowedForTenant(role, accountEmail)) {
+            throw new Error('Role does not belong to this store.');
+        }
+    }
     const safeUserId = sanitizeFilter(userId);
     // Remove all existing roles
     const existingRoles = await pb.collection('user_roles').getFullList({
@@ -237,6 +278,10 @@ export async function getRBACStats(): Promise<{ totalUsers: number; activeUsers:
 export async function assignRole(userId: string, roleId: string): Promise<void> {
     // user_roles.createRule requires the caller's tenant on the row.
     const accountEmail = accountScopeEmail();
+    const role = await pb.collection('roles').getOne<{ is_system?: boolean; account_email?: string }>(roleId);
+    if (!roleAllowedForTenant(role, accountEmail)) {
+        throw new Error('Role does not belong to this store.');
+    }
     await pb.collection('user_roles').create({
         user: userId,
         role: roleId,

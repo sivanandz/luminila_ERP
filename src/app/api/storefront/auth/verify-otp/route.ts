@@ -43,7 +43,7 @@ export async function POST(req: Request) {
         const { boundAdminEmail } = await getStorefrontBinding(reqEmail);
 
         // 2. Verify the code with attempts protection
-        const check = verifyOtp(cleanDigits, otp, boundAdminEmail);
+        const check = await verifyOtp(cleanDigits, otp, boundAdminEmail);
         if (!check.valid) {
             return NextResponse.json(
                 { success: false, error: check.reason || "Invalid or expired OTP." },

@@ -10,8 +10,9 @@ import { isValidGstin as isValidGstinChecksum } from './gstin';
  * - Configure credentials in store_settings
  */
 
-import { getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
+import { getCurrentTenantEmail, pb } from './pocketbase';
 import { getStoreSettings, type Invoice, type InvoiceItem } from './invoice';
+import { getEwayBillConfig as loadEwayBillCredentials } from './eway-bill-settings';
 import CryptoJS from 'crypto-js';
 
 // ============================================
@@ -218,34 +219,27 @@ function ensureTenantSession(): void {
 // HELPER FUNCTIONS
 // ============================================
 
-// store_settings record holding the E-way Bill API credentials
-export interface EwayBillSettings {
-    eway_client_id?: string;
-    eway_client_secret?: string;
-    eway_username?: string;
-    eway_password?: string;
-    eway_is_production?: boolean;
-}
-
 async function getEwayBillConfig(): Promise<EwayBillConfig | null> {
     try {
-        const settings = await getStoreSettings();
-        const ewaySettings = await pb.collection('store_settings').getFirstListItem<EwayBillSettings>(
-            `key="eway_bill" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`
-        ).catch(() => null);
+        // Credentials are encrypted at rest and revealed only to an operator
+        // with settings:update via the server endpoint (AI-SYS-18).
+        const [credentials, settings] = await Promise.all([
+            loadEwayBillCredentials(true),
+            getStoreSettings(),
+        ]);
 
-        if (!ewaySettings) {
+        if (!credentials) {
             console.warn('E-way Bill settings not configured');
             return null;
         }
 
         return {
-            clientId: ewaySettings.eway_client_id || '',
-            clientSecret: ewaySettings.eway_client_secret || '',
+            clientId: credentials.clientId,
+            clientSecret: credentials.clientSecret,
             gstin: settings.store_gstin,
-            username: ewaySettings.eway_username || '',
-            password: ewaySettings.eway_password || '',
-            isProduction: ewaySettings.eway_is_production || false,
+            username: credentials.username,
+            password: credentials.password,
+            isProduction: credentials.isProduction,
         };
     } catch (error) {
         console.error('Error getting E-way Bill config:', error);

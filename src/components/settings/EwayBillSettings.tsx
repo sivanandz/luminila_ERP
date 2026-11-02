@@ -39,6 +39,8 @@ export function EwayBillSettings() {
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isTesting, setIsTesting] = useState(false);
+    // Secrets are never sent back for display; only whether one is stored.
+    const [storedSecrets, setStoredSecrets] = useState({ clientSecret: false, password: false });
     const [testResult, setTestResult] = useState<"success" | "error" | null>(null);
     const [testMessage, setTestMessage] = useState<string | null>(null);
 
@@ -51,6 +53,10 @@ export function EwayBillSettings() {
             ensureAuth();
             const config = await getEwayBillConfig();
             if (config) {
+                setStoredSecrets({
+                    clientSecret: Boolean(config.hasClientSecret),
+                    password: Boolean(config.hasPassword),
+                });
                 setSettings({
                     client_id: config.clientId,
                     client_secret: config.clientSecret,
@@ -78,10 +84,15 @@ export function EwayBillSettings() {
                 isProduction: settings.is_production,
             });
 
+            if (settings.client_secret) setStoredSecrets(prev => ({ ...prev, clientSecret: true }));
+            if (settings.password) setStoredSecrets(prev => ({ ...prev, password: true }));
+            // Do not keep plaintext secrets in component state after saving.
+            setSettings(prev => ({ ...prev, client_secret: '', password: '' }));
+
             toast.success("E-way Bill settings saved");
         } catch (error) {
             console.error("Error saving settings:", error);
-            toast.error("Failed to save settings");
+            toast.error(error instanceof Error ? error.message : "Failed to save settings");
         } finally {
             setIsSaving(false);
         }
@@ -196,7 +207,7 @@ export function EwayBillSettings() {
                             type="password"
                             value={settings.client_secret}
                             onChange={(e) => setSettings(prev => ({ ...prev, client_secret: e.target.value }))}
-                            placeholder="Enter Client Secret"
+                            placeholder={storedSecrets.clientSecret ? "Saved — leave blank to keep" : "Enter Client Secret"}
                         />
                     </div>
                     <div className="space-y-2">
@@ -215,7 +226,7 @@ export function EwayBillSettings() {
                             type="password"
                             value={settings.password}
                             onChange={(e) => setSettings(prev => ({ ...prev, password: e.target.value }))}
-                            placeholder="Your GST Portal password"
+                            placeholder={storedSecrets.password ? "Saved — leave blank to keep" : "Your GST Portal password"}
                         />
                     </div>
                 </div>

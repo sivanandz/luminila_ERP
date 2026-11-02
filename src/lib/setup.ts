@@ -139,7 +139,9 @@ export async function seedDefaultRoles(): Promise<Record<string, string>> {
 
     for (const role of DEFAULT_SETUP_ROLES) {
         try {
-            const existing = await pb.collection("roles").getFirstListItem(`name="${sanitizeFilter(role.name)}"`);
+            const existing = await pb.collection("roles").getFirstListItem(
+                `name="${sanitizeFilter(role.name)}" && is_system = true`
+            );
             roleMap[role.name] = existing.id;
         } catch (err: unknown) {
             if ((err as { status?: number })?.status !== 404) continue;

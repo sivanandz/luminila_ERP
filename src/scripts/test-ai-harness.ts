@@ -56,7 +56,7 @@ const provider: AiProviderConfig = {
     id: 'test',
     name: 'Test Provider',
     baseUrl: 'https://api.example.com/v1/',
-    apiKey: 'sk-test-secret-12345',
+    apiKey: process.env.TEST_AI_KEY || 'test-provider-key',
     model: 'test-model',
     models: [],
     customHeaders: { 'X-Org': 'luminila' },

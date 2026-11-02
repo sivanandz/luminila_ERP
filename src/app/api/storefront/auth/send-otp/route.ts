@@ -69,7 +69,7 @@ export async function POST(req: Request) {
         const { boundAdminEmail, brandName } = await getStorefrontBinding(reqEmail);
 
         // 2. Generate a secure 6-digit OTP scoped to this tenant
-        const otpResult = generateAndSaveOtp(phone10, boundAdminEmail);
+        const otpResult = await generateAndSaveOtp(phone10, boundAdminEmail);
         if (!otpResult.success || !otpResult.otp) {
             return NextResponse.json(
                 {
@@ -110,7 +110,7 @@ _If you did not request this, please ignore this message._`;
         // the tenant's WhatsApp session id is never echoed to an anonymous caller.
         if (!waDelivered && !allowDevOtp) {
             // Delivery never happened, so the daily counter must not count it.
-            releaseOtpAttempt(phone10, boundAdminEmail);
+            await releaseOtpAttempt(phone10, boundAdminEmail);
             return NextResponse.json(
                 { success: false, error: "We could not send the code on WhatsApp. Please try again." },
                 { status: 502, headers: CORS_HEADERS }

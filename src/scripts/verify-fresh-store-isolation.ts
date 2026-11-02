@@ -1,5 +1,6 @@
 import PocketBase from 'pocketbase';
 import assert from 'assert';
+import { randomBytes } from 'crypto';
 import {
     getDashboardStats,
     getSalesTrend,
@@ -15,10 +16,17 @@ async function verifyIsolation() {
 
     // 1. Setup Admin to create fresh test tenant user
     const pbAdmin = new PocketBase('http://127.0.0.1:8091');
-    await pbAdmin.admins.authWithPassword('admin@luminila.local', 'Luminila2026!');
+    const adminEmail = process.env.PB_ADMIN_EMAIL || 'admin@luminila.local';
+    const adminPassword = process.env.PB_ADMIN_PASSWORD || '';
+    if (!adminPassword) {
+        throw new Error('PB_ADMIN_PASSWORD is required to run the isolation verification.');
+    }
+    await pbAdmin.collection('_superusers').authWithPassword(adminEmail, adminPassword);
 
     const freshEmail = `fresh_store_${Date.now()}@luminilatest.local`;
-    const password = 'TestTenantPass123!';
+    // Per-run random password: a checked-in test credential is a CWE-798 even
+    // when the account is disposable.
+    const password = `Test-${randomBytes(12).toString('hex')}!`;
 
     const createdUser = await pbAdmin.collection('users').create({
         email: freshEmail,

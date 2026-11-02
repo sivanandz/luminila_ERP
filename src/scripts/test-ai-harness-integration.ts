@@ -126,7 +126,7 @@ function makeProvider(baseUrl: string): AiProviderConfig {
         id: 'fake',
         name: 'Fake provider',
         baseUrl,
-        apiKey: 'sk-fake-test-key',
+        apiKey: process.env.TEST_AI_KEY || 'test-provider-key',
         model: 'fake-model',
         models: [],
         customHeaders: {},

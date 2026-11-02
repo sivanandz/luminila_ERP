@@ -18,7 +18,7 @@ Tracks remediation of [`docs/codebase_bugs_and_issues_audit.md`](./codebase_bugs
 
 | Feature area | Critical | High | Medium | Low | Fixed | Partial | Open |
 | :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| 1. Auth, tenancy, RBAC, API security | 5 | 11 | 4 | 2 | 21 | 1 | 0 |
+| 1. Auth, tenancy, RBAC, API security | 5 | 11 | 4 | 2 | 22 | 0 | 0 |
 | 2. POS, billing, GST | 5 | 9 | 7 | 3 | 24 | 0 | 0 |
 | 3. Inventory, products, POs, vendors | 6 | 10 | 6 | 3 | 25 | 0 | 0 |
 | 4. Orders, returns, shipping, challans | 6 | 10 | 7 | 1 | 24 | 0 | 0 |
@@ -26,10 +26,10 @@ Tracks remediation of [`docs/codebase_bugs_and_issues_audit.md`](./codebase_bugs
 | 6. Storefront, catalog, payments | 5 | 9 | 9 | 2 | 25 | 0 | 0 |
 | 7. Finance, banking, cheques, GSTR-1 | 4 | 8 | 9 | 3 | 24 | 0 | 0 |
 | 8. Customers, CRM, RFM, consent | 5 | 6 | 8 | 3 | 22 | 0 | 0 |
-| 9. AI, backup, activity, settings, Tauri | 5 | 8 | 8 | 3 | 23 | 1 | 0 |
-| **Total** | **46** | **79** | **66** | **23** | **212** | **2** | **0** |
+| 9. AI, backup, activity, settings, Tauri | 5 | 8 | 8 | 3 | 24 | 0 | 0 |
+| **Total** | **46** | **79** | **66** | **23** | **214** | **0** | **0** |
 
-> Final state after the WhatsApp batch. Two findings remain partial: `A-13` (OTP records still on disk) and `AI-SYS-18` (e-way secrets still plaintext without a server encrypt endpoint). Every Critical and High finding is fixed; both partials have their security-critical half done and the residual documented below.
+> All 214 findings are closed. The final batch moved OTP records into PocketBase, encrypted E-way Bill secrets behind a server endpoint, and tenant-scoped custom roles — the last three residuals.
 
 ---
 
@@ -267,29 +267,42 @@ Backup export filters all 31 collections by tenant, and restore handles all 31 i
 
 ---
 
-## Partial / residual items
+## Final closures
 
-| ID | Reason |
-| :-- | :-- |
-| A-13 (OTP storage) | OTPs still live in `src/data/otp_store.json`; moving them to PocketBase needs a collection and an async store API (callers are sync). Rate limit, lockout rollback and phone normalization are fixed. |
-| AI-SYS-18 | E-Way Bill credentials remain plaintext in `store_settings`; encryption needs a server endpoint (Node `crypto` cannot run in the settings component). The test connection itself is real. |
+### A-13 — OTP records in PocketBase
 
-**Residual note (A-02):** the cross-row `:auth` privilege escalation is fixed and role links are tenant-scoped. The `roles` catalog itself stays shared because seeded system roles have no natural per-tenant copy; splitting it is a product decision, not a defect fix.
+- New `pocketbase/pb_migrations/1793001200_otp_codes.js` creates tenant-scoped `otp_codes` with a unique `(account_email, phone)` index, explicit `created`/`updated` fields, and the daily counter columns.
+- `src/lib/otp-store.ts` is now async and PocketBase-backed: HMAC-only code storage, daily cap, resend cooldown, attempt cap, lazy row create/update on a race, and `releaseOtpAttempt` for failed deliveries. `src/data/otp_store.json` was deleted.
+- `send-otp` and `verify-otp` await the new API; behavior is otherwise unchanged (including `ALLOW_DEV_OTP`).
+
+### AI-SYS-18 — E-way credentials encrypted at rest
+
+- New `GET/POST /api/settings/eway` requires an operator session (`settings:read` for metadata, `settings:update` for reveal/save), encrypts `eway_client_secret` and `eway_password` with AES-256-GCM via `tenant-secrets.ts` (key: `AI_SECRET_KEY` or `TENANT_REGISTRY_KEY`), and returns only `hasClientSecret`/`hasPassword` to the form.
+- Legacy plaintext rows are re-encrypted lazily on the first read. Saving with an empty secret keeps the stored ciphertext; the settings form shows "Saved — leave blank to keep" and clears secret fields after save.
+- `testEwayBillConnection` fetches the saved secrets server-side when the form fields are blank, then calls NIC as before.
+- `eway-bill.ts` now loads credentials through `eway-bill-settings.ts` instead of reading `store_settings` directly.
+
+### A-02 residual — custom roles are tenant-scoped
+
+- New `1793001300_roles_tenant_scope.js` adds `account_email` to `roles` and scopes list/view to `is_system = true || account_email = "" || tenant`, with update/delete limited to non-system roles owned by the caller's tenant.
+- `rbac.ts` filters `getRoles`, stamps `account_email` on `createRole`, refuses system-role edits/deletes, and rejects assigning a role from another tenant in `assignRole`/`setUserRoles`.
+
+### Security scan
+
+- Full Mimosa deep scan completed: `scan-2026-11-02T14-48-51.504Z`, 122 findings (64 high / 58 medium), status **inconclusive** (proof gaps; no verdict). Most findings are in vendored/third-party surfaces (`wppconnect-sidecar`, `server-dist/pocketbase`, `src-tauri/target`, `scratch`). Of the 10 high findings under `src/`, four were hardcoded test credentials (fixed: `test-ai-harness*.ts`, `verify-fresh-store-isolation.ts` now use env/random values); the rest are test-only or false positives (fixed API host, sanitized tenant slug, parameter-array spawn, test harness SQL). No security verdict is being claimed.
 
 ---
 
 ## Final verification
 
 - `npx tsc --noEmit` — **clean** on cache-free full runs. A stale `tsconfig.tsbuildinfo` had been masking real errors; see the Phase 4 incidental build fix.
-- `node --check` — new/changed PocketBase migrations parse.
-- **Full fresh `migrate up` verified end to end:** an empty temp `pb_data` was migrated with all 110 migrations using `pocketbase migrate up --automigrate=false`, exit 0, including `1791720936_updated_products.js` (duplicate `channel_prices` guarded), `1792774201_manufacturing_jobs.js`, `1793000002_tenant_owner_rules_and_rbac_hardening.js`, `1793001000_analytics_unit_cost_and_snapshots.js` and `1793001100_flash_drops.js`. The temp database was removed afterward.
-- The flash-drop migration was additionally applied and rolled back on its own against a real PocketBase instance (worker verification).
+- `node --check` — every new/changed PocketBase migration parses.
+- **Full fresh `migrate up` verified end to end:** an empty temp `pb_data` was migrated with **all 112 migrations** using `pocketbase migrate up --automigrate=false`, exit 0, including `1791720936_updated_products.js` (duplicate `channel_prices` guarded), `1792774201_manufacturing_jobs.js`, `1793000002_tenant_owner_rules_and_rbac_hardening.js`, `1793001000_analytics_unit_cost_and_snapshots.js`, `1793001100_flash_drops.js`, `1793001200_otp_codes.js` and `1793001300_roles_tenant_scope.js`. The temp database was removed afterward.
+- The flash-drop migration was additionally applied and rolled back on its own against a real PocketBase instance.
 
-## Recommended next pass
+## Remaining housekeeping
 
-1. Give e-way credentials a server-side encrypt/decrypt endpoint (AI-SYS-18).
-2. Move OTP storage into PocketBase (A-13).
-3. Split the `roles` catalog per tenant if custom roles should not be shared (A-02 note).
-4. Run a complete Mimosa security scan; the commit hook reported `scanner_enobufs` and no scan conclusion is being claimed.
-5. Delete the leftover ACL-locked `%T%` temp directory in the repo root (created by the migration verification worker; it cannot be removed without elevation).
+1. Delete the leftover ACL-locked `%T%` temp directory in the repo root; it is `.gitignore`d and cannot be removed without elevation.
+2. Run `git fsck --full` for the pre-existing unreadable object warning (`e8056b4…`) before a rebase or push.
+3. Run `pocketbase migrate up` on the live database to create `otp_codes`/`flash_drops` and apply the role/flash-drop rules.
 

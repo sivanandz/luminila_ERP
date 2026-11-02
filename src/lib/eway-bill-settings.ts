@@ -1,10 +1,13 @@
 /**
  * E-way bill credentials, stored per tenant in `store_settings` under the
- * single row `key="eway_bill"`. The settings component used to build that
- * filter and upsert inline (D-23).
+ * single row `key="eway_bill"`.
+ *
+ * Secrets are encrypted at rest by `/api/settings/eway` (AI-SYS-18). The
+ * non-reveal read returns only `hasClientSecret`/`hasPassword`; saving with an
+ * empty secret field keeps the stored value.
  */
 
-import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
+import { pb, ensureAuth, getCurrentTenantEmail } from './pocketbase';
 import { getStoreSettings } from './settings';
 
 export interface EwayBillConfig {
@@ -13,63 +16,76 @@ export interface EwayBillConfig {
     username: string;
     password: string;
     isProduction: boolean;
+    /** True when a secret is already stored (the value itself is not returned). */
+    hasClientSecret?: boolean;
+    hasPassword?: boolean;
 }
 
-interface EwayBillRecord {
-    id: string;
-    eway_client_id?: string;
-    eway_client_secret?: string;
-    eway_username?: string;
-    eway_password?: string;
-    eway_is_production?: boolean;
+interface EwayApiResponse {
+    success?: boolean;
+    error?: string;
+    configured?: boolean;
+    clientId?: string;
+    clientSecret?: string;
+    username?: string;
+    password?: string;
+    isProduction?: boolean;
+    hasClientSecret?: boolean;
+    hasPassword?: boolean;
 }
 
-function tenantFilter(userEmail: string): string {
-    return userEmail
-        ? `key="eway_bill" && account_email="${sanitizeFilter(userEmail)}"`
-        : 'key="eway_bill"';
+function authHeaders(): Record<string, string> {
+    ensureAuth();
+    return pb.authStore.token ? { Authorization: `Bearer ${pb.authStore.token}` } : {};
 }
 
-export async function getEwayBillConfig(): Promise<EwayBillConfig | null> {
-    const userEmail = getCurrentTenantEmail();
-    const filter = tenantFilter(userEmail);
+export async function getEwayBillConfig(revealSecrets = false): Promise<EwayBillConfig | null> {
+    const tenant = getCurrentTenantEmail();
+    const params = new URLSearchParams();
+    if (tenant) params.set('accountEmail', tenant);
+    if (revealSecrets) params.set('reveal', '1');
 
-    const record = await pb.collection('store_settings')
-        .getFirstListItem<EwayBillRecord>(filter)
-        .catch(() => null);
-    if (!record) return null;
+    const res = await fetch(`/api/settings/eway?${params.toString()}`, {
+        headers: authHeaders(),
+        cache: 'no-store',
+    }).catch(() => null);
+    if (!res || !res.ok) return null;
+
+    const data = await res.json() as EwayApiResponse;
+    if (!data.success || !data.configured) return null;
 
     return {
-        clientId: record.eway_client_id || '',
-        clientSecret: record.eway_client_secret || '',
-        username: record.eway_username || '',
-        password: record.eway_password || '',
-        isProduction: record.eway_is_production || false,
+        clientId: data.clientId || '',
+        clientSecret: data.clientSecret || '',
+        username: data.username || '',
+        password: data.password || '',
+        isProduction: Boolean(data.isProduction),
+        hasClientSecret: Boolean(data.hasClientSecret),
+        hasPassword: Boolean(data.hasPassword),
     };
 }
 
 export async function saveEwayBillConfig(config: EwayBillConfig): Promise<void> {
-    const userEmail = getCurrentTenantEmail();
-    const filter = tenantFilter(userEmail);
+    const tenant = getCurrentTenantEmail();
+    const res = await fetch('/api/settings/eway', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders(),
+        },
+        body: JSON.stringify({
+            accountEmail: tenant || undefined,
+            clientId: config.clientId,
+            clientSecret: config.clientSecret,
+            username: config.username,
+            password: config.password,
+            isProduction: config.isProduction,
+        }),
+    });
 
-    const data = {
-        key: 'eway_bill',
-        eway_client_id: config.clientId,
-        eway_client_secret: config.clientSecret,
-        eway_username: config.username,
-        eway_password: config.password,
-        eway_is_production: config.isProduction,
-        account_email: userEmail || '',
-    };
-
-    const existing = await pb.collection('store_settings')
-        .getFirstListItem<{ id: string }>(filter)
-        .catch(() => null);
-
-    if (existing) {
-        await pb.collection('store_settings').update(existing.id, data);
-    } else {
-        await pb.collection('store_settings').create(data);
+    const data = await res.json().catch(() => null) as EwayApiResponse | null;
+    if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `Could not save E-way Bill settings (HTTP ${res.status}).`);
     }
 }
 
@@ -99,7 +115,21 @@ function base64Utf8(value: string): string {
  * and reports exactly what it answered; incomplete credentials are reported as
  * "not configured", never as a success.
  */
-export async function testEwayBillConnection(config: EwayBillConfig): Promise<EwayBillTestResult> {
+export async function testEwayBillConnection(input: EwayBillConfig): Promise<EwayBillTestResult> {
+    // The settings form no longer receives stored secrets; if the operator did
+    // not retype them, use the saved (decrypted server-side) values.
+    let config = input;
+    if (!config.clientSecret || !config.password) {
+        const saved = await getEwayBillConfig(true).catch(() => null);
+        if (saved) {
+            config = {
+                ...config,
+                clientSecret: config.clientSecret || saved.clientSecret,
+                password: config.password || saved.password,
+            };
+        }
+    }
+
     if (!config.clientId || !config.clientSecret || !config.username || !config.password) {
         return {
             ok: false,
