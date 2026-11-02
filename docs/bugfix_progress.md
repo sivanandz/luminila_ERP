@@ -18,16 +18,18 @@ Tracks remediation of [`docs/codebase_bugs_and_issues_audit.md`](./codebase_bugs
 
 | Feature area | Critical | High | Medium | Low | Fixed | Partial | Open |
 | :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| 1. Auth, tenancy, RBAC, API security | 5 | 11 | 4 | 2 | 16 | 2 | 4 |
-| 2. POS, billing, GST | 5 | 9 | 7 | 3 | 8 | 1 | 15 |
-| 3. Inventory, products, POs, vendors | 6 | 10 | 6 | 3 | 6 | 0 | 19 |
-| 4. Orders, returns, shipping, challans | 6 | 10 | 7 | 1 | 6 | 0 | 18 |
+| 1. Auth, tenancy, RBAC, API security | 5 | 11 | 4 | 2 | 20 | 2 | 0 |
+| 2. POS, billing, GST | 5 | 9 | 7 | 3 | 23 | 1 | 0 |
+| 3. Inventory, products, POs, vendors | 6 | 10 | 6 | 3 | 25 | 0 | 0 |
+| 4. Orders, returns, shipping, challans | 6 | 10 | 7 | 1 | 24 | 0 | 0 |
 | 5. WhatsApp commerce | 5 | 8 | 8 | 3 | 0 | 0 | 24 |
-| 6. Storefront, catalog, payments | 5 | 9 | 9 | 2 | 15 | 1 | 9 |
-| 7. Finance, banking, cheques, GSTR-1 | 4 | 8 | 9 | 3 | 5 | 0 | 19 |
-| 8. Customers, CRM, RFM, consent | 5 | 6 | 8 | 3 | 10 | 1 | 11 |
-| 9. AI, backup, activity, settings, Tauri | 5 | 8 | 8 | 3 | 3 | 0 | 21 |
-| **Total** | **46** | **79** | **66** | **23** | **69** | **5** | **140** |
+| 6. Storefront, catalog, payments | 5 | 9 | 9 | 2 | 23 | 1 | 1 |
+| 7. Finance, banking, cheques, GSTR-1 | 4 | 8 | 9 | 3 | 24 | 0 | 0 |
+| 8. Customers, CRM, RFM, consent | 5 | 6 | 8 | 3 | 21 | 1 | 0 |
+| 9. AI, backup, activity, settings, Tauri | 5 | 8 | 8 | 3 | 23 | 1 | 0 |
+| **Total** | **46** | **79** | **66** | **23** | **183** | **6** | **25** |
+
+> Status after the second pass (`1e7feda`). The only remaining batch is WhatsApp (24 findings); `SF-21` is the storefront angle of `WA-01` and closes with it. Partial items are `A-05`, `A-13`, `POS-01`/`SF-02`, `CRM-18`, `AI-SYS-18` — each has its residual documented below.
 
 ---
 
@@ -224,30 +226,73 @@ Doing only step 3 against localStorage data would be insecure (the client suppli
 
 ---
 
-## Deferred / decisions needed
+## Second pass — all non-WhatsApp findings (commit `1e7feda`)
+
+Work was split across disjoint file scopes so a parallel analytics session could keep editing: `inv-agent`, `fin-agent`, `ai-agent`, and this audit-fix session. Per-ID evidence is in `docs/_agent_reports/`. The analytics build itself was committed by its owner as `700ec73`; once it landed, the `reports.ts`/`analytics.ts` residuals from FIN were closed here.
+
+### Auth & setup (A-07, A-17, A-18, A-21)
+
+- **A-07** — the tenant registry stores the admin password as `enc:v1:` ciphertext when `TENANT_REGISTRY_KEY` is set (plaintext only on legacy installs, with a warning).
+- **A-17** — `/users` gates "Add User" behind `users:create` and role/toggle actions behind `users:update` with `<Can>`.
+- **A-18** — setup completion is checked by new `GET /api/setup/status` on a server tenant client instead of an anonymous `users.getList` that always 403s.
+- **A-21** — `PB_CUSTOM_URL_<tenant>` is read/written alongside the legacy key; the last resolved account is remembered in `PB_TENANT_HINT`.
+
+### POS (POS-08 … POS-24)
+
+Manual invoices now deduct stock through `applyChannelStock` (with invoice rollback on failure) and read the product's `gst_rate`/`hsn_code` instead of 3%/7113 (POS-08). Exchange GST follows `is_gst_registered` and the exchange invoice is marked paid when the balance is collected (POS-09/ORD-14). The offline queue is tenant-keyed and persists retry counts (POS-10). PhonePe polling uses refs and a one-shot success guard (POS-11). Receipt HTML is escaped (POS-14). The mock GSTIN is gone and E-Way Bill requires a real pincode (POS-15); `amountToWords` and `isValidGSTIN` are fixed in `gst.ts` (POS-16/23); return estimates use the original tax-inclusive line (POS-17); prorated tax and invoice totals are rounded (POS-18/19); the WhatsApp widget resets per sale (POS-20); storage keys are tenant-scoped (POS-21); discount/loyalty/register are tenant-scoped (POS-22); invalid invoice dates render `-` (POS-24).
+
+### Orders / returns (ORD-07 … ORD-24)
+
+COD/cash-on-delivery may dispatch (ORD-07); the barcode station goes through `createShipmentForOrder` (ORD-08); scanned products resolve a real variant (ORD-09); order reads and child writes are tenant-scoped (ORD-10/11/12); E-Way Bill config and token cache are tenant-keyed (ORD-13); order tax is computed post-discount (ORD-15); label pincode is string-safe (ORD-16); retries are bound to a cart hash (ORD-17); variant resolution requires active parents (ORD-18); refunds reverse customer spend and loyalty (ORD-19); mock HUID/AWB are gone (ORD-20); challan filters actually filter (ORD-21); challan tax follows the consignee state (ORD-22); QC tax uses line rates (ORD-23); E-Way rates keep decimals (ORD-24).
+
+### Storefront (SF-14, SF-16, SF-18…SF-20, SF-23…SF-25)
+
+Catalog variants are tenant/product scoped (SF-14); the `sales` mirror for an online order is written only after capture (SF-16); coupons enforce window, minimum and usage cap and increment on success (SF-18); Meta batch image URLs carry `account_email` (SF-19); standalone products no longer read a non-existent `stock_quantity` (SF-20); webhook dedupe is tenant-scoped (SF-23); catalog sync fails closed without a tenant (SF-24); channel-pricing filters are escaped (SF-25).
+
+### Finance (FIN-01, FIN-04, FIN-06…FIN-24)
+
+All banking/expenses/GSTR-1/report queries are tenant-scoped (FIN-01); cheque clearing/bounce posts to the bank ledger with a real account (FIN-04); GSTR-1 aggregates credit-note items by rate and nets Table 12 (FIN-06); `/reports/gst` JSON now numbers items, uses `typ: 'OE'` correctly, computes `gt/cur_gt` and drops the fake hash (FIN-07); reports exclude draft/cancelled invoices (FIN-08); GSTIN/state normalisation is string-safe (FIN-09); `getCategories(includeInactive)` keeps disabled categories visible (FIN-11); bounce re-entry is guarded (FIN-16); cheque RMW is serialized and only cancelled rows are pruned (FIN-17); Table 13 receives cancelled invoices with numeric sort (FIN-18); LUT export includes IGST when applicable (FIN-19); transfer rows/search are fixed (FIN-20); B2C Large is inter-state >₹2.5L and the IGST column exists (FIN-21); local date defaults (FIN-22); remaining filter/print escaping (FIN-23); report export cards are wired (FIN-24). Analytics staff-email resolution (FIN-13) and stock active/cost fallback (FIN-14) are closed in the committed analytics code.
+
+### CRM (CRM-06, CRM-09…CRM-11, CRM-13…CRM-15, CRM-19…CRM-22)
+
+Customer phones are stored canonically (CRM-06); lifecycle triggers check WhatsApp opt-out and the consent ledger, dedupe within a 30-day tenant-scoped window, implement `post_delivery_review`, and count per flow (CRM-09/13/14); consent events sync profile flags and unchecking marketing clears them (CRM-10); campaign creation accepts the server id and records queued recipient counts (CRM-11); RFM uses live purchase ledgers and local-date milestones (CRM-08/20); campaign caches are tenant-keyed, attribution tolerates `created`, and filters are escaped (CRM-15/19); the customer profile keeps shipping/GSTIN/bangle fields separate (CRM-21); date-only UI values are string-safe (CRM-22). CRM-18 remains partial because the broadcast queue's custom-recipient API is owned by the WhatsApp worker.
+
+### AI / System (AI-SYS-01, AI-SYS-02, AI-SYS-06 … AI-SYS-24)
+
+Backup export filters all 31 collections by tenant, and restore handles all 31 in FK order with per-table results and foreign-id refusal (AI-SYS-01/02); activity logs are tenant-scoped/sanitized and search runs server-side (AI-SYS-06/17); settings resolve the owner and coerce primitives (AI-SYS-07/08); resume uses the persisted profile and locks are pruned/aborted safely (AI-SYS-10/24); AI writes are audited and phone-deduped (AI-SYS-11); AI reads guard active products (AI-SYS-12); auto-backup keys are tenant-suffixed (AI-SYS-13); the Tauri sidecar is owned and killed on exit and the token survives navigation (AI-SYS-14/15, Rust compile-unverified); `/backup` and `/settings` are permission-gated (AI-SYS-16); E-Way Bill test hits NIC and reports "not configured" (AI-SYS-18, partial); provider defaults/keys/tests and model history are fixed (AI-SYS-19/20/21); settings/header UI is wired (AI-SYS-22/23).
+
+### Verification
+
+- `npx tsc --noEmit --incremental false` — clean after the batch (before the WhatsApp files were re-touched).
+- Per-agent reports: `docs/_agent_reports/inv-agent.md`, `fin-agent.md`, `ai-agent.md`.
+- Coordination record: `docs/ACTIVE_WORK_CLAIMS.md`.
+
+---
+
+## Partial / deferred items
 
 | ID | Reason |
 | :-- | :-- |
-| A-02 (roles tenancy) | The `:auth` escalation is fixed. Giving `roles` its own `account_email` scope requires deciding whether seeded system roles are copied per tenant or shared; that is a schema/product decision, not a mechanical fix. |
-| A-05 (other draft migrations) | `1792774202`, `1792774204`, `1792774208`, `1792830000` still pass `fields` to `new Collection(...)`. Converting them is mechanical but touches four files with ~30 field definitions; deferred to keep this pass reviewable. **Note:** `bootstrapTenantDataDir` now throws on `migrate up` failure, so these must be converted before a fresh multi-tenant provision is attempted. |
-| A-13 (OTP storage) | Moving OTPs from `src/data/otp_store.json` to PocketBase requires a new collection and an async store API (callers are sync today). The security-critical parts (rate limit, lockout, phone normalization) are fixed. |
-| WA-01/02/03/04/05 | See Phase 6: flash drops need a collection + admin CRUD + public checkout; the tenant sweep touches ~40 call sites across six WhatsApp modules. |
-| FIN-01, FIN-04, FIN-06…FIN-09 | Phase 8 records the localized banking fixes. FIN-01 is a ~50-query tenant sweep across four modules; FIN-04 posts cheque clearing to the bank ledger; FIN-06…09 are GSTR-1 payload correctness. |
-| CRM-11 (counts) | Campaign id validation is fixed; `total_recipients`/`sent_count` still need a post-`queueCampaign` update. |
-| AI-SYS-01/02 | Backup export/restore tenant scoping and restoring all 31 collections. AI-SYS-02 is a feature gap (7 of 31 collections are restorable). |
+| A-02 (roles tenancy) | The `:auth` escalation is fixed. Giving `roles` its own `account_email` scope requires deciding whether seeded system roles are copied per tenant or shared; that is a schema/product decision. |
+| A-05 (other draft migrations) | `1792774202`, `1792774204`, `1792774208`, `1792830000` still pass `fields` to `new Collection(...)`. `bootstrapTenantDataDir` now throws on `migrate up` failure, so these must be converted before a fresh multi-tenant provision. |
+| A-13 (OTP storage) | OTPs still live in `src/data/otp_store.json`; moving them to PocketBase needs a collection and an async store API (callers are sync). Rate limit, lockout rollback and phone normalization are fixed. |
+| POS-01 / SF-02 | The WhatsApp checkout fails closed, but a public flash-drop checkout is part of the WhatsApp batch (`WA-01/02`). |
+| CRM-18 | Blocked on the broadcast queue accepting an explicit cohort list; owned by the WhatsApp worker. |
+| AI-SYS-18 | E-Way Bill credentials remain plaintext in `store_settings`; encryption needs a server endpoint (Node `crypto` cannot run in the settings component). The test connection itself is real. |
 
 ---
 
 ## Final verification
 
-- `npx tsc --noEmit` — **clean** on a cache-free full run (`tsconfig.tsbuildinfo` deleted first). A stale incremental cache had been masking real errors; see the Phase 4 incidental build fix.
+- `npx tsc --noEmit` — **clean** on cache-free full runs. A stale `tsconfig.tsbuildinfo` had been masking real errors; see the Phase 4 incidental build fix.
 - `node --check` — new/changed PocketBase migrations parse.
-- No database migration was executed as part of this pass; `1793000002_tenant_owner_rules_and_rbac_hardening.js` and the rewritten `1792774201_manufacturing_jobs.js` apply on the next `pocketbase migrate up`.
+- No database migration was executed as part of this pass; `1793000002_tenant_owner_rules_and_rbac_hardening.js`, the rewritten `1792774201_manufacturing_jobs.js` and the WhatsApp flash-drop migration apply on the next `pocketbase migrate up`.
 
-## Recommended next pass (in order)
+## Recommended next pass
 
-1. **WA-01/02** — the only remaining unauthenticated free-order/payment path. Build the `flash_drops` collection, persist admin drops, then the public checkout endpoint.
-2. **FIN-01** — tenant-scope `banking.ts`, `expenses.ts`, `reports.ts`, `gstr1-report.ts`; this is the largest remaining cross-tenant leak.
-3. **AI-SYS-01/02** — scope the backup export and make restore cover every exported collection, or narrow the UI promise.
-4. **WA-03/04/05** — CRM/broadcast/chat tenant sweep.
-5. Remaining Highs/Mediums in the audit, feature by feature.
+1. Finish and commit the WhatsApp batch (`WA-01…WA-24`), including the `flash_drops` migration and public checkout; that closes SF-21 and the last free-order path.
+2. Add the custom-recipient parameter to `queueCampaign` and wire CRM-18.
+3. Convert the four remaining draft migrations to the create-then-add-fields pattern.
+4. Give e-way credentials a server-side encrypt/decrypt endpoint (AI-SYS-18).
+5. Move OTP storage into PocketBase (A-13).
+
