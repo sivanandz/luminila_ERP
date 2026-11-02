@@ -83,7 +83,9 @@ export async function getPublishableProducts(): Promise<WhatsAppProductItem[]> {
                 sort: '-created',
             }),
             pb.collection('product_variants').getFullList<ProductVariant & { account_email?: string }>({
-                filter: tenantEmail ? `account_email = "${sanitizeFilter(tenantEmail)}"` : undefined,
+                // WA-08: relational-active-guard — deactivated products must not
+                // contribute stock to a publishable catalog entry.
+                filter: `product.is_active = true${tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : ''}`,
             }).catch(() => [] as (ProductVariant & { account_email?: string })[]),
         ]);
 

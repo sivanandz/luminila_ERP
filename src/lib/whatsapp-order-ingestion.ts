@@ -15,6 +15,7 @@
 
 import { pb } from './pocketbase';
 import { createSaleFromChat } from './chat-sales';
+import { withTenantFilter } from './whatsapp-crm';
 import type { WPPMessage } from './whatsapp';
 
 export interface IngestedOrderItem {
@@ -67,10 +68,12 @@ export async function ingestWhatsAppCatalogOrder(
         for (const item of items) {
             let productId = item.productId || '';
             if (!productId && item.sku) {
+                // WA-06: SKU is only unique inside a tenant; an unscoped lookup
+                // could resolve another account's product with the same code.
                 const product = await pb
                     .collection('products')
                     .getFirstListItem<{ id: string }>(
-                        pb.filter('sku = {:sku}', { sku: item.sku })
+                        pb.filter(withTenantFilter('is_active = true && sku = {:sku}'), { sku: item.sku })
                     )
                     .catch(() => null);
                 productId = product?.id || '';

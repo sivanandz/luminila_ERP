@@ -26,7 +26,6 @@ import { toast } from 'sonner';
 // ANTI-BOT-DETECTION CONSTANTS & QUOTAS
 // ============================================================================
 
-const AUTO_SYNC_STORAGE_KEY = 'whatsapp_catalog_auto_sync';
 const SETTLE_MIN_MS = 4500;
 const SETTLE_MAX_MS = 8500;
 const INTER_MUTATION_MIN_MS = 9000;
@@ -117,6 +116,11 @@ function getMutationHistoryKey(): string {
 
 function getPersistedQueueKey(): string {
     return `whatsapp_stealth_queue${getTenantStorageSuffix()}`;
+}
+
+/** WA-16: auto-sync is a per-tenant preference, not a global browser flag. */
+function getAutoSyncStorageKey(): string {
+    return `whatsapp_catalog_auto_sync${getTenantStorageSuffix()}`;
 }
 
 function loadIdentityMap(): Record<string, StoredCatalogIdentity> {
@@ -289,13 +293,13 @@ export function getStealthSyncStatus(): StealthSyncTelemetry {
 
 export function isAutoSyncEnabled(): boolean {
     if (typeof window === 'undefined') return false;
-    const val = localStorage.getItem(AUTO_SYNC_STORAGE_KEY);
+    const val = localStorage.getItem(getAutoSyncStorageKey());
     return val === null ? true : val === 'true';
 }
 
 export function setAutoSyncEnabled(enabled: boolean): void {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(AUTO_SYNC_STORAGE_KEY, enabled ? 'true' : 'false');
+    localStorage.setItem(getAutoSyncStorageKey(), enabled ? 'true' : 'false');
     window.dispatchEvent(
         new CustomEvent('whatsapp:auto-sync-status', {
             detail: { enabled },
@@ -653,7 +657,10 @@ export async function executeProductCatalogSync(
         let hasVariants = false;
         try {
             const variants = await pb.collection('product_variants').getFullList<ProductVariant & { account_email?: string }>({
-                filter: `product = "${sanitizeFilter(productId)}"`,
+                // WA-08: relational-active-guard; the product was already fetched
+                // above but a variant whose product flipped inactive must not
+                // keep the catalog item published.
+                filter: `product = "${sanitizeFilter(productId)}" && product.is_active = true`,
             });
             const validVariants = tenantEmail
                 ? variants.filter((v) => !v.account_email || v.account_email.toLowerCase() === tenantEmail.toLowerCase())
@@ -848,6 +855,7 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
         const filterStr = tenantEmail
             ? `account_email = "${sanitizeFilter(tenantEmail)}"`
             : undefined;
+        const activeVariantFilter = `product.is_active = true${filterStr ? ` && ${filterStr}` : ''}`;
 
         const [rawProducts, rawVariants, liveCatalog] = await Promise.all([
             pb.collection('products').getFullList<ReconcileProduct>({
@@ -855,7 +863,7 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
                 sort: '-updated',
             }),
             pb.collection('product_variants').getFullList<ProductVariant & { account_email?: string }>({
-                filter: filterStr,
+                filter: activeVariantFilter,
             }).catch(() => [] as (ProductVariant & { account_email?: string })[]),
             getCatalogProducts(sessionId),
         ]);

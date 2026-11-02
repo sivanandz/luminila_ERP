@@ -141,6 +141,9 @@ export default function CustomersPage() {
     // RFM Segmentation State
     const [rfmData, setRfmData] = useState<{ customers: RFMCustomer[]; cohorts: Record<RFMSegmentId, CohortSummary> } | null>(null);
     const [selectedCohort, setSelectedCohort] = useState<RFMSegmentId>("all");
+    // Exact members of the cohort the operator launched from; passing the
+    // segment name mapped almost every cohort to "all_active" (CRM-18).
+    const [cohortRecipients, setCohortRecipients] = useState<{ id: string; phone: string; name?: string }[]>([]);
     const [rfmLoading, setRfmLoading] = useState(false);
 
     // Campaigns & Analytics State
@@ -310,6 +313,15 @@ export default function CustomersPage() {
 
     // Handle Launch Campaign from Cohort
     const handleLaunchCohortCampaign = (cohortId: RFMSegmentId) => {
+        const members = (rfmData?.customers || [])
+            .filter((customer) => cohortId === "all" || customer.segment === cohortId)
+            .filter((customer) => Boolean(customer.phone))
+            .map((customer) => ({
+                id: customer.id,
+                phone: String(customer.phone),
+                name: customer.name,
+            }));
+        setCohortRecipients(members);
         setNewCampaignForm({
             ...newCampaignForm,
             target_segment: cohortId === "champions" ? "vip_tiers" : cohortId === "at_risk" ? "all_active" : "all_active",
@@ -345,8 +357,10 @@ export default function CustomersPage() {
                 campaign: created.title,
                 template: `${newCampaignForm.template}${newCampaignForm.promo_code ? `\n\nUse Code: *${newCampaignForm.promo_code}* for ${newCampaignForm.discount_percent}% off.` : ""}`,
                 segment: (newCampaignForm.target_segment as any) || "all_active",
+                ...(cohortRecipients.length > 0 ? { customRecipients: cohortRecipients } : {}),
             });
             await updateCampaignQueueCounts(created.id, queueRes.queued);
+            setCohortRecipients([]);
 
             toast.success(`Campaign "${created.title}" launched! ${queueRes.queued} messages queued with anti-ban jitter.`);
             setShowNewCampaignDialog(false);

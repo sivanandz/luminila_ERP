@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MessageCircle, Send, Loader2, BadgeCheck, CreditCard, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import { getTenantStorageKey } from "@/lib/pocketbase";
 import { getCustomerSummary } from "@/lib/customers";
 import { createPaymentLinkLedger } from "@/lib/payment-links";
 import { whatsappManager, checkNumberStatus } from "@/lib/whatsapp";
@@ -97,6 +98,12 @@ export function POSWhatsAppWidget({
     const [sendingReceipt, setSendingReceipt] = useState(false);
     const sentRef = useRef(false);
 
+    // A new sale reuses the same mounted widget; without this the receipt button
+    // stayed disabled after the first send (POS-20).
+    useEffect(() => {
+        sentRef.current = false;
+    }, [invoiceNumber, total, customerId]);
+
     // Sync external toggle events (e.g. from Settings or other modals)
     useEffect(() => {
         const handler = (e: Event) => {
@@ -152,7 +159,7 @@ export function POSWhatsAppWidget({
         if (!phone) { setWaVerified(null); return; }
         (async () => {
             try {
-                const sessionId = localStorage.getItem('wpp_session_id') || 'luminila';
+                const sessionId = localStorage.getItem(getTenantStorageKey('wpp_session_id')) || 'luminila';
                 const { exists } = await checkNumberStatus(sessionId, phone);
                 if (!cancelled) setWaVerified(exists);
             } catch {

@@ -118,21 +118,42 @@ export function FlashDropModal({
     }, [searchQuery]);
 
     const handleAddItem = (prod: Product) => {
-        const prodExpanded = prod as unknown as { expand?: { 'product_variants(product)'?: { id: string; price: number; stock_level?: number; sku?: string }[] } };
-        const variants = prodExpanded.expand?.['product_variants(product)'] || [];
+        // WA-18: PocketBase exposes the back-relation as
+        // `product_variants_via_product`; the old `product_variants(product)`
+        // key never resolved, so `variants` was always empty and the drop line
+        // pointed at a product id where a variant id is required.
+        const prodExpanded = prod as unknown as {
+            expand?: {
+                product_variants_via_product?: { id: string; price_adjustment?: number; stock_level?: number; sku_suffix?: string; variant_name?: string }[];
+                'product_variants(product)'?: { id: string; price_adjustment?: number; stock_level?: number; sku_suffix?: string; variant_name?: string }[];
+            };
+        };
+        const variants =
+            prodExpanded.expand?.product_variants_via_product
+            || prodExpanded.expand?.['product_variants(product)']
+            || [];
         const variant = variants[0];
-        const origPrice = variant?.price || prod.base_price || 1500;
+        if (!variant?.id) {
+            toast.error(`"${prod.name}" has no variant configured; add one before creating a flash drop.`);
+            return;
+        }
+        const origPrice = (prod.base_price || 0) + (variant.price_adjustment || 0);
+        if (origPrice <= 0) {
+            toast.error(`"${prod.name}" has no valid price configured.`);
+            return;
+        }
         const dropPrice = Math.round(origPrice * 0.85); // Default 15% drop discount
+        const sku = `${prod.sku || ''}${variant.sku_suffix ? `-${variant.sku_suffix}` : ''}` || prod.sku || 'SKU-001';
 
         const newItem: FlashDropItem = {
             productId: prod.id,
-            variantId: variant?.id || prod.id,
+            variantId: variant.id,
             name: prod.name,
-            sku: variant?.sku || prod.sku || 'SKU-001',
+            sku,
             imageUrl: prod.image_url || undefined,
             originalPrice: origPrice,
             dropPrice,
-            allocatedStock: Math.max(1, Math.min(10, variant?.stock_level || 5)),
+            allocatedStock: Math.max(1, Math.min(10, variant.stock_level || 5)),
         };
 
         setSelectedItems(prev => [...prev.filter(i => i.variantId !== newItem.variantId), newItem]);
@@ -455,7 +476,9 @@ export function FlashDropModal({
                                                     variant="ghost"
                                                     className="h-6 text-[10px] px-2 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
                                                     onClick={() => {
-                                                        const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/checkout/whatsapp?dropId=${drop.id}`;
+                                                        const params = new URLSearchParams({ dropId: drop.id });
+                                                        if (drop.accountEmail) params.set('account_email', drop.accountEmail);
+                                                        const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/checkout/whatsapp?${params.toString()}`;
                                                         navigator.clipboard.writeText(`✨ *LUMINILA VIP FLASH LINK (Strict 10-Min Hold)* ✨\n👉 Claim & 1-click pay with UPI: ${url}\n_⏳ Notice: 1 unit is reserved exclusively for you for 10 minutes only upon opening._`);
                                                         toast.success("Copied 10-Min VIP Checkout Link to clipboard!");
                                                     }}

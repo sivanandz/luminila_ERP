@@ -10,7 +10,7 @@
  *  - §8.2 Barcode tag print queue (label_print_queue)
  */
 
-import { pb } from './pocketbase';
+import { pb, accountScopeEmail, sanitizeFilter, getTenantStorageKey } from './pocketbase';
 import { recordConsentEvent } from './consent-ledger';
 import {
     phoneFromChatId,
@@ -20,6 +20,7 @@ import {
 } from './customer-lookup';
 import { createGRN } from './purchase';
 import { whatsappManager } from './whatsapp';
+import { getChannelPrice } from './channel-pricing';
 import {
     generateParentSKU,
     generateChildSKU,
@@ -100,6 +101,44 @@ export interface POSCartBroadcastItem {
 }
 
 // ===========================================
+// TENANT SCOPING
+// ===========================================
+
+/**
+ * The account_email that owns the signed-in session (tenant owner, never the
+ * staff member's personal address). Empty when there is no usable session, in
+ * which case PocketBase rules are the only gate and callers must not write.
+ */
+export function tenantScopeEmail(): string {
+    return (accountScopeEmail() || '').trim().toLowerCase();
+}
+
+/**
+ * Scope a PocketBase filter to the current tenant (WA-03/WA-04). Mirrors the
+ * hardened `account_email = @request.auth.email || account_email =
+ * @request.auth.account_email` collection rules so client-side filters and
+ * server rules agree.
+ */
+export function withTenantFilter(base?: string, tenantEmail?: string): string {
+    const email = (tenantEmail ?? tenantScopeEmail()).trim().toLowerCase();
+    const inner = (base || '').trim();
+    if (!email) return inner;
+    const scope = `account_email = "${sanitizeFilter(email)}"`;
+    return inner ? `(${inner}) && ${scope}` : scope;
+}
+
+/** True when a record belongs to the given tenant (or predates account_email). */
+export function recordBelongsToTenant(
+    record: { account_email?: string } | null | undefined,
+    tenantEmail = tenantScopeEmail()
+): boolean {
+    if (!record) return false;
+    const stored = String(record.account_email || '').trim().toLowerCase();
+    if (!stored) return true;
+    return !tenantEmail || stored === tenantEmail;
+}
+
+// ===========================================
 // PHONE NORMALIZATION (E.164)
 // ===========================================
 
@@ -122,7 +161,9 @@ export async function findVendorByPhone(phone: string): Promise<ContactContext['
     const digits = phoneFromChatId(phone) || phone.replace(/\D/g, '').slice(-10);
     if (!digits || digits.length < 10) return null;
     try {
-        const v = await pb.collection('vendors').getFirstListItem(`phone~"${digits}"`);
+        const v = await pb.collection('vendors').getFirstListItem(
+            withTenantFilter(`phone~"${sanitizeFilter(digits)}"`)
+        );
         const vRow = v as unknown as { company_name?: string; gstin?: string };
         return {
             id: v.id,
@@ -148,7 +189,7 @@ export async function resolveContact(
     // Check existing whatsapp_chats record first to respect manually tagged types (like vendor groups)
     try {
         const existing = await pb.collection('whatsapp_chats').getFirstListItem(
-            `chat_id="${chatId}"`
+            withTenantFilter(`chat_id="${sanitizeFilter(chatId)}"`)
         ).catch(() => null);
 
         if (existing && existing.contact_type) {
@@ -156,14 +197,19 @@ export async function resolveContact(
             if (existing.vendor) {
                 try {
                     const v = await pb.collection('vendors').getOne(existing.vendor);
-                    const vRow = v as unknown as { company_name?: string; gstin?: string };
-                    vendor = { id: v.id, name: v.name, company_name: vRow.company_name || v.name, phone: v.phone, gstin: vRow.gstin };
+                    if (recordBelongsToTenant(v as { account_email?: string })) {
+                        const vRow = v as unknown as { company_name?: string; gstin?: string };
+                        vendor = { id: v.id, name: v.name, company_name: vRow.company_name || v.name, phone: v.phone, gstin: vRow.gstin };
+                    }
                 } catch { /* ignore */ }
             }
             let customer = null;
             if (existing.customer) {
                 try {
-                    customer = await pb.collection('customers').getOne(existing.customer);
+                    const row = await pb.collection('customers').getOne(existing.customer);
+                    if (recordBelongsToTenant(row as { account_email?: string })) {
+                        customer = row;
+                    }
                 } catch { /* ignore */ }
             }
             return {
@@ -213,7 +259,7 @@ export async function ensureChat(opts: {
 }): Promise<StoredChat | null> {
     try {
         const existing = await pb.collection('whatsapp_chats').getFirstListItem(
-            `chat_id="${opts.chatId}"`
+            withTenantFilter(`chat_id="${sanitizeFilter(opts.chatId)}"`)
         ).catch(() => null);
 
         const patch: Record<string, unknown> = {
@@ -248,6 +294,7 @@ export async function ensureChat(opts: {
             unread_count: opts.unreadCount ?? 0,
             status: 'active',
             labels: opts.labels || [],
+            account_email: tenantScopeEmail(),
         });
         return created as unknown as StoredChat;
     } catch (err) {
@@ -280,7 +327,7 @@ export async function setChatVendorGroup(
 ): Promise<{ contactType: ContactType; labels: string[] }> {
     try {
         const existing = await pb.collection('whatsapp_chats').getFirstListItem(
-            `chat_id="${chatId}"`
+            withTenantFilter(`chat_id="${sanitizeFilter(chatId)}"`)
         ).catch(() => null);
 
         let labels: string[] = existing?.labels ? (Array.isArray(existing.labels) ? [...existing.labels] : []) : [];
@@ -301,6 +348,7 @@ export async function setChatVendorGroup(
                     labels,
                     unread_count: 0,
                     status: 'active',
+                    account_email: tenantScopeEmail(),
                 });
             }
             return { contactType, labels };
@@ -332,11 +380,13 @@ export async function markChatRead(chatRecordId: string): Promise<void> {
 export async function getStoredChats(filter = ''): Promise<StoredChat[]> {
     try {
         const records = await pb.collection('whatsapp_chats').getFullList({
-            filter,
+            filter: withTenantFilter(filter),
             sort: '-last_message_time',
             expand: 'customer,vendor',
         });
-        return records as unknown as StoredChat[];
+        return (records as unknown as StoredChat[]).filter((chat) =>
+            recordBelongsToTenant(chat as unknown as { account_email?: string })
+        );
     } catch {
         return [];
     }
@@ -358,7 +408,7 @@ export async function persistMessages(
     for (const m of messages) {
         try {
             const existing = await pb.collection('whatsapp_messages').getFirstListItem(
-                `message_id="${m.id}"`
+                withTenantFilter(`message_id="${sanitizeFilter(m.id)}"`)
             ).catch(() => null);
             if (existing) continue;
 
@@ -377,6 +427,7 @@ export async function persistMessages(
                 media_url: m.mediaUrl || '',
                 status: m.fromMe ? 'sent' : 'delivered',
                 timestamp: m.timestamp ? new Date(m.timestamp * 1000).toISOString() : new Date().toISOString(),
+                account_email: tenantScopeEmail(),
             });
         } catch (err) {
             console.warn('[whatsapp-crm] persistMessages skip:', (err as Error)?.message);
@@ -387,7 +438,7 @@ export async function persistMessages(
 export async function getStoredMessages(chatRecordId: string, limit = 50): Promise<StoredMessage[]> {
     try {
         const records = await pb.collection('whatsapp_messages').getList(1, limit, {
-            filter: `chat="${chatRecordId}"`,
+            filter: withTenantFilter(`chat="${sanitizeFilter(chatRecordId)}"`),
             sort: '-timestamp',
         });
         return (records.items as unknown as StoredMessage[]).reverse();
@@ -430,6 +481,7 @@ export async function sendStaffMessage(opts: {
             message_type: opts.messageType || 'text',
             status: ok ? 'sent' : 'failed',
             timestamp: new Date().toISOString(),
+            account_email: tenantScopeEmail(),
         };
         if (chatRecordId) msgPayload.chat = chatRecordId;
         if (opts.staffUserId) msgPayload.staff_user = opts.staffUserId;
@@ -725,7 +777,10 @@ export async function ingestVendorProduct(input: {
 
     if (!isUncategorized && input.category) {
         try {
-            const existingCat = await pb.collection('categories').getFirstListItem(`name~"${input.category}"`).catch(() => null);
+            const existingCat = await pb
+                .collection('categories')
+                .getFirstListItem(withTenantFilter(`name~"${sanitizeFilter(input.category)}"`))
+                .catch(() => null);
             if (existingCat) {
                 categoryId = existingCat.id;
             } else {
@@ -733,6 +788,7 @@ export async function ingestVendorProduct(input: {
                     name: input.category,
                     slug: input.category.toLowerCase().replace(/[^a-z0-9]/g, '-'),
                     is_active: true,
+                    account_email: tenantScopeEmail(),
                 }).catch(() => null);
                 if (createdCat) categoryId = createdCat.id;
             }
@@ -754,7 +810,7 @@ export async function ingestVendorProduct(input: {
         description: input.description || '',
         is_active: true,
         hsn_code: input.hsnCode || '71179010',
-        account_email: pb.authStore.model?.email || '',
+        account_email: tenantScopeEmail(),
     };
     if (categoryId) productPayload.category = categoryId;
 
@@ -779,6 +835,7 @@ export async function ingestVendorProduct(input: {
         plating_type: input.platingCode,
         base_metal: input.baseMetalCode,
         stone_type: input.stoneCode,
+        account_email: tenantScopeEmail(),
     });
 
     if (!hasVendorGRN && input.quantity > 0) {
@@ -789,6 +846,7 @@ export async function ingestVendorProduct(input: {
             reference_id: product.id,
             source: 'vendor_whatsapp',
             notes: `Vendor WhatsApp ingestion${input.weightGrams ? ` (${input.weightGrams}g)` : ''}`,
+            account_email: tenantScopeEmail(),
         }).catch((err) => console.warn('[whatsapp-crm] stock movement log failed:', err));
     }
 
@@ -861,6 +919,7 @@ export async function addToExistingInventory(input: {
         reference_id: input.vendorId || '',
         source: 'vendor_whatsapp',
         notes: input.notes || 'Added from vendor WhatsApp chat',
+        account_email: tenantScopeEmail(),
     });
 }
 
@@ -883,6 +942,7 @@ export async function queueLabelPrint(input: {
             status: 'pending',
             source: input.source || 'manual',
             created_by: input.createdBy || '',
+            account_email: tenantScopeEmail(),
         });
     } catch (err) {
         console.error('[whatsapp-crm] queueLabelPrint failed:', err);
@@ -893,7 +953,7 @@ export async function queueLabelPrint(input: {
 export async function getPendingLabelQueue() {
     try {
         return await pb.collection('label_print_queue').getFullList({
-            filter: 'status="pending"',
+            filter: withTenantFilter('status="pending"'),
             sort: '-created',
             expand: 'variant,variant.product',
         });
@@ -926,11 +986,47 @@ export async function sendProductCard(opts: {
             sku_suffix?: string;
             stock_level?: number;
             price_adjustment?: number;
-            expand?: { product?: { name?: string; sku?: string; base_price?: number; image_url?: string } };
+            account_email?: string;
+            expand?: {
+                product?: {
+                    name?: string;
+                    sku?: string;
+                    base_price?: number;
+                    cost_price?: number;
+                    channel_prices?: Record<string, number>;
+                    image_url?: string;
+                    image_data?: string;
+                    is_active?: boolean;
+                    account_email?: string;
+                };
+            };
         };
+        if (!recordBelongsToTenant(v)) {
+            console.warn('[whatsapp-crm] sendProductCard refused a variant from another tenant');
+            return false;
+        }
         const product = v.expand?.product || {};
+        // WA-19: an inactive product must not be offered, the WhatsApp channel
+        // price (not the POS base price) is what the customer pays, and the
+        // base64 image is preferred when the product has no public URL.
+        if (product.is_active === false) {
+            console.warn('[whatsapp-crm] sendProductCard refused an inactive product:', opts.variantId);
+            return false;
+        }
+        if (product.account_email && tenantScopeEmail() && String(product.account_email).toLowerCase() !== tenantScopeEmail()) {
+            console.warn('[whatsapp-crm] sendProductCard refused a product from another tenant');
+            return false;
+        }
         const sku = `${product.sku || ''}${v.sku_suffix ? '-' + v.sku_suffix : ''}` || opts.variantId;
-        const price = (product.base_price || 0) + (v.price_adjustment || 0);
+        const price = getChannelPrice(
+            {
+                base_price: Number(product.base_price) || 0,
+                cost_price: Number(product.cost_price) || 0,
+                channel_prices: product.channel_prices || {},
+            },
+            'whatsapp',
+            Number(v.price_adjustment) || 0
+        );
         const stock = v.stock_level ?? 0;
 
         const caption = [
@@ -947,8 +1043,9 @@ export async function sendProductCard(opts: {
         ].filter(Boolean).join('\n');
 
         let sent = false;
-        if (product.image_url) {
-            sent = await whatsappManager.sendImage(opts.chatId, product.image_url, caption, `${sku}.jpg`);
+        const imagePayload = product.image_data || product.image_url;
+        if (imagePayload) {
+            sent = await whatsappManager.sendImage(opts.chatId, imagePayload, caption, `${sku}.jpg`);
         }
         if (!sent) {
             sent = await whatsappManager.sendMessage(opts.chatId, caption);
@@ -969,6 +1066,7 @@ export async function sendProductCard(opts: {
                 message_type: 'product_card',
                 status: sent ? 'sent' : 'failed',
                 timestamp: new Date().toISOString(),
+                account_email: tenantScopeEmail(),
             };
             if (chatRecordId) payload.chat = chatRecordId;
             if (opts.staffUserId) payload.staff_user = opts.staffUserId;
@@ -999,7 +1097,10 @@ export async function setWhatsAppOptOut(
     try {
         let custId = customerId;
         if (!custId) {
-            const matched = await pb.collection('customers').getFirstListItem(`phone~"${digits}"`).catch(() => null);
+            const matched = await pb
+                .collection('customers')
+                .getFirstListItem(withTenantFilter(`phone~"${sanitizeFilter(digits)}"`))
+                .catch(() => null);
             if (matched) custId = matched.id;
         }
 
@@ -1019,7 +1120,7 @@ export async function setWhatsAppOptOut(
         await recordConsentEvent(db, { ...consentBase, purpose: 'marketing' });
 
         const existing = await pb.collection('whatsapp_opt_outs').getFirstListItem(
-            `phone~"${digits}"`
+            withTenantFilter(`phone~"${sanitizeFilter(digits)}"`)
         ).catch(() => null);
         if (existing) return;
         await pb.collection('whatsapp_opt_outs').create({
@@ -1027,6 +1128,7 @@ export async function setWhatsAppOptOut(
             customer: custId || '',
             reason,
             created_at: new Date().toISOString(),
+            account_email: tenantScopeEmail(),
         });
     } catch (err) {
         console.warn('[whatsapp-crm] setWhatsAppOptOut failed:', err);
@@ -1039,12 +1141,12 @@ export async function isWhatsAppOptedOut(phone: string, db: typeof pb = pb): Pro
     if (!digits || digits.length < 10) return false;
     try {
         const existing = await pb.collection('whatsapp_opt_outs').getFirstListItem(
-            `phone~"${digits}"`
+            withTenantFilter(`phone~"${sanitizeFilter(digits)}"`)
         ).catch(() => null);
         if (existing) return true;
 
         const customer = await pb.collection('customers').getFirstListItem(
-            `phone~"${digits}" && whatsapp_opt_out=true`
+            withTenantFilter(`phone~"${sanitizeFilter(digits)}" && whatsapp_opt_out=true`)
         ).catch(() => null);
         return !!customer;
     } catch {
@@ -1059,6 +1161,16 @@ export async function isWhatsAppOptedOut(phone: string, db: typeof pb = pb): Pro
 const POS_CART_CHANNEL = 'pos_cart';
 const POS_CART_STORAGE_KEY = 'pos:cart-updated';
 
+// Both the channel and the storage event are scoped to the tenant; a shared
+// name let one store's "add to cart" appear in another store's POS tab (WA-16).
+function posCartChannelName(): string {
+    return getTenantStorageKey(POS_CART_CHANNEL);
+}
+
+function posCartStorageKey(): string {
+    return getTenantStorageKey(POS_CART_STORAGE_KEY);
+}
+
 /** Push an item into the active POS terminal cart (same-tab channel, cross-tab storage event). */
 export function broadcastAddToPOS(item: POSCartBroadcastItem): void {
     if (typeof window === 'undefined') return;
@@ -1070,14 +1182,14 @@ export function broadcastAddToPOS(item: POSCartBroadcastItem): void {
     };
 
     try {
-        const channel = new BroadcastChannel(POS_CART_CHANNEL);
+        const channel = new BroadcastChannel(posCartChannelName());
         channel.postMessage(payload);
         channel.close();
     } catch { /* BroadcastChannel unavailable */ }
 
     // localStorage event reaches other tabs/windows on the same origin
     try {
-        localStorage.setItem(POS_CART_STORAGE_KEY, JSON.stringify(payload));
+        localStorage.setItem(posCartStorageKey(), JSON.stringify(payload));
     } catch { /* storage full / disabled */ }
 }
 
@@ -1092,7 +1204,7 @@ export function subscribeRemoteCartItems(
 
     let channel: BroadcastChannel | null = null;
     try {
-        channel = new BroadcastChannel(POS_CART_CHANNEL);
+        channel = new BroadcastChannel(posCartChannelName());
         channel.onmessage = (event) => {
             const data = event?.data;
             if (data?.type === 'pos:add-item' && data.item) handler(data.item as POSCartBroadcastItem);
@@ -1100,7 +1212,7 @@ export function subscribeRemoteCartItems(
     } catch { /* ignore */ }
 
     const onStorage = (event: StorageEvent) => {
-        if (event.key !== POS_CART_STORAGE_KEY || !event.newValue) return;
+        if (event.key !== posCartStorageKey() || !event.newValue) return;
         try {
             const data = JSON.parse(event.newValue);
             if (data?.type === 'pos:add-item' && data.item) handler(data.item as POSCartBroadcastItem);

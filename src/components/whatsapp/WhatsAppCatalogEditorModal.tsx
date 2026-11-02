@@ -53,9 +53,11 @@ import {
     deleteCatalogCollection,
     setCatalogCartEnabled,
     addCatalogProductImage,
+    getTenantWhatsAppSessionId,
     type WPPCollection,
     CatalogProduct
 } from "@/lib/whatsapp";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -102,8 +104,12 @@ function normalizePrice(val: any): number {
 export function WhatsAppCatalogEditorModal({
     isOpen,
     onClose,
-    sessionId = "luminila"
+    sessionId: sessionIdProp
 }: WhatsAppCatalogEditorModalProps) {
+    // WA-10: defaulting to the shared "luminila" sidecar session attached the
+    // editor to whichever account last connected, not the signed-in tenant.
+    const { user } = useAuth();
+    const sessionId = sessionIdProp || getTenantWhatsAppSessionId(user?.id || user?.email) || "luminila";
     // Data states
     const [loading, setLoading] = useState(false);
     const [rawCatalog, setRawCatalog] = useState<CatalogProduct[]>([]);

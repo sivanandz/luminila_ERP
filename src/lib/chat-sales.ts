@@ -20,11 +20,9 @@ import { getChannelPriceFromList } from './pricing-rules';
 import { loadTenantChannelDefinitions } from './server-pricing';
 import {
     upsertChannelCustomer,
-    applyPurchaseAggregates,
     computeChannelTax,
     findExistingChannelOrder,
     loadChannelStoreTaxContext,
-    AGGREGATES_MARKER,
     type ChannelTaxLine,
 } from './channel-orders';
 import {
@@ -39,7 +37,6 @@ import {
 import { getStateCode } from './gst';
 import { recordConsentEvent } from './consent-ledger';
 import { linkChatOrder } from './whatsapp-order-links';
-import { calculatePointsToEarn, earnPoints } from './loyalty';
 
 export interface ChatCartLine {
     id: string;
@@ -147,13 +144,16 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
     for (const item of input.cart) {
         const product = await pb
             .collection('products')
-            .getOne<{ id: string; name?: string; base_price?: number; cost_price?: number; is_active?: boolean; channel_prices?: Record<string, number> }>(
+            .getOne<{ id: string; name?: string; base_price?: number; cost_price?: number; is_active?: boolean; account_email?: string; channel_prices?: Record<string, number> }>(
                 item.id
             )
             .catch(() => null);
         if (!product) throw new Error(`Product not found: ${item.name || item.id}`);
         if (product.is_active === false) {
             throw new Error(`Product is unavailable: ${product.name || item.id}`);
+        }
+        if (product.account_email && product.account_email.toLowerCase() !== tenantEmail.toLowerCase()) {
+            throw new Error(`Product does not belong to this account: ${product.name || item.id}`);
         }
 
         const channelPrices = product.channel_prices || {};
@@ -176,9 +176,18 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
             if (!variant || variant.product !== item.id) {
                 throw new VariantMismatchError(item.id, variantId);
             }
+            const variantTenant = String((variant as { account_email?: string }).account_email || '').toLowerCase();
+            if (variantTenant && variantTenant !== tenantEmail.toLowerCase()) {
+                throw new VariantMismatchError(item.id, variantId);
+            }
         } else {
             const variants = await pb.collection('product_variants').getFullList<{ id: string }>({
-                filter: pb.filter('product = {:product}', { product: item.id }),
+                // WA-08: relational-active-guard — never sell a variant whose
+                // product was deactivated after it was added to the cart.
+                filter: pb.filter('product = {:product} && product.is_active = true && account_email = {:tenant}', {
+                    product: item.id,
+                    tenant: tenantEmail,
+                }),
                 fields: 'id',
             });
             if (variants.length > 1) {
@@ -391,6 +400,7 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
                 channel: 'whatsapp',
                 channel_order_id: txnId,
                 payment_method: 'upi',
+                account_email: tenantEmail,
                 notes: `WhatsApp concierge order ${orderNumber}${
                     input.chatId ? ` [chat ${input.chatId}]` : ''
                 }`,
@@ -408,6 +418,7 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
                         total_price: line.price * line.quantity,
                         total: line.price * line.quantity,
                         discount: 0,
+                        account_email: tenantEmail,
                     })
                     .catch(() => {});
             }
@@ -415,24 +426,11 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
             console.warn('[chat-sales] sales mirror write failed (order is durable):', mirrorErr);
         }
 
-        // 11. Aggregates + loyalty parity, then the counted marker.
-        await applyPurchaseAggregates(pb, customerId, total);
-        try {
-            const points = await calculatePointsToEarn(total);
-            if (points > 0) {
-                await earnPoints(customerId, total, 'sales_order', orderId);
-            }
-        } catch (loyaltyErr) {
-            console.warn('[chat-sales] loyalty award skipped:', loyaltyErr);
-        }
-        try {
-            const fresh = await pb.collection('sales_orders').getOne(orderId);
-            await pb.collection('sales_orders').update(orderId, {
-                internal_notes: [fresh.internal_notes, AGGREGATES_MARKER].filter(Boolean).join('\n'),
-            });
-        } catch (markErr) {
-            console.warn('[chat-sales] aggregate marker write failed:', markErr);
-        }
+        // 11. Aggregates and loyalty are deliberately NOT applied here (WA-12).
+        // This order is created with payment_status PENDING: crediting
+        // `total_spent` and awarding points before the money arrives inflated
+        // RFM tiers for abandoned chat orders. `settleCapturedOrder` applies
+        // both, idempotently, when the payment is captured.
 
         // Conversation backlink + consent trail (A30/A32), best-effort.
         await linkChatOrder(pb, {

@@ -10,34 +10,90 @@ import {
     CheckCircle2,
     Lock,
     Truck,
-    CreditCard,
     ArrowRight,
     Loader2,
     Sparkles,
     AlertCircle,
-    MapPin,
-    Phone,
-    User,
 } from "lucide-react";
 import { toast } from "sonner";
-import { pb } from "@/lib/pocketbase";
 import { formatPrice } from "@/lib/utils";
-import { createPaymentLink } from "@/lib/razorpay";
 import {
     getFlashDrop,
     reserveFlashDropStock,
     getReservationCountdown,
-    sendReservationHoldWhatsAppNotification,
     type FlashDropCampaign,
     type FlashDropItem,
     type FlashDropReservation,
 } from "@/lib/whatsapp-flash-drops";
 import { calculateUpiSurchargeDiscount, isUpiDiscountEnabled } from "@/lib/channel-pricing";
 
+declare global {
+    interface Window {
+        Razorpay?: new (options: Record<string, unknown>) => {
+            open: () => void;
+            on: (event: string, handler: (payload: unknown) => void) => void;
+        };
+    }
+}
+
+interface FlashDropApiResponse {
+    success?: boolean;
+    error?: string;
+    paid?: boolean;
+    settled?: boolean;
+    duplicate?: boolean;
+    orderId?: string;
+    orderNumber?: string;
+    amount?: number;
+    drop?: FlashDropCampaign;
+    reservation?: FlashDropReservation;
+    gateway?: {
+        orderId: string;
+        amountPaise?: number;
+        currency?: string;
+        keyId?: string;
+    };
+}
+
+async function callFlashDropApi(payload: Record<string, unknown>): Promise<FlashDropApiResponse> {
+    const res = await fetch("/api/storefront/flash-drop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+    const data = (await res.json().catch(() => null)) as FlashDropApiResponse | null;
+    if (!data) return { success: false, error: "The payment service did not respond." };
+    if (!res.ok && !data.error) {
+        return { ...data, success: false, error: `Request failed (${res.status}).` };
+    }
+    return data;
+}
+
+function loadRazorpayCheckout(): Promise<boolean> {
+    if (typeof window === "undefined") return Promise.resolve(false);
+    if (window.Razorpay) return Promise.resolve(true);
+    return new Promise((resolve) => {
+        const existing = document.querySelector<HTMLScriptElement>('script[data-razorpay-checkout="1"]');
+        if (existing) {
+            existing.addEventListener("load", () => resolve(Boolean(window.Razorpay)));
+            existing.addEventListener("error", () => resolve(false));
+            return;
+        }
+        const script = document.createElement("script");
+        script.src = "https://checkout.razorpay.com/v1/checkout.js";
+        script.async = true;
+        script.dataset.razorpayCheckout = "1";
+        script.onload = () => resolve(Boolean(window.Razorpay));
+        script.onerror = () => resolve(false);
+        document.body.appendChild(script);
+    });
+}
+
 function ExpressCheckoutContent() {
     const searchParams = useSearchParams();
     const dropId = searchParams.get("dropId");
     const variantId = searchParams.get("variantId");
+    const accountEmail = searchParams.get("account_email") || "";
     const initialPhone = searchParams.get("phone") || "";
     const initialName = searchParams.get("name") || "";
 
@@ -50,6 +106,7 @@ function ExpressCheckoutContent() {
     const [phone, setPhone] = useState(initialPhone);
     const [address, setAddress] = useState("");
     const [city, setCity] = useState("");
+    const [stateName, setStateName] = useState("");
     const [pincode, setPincode] = useState("");
 
     // Reservation state
@@ -63,21 +120,24 @@ function ExpressCheckoutContent() {
     const [processingPayment, setProcessingPayment] = useState(false);
     const [orderSuccess, setOrderSuccess] = useState<{ orderNumber: string; amount: number } | null>(null);
 
-    // Load drop and product details
+    // Load drop and product details through the public server route: the buyer
+    // has no ERP session, so PocketBase rules would reject a direct read.
     useEffect(() => {
         if (!dropId) {
             setLoading(false);
             return;
         }
 
-        getFlashDrop(dropId).then((d) => {
-            if (d) {
-                setDrop(d);
-                const foundItem = d.items.find((i) => !variantId || i.variantId === variantId) || d.items[0];
-                setItem(foundItem || null);
-            }
-        }).finally(() => setLoading(false));
-    }, [dropId, variantId]);
+        getFlashDrop(dropId, accountEmail || undefined)
+            .then((d) => {
+                if (d) {
+                    setDrop(d);
+                    const foundItem = d.items.find((i) => !variantId || i.variantId === variantId) || d.items[0];
+                    setItem(foundItem || null);
+                }
+            })
+            .finally(() => setLoading(false));
+    }, [dropId, variantId, accountEmail]);
 
     // Live countdown timer for reservation
     useEffect(() => {
@@ -95,7 +155,12 @@ function ExpressCheckoutContent() {
         return () => clearInterval(interval);
     }, [reservation]);
 
-    // Reserve stock when customer enters their phone number
+    const availableStock = item && drop?.availableStock
+        ? drop.availableStock[item.variantId]
+        : undefined;
+
+    // Reserve stock when customer enters their phone number. The server enforces
+    // the hold and the tenant; the browser only carries the phone and variant.
     const handleReserveHold = async (overridePhone?: string) => {
         if (!drop || !item) return;
         const targetPhone = (overridePhone || phone).trim().replace(/\D/g, "");
@@ -106,14 +171,16 @@ function ExpressCheckoutContent() {
 
         setReserving(true);
         try {
-            const res = await reserveFlashDropStock(drop.id, item.variantId, targetPhone, name);
+            const res = await reserveFlashDropStock(
+                drop.id,
+                item.variantId,
+                targetPhone,
+                name,
+                drop.accountEmail || accountEmail || undefined
+            );
             if (res.success && res.reservation) {
                 setReservation(res.reservation);
                 toast.success("🔒 1 piece held exclusively for you for 10 minutes!");
-
-                // Instant notification to customer via WhatsApp with 10-minute hold window
-                const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
-                sendReservationHoldWhatsAppNotification(res.reservation, item, currentUrl).catch(() => {});
             } else {
                 toast.error(res.error || "Could not reserve item");
             }
@@ -135,7 +202,43 @@ function ExpressCheckoutContent() {
         return calculateUpiSurchargeDiscount(itemTotal, true, isUpiDiscountEnabled());
     }, [itemTotal]);
 
-    // Handle payment
+    /** Confirm a Razorpay checkout payment against the server-verified order. */
+    const confirmPayment = async (payIntent: FlashDropApiResponse, payment: { razorpay_payment_id?: string; razorpay_order_id?: string; razorpay_signature?: string }) => {
+        const paymentId = String(payment.razorpay_payment_id || "");
+        if (!payIntent.orderId || !paymentId) {
+            setProcessingPayment(false);
+            toast.error("Payment was not completed. No order was confirmed.");
+            return;
+        }
+        try {
+            const res = await callFlashDropApi({
+                action: "order",
+                accountEmail: drop?.accountEmail || accountEmail || undefined,
+                orderId: payIntent.orderId,
+                paymentId,
+                signature: payment.razorpay_signature || "",
+                phone: phone.replace(/\D/g, ""),
+            });
+            if (res.success && res.settled) {
+                setOrderSuccess({
+                    orderNumber: String(res.orderNumber || payIntent.orderNumber || ""),
+                    amount: Number(res.amount ?? itemTotal),
+                });
+            } else {
+                // Fail closed: the gateway has the money but the order was not
+                // confirmed; surface the reconciliation message instead of a
+                // fabricated success screen.
+                toast.error(res.error || "Payment received but the order could not be confirmed. Our team will contact you.");
+            }
+        } catch (err) {
+            toast.error("Payment confirmation failed: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            setProcessingPayment(false);
+        }
+    };
+
+    // Handle payment: server creates the ERP order + gateway order, Razorpay
+    // collects the money, then the server verifies capture before confirming.
     const handlePayNow = async () => {
         if (!name.trim()) {
             toast.error("Please enter your name");
@@ -152,51 +255,92 @@ function ExpressCheckoutContent() {
         if (!item || !drop) return;
 
         // Auto-reserve if not yet reserved
-        if (!reservation || countdown.isExpired) {
-            const res = await reserveFlashDropStock(drop.id, item.variantId, phone, name);
+        let currentReservation = reservation;
+        if (!currentReservation || countdown.isExpired) {
+            const res = await reserveFlashDropStock(
+                drop.id,
+                item.variantId,
+                phone,
+                name,
+                drop.accountEmail || accountEmail || undefined
+            );
             if (!res.success || !res.reservation) {
                 toast.error(res.error || "Stock is no longer available.");
                 return;
             }
+            currentReservation = res.reservation;
             setReservation(res.reservation);
         }
 
         setProcessingPayment(true);
         try {
-            const orderRef = `DROP-${Date.now().toString(36).toUpperCase()}`;
-
-            // Create Razorpay payment link
-            const payRes = await createPaymentLink({
-                orderId: orderRef,
-                amount: itemTotal,
-                customerName: name,
-                customerPhone: phone,
-                description: `Luminila Jewels: ${item.name} (${drop.title})`,
-                notes: {
-                    source: "whatsapp_flash_drop",
-                    drop_id: drop.id,
-                    variant_id: item.variantId,
-                    delivery_address: `${address}, ${city} - ${pincode}`,
-                    upi_zero_mdr_discount: String(upiDiscount.applicable),
-                },
+            const payIntent = await callFlashDropApi({
+                action: "pay-intent",
+                accountEmail: drop.accountEmail || accountEmail || undefined,
+                dropId: drop.id,
+                variantId: item.variantId,
+                reservationId: currentReservation?.id || undefined,
+                phone: phone.replace(/\D/g, ""),
+                name,
+                address,
+                city,
+                state: stateName,
+                pincode,
             });
 
-            if (payRes.success && payRes.data?.short_url) {
-                // If in sandbox or mock, or redirecting to Razorpay checkout:
-                window.location.href = payRes.data.short_url;
-            } else {
-                // Fail closed. This branch used to mark the reservation complete
-                // and show "Order Confirmed! Amount Paid" without collecting
-                // anything (POS-01 / SF-02). A flash drop may only be confirmed
-                // by a server-verified payment.
-                toast.error(
-                    payRes.error
-                        || "Online payment is unavailable right now. Please complete your purchase on the storefront."
-                );
+            if (payIntent.paid) {
+                setOrderSuccess({
+                    orderNumber: String(payIntent.orderNumber || ""),
+                    amount: Number(payIntent.amount ?? itemTotal),
+                });
+                return;
             }
+            if (!payIntent.success || !payIntent.gateway?.orderId) {
+                toast.error(payIntent.error || "Online payment is unavailable right now. Please retry in a moment.");
+                return;
+            }
+
+            const ready = await loadRazorpayCheckout();
+            if (!ready || !window.Razorpay) {
+                toast.error("The secure payment window could not be loaded. Please check your connection and retry.");
+                return;
+            }
+
+            const checkout = new window.Razorpay({
+                key: payIntent.gateway.keyId || "",
+                amount: payIntent.gateway.amountPaise,
+                currency: payIntent.gateway.currency || "INR",
+                name: "Luminila Jewels",
+                description: `${item.name} — ${drop.title}`,
+                order_id: payIntent.gateway.orderId,
+                prefill: { name, contact: phone.replace(/\D/g, "") },
+                notes: {
+                    drop_id: drop.id,
+                    variant_id: item.variantId,
+                    source: "whatsapp_flash_drop",
+                },
+                theme: { color: "#f59e0b" },
+                handler: (response: unknown) => {
+                    const payment = (response || {}) as {
+                        razorpay_payment_id?: string;
+                        razorpay_order_id?: string;
+                        razorpay_signature?: string;
+                    };
+                    void confirmPayment(payIntent, payment);
+                },
+                modal: {
+                    ondismiss: () => {
+                        setProcessingPayment(false);
+                        toast.info("Payment cancelled — your hold is still active until the timer runs out.");
+                    },
+                },
+            });
+            checkout.open();
         } catch (err) {
             toast.error("Payment initiation failed: " + (err instanceof Error ? err.message : String(err)));
         } finally {
+            // Every early return (sold out, gateway unavailable, script blocked)
+            // must re-enable the button; leaving it spinning was a dead end.
             setProcessingPayment(false);
         }
     };
@@ -230,7 +374,7 @@ function ExpressCheckoutContent() {
                     <div>
                         <h2 className="text-xl font-bold text-white">Order Confirmed! ✨</h2>
                         <p className="text-xs text-slate-400 mt-1">
-                            Thank you, <span className="text-white font-semibold">{name}</span>. Your VIP Flash Drop reservation is locked.
+                            Thank you, <span className="text-white font-semibold">{name}</span>. Your payment was verified and your piece is reserved.
                         </p>
                     </div>
                     <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-left space-y-1.5 text-xs font-mono">
@@ -254,6 +398,8 @@ function ExpressCheckoutContent() {
             </div>
         );
     }
+
+    const soldOut = availableStock !== undefined && availableStock <= 0;
 
     return (
         <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 sm:p-6 font-sans">
@@ -352,9 +498,14 @@ function ExpressCheckoutContent() {
                                 {formatPrice(item.originalPrice)}
                             </span>
                             <span className="text-[10px] font-bold text-amber-400 bg-amber-400/10 px-1 rounded">
-                                SAVE {Math.round(((item.originalPrice - item.dropPrice) / item.originalPrice) * 100)}%
+                                SAVE {item.originalPrice > 0 ? Math.round(((item.originalPrice - item.dropPrice) / item.originalPrice) * 100) : 0}%
                             </span>
                         </div>
+                        {availableStock !== undefined && (
+                            <span className={`text-[10px] font-semibold ${soldOut ? "text-rose-400" : "text-amber-400"}`}>
+                                {soldOut ? "All units claimed" : `${availableStock} unit${availableStock === 1 ? "" : "s"} left in this drop`}
+                            </span>
+                        )}
                     </div>
                 </div>
 
@@ -414,15 +565,27 @@ function ExpressCheckoutContent() {
                             />
                         </div>
                         <div className="space-y-1">
-                            <label className="text-[10px] text-slate-400">Pincode</label>
+                            <label className="text-[10px] text-slate-400">State</label>
                             <input
                                 type="text"
-                                placeholder="400001"
-                                value={pincode}
-                                onChange={(e) => setPincode(e.target.value)}
-                                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white font-mono focus:outline-none focus:border-amber-500"
+                                placeholder="Maharashtra"
+                                value={stateName}
+                                onChange={(e) => setStateName(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white focus:outline-none focus:border-amber-500"
                             />
                         </div>
+                    </div>
+
+                    <div className="space-y-1 text-xs">
+                        <label className="text-[10px] text-slate-400">Pincode</label>
+                        <input
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="400001"
+                            value={pincode}
+                            onChange={(e) => setPincode(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white font-mono focus:outline-none focus:border-amber-500"
+                        />
                     </div>
                 </div>
 
@@ -455,11 +618,13 @@ function ExpressCheckoutContent() {
                 <div className="pt-2">
                     <button
                         onClick={handlePayNow}
-                        disabled={Boolean(processingPayment || reserving || (reservation && countdown.isExpired))}
+                        disabled={Boolean(processingPayment || reserving || soldOut || (reservation && countdown.isExpired))}
                         className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                     >
                         {processingPayment ? (
                             <Loader2 size={18} className="animate-spin" />
+                        ) : soldOut ? (
+                            <span>Sold Out — All Units Claimed</span>
                         ) : reservation && countdown.isExpired ? (
                             <span>Hold Expired — Tap Renew Hold Above</span>
                         ) : (

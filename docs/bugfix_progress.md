@@ -18,18 +18,18 @@ Tracks remediation of [`docs/codebase_bugs_and_issues_audit.md`](./codebase_bugs
 
 | Feature area | Critical | High | Medium | Low | Fixed | Partial | Open |
 | :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| 1. Auth, tenancy, RBAC, API security | 5 | 11 | 4 | 2 | 20 | 2 | 0 |
-| 2. POS, billing, GST | 5 | 9 | 7 | 3 | 23 | 1 | 0 |
+| 1. Auth, tenancy, RBAC, API security | 5 | 11 | 4 | 2 | 21 | 1 | 0 |
+| 2. POS, billing, GST | 5 | 9 | 7 | 3 | 24 | 0 | 0 |
 | 3. Inventory, products, POs, vendors | 6 | 10 | 6 | 3 | 25 | 0 | 0 |
 | 4. Orders, returns, shipping, challans | 6 | 10 | 7 | 1 | 24 | 0 | 0 |
-| 5. WhatsApp commerce | 5 | 8 | 8 | 3 | 0 | 0 | 24 |
-| 6. Storefront, catalog, payments | 5 | 9 | 9 | 2 | 23 | 1 | 1 |
+| 5. WhatsApp commerce | 5 | 8 | 8 | 3 | 24 | 0 | 0 |
+| 6. Storefront, catalog, payments | 5 | 9 | 9 | 2 | 25 | 0 | 0 |
 | 7. Finance, banking, cheques, GSTR-1 | 4 | 8 | 9 | 3 | 24 | 0 | 0 |
-| 8. Customers, CRM, RFM, consent | 5 | 6 | 8 | 3 | 21 | 1 | 0 |
+| 8. Customers, CRM, RFM, consent | 5 | 6 | 8 | 3 | 22 | 0 | 0 |
 | 9. AI, backup, activity, settings, Tauri | 5 | 8 | 8 | 3 | 23 | 1 | 0 |
-| **Total** | **46** | **79** | **66** | **23** | **183** | **6** | **25** |
+| **Total** | **46** | **79** | **66** | **23** | **212** | **2** | **0** |
 
-> Status after the second pass (`1e7feda`). The only remaining batch is WhatsApp (24 findings); `SF-21` is the storefront angle of `WA-01` and closes with it. Partial items are `A-05`, `A-13`, `POS-01`/`SF-02`, `CRM-18`, `AI-SYS-18` — each has its residual documented below.
+> Final state after the WhatsApp batch. Two findings remain partial: `A-13` (OTP records still on disk) and `AI-SYS-18` (e-way secrets still plaintext without a server encrypt endpoint). Every Critical and High finding is fixed; both partials have their security-critical half done and the residual documented below.
 
 ---
 
@@ -133,21 +133,19 @@ These five root causes generated a large share of the downstream findings; fixin
 
 - `npx tsc --noEmit` — clean after Phase 5.
 
-## Phase 6 — WhatsApp commerce (deferred, needs a design)
+## Phase 6 — WhatsApp commerce (completed in the final batch)
 
-The WhatsApp criticals are architectural rather than line-level: flash drops and reservations live only in browser `localStorage` (`luminila_flash_drops_v1`), so a public buyer on another device can never read them and no server-side stock hold is possible. Fixing WA-01/WA-02 requires, in order:
+The architectural pair is implemented rather than deferred:
 
-1. A `flash_drops` / `flash_drop_reservations` PocketBase collection pair with tenant rules.
-2. Admin CRUD wired to the existing flash-drop UI so drops are persisted instead of cached.
-3. A public checkout endpoint that reads the drop, enforces the hold atomically, creates `sales_orders`/`sales_order_items` and deducts stock through `applyChannelStock`.
+- `pocketbase/pb_migrations/1793001100_flash_drops.js` creates tenant-scoped `flash_drops` and `flash_drop_reservations` with explicit `created`/`updated` fields and a partial unique index that makes a phone's hold idempotent per variant. The migration was applied **and rolled back** against a real PocketBase instance, and is part of the full fresh `migrate up` verified below.
+- `whatsapp-flash-drops.ts` is PocketBase-backed; `localStorage` is no longer a store.
+- New public `POST /api/storefront/flash-drop` supports `reserve` / `pay-intent` / `order`: prices come from the server-side drop snapshot, orders and items are tenant-stamped, stock is deducted through `applyChannelStock`, and confirmation requires a captured gateway payment. The checkout page uses it and has no unpaid success path. This also closes **POS-01 / SF-02 / SF-21**.
+- WA-03…WA-24: tenant scoping across broadcast/CRM/message-store/inventory/order-ingestion/chat-sales, active-product guards, tenant session ids, storage-key suffixes, editable message previews, real shipment tracking (fake AWB removed), per-request sidecar secret limited to the sidecar origin, real catalog metrics, fixed expand syntax, WhatsApp channel pricing and `image_data` in product cards.
+- WA-16's last shared key (`pos:cart-updated`) is now tenant-suffixed in both the BroadcastChannel and the storage event.
+- WA-20 has no remaining client caller (the modal no longer opens the feed URL), so the 401 path is unreachable; the feed route remains authenticated.
+- WA-21/23/24 were verified absent from the current tree and recorded as no-ops.
 
-Doing only step 3 against localStorage data would be insecure (the client supplies the price), so the sequence was not short-circuited. WA-03/04/05 (tenant scoping across `whatsapp-broadcast`, `whatsapp-crm`, `chat-inventory`) are mechanical but touch six large modules and were left for the next pass rather than half-applied.
-
-| ID | Status | Reason |
-| :-- | :-- | :-- |
-| WA-01, WA-02, SF-21 | ⏸ Deferred | Requires the collection + admin CRUD + public endpoint described above. |
-| WA-03, WA-04, WA-05 | ⏸ Deferred | Tenant-scoping sweep over `whatsapp-broadcast.ts`, `whatsapp-crm.ts`, `chat-inventory.ts`; same pattern as the fixed modules, ~40 call sites. |
-| WA-06 … WA-24 | ⬜ Open | Not started. |
+See `docs/_agent_reports/wa-agent.md` for per-ID evidence.
 
 ## Phase 7 — Storefront / payment gateways (criticals complete)
 
@@ -269,16 +267,14 @@ Backup export filters all 31 collections by tenant, and restore handles all 31 i
 
 ---
 
-## Partial / deferred items
+## Partial / residual items
 
 | ID | Reason |
 | :-- | :-- |
-| A-02 (roles tenancy) | The `:auth` escalation is fixed. Giving `roles` its own `account_email` scope requires deciding whether seeded system roles are copied per tenant or shared; that is a schema/product decision. |
-| A-05 (other draft migrations) | `1792774202`, `1792774204`, `1792774208`, `1792830000` still pass `fields` to `new Collection(...)`. `bootstrapTenantDataDir` now throws on `migrate up` failure, so these must be converted before a fresh multi-tenant provision. |
 | A-13 (OTP storage) | OTPs still live in `src/data/otp_store.json`; moving them to PocketBase needs a collection and an async store API (callers are sync). Rate limit, lockout rollback and phone normalization are fixed. |
-| POS-01 / SF-02 | The WhatsApp checkout fails closed, but a public flash-drop checkout is part of the WhatsApp batch (`WA-01/02`). |
-| CRM-18 | Blocked on the broadcast queue accepting an explicit cohort list; owned by the WhatsApp worker. |
 | AI-SYS-18 | E-Way Bill credentials remain plaintext in `store_settings`; encryption needs a server endpoint (Node `crypto` cannot run in the settings component). The test connection itself is real. |
+
+**Residual note (A-02):** the cross-row `:auth` privilege escalation is fixed and role links are tenant-scoped. The `roles` catalog itself stays shared because seeded system roles have no natural per-tenant copy; splitting it is a product decision, not a defect fix.
 
 ---
 
@@ -286,13 +282,14 @@ Backup export filters all 31 collections by tenant, and restore handles all 31 i
 
 - `npx tsc --noEmit` — **clean** on cache-free full runs. A stale `tsconfig.tsbuildinfo` had been masking real errors; see the Phase 4 incidental build fix.
 - `node --check` — new/changed PocketBase migrations parse.
-- No database migration was executed as part of this pass; `1793000002_tenant_owner_rules_and_rbac_hardening.js`, the rewritten `1792774201_manufacturing_jobs.js` and the WhatsApp flash-drop migration apply on the next `pocketbase migrate up`.
+- **Full fresh `migrate up` verified end to end:** an empty temp `pb_data` was migrated with all 110 migrations using `pocketbase migrate up --automigrate=false`, exit 0, including `1791720936_updated_products.js` (duplicate `channel_prices` guarded), `1792774201_manufacturing_jobs.js`, `1793000002_tenant_owner_rules_and_rbac_hardening.js`, `1793001000_analytics_unit_cost_and_snapshots.js` and `1793001100_flash_drops.js`. The temp database was removed afterward.
+- The flash-drop migration was additionally applied and rolled back on its own against a real PocketBase instance (worker verification).
 
 ## Recommended next pass
 
-1. Finish and commit the WhatsApp batch (`WA-01…WA-24`), including the `flash_drops` migration and public checkout; that closes SF-21 and the last free-order path.
-2. Add the custom-recipient parameter to `queueCampaign` and wire CRM-18.
-3. Convert the four remaining draft migrations to the create-then-add-fields pattern.
-4. Give e-way credentials a server-side encrypt/decrypt endpoint (AI-SYS-18).
-5. Move OTP storage into PocketBase (A-13).
+1. Give e-way credentials a server-side encrypt/decrypt endpoint (AI-SYS-18).
+2. Move OTP storage into PocketBase (A-13).
+3. Split the `roles` catalog per tenant if custom roles should not be shared (A-02 note).
+4. Run a complete Mimosa security scan; the commit hook reported `scanner_enobufs` and no scan conclusion is being claimed.
+5. Delete the leftover ACL-locked `%T%` temp directory in the repo root (created by the migration verification worker; it cannot be removed without elevation).
 

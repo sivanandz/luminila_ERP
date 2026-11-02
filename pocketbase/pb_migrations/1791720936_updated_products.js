@@ -2,17 +2,20 @@
 migrate((app) => {
   const collection = app.findCollectionByNameOrId("pbc_4092854851")
 
-  // add field
-  collection.fields.addAt(20, new Field({
-    "hidden": false,
-    "id": "json447239975",
-    "maxSize": 0,
-    "name": "channel_prices",
-    "presentable": false,
-    "required": false,
-    "system": false,
-    "type": "json"
-  }))
+  // A fresh database can already have channel_prices from an earlier schema
+  // snapshot; adding it twice aborts `migrate up` and blocks provisioning.
+  if (!collection.fields.find((field) => field.name === "channel_prices")) {
+    collection.fields.add(new Field({
+      "hidden": false,
+      "id": "json447239975",
+      "maxSize": 0,
+      "name": "channel_prices",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    }))
+  }
 
   return app.save(collection)
 }, (app) => {

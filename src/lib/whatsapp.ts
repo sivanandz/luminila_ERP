@@ -6,6 +6,9 @@
  * It provides REST API for WhatsApp Web automation.
  */
 
+import { getTenantStorageKey } from "./pocketbase";
+import { isSingleAccountMode } from "./deployment-mode";
+
 const DEFAULT_WPPCONNECT_URL = process.env.NEXT_PUBLIC_WPPCONNECT_URL || "http://127.0.0.1:21465";
 
 declare global {
@@ -43,36 +46,60 @@ function readSidecarSecret(): string {
     }
     let stored: string | null = null;
     try {
-        stored = window.localStorage.getItem("WA_SIDECAR_TOKEN");
+        // WA-16: the token is tenant-scoped. Legacy rows are only adopted in
+        // single-account mode; in multi-tenant mode inheriting an unscoped
+        // token would let one store reach another store's sidecar.
+        stored = window.localStorage.getItem(getTenantStorageKey("WA_SIDECAR_TOKEN"));
+        if (!stored && isSingleAccountMode()) {
+            const legacy = window.localStorage.getItem("WA_SIDECAR_TOKEN");
+            if (legacy) {
+                stored = legacy;
+                try {
+                    window.localStorage.setItem(getTenantStorageKey("WA_SIDECAR_TOKEN"), legacy);
+                } catch { /* storage disabled */ }
+            }
+        }
     } catch {
         stored = null;
     }
     return resolveWppSecret(window.__WPPCONNECT_SECRET__, stored, process.env.NEXT_PUBLIC_WPPCONNECT_SECRET);
 }
 
-const WPPCONNECT_SECRET = readSidecarSecret();
-
-/** Bearer token the sidecar expects; empty when no token is configured. */
+/**
+ * Bearer token the sidecar expects; empty when no token is configured.
+ * Read per call (WA-13): a module-load constant stayed "" during SSR and never
+ * picked up a token the desktop shell injected after boot.
+ */
 export function getWppConnectSecret(): string {
-    return WPPCONNECT_SECRET;
+    return readSidecarSecret();
 }
 
 /** False when no token is available, which means WhatsApp calls cannot authenticate. */
 export function isWhatsAppConfigured(): boolean {
-    return WPPCONNECT_SECRET.length >= 16;
+    return readSidecarSecret().length >= 16;
+}
+
+/** True when `url` targets the configured sidecar origin. */
+function isSidecarUrl(urlStr: string): boolean {
+    const base = getWhatsAppUrl().replace(/\/+$/, "");
+    if (!base) return false;
+    return urlStr === base || urlStr.startsWith(`${base}/`);
 }
 
 // Wrap global fetch for WhatsApp sidecar requests to automatically attach Bearer authentication
 const _nativeFetch = typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch;
 const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
-    const isWppReq = urlStr.includes("21465") || urlStr.includes("/api/");
+    // WA-13: only the sidecar origin gets the bearer token. The old
+    // `.includes("/api/")` test attached it to every same-origin ERP API call
+    // (and to any absolute URL that happened to contain "/api/").
+    const secret = isSidecarUrl(urlStr) ? readSidecarSecret() : "";
 
-    if (isWppReq && WPPCONNECT_SECRET) {
+    if (secret) {
         init = init || {};
         const headers = new Headers(init.headers || {});
         if (!headers.has("Authorization")) {
-            headers.set("Authorization", `Bearer ${WPPCONNECT_SECRET}`);
+            headers.set("Authorization", `Bearer ${secret}`);
         }
         init.headers = headers;
     }
@@ -85,7 +112,17 @@ const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
  */
 export function getWhatsAppUrl(): string {
     if (typeof window !== "undefined") {
-        const customUrl = localStorage.getItem("WA_CUSTOM_URL");
+        // WA-16: a sidecar URL is tenant configuration, not a global setting.
+        let customUrl = localStorage.getItem(getTenantStorageKey("WA_CUSTOM_URL"));
+        if (!customUrl && isSingleAccountMode()) {
+            const legacy = localStorage.getItem("WA_CUSTOM_URL");
+            if (legacy) {
+                customUrl = legacy;
+                try {
+                    localStorage.setItem(getTenantStorageKey("WA_CUSTOM_URL"), legacy);
+                } catch { /* storage disabled */ }
+            }
+        }
         if (customUrl && customUrl.trim()) {
             return customUrl.trim().replace(/\/+$/, "");
         }
@@ -110,9 +147,9 @@ export function setWhatsAppUrl(url: string): string {
     if (typeof window !== "undefined") {
         const isSafe = /^https?:\/\/(localhost|127\.0\.0\.1|tauri\.localhost|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$/i.test(sanitized);
         if (sanitized && isSafe && sanitized !== DEFAULT_WPPCONNECT_URL) {
-            localStorage.setItem("WA_CUSTOM_URL", sanitized);
+            localStorage.setItem(getTenantStorageKey("WA_CUSTOM_URL"), sanitized);
         } else {
-            localStorage.removeItem("WA_CUSTOM_URL");
+            localStorage.removeItem(getTenantStorageKey("WA_CUSTOM_URL"));
         }
         window.dispatchEvent(new CustomEvent("wa:server-changed", { detail: { url: sanitized || DEFAULT_WPPCONNECT_URL } }));
     }

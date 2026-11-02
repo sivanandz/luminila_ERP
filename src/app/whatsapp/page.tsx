@@ -34,7 +34,7 @@ import type { WPPMessage } from "@/lib/whatsapp";
 import { toast } from "sonner";
 import { listActiveChatProducts, listChatProducts, findProductByImageHash, createChatProduct } from "@/lib/chat-inventory";
 import { createSaleFromChat } from "@/lib/chat-sales";
-import { pb, getCurrentTenantEmail } from "@/lib/pocketbase";
+import { pb, getCurrentTenantEmail, getTenantStorageKey } from "@/lib/pocketbase";
 import { findMatchingProducts, generateImageHash } from "@/lib/image-matcher";
 import {
     MessageCircle,
@@ -140,6 +140,9 @@ import {
 } from "@/lib/whatsapp-crm";
 import { startPaymentReconciler } from "@/lib/payment-reconciliation";
 import { processBroadcastQueue } from "@/lib/whatsapp-broadcast";
+import { getStealthSyncStatus, type StealthSyncTelemetry } from "@/lib/whatsapp-event-sync";
+import { getPublishableProducts } from "@/lib/whatsapp-catalog";
+import { listShipmentsForOrder } from "@/lib/shipments";
 import { BroadcastComposerModal } from "@/components/whatsapp/BroadcastComposerModal";
 import { AdminApprovalModal } from "@/components/whatsapp/AdminApprovalModal";
 import { MarqueeText } from "@/components/ui/marquee-text";
@@ -939,7 +942,7 @@ export default function WhatsAppPage() {
     // Hydrate read timestamps from sessionStorage on initial mount
     useEffect(() => {
         try {
-            const raw = sessionStorage.getItem('wa_read_timestamps');
+            const raw = sessionStorage.getItem(getTenantStorageKey('wa_read_timestamps'));
             if (raw) {
                 const parsed = JSON.parse(raw);
                 readChatTimestampsRef.current = new Map(Object.entries(parsed));
@@ -951,7 +954,7 @@ export default function WhatsAppPage() {
         const now = Math.floor(Date.now() / 1000);
         readChatTimestampsRef.current.set(chatId, now);
         try {
-            sessionStorage.setItem('wa_read_timestamps', JSON.stringify(Object.fromEntries(readChatTimestampsRef.current)));
+            sessionStorage.setItem(getTenantStorageKey('wa_read_timestamps'), JSON.stringify(Object.fromEntries(readChatTimestampsRef.current)));
         } catch { /* ignore storage error */ }
         setChats(prev => prev.map(c => c.id === chatId ? { ...c, unreadCount: 0 } : c));
         whatsappManager.markAsRead(chatId).catch(() => {});
@@ -1054,7 +1057,7 @@ export default function WhatsAppPage() {
 
     useEffect(() => {
         try {
-            const savedLayout = localStorage.getItem('wa_badge_layout');
+            const savedLayout = localStorage.getItem(getTenantStorageKey('wa_badge_layout'));
             if (savedLayout === 'inline' || savedLayout === 'subtitle') {
                 setBadgeLayout(savedLayout);
             }
@@ -1078,6 +1081,40 @@ export default function WhatsAppPage() {
     const [showFlashDropModal, setShowFlashDropModal] = useState(false);
     const [showConciergePanel, setShowConciergePanel] = useState(true);
     const [orderBannerMsg, setOrderBannerMsg] = useState<Message | null>(null);
+
+    // WA-17: Catalog Sync sidebar indicators are real state, not "45"/"0".
+    const [catalogTelemetry, setCatalogTelemetry] = useState<StealthSyncTelemetry>(() => getStealthSyncStatus());
+    const [catalogSyncedCount, setCatalogSyncedCount] = useState(0);
+    const [catalogProductCount, setCatalogProductCount] = useState(0);
+
+    useEffect(() => {
+        if (activePanel !== 'catalog') return;
+        let cancelled = false;
+
+        setCatalogTelemetry(getStealthSyncStatus());
+        getPublishableProducts()
+            .then((items) => {
+                if (cancelled) return;
+                setCatalogProductCount(items.length);
+                setCatalogSyncedCount(items.filter((p) => Boolean(p.whatsappProductId)).length);
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setCatalogProductCount(0);
+                    setCatalogSyncedCount(0);
+                }
+            });
+
+        const onStatus = (event: Event) => {
+            const custom = event as CustomEvent<StealthSyncTelemetry>;
+            if (custom.detail) setCatalogTelemetry(custom.detail);
+        };
+        window.addEventListener('whatsapp:stealth-sync-status', onStatus);
+        return () => {
+            cancelled = true;
+            window.removeEventListener('whatsapp:stealth-sync-status', onStatus);
+        };
+    }, [activePanel]);
 
     // Payment link reconciliation (spec §7) + broadcast queue drain (spec §11)
     useEffect(() => {
@@ -1783,19 +1820,10 @@ export default function WhatsAppPage() {
         const itemsList = cart.map(item => `• ${item.name} x${item.quantity} - ${formatPrice(item.base_price * item.quantity)}`).join("\n");
         const invoiceMsg = `🧾 *Invoice & Order Summary*\n\n${itemsList}\n\n*Total: ${formatPrice(cartTotal)}*\n\nPlease confirm to pay.`;
 
-        const sent = await whatsappManager.sendMessageDetailed(selectedChat, invoiceMsg);
-
-        // Add to local chat view
-        setSelectedChatMessages(prev => [...prev, {
-            id: sent.id || `sent-${Date.now()}`,
-            from: "me",
-            fromName: "You",
-            body: invoiceMsg,
-            timestamp: new Date(),
-            isOrder: false,
-            fromMe: true, ack: 1,
-            type: "chat"
-        }]);
+        // WA-11 / [message-templates]: a canned invoice must be reviewed by the
+        // operator before it goes out. Pre-fill the composer instead of sending.
+        setReplyText(invoiceMsg);
+        toast.info("Invoice message ready in the composer — review and send when correct.");
     };
 
     const handleCreateOrder = async () => {
@@ -1814,7 +1842,13 @@ export default function WhatsAppPage() {
                     const variants = await pb
                         .collection("product_variants")
                         .getFullList<{ id: string; variant_name?: string; size?: string; color?: string; stock_level?: number }>({
-                            filter: pb.filter("product = {:p}", { p: item.id }),
+                            // WA-08: relational-active-guard + tenant scope; a
+                            // deactivated product must not be sellable from a
+                            // stale concierge cart.
+                            filter: pb.filter(
+                                "product = {:p} && product.is_active = true && account_email = {:tenant}",
+                                { p: item.id, tenant: getCurrentTenantEmail() }
+                            ),
                         })
                         .catch(() => []);
                     if (variants.length === 0) {
@@ -1885,9 +1919,12 @@ export default function WhatsAppPage() {
                 idempotencyKey,
             });
 
-            // 3. Notify via WhatsApp with the server-computed total.
+            // 3. Put the confirmation in the composer for review (WA-11): an
+            // order confirmation is customer-facing copy, so the operator edits
+            // and sends it rather than the app auto-dispatching a canned text.
             const confirmMsg = `✅ *Order ${sale.orderNumber} Created*\nTotal: ₹${sale.total.toLocaleString('en-IN')}\nPayment ref: ${sale.paymentRef}\n\nThank you for your order! ${sale.paymentUrl ? `Pay here: ${sale.paymentUrl}` : "Your payment link is on its way — or pay via the UPI details our team shares next."}`;
-            await whatsappManager.sendMessage(selectedChat, confirmMsg);
+            setReplyText(confirmMsg);
+            toast.info("Order created — the confirmation is in the composer for you to review and send.");
 
             // 4. Reset & toast
             setCart([]);
@@ -1915,7 +1952,10 @@ export default function WhatsAppPage() {
     const handleConnect = async (forceClean = false) => {
         if (connectPollRef.current) clearInterval(connectPollRef.current);
         setSessionStatus("connecting");
-        whatsappManager.setSessionId("luminila");
+        // WA-09: the connect/reset path must not fall back to the shared
+        // "luminila" session — that overwrote the tenant-scoped session for
+        // every account on the machine.
+        whatsappManager.setSessionId(tenantSessionId);
         setQrCode(null);
         setPairingCode(null);
         const started = await whatsappManager.connect(forceClean);
@@ -2393,7 +2433,27 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 setTimeout(() => setAddedToast(null), 3000);
             }
         } else if (actionId === 'tracking') {
-            setReplyText("🚚 *Tracking Update:* Your Luminila order has been dispatched via BlueDart. Live AWB: BD102938475. Track at https://bluedart.com");
+            // WA-11 / [zero-mock]: tracking comes from the real `shipments`
+            // ledger. The old snippet inserted a hardcoded BlueDart AWB
+            // (BD102938475) that belongs to no parcel.
+            void (async () => {
+                const latestOrder = customerOrders[0];
+                if (!latestOrder) {
+                    toast.info("No order found for this customer.");
+                    return;
+                }
+                const shipments = await listShipmentsForOrder(pb, latestOrder.id);
+                const shipment = [...shipments].reverse().find((row) => Boolean(row.awb_number));
+                if (!shipment?.awb_number) {
+                    toast.info("No shipment/AWB recorded yet for this customer's latest order.");
+                    return;
+                }
+                const carrier = shipment.carrier || 'courier';
+                const trackingLine = shipment.tracking_url ? ` Track at ${shipment.tracking_url}` : '';
+                setReplyText(
+                    `🚚 *Tracking Update:* Your Luminila order has been dispatched via ${carrier}. AWB: ${shipment.awb_number}.${trackingLine}`
+                );
+            })();
         }
     };
 
@@ -3211,7 +3271,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         <button
                                             onClick={() => {
                                                 setBadgeLayout('inline');
-                                                try { localStorage.setItem('wa_badge_layout', 'inline'); } catch {}
+                                                try { localStorage.setItem(getTenantStorageKey('wa_badge_layout'), 'inline'); } catch {}
                                             }}
                                             className={`px-1.5 py-0.5 rounded font-semibold transition-all ${
                                                 badgeLayout === 'inline'
@@ -3225,7 +3285,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         <button
                                             onClick={() => {
                                                 setBadgeLayout('subtitle');
-                                                try { localStorage.setItem('wa_badge_layout', 'subtitle'); } catch {}
+                                                try { localStorage.setItem(getTenantStorageKey('wa_badge_layout'), 'subtitle'); } catch {}
                                             }}
                                             className={`px-1.5 py-0.5 rounded font-semibold transition-all ${
                                                 badgeLayout === 'subtitle'
@@ -4520,21 +4580,39 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                             <div className="bg-card border border-border rounded-lg p-4 space-y-4">
                                                 <div className="flex justify-between items-center">
                                                     <span className="text-sm font-bold">Sync Status</span>
-                                                    <span className="text-xs px-2 py-1 rounded-full bg-green-500/20 text-green-500 font-bold">Active</span>
+                                                    <span className={`text-xs px-2 py-1 rounded-full font-bold ${
+                                                        catalogTelemetry.enabled
+                                                            ? 'bg-green-500/20 text-green-500'
+                                                            : 'bg-muted text-muted-foreground'
+                                                    }`}>
+                                                        {catalogTelemetry.enabled
+                                                            ? catalogTelemetry.workerState === 'idle' ? 'Active' : catalogTelemetry.workerState.replace('_', ' ')
+                                                            : 'Paused'}
+                                                    </span>
                                                 </div>
 
                                                 <div className="space-y-2">
                                                     <div className="flex justify-between text-xs">
                                                         <span className="text-muted-foreground">Last Sync:</span>
-                                                        <span>Just now</span>
+                                                        <span>
+                                                            {catalogTelemetry.lastSyncedAt
+                                                                ? new Date(catalogTelemetry.lastSyncedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+                                                                : 'Never'}
+                                                        </span>
                                                     </div>
                                                     <div className="flex justify-between text-xs">
                                                         <span className="text-muted-foreground">Products Synced:</span>
-                                                        <span>45</span>
+                                                        <span>{catalogSyncedCount} / {catalogProductCount}</span>
+                                                    </div>
+                                                    <div className="flex justify-between text-xs">
+                                                        <span className="text-muted-foreground">Queue:</span>
+                                                        <span>{catalogTelemetry.queueSize}</span>
                                                     </div>
                                                     <div className="flex justify-between text-xs">
                                                         <span className="text-muted-foreground">Errors:</span>
-                                                        <span className="text-red-500">0</span>
+                                                        <span className={catalogTelemetry.lastError ? 'text-red-500' : 'text-muted-foreground'}>
+                                                            {catalogTelemetry.lastError ? 'Last run failed' : 'None'}
+                                                        </span>
                                                     </div>
                                                 </div>
 
@@ -4995,7 +5073,13 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     });
 
                     let imageToUse: string | null = msg.mediaUrl || null;
-                    if (msg.id && (!imageToUse || imageToUse.includes('whatsapp.net') || imageToUse.startsWith('http'))) {
+                    // WA-07: `mmg.whatsapp.net` URLs are encrypted payloads, not
+                    // images. Never fall back to one when the sidecar decrypt
+                    // fails — leave the field empty so the operator is prompted.
+                    if (imageToUse && (imageToUse.includes('whatsapp.net') || !/^(https?:|data:)/i.test(imageToUse))) {
+                        imageToUse = null;
+                    }
+                    if (msg.id && !imageToUse) {
                         try {
                             const decrypted = await whatsappManager.downloadMedia(msg.id);
                             if (decrypted) imageToUse = decrypted;
@@ -5054,7 +5138,12 @@ _Your order will be confirmed and processed immediately upon successful payment.
                     });
 
                     let imageToUse: string | null = m?.mediaUrl || null;
-                    if (m?.id && (!imageToUse || imageToUse.includes('whatsapp.net') || imageToUse.startsWith('http'))) {
+                    // WA-07: an encrypted `mmg.whatsapp.net` URL is not an image;
+                    // leave it empty when decryption fails instead of persisting it.
+                    if (imageToUse && (imageToUse.includes('whatsapp.net') || !/^(https?:|data:)/i.test(imageToUse))) {
+                        imageToUse = null;
+                    }
+                    if (m?.id && !imageToUse) {
                         try {
                             const decrypted = await whatsappManager.downloadMedia(m.id);
                             if (decrypted) imageToUse = decrypted;

@@ -46,6 +46,7 @@ import {
 } from "@/lib/whatsapp-broadcast";
 import { getAllChats, whatsappManager, type WPPChat } from "@/lib/whatsapp";
 import { searchProductsForPicker } from "@/lib/products";
+import { getCurrentTenantEmail } from "@/lib/pocketbase";
 import type { Product } from "@/types/database";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -162,7 +163,15 @@ export function ProductBroadcastModal({
             setSearchingProducts(true);
             try {
                 const items = await searchProductsForPicker(searchQuery);
-                const mapped: BroadcastProductItem[] = items.map((p) => ({
+                // WA-22: belt-and-braces in-memory tenant guard. `searchProductsForPicker`
+                // already adds a tenant clause, but a legacy row without
+                // account_email must never leak into a broadcast composer.
+                const tenant = getCurrentTenantEmail().trim().toLowerCase();
+                const scoped = items.filter((p) => {
+                    const owner = String((p as unknown as { account_email?: string }).account_email || '').trim().toLowerCase();
+                    return !owner || !tenant || owner === tenant;
+                });
+                const mapped: BroadcastProductItem[] = scoped.map((p) => ({
                     id: p.id,
                     name: p.name,
                     sku: p.sku,

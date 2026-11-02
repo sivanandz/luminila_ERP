@@ -13,9 +13,14 @@
  * time and re-schedules the rest — call it on an interval from a long-lived surface.
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 import { whatsappManager } from './whatsapp';
-import { normalizeE164, isWhatsAppOptedOut } from './whatsapp-crm';
+import {
+    normalizeE164,
+    isWhatsAppOptedOut,
+    withTenantFilter,
+    tenantScopeEmail,
+} from './whatsapp-crm';
 
 export const DAILY_MARKETING_QUOTA = 150;
 export const JITTER_MIN_MS = 8_000;
@@ -51,6 +56,14 @@ interface CustomerRow {
     total_spent?: number;
     customer_type?: string;
     whatsapp_opt_out?: boolean;
+    opt_in_marketing?: boolean;
+}
+
+/** Explicit cohort entry supplied by an RFM/customer-list surface (CRM-18). */
+export interface CustomBroadcastRecipient {
+    id: string;
+    phone: string;
+    name?: string;
 }
 
 export interface AudienceResolutionResult {
@@ -65,11 +78,18 @@ export interface CachedTier {
 }
 
 let cachedLoyaltyTiers: CachedTier[] | null = null;
+let cachedLoyaltyTiersTenant = '';
 
 export async function loadLoyaltyTiers(): Promise<CachedTier[]> {
-    if (cachedLoyaltyTiers) return cachedLoyaltyTiers;
+    // WA-03: the tier ladder is tenant data; a module-level cache keyed by
+    // nothing served tenant A's tiers to tenant B after an account switch.
+    const tenant = tenantScopeEmail();
+    if (cachedLoyaltyTiers && cachedLoyaltyTiersTenant === tenant) return cachedLoyaltyTiers;
+    cachedLoyaltyTiers = null;
+    cachedLoyaltyTiersTenant = tenant;
     try {
         const records = await pb.collection('loyalty_tiers').getFullList<CachedTier>({
+            filter: withTenantFilter(undefined, tenant),
             sort: '-min_points',
         });
         if (records.length > 0) {
@@ -103,34 +123,39 @@ export function resolveTierName(points: number, configuredTiers?: CachedTier[]):
 
 /** Resolve an audience segment into opted-in customers with valid phone numbers and detailed metrics. */
 export async function resolveAudienceDetailed(segment: AudienceSegment): Promise<AudienceResolutionResult> {
+    // CRM-10: marketing audiences are opt-in only. `whatsapp_opt_out` is the
+    // STOP registry flag; `opt_in_marketing` is the consent ledger's grant.
+    // PocketBase stores an unset bool as false, so a customer who never opted
+    // in is excluded rather than treated as consenting.
     const filters: Record<AudienceSegment, string> = {
-        all_active: '',
-        vip_tiers: 'loyalty_points>=1000',
-        points_over_500: 'loyalty_points>500',
-        wholesale: 'customer_type="wholesale"',
+        all_active: 'opt_in_marketing != false',
+        vip_tiers: 'loyalty_points>=1000 && opt_in_marketing != false',
+        points_over_500: 'loyalty_points>500 && opt_in_marketing != false',
+        wholesale: 'customer_type="wholesale" && opt_in_marketing != false',
     };
 
     let rows: CustomerRow[] = [];
     try {
         rows = await pb.collection('customers').getFullList({
-            filter: filters[segment],
+            filter: withTenantFilter(filters[segment]),
             sort: '-total_spent',
         }) as unknown as CustomerRow[];
     } catch {
         // Fallback: fetch without filter and filter in memory if PB syntax differs
         try {
             const allRows = await pb.collection('customers').getFullList({
+                filter: withTenantFilter(),
                 sort: '-total_spent',
             }) as unknown as CustomerRow[];
 
             if (segment === 'vip_tiers') {
-                rows = allRows.filter((r) => (r.loyalty_points || 0) >= 1000);
+                rows = allRows.filter((r) => (r.loyalty_points || 0) >= 1000 && r.opt_in_marketing !== false);
             } else if (segment === 'points_over_500') {
-                rows = allRows.filter((r) => (r.loyalty_points || 0) > 500);
+                rows = allRows.filter((r) => (r.loyalty_points || 0) > 500 && r.opt_in_marketing !== false);
             } else if (segment === 'wholesale') {
-                rows = allRows.filter((r) => r.customer_type === 'wholesale');
+                rows = allRows.filter((r) => r.customer_type === 'wholesale' && r.opt_in_marketing !== false);
             } else {
-                rows = allRows;
+                rows = allRows.filter((r) => r.opt_in_marketing !== false);
             }
         } catch (fallbackErr) {
             console.error('[broadcast] resolveAudience failed completely:', fallbackErr);
@@ -150,8 +175,14 @@ export async function resolveAudienceDetailed(segment: AudienceSegment): Promise
             continue;
         }
 
-        // Verify opt-out via both direct customer flag and global registry
+        // Verify consent via both direct customer flags and the global registry.
+        // CRM-10: an explicit marketing opt-out excludes the customer even when
+        // they never sent STOP.
         if (row.whatsapp_opt_out) {
+            skippedOptOut++;
+            continue;
+        }
+        if (row.opt_in_marketing === false) {
             skippedOptOut++;
             continue;
         }
@@ -202,7 +233,7 @@ export async function sentTodayCount(): Promise<number> {
     startOfDay.setHours(0, 0, 0, 0);
     try {
         const records = await pb.collection('broadcast_messages').getList(1, 1, {
-            filter: `status="sent" && sent_at>="${startOfDay.toISOString()}"`,
+            filter: withTenantFilter(`status="sent" && sent_at>="${startOfDay.toISOString()}"`),
         });
         return records.totalItems;
     } catch {
@@ -222,16 +253,82 @@ export function getHumanizedJitterDelayMs(): number {
 }
 
 /**
+ * Resolve an explicit cohort (RFM segment, hand-picked list) to audience
+ * members. The ids are re-read under the tenant scope, so a caller cannot queue
+ * a message to another account's customer by passing a foreign id (CRM-18).
+ */
+export async function resolveCustomRecipients(
+    recipients: CustomBroadcastRecipient[]
+): Promise<AudienceResolutionResult> {
+    const unique = new Map<string, CustomBroadcastRecipient>();
+    for (const recipient of recipients || []) {
+        const id = String(recipient?.id || '').trim();
+        if (id) unique.set(id, recipient);
+    }
+    if (unique.size === 0) return { members: [], skippedOptOut: 0, skippedNoPhone: 0 };
+
+    const ids = Array.from(unique.keys());
+    let rows: CustomerRow[] = [];
+    try {
+        const idFilter = ids.map((id) => `id = "${sanitizeFilter(id)}"`).join(' || ');
+        rows = await pb.collection('customers').getFullList({
+            filter: withTenantFilter(idFilter),
+        }) as unknown as CustomerRow[];
+    } catch {
+        return { members: [], skippedOptOut: 0, skippedNoPhone: 0 };
+    }
+
+    const members: BroadcastAudienceMember[] = [];
+    let skippedNoPhone = 0;
+    let skippedOptOut = 0;
+    for (const row of rows) {
+        const requested = unique.get(row.id);
+        const rawPhone = row.phone || requested?.phone || '';
+        const digits = rawPhone.replace(/\D/g, '');
+        if (!rawPhone || digits.length < 10) {
+            skippedNoPhone++;
+            continue;
+        }
+        if (row.whatsapp_opt_out) {
+            skippedOptOut++;
+            continue;
+        }
+        if (await isWhatsAppOptedOut(rawPhone)) {
+            skippedOptOut++;
+            continue;
+        }
+        members.push({
+            id: row.id,
+            name: row.name || requested?.name || 'Customer',
+            phone: normalizeE164(rawPhone),
+            loyalty_points: row.loyalty_points || 0,
+            total_spent: row.total_spent || 0,
+            customer_type: row.customer_type || 'retail',
+        });
+    }
+    return { members, skippedOptOut, skippedNoPhone };
+}
+
+/**
  * Queue a campaign: resolves the audience, renders merge tags, registers
  * opt-outs, and assigns each message a randomized 8–22s staggered slot.
+ *
+ * `customRecipients` lets an RFM/cohort surface queue its exact list instead of
+ * mapping every cohort onto one of the coarse `AudienceSegment` buckets. The
+ * segment path is unchanged when the list is omitted.
  */
 export async function queueCampaign(input: {
     campaign: string;
     template: string;
     segment: AudienceSegment;
     createdBy?: string;
+    /** Explicit cohort (ids are re-validated against the tenant). */
+    customRecipients?: CustomBroadcastRecipient[];
 }): Promise<CampaignQueueResult> {
-    const { members, skippedOptOut, skippedNoPhone } = await resolveAudienceDetailed(input.segment);
+    const resolved = input.customRecipients && input.customRecipients.length > 0
+        ? await resolveCustomRecipients(input.customRecipients)
+        : await resolveAudienceDetailed(input.segment);
+    const { members, skippedOptOut, skippedNoPhone } = resolved;
     const result: CampaignQueueResult = {
         campaign: input.campaign,
         queued: 0,
@@ -254,6 +351,7 @@ export async function queueCampaign(input: {
                 status: 'queued',
                 scheduled_at: new Date(Date.now() + slotOffset).toISOString(),
                 created_by: input.createdBy || '',
+                account_email: tenantScopeEmail(),
             });
             result.queued++;
         } catch (err) {
@@ -285,7 +383,7 @@ export async function processBroadcastQueue(): Promise<{
     let due;
     try {
         due = await pb.collection('broadcast_messages').getList(1, Math.min(quotaRemaining, 20), {
-            filter: 'status="queued" && scheduled_at<="' + new Date().toISOString() + '"',
+            filter: withTenantFilter('status="queued" && scheduled_at<="' + new Date().toISOString() + '"'),
             sort: 'scheduled_at',
         });
     } catch (err) {
@@ -348,10 +446,12 @@ export async function registerStopOptOut(phoneOrChatId: string, customerId?: str
 /** Campaign queue snapshot for the composer UI. */
 export async function getCampaignQueueSnapshot(campaign?: string): Promise<{ queued: number; sentToday: number }> {
     try {
-        const filter = campaign ? `campaign="${campaign}"` : '';
+        const base = campaign
+            ? `campaign="${sanitizeFilter(campaign)}" && status="queued"`
+            : 'status="queued"';
         const [queued, sentToday] = await Promise.all([
             pb.collection('broadcast_messages').getList(1, 1, {
-                filter: (filter ? filter + ' && ' : '') + 'status="queued"',
+                filter: withTenantFilter(base),
             }),
             sentTodayCount(),
         ]);

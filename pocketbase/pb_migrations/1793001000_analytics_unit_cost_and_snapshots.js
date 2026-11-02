@@ -31,36 +31,52 @@ migrate((app) => {
   }
 
   // --- 2. daily snapshot rollups ---
-  if (app.findCollectionByNameOrId("analytics_daily_snapshots") === null) {
-    const snapshots = new Collection({
-      type: "base",
-      name: "analytics_daily_snapshots",
+  // `findCollectionByNameOrId` throws when the collection is absent; on a
+  // fresh database that aborted the whole migrate run. Create the collection
+  // first, add fields, then apply rules (PB 0.25 ignores constructor fields).
+  let snapshots = null;
+  try {
+    snapshots = app.findCollectionByNameOrId("analytics_daily_snapshots");
+  } catch (e) {
+    snapshots = null;
+  }
+
+  if (!snapshots) {
+    snapshots = new Collection({ type: "base", name: "analytics_daily_snapshots" });
+    app.save(snapshots);
+
+    const fields = [
+      // System fields declared explicitly — without created/updated any
+      // `sort=-updated` query 400s (see 1793000001 corrective).
+      { name: "created", type: "autodate", onCreate: true, onUpdate: false },
+      { name: "updated", type: "autodate", onCreate: true, onUpdate: true },
+      { name: "account_email", type: "text", required: true, max: 255 },
+      { name: "day", type: "text", required: true, max: 10 }, // YYYY-MM-DD
+      { name: "category_id", type: "text", max: 60 }, // '' = unclassified
+      { name: "category_name", type: "text", max: 200 },
+      { name: "revenue", type: "number" },
+      { name: "cogs", type: "number" },
+      { name: "units", type: "number" },
+      { name: "orders", type: "number" },
+      { name: "discounts", type: "number" },
+      { name: "stock_value", type: "number" }, // optional end-of-day stock value
+    ];
+    for (const def of fields) {
+      snapshots.fields.add(new Field(def));
+    }
+    app.save(snapshots);
+
+    unmarshal({
       listRule: TENANT_RULE,
       viewRule: TENANT_RULE,
       createRule: TENANT_RULE,
       updateRule: TENANT_RULE,
       deleteRule: TENANT_RULE,
-      fields: [
-        // System fields declared explicitly — without created/updated any
-        // `sort=-updated` query 400s (see 1793000001 corrective).
-        { name: "created", type: "autodate", onCreate: true, onUpdate: false },
-        { name: "updated", type: "autodate", onCreate: true, onUpdate: true },
-        { name: "account_email", type: "text", required: true, max: 255 },
-        { name: "day", type: "text", required: true, max: 10 }, // YYYY-MM-DD
-        { name: "category_id", type: "text", max: 60 }, // '' = unclassified
-        { name: "category_name", type: "text", max: 200 },
-        { name: "revenue", type: "number" },
-        { name: "cogs", type: "number" },
-        { name: "units", type: "number" },
-        { name: "orders", type: "number" },
-        { name: "discounts", type: "number" },
-        { name: "stock_value", type: "number" }, // optional end-of-day stock value
-      ],
       indexes: [
         "CREATE UNIQUE INDEX idx_analytics_snap_day_cat ON analytics_daily_snapshots (account_email, day, category_id)",
         "CREATE INDEX idx_analytics_snap_day ON analytics_daily_snapshots (account_email, day)",
       ],
-    });
+    }, snapshots);
     app.save(snapshots);
   }
 

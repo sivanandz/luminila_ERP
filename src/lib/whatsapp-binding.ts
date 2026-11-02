@@ -5,7 +5,8 @@
  */
 
 import PocketBase, { type RecordModel } from 'pocketbase';
-import { pb, getPocketBaseUrl, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, resolveTenantPocketBase } from './pocketbase';
+import { pb, getPocketBaseUrl, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, resolveTenantPocketBase, sanitizeFilter } from './pocketbase';
+import { isSingleAccountMode } from './deployment-mode';
 
 export interface WhatsAppBinding {
     isBound: boolean;
@@ -289,15 +290,30 @@ export async function verifyAdminApproval(
 
 /**
  * Fetch list of admin users eligible for binding.
+ *
+ * WA-14: previously read every tenant's `users`/`user_roles` rows and, when
+ * none matched, returned a hardcoded `admin@luminila.local` (`e9zgt73u78651d4`)
+ * that exists in no database — an approval could be "verified" against it.
  */
 export async function getAdminUsers(): Promise<AdminUserOption[]> {
     try {
+        ensureAuth();
+        const tenant = getCurrentTenantEmail().trim().toLowerCase();
+        // In single-account mode legacy rows may predate account_email; in a
+        // multi-tenant deployment an unowned row must not leak into the picker.
+        const tenantClause = tenant && tenant !== 'default'
+            ? ` && (account_email = "${sanitizeFilter(tenant)}"${isSingleAccountMode() ? ' || account_email = ""' : ''})`
+            : '';
+
         const users = await pb.collection('users').getFullList({
-            filter: 'is_active!=false',
+            filter: `is_active!=false${tenantClause}`,
             sort: 'name',
         });
 
         const allUserRoles = await pb.collection('user_roles').getFullList({
+            filter: tenant && tenant !== 'default'
+                ? `account_email = "${sanitizeFilter(tenant)}"${isSingleAccountMode() ? ' || account_email = ""' : ''}`
+                : '',
             expand: 'role',
         });
 
@@ -321,26 +337,11 @@ export async function getAdminUsers(): Promise<AdminUserOption[]> {
             }
         }
 
-        // Fallback default if no explicit admin roles returned
-        if (adminOptions.length === 0) {
-            adminOptions.push({
-                id: 'e9zgt73u78651d4',
-                email: 'admin@luminila.local',
-                name: 'System Admin',
-                roleName: 'Admin',
-            });
-        }
-
+        // Never invent an admin: an empty list means the tenant has no bound
+        // administrator, and the caller must say so instead of approving.
         return adminOptions;
     } catch (err) {
-        console.warn('[WhatsApp Binding] Error fetching admin users, using fallback:', err);
-        return [
-            {
-                id: 'e9zgt73u78651d4',
-                email: 'admin@luminila.local',
-                name: 'System Admin',
-                roleName: 'Admin',
-            },
-        ];
+        console.warn('[WhatsApp Binding] Error fetching admin users:', err);
+        return [];
     }
 }

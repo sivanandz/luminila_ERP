@@ -99,3 +99,6 @@ src-tauri/gen/android/local.properties
 .cursor/
 scratch/
 **/.kotlin/
+
+# leftover PocketBase verification temp dir (ACL-locked; delete manually)
+%T%/

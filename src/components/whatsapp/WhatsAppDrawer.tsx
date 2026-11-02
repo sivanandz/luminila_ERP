@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname } from "next/navigation";
 import { MessageCircle, X, Send, Search, Loader2, RefreshCw, Users, Radio, Building2, Megaphone } from "lucide-react";
 import { toast } from "sonner";
-import { whatsappManager, getAllChats, getChatMessages, markAsRead, type WPPChat, type WPPMessage } from "@/lib/whatsapp";
+import { whatsappManager, getAllChats, getChatMessages, markAsRead, getTenantWhatsAppSessionId, type WPPChat, type WPPMessage } from "@/lib/whatsapp";
 import {
     getStoredChats,
     ensureChat,
@@ -76,6 +76,17 @@ export function WhatsAppDrawer() {
 
     // Hide on the dedicated hub, auth and first-run screens
     const hidden = pathname?.startsWith('/whatsapp') || pathname?.startsWith('/login') || pathname?.startsWith('/setup');
+
+    // WA-10: the drawer is mounted on every route, so it must select the
+    // signed-in tenant's sidecar session instead of inheriting the shared
+    // "luminila" default from whatever surface connected last.
+    const tenantSessionId = useMemo(
+        () => getTenantWhatsAppSessionId(user?.id || user?.email),
+        [user?.id, user?.email]
+    );
+    useEffect(() => {
+        whatsappManager.setSessionId(tenantSessionId);
+    }, [tenantSessionId]);
 
     const loadChats = useCallback(async () => {
         setLoading(true);
