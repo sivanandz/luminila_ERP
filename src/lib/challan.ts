@@ -3,7 +3,7 @@
  * Handles challan CRUD operations for material outward tracking using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 import { ClientResponseError } from 'pocketbase';
 import { toast } from 'sonner';
 import { getStoreSettings } from './invoice';
@@ -455,7 +455,8 @@ export async function generateChallanFromOrder(
     try {
         const order = await pb.collection('sales_orders').getOne(orderId);
         const orderItems = await pb.collection('sales_order_items').getFullList<SalesOrderItemRecord>({
-            filter: `sales_order="${orderId}"`,
+            // sales_order_items has no `sales_order` column; the relation is `order`.
+            filter: `order="${sanitizeFilter(orderId)}"`,
         });
 
         const settings = await getStoreSettings();

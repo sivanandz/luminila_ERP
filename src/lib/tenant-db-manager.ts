@@ -59,6 +59,66 @@ export function getTenantDbSlug(email: string): string {
     return clean.replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 64);
 }
 
+const TENANT_OWNER_MARKER = 'tenant-email.txt';
+
+/**
+ * Does this account own a database already?
+ *
+ * The registry alone is not enough: it can be cleared or half-written, and two
+ * different addresses can normalize to the same on-disk slug
+ * (`a_b@c.com` vs `a.b@c.com`). Provisioning an "existing" account requires a
+ * session for that account, so this must be conservative (A-03).
+ */
+export function tenantDatabaseExists(email: string): boolean {
+    const clean = email.trim().toLowerCase();
+    if (!clean) return false;
+    const registry = readTenantRegistry();
+    if (registry.tenants[clean] || registry.activeTenantEmail === clean) return true;
+
+    const slug = getTenantDbSlug(clean);
+    if (slug === 'primary') return true; // the primary database always exists
+    const dataDir = path.join(PB_TENANTS_BASE_DIR, slug);
+    return fs.existsSync(path.join(dataDir, 'data.db')) || fs.existsSync(dataDir);
+}
+
+/**
+ * Return the account that already owns the directory this email would use, if
+ * any. A marker file records the owner because the slug is lossy.
+ */
+export function findTenantSlugOwner(email: string): string | null {
+    const clean = email.trim().toLowerCase();
+    const slug = getTenantDbSlug(clean);
+    if (!clean || slug === 'primary') return null;
+
+    const registry = readTenantRegistry();
+    for (const [registeredEmail, record] of Object.entries(registry.tenants)) {
+        if (registeredEmail !== clean && record.tenantSlug === slug) {
+            return registeredEmail;
+        }
+    }
+
+    try {
+        const marker = path.join(PB_TENANTS_BASE_DIR, slug, TENANT_OWNER_MARKER);
+        if (fs.existsSync(marker)) {
+            const owner = fs.readFileSync(marker, 'utf-8').trim().toLowerCase();
+            if (owner && owner !== clean) return owner;
+        }
+    } catch {
+        // Unreadable marker: fall through; provisioning re-checks before writing.
+    }
+    return null;
+}
+
+/** Refuse to bootstrap a directory outside the PocketBase roots (A-03). */
+function assertSafeDataDir(dataDir: string): void {
+    const resolved = path.resolve(dataDir);
+    const tenantsRoot = path.resolve(PB_TENANTS_BASE_DIR);
+    const defaultRoot = path.resolve(PB_DEFAULT_DATA_DIR);
+    if (resolved !== defaultRoot && !resolved.startsWith(tenantsRoot + path.sep)) {
+        throw new Error('Refusing to bootstrap a data directory outside the PocketBase roots');
+    }
+}
+
 /**
  * Ensure `pocketbase/pb_tenants/` directory exists
  */
@@ -170,6 +230,7 @@ async function allocateTenantPort(registry: TenantRegistryData, existingPort?: n
  * Run PocketBase CLI `migrate up` and `superuser upsert` on the target data directory
  */
 function bootstrapTenantDataDir(dataDir: string, email: string, password: string): void {
+    assertSafeDataDir(dataDir);
     if (!fs.existsSync(PB_EXE_PATH)) {
         throw new Error(`PocketBase binary not found at ${PB_EXE_PATH}`);
     }
@@ -191,7 +252,12 @@ function bootstrapTenantDataDir(dataDir: string, email: string, password: string
             { stdio: 'pipe', timeout: 20000 }
         );
     } catch (migErr) {
-        console.warn('[TenantDB] migrate up notice:', (migErr as Error)?.message);
+        // A swallowed failure left the tenant serving a half-migrated schema
+        // whose collections and rules didn't match the code (A-05), so
+        // provisioning now fails loudly with the migration output attached.
+        const err = migErr as { stderr?: Buffer; message?: string };
+        const detail = err?.stderr?.toString().trim() || err?.message || String(migErr);
+        throw new Error(`PocketBase migrate up failed for ${path.basename(dataDir)}: ${detail}`);
     }
 
     // 2. Upsert the PocketBase superuser with the exact setup email & password
@@ -317,8 +383,35 @@ export async function provisionTenantDatabase(params: {
 
     // Dedicated physical SQLite directory for this tenant account
     const existingRecord = registry.tenants[cleanEmail];
-    const dataDir = path.join(PB_TENANTS_BASE_DIR, tenantSlug);
+    // `getTenantDbSlug` lowercases and strips everything outside [a-z0-9_];
+    // re-check the whitelist before the value reaches the filesystem.
+    if (!/^[a-z0-9_]{1,64}$/.test(tenantSlug)) {
+        throw new Error('Invalid tenant slug');
+    }
+    const tenantRoot = path.resolve(PB_TENANTS_BASE_DIR);
+    const dataDir = path.resolve(tenantRoot, tenantSlug);
+    if (!dataDir.startsWith(tenantRoot + path.sep)) {
+        throw new Error('Refusing to bootstrap a data directory outside the tenants root');
+    }
+
+    // Slug collisions are silent data loss: `a_b@c.com` and `a.b@c.com` map to
+    // the same directory, so a second provision would take over the first
+    // tenant's database. Refuse unless the marker names this account (A-03).
+    const slugOwner = findTenantSlugOwner(cleanEmail);
+    if (slugOwner) {
+        throw new Error(`This account slug is already owned by another account (${slugOwner}). Choose a different login email.`);
+    }
+
     const port = await allocateTenantPort(registry, existingRecord?.port);
+
+    // Record the owner before migrations so a later collision can be detected
+    // even if the registry is lost.
+    fs.mkdirSync(dataDir, { recursive: true });
+    const markerPath = path.resolve(dataDir, TENANT_OWNER_MARKER);
+    if (!markerPath.startsWith(dataDir + path.sep)) {
+        throw new Error('Refusing to write the tenant marker outside its data directory');
+    }
+    fs.writeFileSync(markerPath, cleanEmail, 'utf-8');
 
     // Run migrations and create/update superuser with the exact setup email & password
     bootstrapTenantDataDir(dataDir, cleanEmail, params.password);
@@ -354,8 +447,7 @@ export async function provisionTenantDatabase(params: {
 
 /**
  * Resolve and ensure the PocketBase instance for a given account email is running (used on `/login`)
- */
-export async function resolveTenantDatabase(
+ */export async function resolveTenantDatabase(
     email?: string,
     options?: { activate?: boolean }
 ): Promise<{

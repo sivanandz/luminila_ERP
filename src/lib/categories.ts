@@ -3,7 +3,13 @@
  * CRUD operations for user-defined product categories using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+
+/** `&& account_email = "…"` for tenant-scoped reads under a superuser client. */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 export interface Category {
     id: string;
@@ -28,7 +34,7 @@ export interface Category {
 
 export async function getCategories(activeOnly: boolean = false): Promise<Category[]> {
     try {
-        const filters = activeOnly ? 'is_active=true' : '';
+        const filters = `${activeOnly ? 'is_active=true' : 'id != ""'}${tenantClause()}`;
         const records = await pb.collection('categories').getFullList<Category>({
             filter: filters,
             sort: 'sort_order'
@@ -59,6 +65,9 @@ function buildTree(categories: Category[], parentId: string | undefined = undefi
 export async function getCategory(id: string): Promise<Category | null> {
     try {
         const record = await pb.collection('categories').getOne<Category>(id);
+        const tenant = accountScopeEmail();
+        if (tenant && (record as { account_email?: string }).account_email
+            && (record as { account_email?: string }).account_email !== tenant) return null;
         return record;
     } catch (error) {
         console.error('Error fetching category:', error);
@@ -72,7 +81,8 @@ export async function createCategory(category: Omit<Category, 'id' | 'created' |
     try {
         const record = await pb.collection('categories').create({
             ...category,
-            slug
+            slug,
+            account_email: accountScopeEmail(),
         });
         return record as unknown as Category;
     } catch (error) {

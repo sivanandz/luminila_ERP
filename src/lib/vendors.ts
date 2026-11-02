@@ -3,7 +3,13 @@
  * CRUD operations for vendor management using PocketBase
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+
+/** `&& account_email = "…"` for tenant-scoped reads under a superuser client. */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 // ===========================================
 // TYPES
@@ -19,6 +25,7 @@ export interface Vendor {
     pan?: string;
     payment_terms?: string;
     notes?: string;
+    account_email?: string;
     created: string;
     updated: string;
 }
@@ -65,6 +72,7 @@ export interface VendorWithProducts extends Vendor {
 export async function getVendors(): Promise<Vendor[]> {
     try {
         const records = await pb.collection('vendors').getFullList<Vendor>({
+            filter: `id != ""${tenantClause()}`,
             sort: 'name'
         });
         return records;
@@ -77,6 +85,8 @@ export async function getVendors(): Promise<Vendor[]> {
 export async function getVendor(id: string): Promise<VendorWithProducts | null> {
     try {
         const vendor = await pb.collection('vendors').getOne<Vendor>(id);
+        const tenant = accountScopeEmail();
+        if (tenant && vendor.account_email && vendor.account_email !== tenant) return null;
 
         // Fetch products manually as reverse expand implies list
         const products = await getVendorsForProductByVendor(id);
@@ -93,7 +103,7 @@ export async function getVendor(id: string): Promise<VendorWithProducts | null> 
 
 export async function createVendor(vendor: Omit<Vendor, 'id' | 'created' | 'updated'>): Promise<Vendor> {
     try {
-        const accountEmail = (pb.authStore.model as any)?.email || '';
+        const accountEmail = accountScopeEmail();
         const record = await pb.collection('vendors').create({
             ...vendor,
             account_email: accountEmail,
@@ -137,6 +147,7 @@ export async function addVendorProduct(mapping: {
 }): Promise<VendorProduct> {
     try {
         const record = await pb.collection('vendor_products').create({
+            account_email: accountScopeEmail(),
             vendor: mapping.vendor_id,
             variant: mapping.variant_id,
             vendor_sku: mapping.vendor_sku,
@@ -175,7 +186,7 @@ export async function removeVendorProduct(id: string): Promise<void> {
 export async function getVendorsForProduct(variantId: string): Promise<VendorProduct[]> {
     try {
         const records = await pb.collection('vendor_products').getFullList<VendorProduct>({
-            filter: `variant="${variantId}"`,
+            filter: `variant="${sanitizeFilter(variantId)}"${tenantClause()}`,
             expand: 'vendor'
         });
         return records;
@@ -188,7 +199,7 @@ export async function getVendorsForProduct(variantId: string): Promise<VendorPro
 async function getVendorsForProductByVendor(vendorId: string): Promise<VendorProduct[]> {
     try {
         const records = await pb.collection('vendor_products').getFullList<VendorProduct>({
-            filter: `vendor="${vendorId}"`,
+            filter: `vendor="${sanitizeFilter(vendorId)}"${tenantClause()}`,
             expand: 'variant.product'
         });
         return records;
@@ -203,8 +214,9 @@ async function getVendorsForProductByVendor(vendorId: string): Promise<VendorPro
 
 export async function searchVendors(query: string): Promise<Vendor[]> {
     try {
+        const term = sanitizeFilter((query || '').trim());
         const records = await pb.collection('vendors').getList<Vendor>(1, 20, {
-            filter: `name~"${query}" || contact_name~"${query}" || phone~"${query}"`,
+            filter: `(name~"${term}" || contact_name~"${term}" || phone~"${term}")${tenantClause()}`,
             sort: 'name'
         });
         return records.items;
@@ -221,12 +233,12 @@ export async function getVendorStats(id: string): Promise<{
 }> {
     try {
         const productsResult = await pb.collection('vendor_products').getList(1, 1, {
-            filter: `vendor="${id}"`
+            filter: `vendor="${sanitizeFilter(id)}"${tenantClause()}`
         });
 
         // Use purchase orders
         const purchaseStats = await pb.collection('purchase_orders').getFullList({
-            filter: `vendor="${id}" && status != "cancelled"`,
+            filter: `vendor="${sanitizeFilter(id)}" && status != "cancelled"${tenantClause()}`,
             fields: 'total,order_date'
         });
 
@@ -254,7 +266,9 @@ export async function getVendorStats(id: string): Promise<{
 export async function findVendorByPhone(digits: string) {
     if (!digits) return null;
     try {
-        const vendor = await pb.collection('vendors').getFirstListItem(`phone~"${sanitizeFilter(digits)}"`);
+        const vendor = await pb.collection('vendors').getFirstListItem(
+            `phone~"${sanitizeFilter(digits)}"${tenantClause()}`
+        );
         return { id: vendor.id, name: vendor.name || '' };
     } catch {
         return null;

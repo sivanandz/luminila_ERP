@@ -129,6 +129,13 @@ interface CartItem {
     gst_rate?: number;   // GST rate from the product, captured at add time
     image?: string | null;
     hsn_code?: string;
+    // Jewellery attributes captured at scan/search time so the sale line keeps
+    // weights, purity and HUID instead of dropping them (POS-07).
+    gross_weight?: number;
+    net_weight?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    huid_code?: string;
 }
 
 // Product type for POS (simpler than ProductWithVariant for cart)
@@ -147,6 +154,11 @@ interface POSProduct {
     image?: string | null;
     hsn_code?: string;
     gst_rate?: number;
+    gross_weight?: number;
+    net_weight?: number;
+    purity_karat?: string;
+    making_charges?: number;
+    huid_code?: string;
 }
 
 export interface HeldCart {
@@ -519,6 +531,21 @@ export default function POSPage() {
                 }
                 const basePrice = p?.base_price || 0;
                 const priceAdjustment = v.price_adjustment || 0;
+                // Jewellery columns exist in the database but not yet on the
+                // generated TypeScript record types, so read them through a
+                // narrow view instead of widening the shared types here.
+                const jewellery = {
+                    ...((p || {}) as unknown as Record<string, unknown>),
+                    ...((v || {}) as unknown as Record<string, unknown>),
+                };
+                const jewelleryNumber = (key: string): number | undefined => {
+                    const value = jewellery[key];
+                    return value === null || value === undefined || value === '' ? undefined : Number(value);
+                };
+                const jewelleryText = (key: string): string | undefined => {
+                    const value = jewellery[key];
+                    return value === null || value === undefined ? undefined : String(value);
+                };
                 const posProduct: POSProduct = {
                     id: v.id,
                     productId: v.product,
@@ -533,6 +560,15 @@ export default function POSPage() {
                     stock: stock,
                     image: p?.image_data || p?.image_url || null,
                     hsn_code: p?.hsn_code || "71179010",
+                    // A scanned 18% or 0% item must not fall back to the 3%
+                    // jewellery default, and its weights/purity must survive
+                    // into the cart (POS-07).
+                    gst_rate: jewelleryNumber('gst_rate'),
+                    gross_weight: jewelleryNumber('gross_weight'),
+                    net_weight: jewelleryNumber('net_weight'),
+                    purity_karat: jewelleryText('purity_karat'),
+                    making_charges: jewelleryNumber('making_charges'),
+                    huid_code: jewelleryText('huid_code'),
                 };
                 addToCart(posProduct);
             } else {
@@ -955,6 +991,27 @@ export default function POSPage() {
         },
     });
 
+    // Pre-commit loyalty validation shared by the cash/card path and the
+    // PhonePe path, so an invalid redemption is rejected before any money moves.
+    const validateLoyaltyRedemption = async (): Promise<boolean> => {
+        if (!selectedCustomerId || pointsToRedeem <= 0) return true;
+        const account = await getLoyaltyAccount(selectedCustomerId);
+        const settings = await getLoyaltySettings();
+        if (!account || pointsToRedeem > account.current_balance) {
+            toast.error('Insufficient loyalty points balance for this redemption. Sale cancelled — please adjust and retry.');
+            setPointsToRedeem(0);
+            setRedemptionValue(0);
+            return false;
+        }
+        if (pointsToRedeem < settings.min_redemption_points) {
+            toast.error(`Minimum ${settings.min_redemption_points} points required for redemption. Sale cancelled — please adjust and retry.`);
+            setPointsToRedeem(0);
+            setRedemptionValue(0);
+            return false;
+        }
+        return true;
+    };
+
     // Process sale
     const processSale = async () => {
         // Re-entrancy guard: the keyboard shortcut path (F12) and rapid clicks can
@@ -970,6 +1027,19 @@ export default function POSPage() {
             return;
         }
 
+        // Under-tendered cash must not complete as a fully paid sale.
+        if (paymentMethod === 'cash' && cashTendered !== '') {
+            const tendered = parseFloat(cashTendered);
+            if (!Number.isFinite(tendered) || tendered < total) {
+                toast.error(`Cash tendered (${formatPrice(Number.isFinite(tendered) ? tendered : 0)}) is less than the bill total (${formatPrice(total)}).`);
+                return;
+            }
+        }
+
+        // Loyalty must be validated BEFORE the gateway opens: once the customer
+        // pays, a rejected redemption can only be handled by refunding (POS-04).
+        if (!(await validateLoyaltyRedemption())) return;
+
         // If PhonePe is selected, show the PhonePe modal
         if (paymentMethod === 'phonepe') {
             setShowPhonePeModal(true);
@@ -980,25 +1050,6 @@ export default function POSPage() {
         isProcessingRef.current = true;
 
         try {
-            // Pre-commit loyalty validation: reject an invalid redemption BEFORE
-            // the sale is recorded so it can never throw after commit.
-            if (selectedCustomerId && pointsToRedeem > 0) {
-                const account = await getLoyaltyAccount(selectedCustomerId);
-                const settings = await getLoyaltySettings();
-                if (!account || pointsToRedeem > account.current_balance) {
-                    toast.error('Insufficient loyalty points balance for this redemption. Sale cancelled — please adjust and retry.');
-                    setPointsToRedeem(0);
-                    setRedemptionValue(0);
-                    return;
-                }
-                if (pointsToRedeem < settings.min_redemption_points) {
-                    toast.error(`Minimum ${settings.min_redemption_points} points required for redemption. Sale cancelled — please adjust and retry.`);
-                    setPointsToRedeem(0);
-                    setRedemptionValue(0);
-                    return;
-                }
-            }
-
             // Save sale to PocketBase and generate invoice
             const result = await createPOSSale({
                 channel: selectedChannel as import('@/types/database').SalesChannel,
@@ -1035,10 +1086,10 @@ export default function POSPage() {
             // must not be reported as a failed sale (retrying would double-sell).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
-                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption', Math.max(0, subtotal - discountAmount));
+                    await redeemPoints(selectedCustomerId, pointsToRedeem, 'pos_sale', result.saleId, Math.max(0, subtotal - discountAmount));
                 }
                 if (selectedCustomerId && pointsToEarn > 0) {
-                    await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+                    await earnPoints(selectedCustomerId, total, 'pos_sale', result.saleId);
                 }
             } catch (loyaltyError) {
                 console.error('Loyalty update failed after sale was committed:', loyaltyError);
@@ -1086,9 +1137,15 @@ export default function POSPage() {
 
     // Handle PhonePe payment success
     const handlePhonePeSuccess = async (transactionId: string, phonePeTransactionId?: string) => {
+        // The gateway can invoke this twice (retry/poll race). A second call
+        // would create a duplicate sale and deduct stock again (POS-04).
+        if (isProcessingRef.current) return;
+        isProcessingRef.current = true;
+        setIsProcessing(true);
         setShowPhonePeModal(false);
 
         if (!currentShift || !userId) {
+            isProcessingRef.current = false;
             console.error('No active shift or user');
             return;
         }
@@ -1122,6 +1179,9 @@ export default function POSPage() {
                 customerPhone: selectedCustomer?.phone || undefined,
                 shiftId: currentShift.id,
                 userId,
+                // Without the location the multi-location stock never moves for
+                // a PhonePe sale (POS-04).
+                locationId: selectedPosLocationId,
                 notes: phonePeTransactionId ? `PhonePe: ${phonePeTransactionId}` : undefined,
                 pointsRedeemed: pointsToRedeem,
                 pointsEarned: pointsToEarn,
@@ -1137,10 +1197,10 @@ export default function POSPage() {
             // must not be reported as a failed sale (the payment was received).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
-                    await redeemPoints(selectedCustomerId, pointsToRedeem, result.saleId, 'POS redemption', Math.max(0, subtotal - discountAmount));
+                    await redeemPoints(selectedCustomerId, pointsToRedeem, 'pos_sale', result.saleId, Math.max(0, subtotal - discountAmount));
                 }
                 if (selectedCustomerId && pointsToEarn > 0) {
-                    await earnPoints(selectedCustomerId, total, result.saleId, 'POS purchase');
+                    await earnPoints(selectedCustomerId, total, 'pos_sale', result.saleId);
                 }
             } catch (loyaltyError) {
                 console.error('Loyalty update failed after sale was committed:', loyaltyError);
@@ -1177,6 +1237,7 @@ export default function POSPage() {
             console.error('Error processing PhonePe sale:', error);
             alert('Payment received but failed to record sale. Please contact support.');
         } finally {
+            isProcessingRef.current = false;
             setIsProcessing(false);
         }
     };

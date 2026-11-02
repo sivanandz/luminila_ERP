@@ -10,7 +10,7 @@
  * 5. Audit trail in activity_logs upon sequence exhaustion fallback for GST compliance (T7-F2).
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 
 export interface SequenceOptions {
     /** Unique identifier for sequence (e.g. 'invoice_2627', 'po', 'grn', 'credit_note', 'challan', 'expense') */
@@ -58,18 +58,60 @@ export async function getNextSequenceNumber(options: SequenceOptions, db: typeof
     const pb = db;
     const { seqName, prefix, padding = 5, formatFn, maxRetries = 5 } = options;
 
-    return enqueueSequenceTask(seqName, async () => {
+    // Sequences are per tenant. A bare `name="invoice_2627"` row is shared by
+    // every account in a common database, so two stores would consume each
+    // other's numbers and collide (POS-02).
+    const authRecord = (pb.authStore as unknown as {
+        record?: { email?: string; account_email?: string } | null;
+        model?: { email?: string; account_email?: string } | null;
+    });
+    const record = authRecord.record || authRecord.model;
+    const tenant = (
+        accountScopeEmail()
+        || String(record?.account_email || record?.email || '')
+    ).trim().toLowerCase();
+    const scopedName = tenant ? `${seqName}_${tenant}` : seqName;
+
+    return enqueueSequenceTask(`${tenant}:${seqName}`, async () => {
         let attempt = 0;
         let lastError: unknown = null;
 
         while (attempt < maxRetries) {
             attempt++;
             try {
-                // Scoped strictly to sequence name to respect per-FY and per-type resets
-                const seq = await pb
+                // Scoped strictly to the tenant and sequence name to respect
+                // per-FY and per-type resets.
+                let seq = await pb
                     .collection('number_sequences')
-                    .getFirstListItem(`name="${seqName}"`)
+                    .getFirstListItem(`name="${sanitizeFilter(scopedName)}"`)
                     .catch(() => null);
+
+                if (!seq && tenant) {
+                    // Adopt a pre-scoping row so an existing invoice series
+                    // continues instead of restarting at 1 (which would
+                    // duplicate already-issued numbers).
+                    const legacy = await pb
+                        .collection('number_sequences')
+                        .getFirstListItem(`name="${sanitizeFilter(seqName)}"`)
+                        .catch(() => null);
+                    if (legacy) {
+                        try {
+                            seq = await pb.collection('number_sequences').create({
+                                name: scopedName,
+                                prefix: legacy.prefix || prefix,
+                                current_value: Math.max(0, Number(legacy.current_value ?? legacy.current_number ?? 0)),
+                                current_number: Math.max(0, Number(legacy.current_number ?? legacy.current_value ?? 0)),
+                                padding: Number(legacy.padding) || padding,
+                                account_email: tenant,
+                            });
+                        } catch {
+                            // Another process adopted it first; retry the read.
+                            const backoffMs = Math.floor(Math.random() * 40) + 20;
+                            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+                            continue;
+                        }
+                    }
+                }
 
                 let nextValue: number;
 
@@ -88,11 +130,12 @@ export async function getNextSequenceNumber(options: SequenceOptions, db: typeof
                     nextValue = 1;
                     try {
                         await pb.collection('number_sequences').create({
-                            name: seqName,
+                            name: scopedName,
                             prefix: prefix,
                             current_value: nextValue,
                             current_number: nextValue,
                             padding: padding,
+                            account_email: tenant,
                         });
                     } catch {
                         // If another process created the record concurrently, re-read and retry
@@ -124,6 +167,7 @@ export async function getNextSequenceNumber(options: SequenceOptions, db: typeof
                 action: 'sync',
                 entity_type: 'settings',
                 entity_id: seqName,
+                account_email: tenant,
                 description: `[CRITICAL GST NOTICE] Sequence allocator exhausted ${maxRetries} attempts for '${seqName}'. Fallback non-sequential document number generated: ${fallbackSerial}. Accountant manual reconciliation / sequence gap explanation required under Indian GST law.`,
                 metadata: {
                     seqName,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 
@@ -124,11 +124,10 @@ import {
     createVariant,
     getProductVariants,
     updateVariant,
-    deleteVariant,
+    deleteProductCascade,
     STORAGE_LOCATIONS,
     getProductDisplayImage,
     type Product as PbProduct,
-    type ProductVariant,
 } from "@/lib/products";
 import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
@@ -197,11 +196,7 @@ function InventoryContent() {
     const [categories, setCategories] = useState<Category[]>([]);
     const [, setAttributes] = useState<ProductAttribute[]>([]);
 
-    const [showImportDialog, setShowImportDialog] = useState(false);
     const [showBulkImportModal, setShowBulkImportModal] = useState(false);
-    const [importData, setImportData] = useState<Record<string, string>[]>([]);
-    const [importLoading, setImportLoading] = useState(false);
-    const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Edit mode
     const [isEditMode, setIsEditMode] = useState(false);
@@ -336,14 +331,13 @@ function InventoryContent() {
             !showDiscrepancyModal &&
             !showBroadcastModal &&
             !showBulkImportModal &&
-            !showImportDialog &&
             !showPOHistoryModal
     );
 
     // Handle Scan Logic. `overrideQuery` lets the camera path pass the scanned code
     // directly, because a setScanQuery() in the same event is not visible to this
     // render's closure yet.
-    const handleScanSubmit = (e: Pick<React.FormEvent, "preventDefault">, overrideQuery?: string) => {
+    const handleScanSubmit = useCallback((e: Pick<React.FormEvent, "preventDefault">, overrideQuery?: string) => {
         e.preventDefault();
         const rawQuery = (overrideQuery ?? scanQuery).trim();
         if (!rawQuery) return;
@@ -365,7 +359,7 @@ function InventoryContent() {
             setScanResult(null);
             setScanNotFoundSku(normalizedQuery);
         }
-    };
+    }, [scanQuery, products]);
 
     // Context-aware hardware barcode scanner routing for Inventory
     useEffect(() => {
@@ -387,7 +381,7 @@ function InventoryContent() {
             }, 50);
             return () => unregister();
         }
-    }, [showAddDialog, showScanDialog, showDiscrepancyModal, showBroadcastModal, products]);
+    }, [showAddDialog, showScanDialog, showDiscrepancyModal, showBroadcastModal, handleScanSubmit]);
 
     // Update stock from scanner
     const handleScanStockUpdate = async (change: number) => {
@@ -651,6 +645,9 @@ function InventoryContent() {
             };
 
             let targetVariantId = "";
+            // Quantity actually added to stock by this save. In edit mode this is
+            // the delta, not the cumulative total the dialog shows (INV-05).
+            let intakeQuantity = parseInt(newProduct.stock) || 0;
 
             if (isEditMode && editingProductId) {
                 // Update
@@ -664,6 +661,8 @@ function InventoryContent() {
                 const desiredTotal = parseInt(newProduct.stock) || 0;
                 const currentTotal = products.find(p => p.id === editingProductId)?.stock ?? desiredTotal;
                 const stockDelta = desiredTotal - currentTotal;
+                // Only the positive delta was added; a reduction is not an inward receipt.
+                intakeQuantity = Math.max(0, stockDelta);
                 if (variants.length > 0) {
                     targetVariantId = variants[0].id;
                     await updateVariant(variants[0].id, {
@@ -696,7 +695,7 @@ function InventoryContent() {
 
             // If tagged to a Purchase Order, log stock movement and reconcile
             if (poRef && targetVariantId) {
-                const addedStock = parseInt(newProduct.stock) || 0;
+                const addedStock = intakeQuantity;
                 await recordManualIntakeMovement({
                     variantId: targetVariantId,
                     quantity: addedStock,
@@ -720,8 +719,8 @@ function InventoryContent() {
                     } else {
                         toast.success(`PO ${poRef} reconciled successfully with inward intake!`);
                     }
-                } catch (recErr: any) {
-                    console.warn('PO reconciliation notice:', recErr.message);
+                } catch (recErr) {
+                    console.warn('PO reconciliation notice:', recErr instanceof Error ? recErr.message : String(recErr));
                 }
             }
 
@@ -787,11 +786,7 @@ function InventoryContent() {
         if (!shouldRemove) return;
 
         for (const demo of demos) {
-            const variants = await getProductVariants(demo.id).catch(() => []);
-            for (const variant of variants) {
-                await deleteVariant(variant.id).catch(() => {});
-            }
-            await pb.collection("products").delete(demo.id).catch(() => {});
+            await deleteProductCascade(demo.id).catch(() => {});
         }
         toast.success("Demo products removed.");
         await fetchProducts();
@@ -811,12 +806,18 @@ function InventoryContent() {
                 return;
             }
 
-            const variants = await getProductVariants(id).catch(() => []);
-            for (const variant of variants) {
-                await deleteVariant(variant.id).catch(() => {});
-            }
-            await pb.collection("products").delete(id);
-            toast.success("Product deleted");
+            // Clears the required-relation blockers (stock movements, label
+            // queue, vendor mappings) before the product delete cascades the
+            // variants — see deleteProductCascade for the full map.
+            const report = await deleteProductCascade(id);
+            const cleaned = [
+                report.removedStockMovements > 0 ? `${report.removedStockMovements} stock movements` : null,
+                report.removedLabelQueueEntries > 0 ? `${report.removedLabelQueueEntries} label jobs` : null,
+                report.removedVendorMappings > 0 ? `${report.removedVendorMappings} vendor mappings` : null,
+            ].filter(Boolean).join(", ");
+            toast.success("Product deleted", {
+                description: cleaned ? `Also removed ${cleaned}.` : undefined,
+            });
             fetchProducts();
         } catch (err: unknown) {
             console.error("Failed to delete product:", err);
@@ -824,76 +825,6 @@ function InventoryContent() {
             toast.error("Failed to delete product: " + msg);
         }
     };
-
-    // File import logic reused (simplified)
-    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        // Assuming similar logic for parsing, but saving via PB
-        // For brevity, using the existing parsing logic if it was robust, 
-        // but rewriting just the save part in handleBulkImport
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            const text = event.target?.result as string;
-            const lines = text.split('\n').filter(line => line.trim() && !line.startsWith('#'));
-            if (lines.length < 2) return;
-            const headers = lines[0].split(',').map(h => h.trim());
-            const data: Record<string, string>[] = [];
-            for (let i = 1; i < lines.length; i++) {
-                const values = lines[i].split(',').map(v => v.trim());
-                if (values.length < headers.length) continue;
-                const row: Record<string, string> = {};
-                headers.forEach((header, idx) => { row[header] = values[idx] || ''; });
-                if (row['Name'] || row['name']) data.push(row);
-            }
-            setImportData(data);
-            setShowImportDialog(true);
-        };
-        reader.readAsText(file);
-    };
-
-    const handleBulkImport = async () => {
-        if (importData.length === 0) return;
-        setImportLoading(true);
-        let success = 0;
-        let errors = 0;
-
-        const defaultCat = categories.find(c => c.name === "Uncategorized")?.id || categories[0]?.id;
-
-        for (const row of importData) {
-            try {
-                const name = row['Name'] || row['name'];
-                const sku = row['SKU'] || row['sku'] || `SKU-${Date.now()}`;
-                const price = parseFloat(row['Price'] || row['price'] || '0');
-                const stock = parseInt(row['Stock'] || row['stock'] || '0');
-
-                const product = await createProduct({
-                    name,
-                    sku,
-                    base_price: price,
-                    category: defaultCat,
-                    is_active: true
-                });
-
-                await createVariant({
-                    product: product.id,
-                    variant_name: sku,
-                    stock_level: stock
-                });
-                success++;
-            } catch {
-                errors++;
-            }
-        }
-
-        setImportLoading(false);
-        setShowImportDialog(false);
-        setImportData([]);
-        toast.success(`Imported ${success} items. ${errors} failed.`);
-        fetchProducts();
-    };
-
 
     const filteredProducts = products.filter(product => {
         const matchesCategory = selectedCategory === "All" || product.category === selectedCategory || product.categoryId === selectedCategory;
@@ -1954,16 +1885,6 @@ function InventoryContent() {
                         {scanNotFoundSku && (
                             <div className="text-red-400 text-center p-4 bg-red-500/10 rounded-lg">Product not found: {scanNotFoundSku}</div>
                         )}
-                    </div>
-                </DialogContent>
-            </Dialog>
-
-            <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
-                <DialogContent className="bg-surface-navy border-surface-hover text-white max-h-[80vh] overflow-y-auto">
-                    <DialogHeader><DialogTitle>Import Data Preview</DialogTitle></DialogHeader>
-                    <div className="space-y-4">
-                        <p>{importData.length} items found.</p>
-                        <Button onClick={handleBulkImport} disabled={importLoading} className="w-full">{importLoading ? 'Importing...' : 'Confirm Import'}</Button>
                     </div>
                 </DialogContent>
             </Dialog>

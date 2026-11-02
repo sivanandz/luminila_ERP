@@ -3,7 +3,13 @@
  * CRUD operations, search, purchase history using PocketBase
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+
+/** `&& account_email = "…"` for tenant-scoped reads under a superuser client (CRM-01). */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 // ===========================================
 // TYPES
@@ -12,6 +18,8 @@ export type CustomerType = 'retail' | 'wholesale' | 'vip';
 
 export interface Customer {
     id: string;
+    /** Owning tenant account (CRM-01 tenant-scoped reads). */
+    account_email?: string;
     name: string;
     phone?: string;
     email?: string;
@@ -81,7 +89,9 @@ export async function getCustomers(filters?: {
     hasPhone?: boolean;
 }): Promise<Customer[]> {
     try {
-        const filterParts: string[] = [];
+        const filterParts: string[] = ['id != ""'];
+        const scope = tenantClause().replace(/^ && /, '');
+        if (scope) filterParts.push(scope);
 
         if (filters?.type) {
             filterParts.push(`customer_type="${filters.type}"`);
@@ -112,6 +122,8 @@ export async function getCustomers(filters?: {
 export async function getCustomer(id: string): Promise<Customer | null> {
     try {
         const record = await pb.collection('customers').getOne<Customer>(id);
+        const tenant = accountScopeEmail();
+        if (tenant && record.account_email && record.account_email !== tenant) return null;
         return record;
     } catch (error) {
         console.error('Error fetching customer:', error);
@@ -121,7 +133,10 @@ export async function getCustomer(id: string): Promise<Customer | null> {
 
 export async function createCustomer(customer: Omit<Customer, 'id' | 'loyalty_points' | 'total_spent' | 'total_orders' | 'created' | 'updated'>): Promise<Customer> {
     try {
-        const record = await pb.collection('customers').create(customer);
+        const record = await pb.collection('customers').create({
+            ...customer,
+            account_email: accountScopeEmail(),
+        });
         return record as unknown as Customer;
     } catch (error) {
         console.error('Error creating customer:', error);
@@ -169,7 +184,7 @@ export async function searchCustomers(query: string, limit: number = 10): Promis
 
     try {
         const records = await pb.collection('customers').getList<Customer>(1, limit, {
-            filter: `name~"${sanitizeFilter(query)}" || phone~"${sanitizeFilter(query)}" || email~"${sanitizeFilter(query)}"`,
+            filter: `(name~"${sanitizeFilter(query)}" || phone~"${sanitizeFilter(query)}" || email~"${sanitizeFilter(query)}")${tenantClause()}`,
             sort: 'name'
         });
         return records.items;
@@ -194,7 +209,7 @@ export async function getCustomerPurchases(customerId: string): Promise<Customer
 
     try {
         const records = await pb.collection('sales').getList<SaleSummary>(1, 50, {
-            filter: `customer="${customerId}"`,
+            filter: `customer="${sanitizeFilter(customerId)}"${tenantClause()}`,
             sort: '-created',
             expand: 'sale_items(sale)' // Logic for count might be complex if items are separate collection
         });
@@ -226,7 +241,7 @@ export async function getCustomerPurchases(customerId: string): Promise<Customer
 export async function getCustomerInteractions(customerId: string): Promise<CustomerInteraction[]> {
     try {
         const records = await pb.collection('customer_interactions').getList<CustomerInteraction>(1, 50, {
-            filter: `customer="${customerId}"`,
+            filter: `customer="${sanitizeFilter(customerId)}"${tenantClause()}`,
             sort: '-created'
         });
         return records.items;
@@ -238,7 +253,10 @@ export async function getCustomerInteractions(customerId: string): Promise<Custo
 
 export async function addInteraction(interaction: Omit<CustomerInteraction, 'id' | 'created'>): Promise<CustomerInteraction> {
     try {
-        const record = await pb.collection('customer_interactions').create(interaction);
+        const record = await pb.collection('customer_interactions').create({
+            ...interaction,
+            account_email: accountScopeEmail(),
+        });
         return record as unknown as CustomerInteraction;
     } catch (error) {
         throw error;
@@ -286,7 +304,7 @@ export async function getUpcomingBirthdays(days: number = 7): Promise<Customer[]
     // PB filtering for dates excluding year is hard. fetch all with DOB and filter in JS.
     try {
         const records = await pb.collection('customers').getFullList<Customer>({
-            filter: 'date_of_birth != "" && date_of_birth != null',
+            filter: `date_of_birth != "" && date_of_birth != null${tenantClause()}`,
             sort: 'date_of_birth'
         });
 
@@ -314,7 +332,7 @@ export async function getUpcomingBirthdays(days: number = 7): Promise<Customer[]
 export async function getUpcomingAnniversaries(days: number = 7): Promise<Customer[]> {
     try {
         const records = await pb.collection('customers').getFullList<Customer>({
-            filter: 'anniversary != "" && anniversary != null',
+            filter: `anniversary != "" && anniversary != null${tenantClause()}`,
             sort: 'anniversary'
         });
 
@@ -349,7 +367,8 @@ export async function getCustomerStats(): Promise<{
     byType: Record<CustomerType, number>;
 }> {
     try {
-        const totalResult = await pb.collection('customers').getList(1, 1);
+        const scope = `id != ""${tenantClause()}`;
+        const totalResult = await pb.collection('customers').getList(1, 1, { filter: scope });
 
         const thisMonth = new Date();
         thisMonth.setDate(1);
@@ -357,24 +376,30 @@ export async function getCustomerStats(): Promise<{
         const thisMonthStr = thisMonth.toISOString();
 
         const newResult = await pb.collection('customers').getList(1, 1, {
-            filter: `created >= "${thisMonthStr}"`
+            filter: `created >= "${thisMonthStr}"${tenantClause()}`
         });
 
         const topSpenders = await pb.collection('customers').getList<Customer>(1, 5, {
+            filter: scope,
             sort: '-total_spent'
         });
 
-        // Type counts - hard without aggregate. Do a full list fetch if small enough, 
-        // or just skip for now to save bandwidth.
-        // Doing full list for type stats is risky for scale. 
-        // Let's implement basic counters if needed or return 0s for now.
+        // Compute type counts from the tenant's customer list: the hardcoded
+        // zeroes made the "VIP Patrons"/"Wholesale Partners" cards always read
+        // 0 (CRM-17).
+        const allForTypes = await pb.collection('customers').getFullList<Customer>({
+            filter: scope,
+            fields: 'customer_type',
+        });
         const byType: Record<CustomerType, number> = {
             retail: 0,
             wholesale: 0,
             vip: 0,
         };
-
-        // TODO: Implement aggregation with PB hooks or multiple count queries
+        for (const customer of allForTypes) {
+            const type = customer.customer_type;
+            if (type === 'retail' || type === 'wholesale' || type === 'vip') byType[type] += 1;
+        }
 
         return {
             totalCustomers: totalResult.totalItems,
@@ -406,10 +431,20 @@ export async function getCustomerOrderHistory(
     customerId: string,
     phone?: string
 ): Promise<CustomerOrderHistoryRow[]> {
-    const scope = `customer="${customerId}"${phone ? ` || customer_phone="${sanitizeFilter(phone)}"` : ''}`;
+    const safeId = sanitizeFilter(customerId);
+    const phone10 = String(phone || '').replace(/\D/g, '').slice(-10);
+    const customerExpr = phone10
+        ? `(customer="${safeId}" || customer_phone~"${sanitizeFilter(phone10)}")`
+        : `customer="${safeId}"`;
+    // Storefront orders exist twice (sales mirror + sales_orders). Excluding the
+    // mirror and cancelled/draft rows keeps the profile spend from doubling
+    // (CRM-07). Phone matching uses the 10-digit suffix so formatting
+    // differences no longer hide orders (CRM-16).
+    const salesFilter = `${customerExpr} && channel != "storefront" && status != "cancelled"${tenantClause()}`;
+    const ordersFilter = `${customerExpr} && status != "cancelled" && status != "draft"${tenantClause()}`;
     const [salesRes, ordersRes] = await Promise.all([
-        pb.collection('sales').getList(1, 25, { filter: scope, sort: '-created' }).catch(() => ({ items: [] })),
-        pb.collection('sales_orders').getList(1, 25, { filter: scope, sort: '-created' }).catch(() => ({ items: [] })),
+        pb.collection('sales').getList(1, 25, { filter: salesFilter, sort: '-created' }).catch(() => ({ items: [] })),
+        pb.collection('sales_orders').getList(1, 25, { filter: ordersFilter, sort: '-created' }).catch(() => ({ items: [] })),
     ]);
 
     return [

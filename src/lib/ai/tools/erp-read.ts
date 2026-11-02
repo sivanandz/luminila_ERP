@@ -200,9 +200,14 @@ export const readTools: AiTool[] = [
                 return { summary: 'No active products matched.', data: { products: [] } };
             }
             const productIds = products.map((product) => asText((product as Record<string, unknown>).id));
-            const idClause = idOrClause(productIds);
+            // `product_variants` has no `id` equal to a product id; the relation
+            // column is `product`. The old idOrClause always matched zero rows,
+            // so every product reported totalStock 0 / out of stock (AI-SYS-05).
+            const idClause = productIds
+                .map((id) => `product = "${escapeFilterValue(id)}"`)
+                .join(' || ');
             const variants = await listRecords(context.client, 'product_variants', {
-                filter: `${accountFilter(context.accountEmail)} && (${idClause})`,
+                filter: `${accountFilter(context.accountEmail)} && product.is_active = true && (${idClause})`,
                 fields: 'id,product,stock_level,price_adjustment,variant_name,size,color',
                 perPage: 300,
             }).catch(() => []);

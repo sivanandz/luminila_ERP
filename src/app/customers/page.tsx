@@ -1178,8 +1178,8 @@ export default function CustomersPage() {
                                                     return (
                                                         <tr key={cmp.id} className="hover:bg-muted/20">
                                                             <td className="py-3 px-3">
-                                                                <span className="font-bold text-foreground text-sm block">{cmp.title}</span>
-                                                                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{cmp.category.replace("_", " ")}</span>
+                                                                <span className="font-bold text-foreground text-sm block">{cmp.title || "Campaign"}</span>
+                                                                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{(cmp.category || "promotional").replace("_", " ")}</span>
                                                             </td>
                                                             <td className="py-3 px-3">
                                                                 {cmp.promo_code ? (

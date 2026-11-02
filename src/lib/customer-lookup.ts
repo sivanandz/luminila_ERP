@@ -2,7 +2,7 @@
  * Customer Lookup - Links WhatsApp chats to customers table using PocketBase
  */
 
-import { pb, ensureAuth } from './pocketbase';
+import { pb, ensureAuth, accountScopeEmail, sanitizeFilter } from './pocketbase';
 import { ClientResponseError } from 'pocketbase';
 import type { Sale } from '../types/database';
 
@@ -179,9 +179,11 @@ export async function findCustomerByPhone(phone: string): Promise<Customer | nul
     }
 
     try {
-        // Search with LIKE for flexibility
+        // Scope to the tenant: an unscoped phone match could link the order to
+        // another store's customer (CRM-02).
+        const tenant = accountScopeEmail();
         const result = await pb.collection('customers').getFirstListItem<CustomerRecord>(
-            `phone~"${normalized}"`
+            `phone~"${sanitizeFilter(normalized)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`
         );
 
         return mapCustomerRecord(result);

@@ -135,7 +135,7 @@ export async function seedDefaultRoles(): Promise<Record<string, string>> {
 
     for (const role of DEFAULT_SETUP_ROLES) {
         try {
-            const existing = await pb.collection("roles").getFirstListItem(`name="${role.name}"`);
+            const existing = await pb.collection("roles").getFirstListItem(`name="${sanitizeFilter(role.name)}"`);
             roleMap[role.name] = existing.id;
         } catch (err: unknown) {
             if ((err as { status?: number })?.status !== 404) continue;
@@ -160,7 +160,7 @@ export async function ensureSetupAdminUser(input: {
     // account_email scope or it is invisible under the tenant isolation rules.
     const accountEmail = input.email.trim().toLowerCase();
     try {
-        const existing = await pb.collection("users").getFirstListItem(`email="${input.email}"`);
+        const existing = await pb.collection("users").getFirstListItem(`email="${sanitizeFilter(input.email)}"`);
         return await pb.collection("users").update(existing.id, {
             name: input.name,
             password: input.password,
@@ -187,7 +187,9 @@ export async function ensureSetupAdminUser(input: {
 export async function linkUserToAdminRole(userId: string, roleId: string | undefined): Promise<void> {
     if (!roleId) return;
     try {
-        await pb.collection("user_roles").getFirstListItem(`user="${userId}" && role="${roleId}"`);
+        await pb.collection("user_roles").getFirstListItem(
+            `user="${sanitizeFilter(userId)}" && role="${sanitizeFilter(roleId)}"`
+        );
     } catch (err: unknown) {
         if ((err as { status?: number })?.status !== 404) return;
         try {
@@ -217,7 +219,7 @@ export async function seedStoreSettings(
     for (const setting of initialSettings) {
         try {
             const existingSetting = await pb.collection("store_settings").getFirstListItem(
-                `key="${setting.key}" && account_email="${accountEmail}"`
+                `key="${sanitizeFilter(setting.key)}" && account_email="${sanitizeFilter(accountEmail)}"`
             );
             await pb.collection("store_settings").update(existingSetting.id, {
                 value: setting.value,

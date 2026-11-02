@@ -27,7 +27,6 @@ import {
     getFlashDrop,
     reserveFlashDropStock,
     getReservationCountdown,
-    completeFlashDropReservation,
     sendReservationHoldWhatsAppNotification,
     type FlashDropCampaign,
     type FlashDropItem,
@@ -186,12 +185,14 @@ function ExpressCheckoutContent() {
                 // If in sandbox or mock, or redirecting to Razorpay checkout:
                 window.location.href = payRes.data.short_url;
             } else {
-                // Standalone test/fallback: record order directly
-                const confirmedOrderNo = `ORD-${Date.now().toString().slice(-6)}`;
-                if (reservation) {
-                    await completeFlashDropReservation(reservation.id, confirmedOrderNo);
-                }
-                setOrderSuccess({ orderNumber: confirmedOrderNo, amount: itemTotal });
+                // Fail closed. This branch used to mark the reservation complete
+                // and show "Order Confirmed! Amount Paid" without collecting
+                // anything (POS-01 / SF-02). A flash drop may only be confirmed
+                // by a server-verified payment.
+                toast.error(
+                    payRes.error
+                        || "Online payment is unavailable right now. Please complete your purchase on the storefront."
+                );
             }
         } catch (err) {
             toast.error("Payment initiation failed: " + (err instanceof Error ? err.message : String(err)));

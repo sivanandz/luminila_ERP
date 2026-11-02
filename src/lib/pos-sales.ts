@@ -10,11 +10,12 @@
  * 5. Generate invoice from sale
  */
 
-import { pb, getCurrentTenantEmail } from './pocketbase';
+import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
 import { createInvoiceFromSale } from './invoice';
 import { enqueueTask } from './concurrency';
 import { adjustLocationStock } from './multi-location';
 import { applyChannelStock, toStockDb } from './channel-stock';
+import { resolveUnitCostMap } from './item-cost';
 import type { Sale } from '../types/database';
 
 // ============================================
@@ -112,6 +113,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     try {
         // 1. Create sale record
         const sale = await pb.collection('sales').create({
+            account_email: getCurrentTenantEmail(),
             channel: data.channel || 'pos',
             channel_order_id: transactionId,
             customer: data.customerId || null,
@@ -133,13 +135,26 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
         console.log('Sale created:', sale.id);
 
         // 2. Create sale items & decrement stock
+        // Cost snapshot (analytics): resolve each line's unit cost at sale
+        // time so COGS/margin analytics don't revalue history later.
+        const unitCosts = await resolveUnitCostMap(
+            pb,
+            getCurrentTenantEmail(),
+            data.items.map((item) => ({ variantId: item.variantId, productId: item.productId }))
+        ).catch((e) => {
+            console.warn('unit-cost resolution failed; sale items will omit unit_cost:', e);
+            return new Map<string, number>();
+        });
+
         for (const item of data.items) {
             const saleItem = await pb.collection('sale_items').create({
+                account_email: getCurrentTenantEmail(),
                 sale: sale.id,
                 product: item.productId || null,
                 variant: item.variantId || null,
                 quantity: item.quantity,
                 unit_price: item.price,
+                unit_cost: unitCosts.get(item.variantId || item.productId || '') ?? null,
                 total_price: item.price * item.quantity,
                 gst_rate: item.gst_rate ?? null,
                 remarks: item.remarks || '',
@@ -282,7 +297,9 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
         if (createdInvoiceId) {
             const orphanItems = await pb
                 .collection('invoice_items')
-                .getFullList<{ id: string }>({ filter: `invoice="${createdInvoiceId}"` })
+                .getFullList<{ id: string }>({
+                    filter: `invoice="${sanitizeFilter(createdInvoiceId)}" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`,
+                })
                 .catch(() => []);
             for (const orphan of orphanItems) {
                 await pb.collection('invoice_items').delete(orphan.id).catch(() => {});
@@ -343,7 +360,7 @@ async function updateShiftTotals(
 export async function getSalesByShift(shiftId: string): Promise<Sale[]> {
     try {
         const sales = await pb.collection('sales').getFullList<Sale>({
-            filter: `register_shift_id="${shiftId}"`,
+            filter: `register_shift_id="${sanitizeFilter(shiftId)}" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`,
             sort: '-created',
             expand: 'customer',
         });
@@ -370,7 +387,7 @@ export async function getTodaysSalesSummary(): Promise<{
         today.setHours(0, 0, 0, 0);
 
         const sales = await pb.collection('sales').getFullList<Sale>({
-            filter: `channel="pos" && created>="${today.toISOString()}"`,
+            filter: `channel="pos" && created>="${today.toISOString()}" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`,
         });
 
         return {

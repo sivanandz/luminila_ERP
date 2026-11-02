@@ -1,4 +1,4 @@
-import { pb, ensureServerAuth, sanitizeFilter } from "@/lib/pocketbase";
+import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
 
 export interface StorefrontBinding {
     boundAdminEmail: string;
@@ -6,8 +6,15 @@ export interface StorefrontBinding {
     customDomain: string;
 }
 
+/**
+ * Fallback tenant for a storefront that has never been bound. Shared by the
+ * content route and tenant resolver so OTP tokens and orders cannot land on
+ * two different default tenants (SF-13).
+ */
+export const DEFAULT_STOREFRONT_TENANT_EMAIL = "admin@luminila.local";
+
 const DEFAULT_BINDING: StorefrontBinding = {
-    boundAdminEmail: "admin@luminila.internal",
+    boundAdminEmail: DEFAULT_STOREFRONT_TENANT_EMAIL,
     brandName: "Luminila Jewels",
     customDomain: "storefront",
 };
@@ -49,13 +56,16 @@ export function resolveOrderTenant(
 export async function getStorefrontBinding(preferredEmail?: string): Promise<StorefrontBinding> {
     const cleanEmail = normalizeBindingEmail(preferredEmail);
     try {
-        await ensureServerAuth(cleanEmail || undefined);
+        // A per-request client keeps this lookup out of the module-global
+        // `pb` session, which concurrent requests for different tenants would
+        // otherwise overwrite mid-flight (A-09).
+        const client = await createTenantClient(cleanEmail || undefined);
         let query = 'key="storefront_content"';
         if (cleanEmail) {
             query += ` && account_email="${sanitizeFilter(cleanEmail)}"`;
         }
 
-        const record = await pb.collection("store_settings").getFirstListItem(query).catch(() => null);
+        const record = await client.collection("store_settings").getFirstListItem(query).catch(() => null);
 
         if (record && record.value) {
             const cms = typeof record.value === "string" ? JSON.parse(record.value) : record.value;
@@ -70,7 +80,7 @@ export async function getStorefrontBinding(preferredEmail?: string): Promise<Sto
         // Previously any caller-supplied address was accepted, so an unknown
         // storefront name was echoed back and used as the tenant.
         if (cleanEmail) {
-            const nameRecord = await pb
+            const nameRecord = await client
                 .collection("store_settings")
                 .getFirstListItem(`key="store_name" && account_email="${sanitizeFilter(cleanEmail)}"`)
                 .catch(() => null);

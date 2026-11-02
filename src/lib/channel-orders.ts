@@ -341,23 +341,47 @@ export function computeChannelTax(
  * Idempotency guard for order submission (F6): the storefront generates one
  * key per checkout session and retries reuse it, so a retried submit returns
  * the original order instead of creating a duplicate.
+ *
+ * The lookup is tenant- and customer-scoped. An unscoped `order_number` query
+ * let a caller replay another tenant's key (or guess one) and receive that
+ * order's id and gateway details (A-10 / ORD-01).
  */
 export async function findExistingChannelOrder(
     client: PocketBase,
-    orderNumber: string
+    orderNumber: string,
+    tenantEmail?: string,
+    customerPhone?: string
 ): Promise<{
     id: string;
     order_number?: string;
     internal_notes?: string;
     status?: string;
     customer?: string;
+    customer_phone?: string;
     total?: number;
     tax_total?: number;
 } | null> {
     if (!orderNumber) return null;
-    return client.collection('sales_orders').getFirstListItem(
-        client.filter('order_number = {:num}', { num: orderNumber })
-    ).catch(() => null);
+
+    const filter = tenantEmail
+        ? client.filter('order_number = {:num} && account_email = {:tenant}', {
+            num: orderNumber,
+            tenant: tenantEmail.trim().toLowerCase(),
+        })
+        : client.filter('order_number = {:num}', { num: orderNumber });
+
+    const record = await client.collection('sales_orders').getFirstListItem(filter).catch(() => null);
+    if (!record) return null;
+
+    const wanted = String(customerPhone || '').replace(/\D/g, '').slice(-10);
+    if (wanted) {
+        const stored = String(record.customer_phone || '').replace(/\D/g, '').slice(-10);
+        // An empty stored phone cannot prove ownership, so it is treated as a
+        // miss rather than returning another customer's order.
+        if (stored !== wanted) return null;
+    }
+
+    return record;
 }
 
 /**

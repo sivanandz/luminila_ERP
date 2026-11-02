@@ -25,6 +25,7 @@ import {
     type OpenAiUsageRaw,
 } from './sse';
 import { redactSecrets } from './guardrails';
+import { isBlockedAiHost } from './net-guard';
 
 const MAX_ERROR_BODY_CHARS = 2_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -156,6 +157,14 @@ function assertHttpUrl(url: string): string {
     }
     if (parsed.username || parsed.password) {
         throw new AiProviderError('The provider base URL must not embed credentials; use the API key field.', {
+            code: 'invalid_provider_url',
+        });
+    }
+    // Re-check at fetch time, not only in the settings schema: a stored row can
+    // predate the validation and every request would otherwise reach a private
+    // host (AI-SYS-04).
+    if (isBlockedAiHost(parsed.hostname, parsed.port)) {
+        throw new AiProviderError('The provider base URL points at a private or internal address.', {
             code: 'invalid_provider_url',
         });
     }

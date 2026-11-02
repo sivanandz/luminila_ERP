@@ -136,7 +136,12 @@ pb.autoCancellation(false);
  */
 export function accountScopeEmail(): string {
     if (isSingleAccountMode()) return SINGLE_ACCOUNT_EMAIL;
-    return pb.authStore.model?.email?.trim().toLowerCase() || '';
+    // Staff accounts carry both their personal `email` and the owning tenant's
+    // `account_email`. Records and rules are keyed by the tenant owner, so the
+    // account_email must win; falling back to the personal email would stamp
+    // every staff write with a tenant that owns no other rows (A-01).
+    const model = pb.authStore.model as { email?: string; account_email?: string } | null;
+    return String(model?.account_email || model?.email || '').trim().toLowerCase();
 }
 
 // Account Data Isolation: Auto-inject account_email on record creation
@@ -544,7 +549,8 @@ export function getCurrentTenantEmail(): string {
     // Single mode: every record belongs to the one account, whichever user signed in.
     if (isSingleAccountMode()) return SINGLE_ACCOUNT_EMAIL;
     ensureAuth();
-    return pb.authStore.model?.email?.trim().toLowerCase() || "default";
+    const model = pb.authStore.model as { email?: string; account_email?: string } | null;
+    return String(model?.account_email || model?.email || "").trim().toLowerCase() || "default";
 }
 
 /**

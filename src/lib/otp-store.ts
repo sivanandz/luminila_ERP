@@ -32,6 +32,17 @@ function normalizeTenant(tenant?: string): string {
 }
 
 /**
+ * One canonical phone form for every OTP read and write.
+ *
+ * Storefront callers send `+91...`, `91...` and bare 10-digit numbers; storing
+ * one form and verifying another is why codes minted on send failed on verify
+ * (A-14 / SF-12). The last 10 digits are the Indian subscriber number.
+ */
+function normalizePhone(phone: string): string {
+    return String(phone ?? "").replace(/\D/g, "").slice(-10);
+}
+
+/**
  * OTPs are scoped to a tenant as well as a phone, so a code minted for one
  * storefront cannot be replayed against another.
  */
@@ -96,7 +107,7 @@ export function generateAndSaveOtp(phone: string, tenant?: string): {
     error?: string;
     cooldownRemaining?: number;
 } {
-    const cleanPhone = phone.replace(/\D/g, "");
+    const cleanPhone = normalizePhone(phone);
     if (cleanPhone.length < 10) {
         return { success: false, error: "Invalid phone number length" };
     }
@@ -127,8 +138,10 @@ export function generateAndSaveOtp(phone: string, tenant?: string): {
         }
     }
 
-    // Generate cryptographically secure 6-digit numeric OTP
-    const otp = crypto.randomInt(100000, 999999).toString();
+    // Generate cryptographically secure 6-digit numeric OTP. randomInt's upper
+    // bound is exclusive, so 999999 as the bound could never be generated
+    // (A-22).
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const salt = crypto.randomBytes(16).toString("hex");
     const hashedOtp = hashOtp(otp, salt);
 
@@ -150,11 +163,32 @@ export function generateAndSaveOtp(phone: string, tenant?: string): {
     return { success: true, otp };
 }
 
+/**
+ * Undo a request whose delivery failed.
+ *
+ * `generateAndSaveOtp` increments the daily counter before WhatsApp is called,
+ * so five failed sends used to lock the number out for the rest of the day
+ * without a single code reaching it (A-13). The code is consumed as well: a
+ * message that never arrived must not remain verifiable.
+ */
+export function releaseOtpAttempt(phone: string, tenant?: string): void {
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) return;
+    const store = loadStore();
+    const key = storageKey(tenant, cleanPhone);
+    const record = store[key];
+    if (!record) return;
+    record.dayCount = Math.max(0, (record.dayCount || 0) - 1);
+    record.requestCount = Math.max(0, (record.requestCount || 0) - 1);
+    consumeCode(record);
+    saveStore(store);
+}
+
 export function verifyOtp(phone: string, inputOtp: string, tenant?: string): {
     valid: boolean;
     reason?: string;
 } {
-    const cleanPhone = phone.replace(/\D/g, "");
+    const cleanPhone = normalizePhone(phone);
     const store = loadStore();
     const key = storageKey(tenant, cleanPhone);
     const record = store[key];

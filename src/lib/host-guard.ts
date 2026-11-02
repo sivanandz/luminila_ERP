@@ -77,11 +77,20 @@ export function isLoopbackHost(hostname: string): boolean {
     return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "tauri.localhost";
 }
 
-export function classifyHost(rawHost: string | null | undefined, config: HostGuardConfig): HostRole {
+export function classifyHost(
+    rawHost: string | null | undefined,
+    config: HostGuardConfig,
+    options: { trustLoopback?: boolean } = {}
+): HostRole {
     if (!config.enabled) return "admin";
     const host = normalizeHost(rawHost);
     if (!host) return "storefront";
-    if (config.adminHosts.includes(host) || isLoopbackHost(host)) return "admin";
+    // Loopback is only "the operator's own machine" when nothing forwarded the
+    // request. Behind a tunnel the Host header can be rewritten to
+    // localhost/127.0.0.1 while the caller is a public visitor (A-15).
+    const trustLoopback = options.trustLoopback !== false;
+    if (config.adminHosts.includes(host)) return "admin";
+    if (trustLoopback && isLoopbackHost(host)) return "admin";
     if (config.storefrontHosts.includes(host)) return "storefront";
     return "storefront";
 }
@@ -91,7 +100,9 @@ export function isStorefrontServeablePath(pathname: string): boolean {
     if (isStorefrontPath(pathname)) return true;
     if (STATIC_FILES.has(pathname)) return true;
     if (STATIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return true;
-    if (STATIC_EXTENSION.test(pathname)) return true;
+    // A file extension must not make an API route serveable on the storefront
+    // host (`/api/export.json`, `/api/x.js`) (A-15).
+    if (!pathname.startsWith("/api/") && STATIC_EXTENSION.test(pathname)) return true;
     return false;
 }
 

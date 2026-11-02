@@ -104,10 +104,13 @@ function splitIntoComponents(
     if (isInterState) {
         igst = baseTaxPaise;
     } else {
-        // Floor one half and give the remainder to the other so the two halves
-        // always add back to the exact tax amount.
-        cgst = Math.floor(baseTaxPaise / 2);
-        sgst = baseTaxPaise - cgst;
+        // Intra-state tax must split into equal CGST and SGST; GSTN rejects an
+        // invoice where the two halves differ by a paise. Callers pass an even
+        // baseTaxPaise (they absorb an odd paise into the taxable value), so
+        // this is an exact halving rather than a floor/remainder split
+        // (POS-05).
+        cgst = Math.round(baseTaxPaise / 2);
+        sgst = cgst;
     }
     return {
         gstRate,
@@ -148,9 +151,18 @@ export function splitInclusiveLine(
 
     const taxable = Math.round((total * 100) / (100 + rate + cess));
     const cessPaise = cess > 0 ? Math.round((taxable * cess) / 100) : 0;
-    const baseTax = Math.max(0, total - taxable - cessPaise);
+    let baseTax = Math.max(0, total - taxable - cessPaise);
+    let adjustedTaxable = taxable;
 
-    return splitIntoComponents(taxable, baseTax, rate, cessPaise, cess, isInterState);
+    // An odd paise of intra-state tax cannot be halved equally. Move it into
+    // the taxable value so taxable + CGST + SGST still equals the inclusive
+    // total while CGST and SGST stay identical.
+    if (!isInterState && baseTax % 2 !== 0) {
+        baseTax -= 1;
+        adjustedTaxable += 1;
+    }
+
+    return splitIntoComponents(adjustedTaxable, baseTax, rate, cessPaise, cess, isInterState);
 }
 
 /**
@@ -170,7 +182,14 @@ export function splitExclusiveLine(
     const isInterState = Boolean(sellerStateCode) && Boolean(buyerStateCode) && sellerStateCode !== buyerStateCode;
 
     const cessPaise = cess > 0 ? Math.round((taxable * cess) / 100) : 0;
-    const baseTax = Math.round((taxable * rate) / 100);
+    let baseTax = Math.round((taxable * rate) / 100);
+
+    // See splitInclusiveLine: equal halves require an even paise count. The
+    // taxpayer absorbs the rounding difference here because the taxable value
+    // is the quoted price and cannot move.
+    if (!isInterState && baseTax % 2 !== 0) {
+        baseTax = Math.round(baseTax / 2) * 2;
+    }
 
     return splitIntoComponents(taxable, baseTax, rate, cessPaise, cess, isInterState);
 }

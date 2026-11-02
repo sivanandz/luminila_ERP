@@ -2,9 +2,9 @@ import type PocketBase from "pocketbase";
 import { createTenantClient } from "@/lib/pocketbase";
 import { readTenantRegistry } from "@/lib/tenant-db-manager";
 import { SINGLE_ACCOUNT_EMAIL, isSingleAccountMode } from "@/lib/deployment-mode";
+import { DEFAULT_STOREFRONT_TENANT_EMAIL } from "@/lib/storefront";
 
 const STOREFRONT_CONTENT_KEY = "storefront_content";
-const PRIMARY_ADMIN_EMAIL = "admin@luminila.local";
 
 export interface StorefrontTenant {
     /** The tenant whose inventory is bound to the storefront content. */
@@ -41,12 +41,16 @@ export async function resolveStorefrontTenant(
             email = "";
         }
     }
-    if (!email) email = PRIMARY_ADMIN_EMAIL;
+    if (!email) email = DEFAULT_STOREFRONT_TENANT_EMAIL;
 
     let client = await createTenantClient(email);
 
     try {
-        let record = await client
+        // Only the scoped row may bind the storefront. An unscoped
+        // `key = "storefront_content"` read returns whichever tenant happens to
+        // own the first row and would silently switch the storefront to it
+        // (A-08 / SF-04).
+        const record = await client
             .collection("store_settings")
             .getFirstListItem(
                 client.filter(
@@ -55,15 +59,6 @@ export async function resolveStorefrontTenant(
                 )
             )
             .catch(() => null);
-
-        if (!record) {
-            record = await client
-                .collection("store_settings")
-                .getFirstListItem(
-                    client.filter('key = "storefront_content"')
-                )
-                .catch(() => null);
-        }
 
         const raw = record?.value;
         const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;

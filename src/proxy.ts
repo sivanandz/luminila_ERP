@@ -24,7 +24,14 @@ export default function proxy(request: NextRequest) {
         return NextResponse.next();
     }
 
-    const role = classifyHost(request.headers.get("host"), config);
+    // Reverse proxies and tunnels rewrite `Host` but leave the original in
+    // `x-forwarded-host`. Trusting Host alone let a tunnel to localhost be
+    // classified as the operator's loopback admin surface (A-15).
+    const forwardedHost = request.headers.get("x-forwarded-host");
+    const forwardedFor = request.headers.get("x-forwarded-for");
+    const effectiveHost = forwardedHost || request.headers.get("host");
+    const viaProxy = Boolean(forwardedHost || forwardedFor);
+    const role = classifyHost(effectiveHost, config, { trustLoopback: !viaProxy });
     const pathname = request.nextUrl.pathname;
 
     if (!isPathAllowed(role, pathname)) {

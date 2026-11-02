@@ -10,12 +10,17 @@
 import PocketBase from 'pocketbase';
 import { resolveTenantDatabase } from './tenant-db-manager';
 import { isSingleAccountMode } from './deployment-mode';
+import { sanitizeFilter } from './pocketbase';
 
 export interface OperatorSession {
     ok: boolean;
     status: number;
     error?: string;
+    /** Tenant owner email (`account_email`), falling back to the login email. */
     email?: string;
+    /** The actual signed-in account, which differs from `email` for staff. */
+    staffEmail?: string;
+    accountEmail?: string;
     userId?: string;
     isSuperuser?: boolean;
     pbUrl?: string;
@@ -84,10 +89,17 @@ export async function authenticateOperator(req: Request, hintEmail?: string): Pr
         return { ok: false, status: 401, error: 'Invalid or expired operator session', pbUrl };
     }
 
-    const record = client.authStore.record as { id?: string; email?: string } | null;
-    const email = (record?.email || '').trim().toLowerCase() || undefined;
+    const record = client.authStore.record as
+        { id?: string; email?: string; account_email?: string }
+        | null;
+    const staffEmail = String(record?.email || '').trim().toLowerCase() || undefined;
+    // A staff account authenticates with its personal email but acts on the
+    // tenant recorded in `account_email`. Compare the hint against the tenant,
+    // not the login address, or every multi-account staff call is a 403 (A-16).
+    const accountEmail = String(record?.account_email || record?.email || '').trim().toLowerCase() || undefined;
+    const email = accountEmail;
 
-    if (target && email && email !== target) {
+    if (target && accountEmail && accountEmail !== target) {
         return {
             ok: false,
             status: 403,
@@ -100,6 +112,8 @@ export async function authenticateOperator(req: Request, hintEmail?: string): Pr
         ok: true,
         status: 200,
         email,
+        staffEmail,
+        accountEmail,
         userId: record?.id,
         isSuperuser: Boolean(client.authStore.isSuperuser),
         pbUrl,
@@ -155,8 +169,13 @@ export async function hasCapability(
     if (!session.userId) return false;
 
     try {
+        // Role links are tenant-scoped. The user id already narrows the rows,
+        // but without the tenant predicate a link planted by another tenant
+        // would still grant capability here. Empty is tolerated only so rows
+        // created before the backfill keep working.
+        const tenant = session.accountEmail ? `account_email = "${sanitizeFilter(session.accountEmail)}" || account_email = ""` : "";
         const roles = await session.client.collection('user_roles').getFullList({
-            filter: `user="${session.userId}"`,
+            filter: tenant ? `user="${session.userId}" && (${tenant})` : `user="${session.userId}"`,
             expand: 'role',
         });
 

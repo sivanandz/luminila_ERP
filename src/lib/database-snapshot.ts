@@ -6,7 +6,10 @@
  * no direct PocketBase access (D-23).
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+
+/** Keys whose values must never leave the device in an export. */
+const SECRET_KEY = /(secret|token|password|passwd|api[_-]?key|credential|client[_-]?id)/i;
 
 export interface DatabaseSnapshot {
     app: string;
@@ -31,14 +34,26 @@ export interface DatabaseSnapshot {
 }
 
 export async function collectDatabaseSnapshot(exportedBy: string): Promise<DatabaseSnapshot> {
-    const [products, variants, customers, invoices, invoiceItems, settingsList] = await Promise.all([
-        pb.collection('products').getFullList({ sort: '-created' }).catch(() => []),
-        pb.collection('product_variants').getFullList().catch(() => []),
-        pb.collection('customers').getFullList().catch(() => []),
-        pb.collection('invoices').getFullList().catch(() => []),
-        pb.collection('invoice_items').getFullList().catch(() => []),
-        pb.collection('store_settings').getFullList().catch(() => []),
+    // Exports are tenant-scoped and fail closed without a tenant: a superuser
+    // read with no filter would dump every store's data and secrets (AI-SYS-03).
+    const tenant = accountScopeEmail();
+    const scope = tenant ? `account_email = "${sanitizeFilter(tenant)}"` : 'id = ""';
+
+    const [products, variants, customers, invoices, invoiceItems, settingsRaw] = await Promise.all([
+        pb.collection('products').getFullList({ filter: scope, sort: '-created' }).catch(() => []),
+        pb.collection('product_variants').getFullList({ filter: scope }).catch(() => []),
+        pb.collection('customers').getFullList({ filter: scope }).catch(() => []),
+        pb.collection('invoices').getFullList({ filter: scope }).catch(() => []),
+        pb.collection('invoice_items').getFullList({ filter: scope }).catch(() => []),
+        pb.collection('store_settings').getFullList({ filter: scope }).catch(() => []),
     ]);
+
+    const settingsList = settingsRaw.map((row) => {
+        const key = String((row as { key?: string }).key || '');
+        return SECRET_KEY.test(key)
+            ? { ...(row as Record<string, unknown>), value: '[REDACTED]' }
+            : row;
+    });
 
     return {
         app: "Luminila Jewelry ERP",

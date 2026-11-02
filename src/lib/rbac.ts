@@ -3,7 +3,7 @@
  * Role-Based Access Control utilities for PocketBase
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 
 // ===========================================
 // TYPES
@@ -145,13 +145,20 @@ export async function deleteRole(id: string): Promise<void> {
 
 export async function getUsers(): Promise<UserProfile[]> {
     try {
+        // users and user_roles are tenant-scoped; without this filter the
+        // superuser client lists every account in the database (A-12).
+        const tenant = accountScopeEmail();
+        if (!tenant) return [];
+        const tenantFilter = `account_email = "${sanitizeFilter(tenant)}"`;
         const records = await pb.collection('users').getFullList({
+            filter: tenantFilter,
             sort: 'name'
         });
 
         // Fetch roles for all users
         // Optimization: Fetch all user_roles and map them, instead of N+1 queries
         const allUserRoles = await pb.collection('user_roles').getFullList({
+            filter: tenantFilter,
             expand: 'role'
         });
 
@@ -184,10 +191,11 @@ export async function getUsers(): Promise<UserProfile[]> {
 export async function setUserRoles(userId: string, roleIds: string[]): Promise<void> {
     // user_roles rows are tenant-scoped by account_email; stamp the acting
     // tenant so the assignment stays visible to this store only.
-    const accountEmail = String((pb.authStore.model as { email?: string } | null)?.email || '').trim().toLowerCase();
+    const accountEmail = accountScopeEmail();
+    const safeUserId = sanitizeFilter(userId);
     // Remove all existing roles
     const existingRoles = await pb.collection('user_roles').getFullList({
-        filter: `user="${userId}"`
+        filter: `user="${safeUserId}"`
     });
     for (const ur of existingRoles) {
         await pb.collection('user_roles').delete(ur.id);
@@ -204,8 +212,12 @@ export async function toggleUserActive(userId: string, isActive: boolean): Promi
 
 export async function getRBACStats(): Promise<{ totalUsers: number; activeUsers: number; totalRoles: number }> {
     try {
-        const usersResult = await pb.collection('users').getList(1, 1);
-        const activeUsersResult = await pb.collection('users').getList(1, 1, { filter: 'is_active=true' });
+        const tenant = accountScopeEmail();
+        if (!tenant) return { totalUsers: 0, activeUsers: 0, totalRoles: 0 };
+        const tenantFilter = `account_email = "${sanitizeFilter(tenant)}"`;
+        const usersResult = await pb.collection('users').getList(1, 1, { filter: tenantFilter });
+        const activeUsersResult = await pb.collection('users').getList(1, 1, { filter: `${tenantFilter} && is_active=true` });
+        // roles is the shared RBAC catalog (no tenant PII), so it stays global.
         const rolesResult = await pb.collection('roles').getList(1, 1);
 
         return {
@@ -223,15 +235,20 @@ export async function getRBACStats(): Promise<{ totalUsers: number; activeUsers:
 // ===========================================
 
 export async function assignRole(userId: string, roleId: string): Promise<void> {
+    // user_roles.createRule requires the caller's tenant on the row.
+    const accountEmail = accountScopeEmail();
     await pb.collection('user_roles').create({
         user: userId,
-        role: roleId
+        role: roleId,
+        account_email: accountEmail
     });
 }
 
 export async function removeRole(userId: string, roleId: string): Promise<void> {
     // Need to find the ID of the user_role record first
-    const record = await pb.collection('user_roles').getFirstListItem(`user="${userId}" && role="${roleId}"`);
+    const record = await pb.collection('user_roles').getFirstListItem(
+        `user="${sanitizeFilter(userId)}" && role="${sanitizeFilter(roleId)}"`
+    );
     if (record) {
         await pb.collection('user_roles').delete(record.id);
     }
@@ -248,7 +265,7 @@ export async function isAdmin(userId: string): Promise<boolean> {
     // 2. Check if assigned 'Admin' role
     try {
         const userRoles = await pb.collection('user_roles').getFullList({
-            filter: `user="${userId}"`,
+            filter: `user="${sanitizeFilter(userId)}"`,
             expand: 'role'
         });
         return userRoles.some(ur => ur.expand?.role?.name === 'Admin' || ur.expand?.role?.name === 'Super Admin');
@@ -263,7 +280,7 @@ export async function getCurrentUserPermissions(): Promise<Record<Resource, Perm
 
     // 1. Get User Roles
     const userRoles = await pb.collection('user_roles').getFullList({
-        filter: `user="${userId}"`,
+        filter: `user="${sanitizeFilter(userId)}"`,
         expand: 'role'
     });
 

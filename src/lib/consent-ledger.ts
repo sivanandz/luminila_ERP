@@ -11,7 +11,7 @@
  * cannot be rewritten from the app. Callers pass the per-tenant client (CO-08).
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 
 export type ConsentChannel = 'storefront' | 'website' | 'whatsapp' | 'pos' | 'import' | 'system';
 export type ConsentPurpose = 'marketing' | 'transactional' | 'whatsapp_service';
@@ -84,12 +84,18 @@ export async function getConsentState(
         lastEventAt: null,
     };
     const filters: string[] = [];
-    if (opts.customerId) filters.push(`customer = "${opts.customerId.replace(/"/g, '')}"`);
+    if (opts.customerId) filters.push(`customer = "${sanitizeFilter(opts.customerId)}"`);
     if (opts.phone) {
         const digits = opts.phone.replace(/\D/g, '').slice(-10);
         if (digits.length === 10) filters.push(`phone ~ "${digits}"`);
     }
     if (filters.length === 0) return state;
+
+    // The identity predicates are OR-ed, so the tenant must be AND-ed around
+    // the whole group; without it another tenant's events decided this
+    // customer's consent (CRM-04).
+    const tenant = tenantEmail(db);
+    const filter = `${tenant ? `account_email = "${sanitizeFilter(tenant)}" && ` : ''}(${filters.join(' || ')})`;
 
     try {
         const events = await db.collection('consent_events').getFullList<{
@@ -97,7 +103,7 @@ export async function getConsentState(
             granted: boolean;
             occurred_at?: string;
         }>({
-            filter: filters.join(' || '),
+            filter,
             sort: '-occurred_at',
             requestKey: null,
         });

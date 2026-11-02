@@ -8,7 +8,8 @@
  * machine so illegal transitions are refused with the engine's own message.
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+import { enqueueTask } from './concurrency';
 import {
     aggregateChequePortfolio,
     getPdcMaturityInfo,
@@ -84,10 +85,18 @@ function sortCheques(cheques: ChequeRecord[]): ChequeRecord[] {
     return [...cheques].sort((a, b) => (a.chequeDate < b.chequeDate ? 1 : -1));
 }
 
+/** Tenant-scoped key filter for the shared `store_settings` table (FIN-02). */
+function settingsFilter(): string {
+    const tenant = accountScopeEmail();
+    return tenant
+        ? `key="${SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
+        : `key="${SETTINGS_KEY}"`;
+}
+
 async function readCheques(): Promise<ChequeRecord[]> {
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(`key="${SETTINGS_KEY}"`)
+        .getFirstListItem(settingsFilter())
         .catch(() => null);
     if (!row) return [];
     return parseCheques(row.value);
@@ -97,13 +106,14 @@ async function writeCheques(cheques: ChequeRecord[]): Promise<void> {
     const value = JSON.stringify(cheques);
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(`key="${SETTINGS_KEY}"`)
+        .getFirstListItem(settingsFilter())
         .catch(() => null);
 
     if (row) {
         await pb.collection('store_settings').update(row.id, { value });
     } else {
         await pb.collection('store_settings').create({
+            account_email: accountScopeEmail(),
             key: SETTINGS_KEY,
             value,
             category: 'banking',
@@ -119,29 +129,39 @@ export async function addCheque(input: NewChequeInput): Promise<ChequeRecord[]> 
     const errors = validateChequeInput(input);
     if (errors.length > 0) throw new Error(errors[0]);
 
-    const now = new Date().toISOString();
-    const record: ChequeRecord = {
-        id: `chq_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
-        chequeNumber: input.chequeNumber.trim(),
-        direction: input.direction,
-        partyName: input.partyName.trim(),
-        bankName: input.bankName.trim(),
-        branchName: input.branchName?.trim(),
-        chequeDate: input.chequeDate,
-        amount: Math.round(input.amount * 100) / 100,
-        status: 'open',
-        notes: input.notes?.trim(),
-        createdDate: now,
-        modifiedDate: now,
-    };
+    // Serialize read-modify-write on the shared JSON array; two tabs adding a
+    // cheque at once could otherwise overwrite each other (FIN-17).
+    return enqueueTask('cheque_register', async () => {
+        const now = new Date().toISOString();
+        const record: ChequeRecord = {
+            id: `chq_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+            chequeNumber: input.chequeNumber.trim(),
+            direction: input.direction,
+            partyName: input.partyName.trim(),
+            bankName: input.bankName.trim(),
+            branchName: input.branchName?.trim(),
+            chequeDate: input.chequeDate,
+            amount: Math.round(input.amount * 100) / 100,
+            status: 'open',
+            notes: input.notes?.trim(),
+            createdDate: now,
+            modifiedDate: now,
+        };
 
-    const existing = await readCheques();
-    if (existing.some((cheque) => cheque.chequeNumber === record.chequeNumber && cheque.bankName === record.bankName)) {
-        throw new Error('That cheque number already exists for this bank.');
-    }
+        const existing = await readCheques();
+        if (existing.some((cheque) => cheque.chequeNumber === record.chequeNumber && cheque.bankName === record.bankName)) {
+            throw new Error('That cheque number already exists for this bank.');
+        }
 
-    await writeCheques([record, ...existing].slice(0, MAX_CHEQUES));
-    return listCheques();
+        // Prune only cancelled history. The old `slice(0, MAX_CHEQUES)` silently
+        // evicted the oldest open/cleared cheques, which are audit records (FIN-17).
+        const merged = [record, ...existing];
+        const active = merged.filter((cheque) => cheque.status !== 'cancelled');
+        const cancelled = merged.filter((cheque) => cheque.status === 'cancelled');
+        const keepCancelled = Math.max(0, MAX_CHEQUES - active.length);
+        await writeCheques([...active, ...cancelled.slice(0, keepCancelled)]);
+        return listCheques();
+    });
 }
 
 export async function advanceCheque(
@@ -149,16 +169,18 @@ export async function advanceCheque(
     status: ChequeStatus,
     options: ChequeTransitionOptions = {}
 ): Promise<{ cheques: ChequeRecord[]; result: ChequeTransitionResult }> {
-    const cheques = await readCheques();
-    const index = cheques.findIndex((cheque) => cheque.id === id);
-    if (index < 0) throw new Error('Cheque not found.');
+    return enqueueTask('cheque_register', async () => {
+        const cheques = await readCheques();
+        const index = cheques.findIndex((cheque) => cheque.id === id);
+        if (index < 0) throw new Error('Cheque not found.');
 
-    const result = transitionChequeStatus(cheques[index], status, options);
-    if (!result.success) throw new Error(result.error || 'That status change is not allowed.');
+        const result = transitionChequeStatus(cheques[index], status, options);
+        if (!result.success) throw new Error(result.error || 'That status change is not allowed.');
 
-    cheques[index] = result.cheque;
-    await writeCheques(cheques);
-    return { cheques: sortCheques(cheques), result };
+        cheques[index] = result.cheque;
+        await writeCheques(cheques);
+        return { cheques: sortCheques(cheques), result };
+    });
 }
 
 export async function deleteCheque(id: string): Promise<ChequeRecord[]> {

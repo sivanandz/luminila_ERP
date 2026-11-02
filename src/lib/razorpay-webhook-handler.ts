@@ -2,7 +2,7 @@ import { pb, createTenantClient } from '@/lib/pocketbase';
 import { getRazorpayConfig, verifyWebhookSignature } from '@/lib/razorpay';
 import { sendPaidOrderInvoice, sendLoyaltyMilestoneAlert } from '@/lib/whatsapp-notifications';
 import { applyChannelStock, toStockDb } from '@/lib/channel-stock';
-import { applyPurchaseAggregates, AGGREGATES_MARKER } from '@/lib/channel-orders';
+import { applyPurchaseAggregates, AGGREGATES_MARKER, aggregatesWereCounted } from '@/lib/channel-orders';
 import { generateInvoiceFromOrder } from '@/lib/orders';
 import { earnPoints, calculatePointsToEarn } from '@/lib/loyalty';
 import {
@@ -40,6 +40,31 @@ export interface SettleResult {
  * email in the gateway notes. The shared module client is never mutated.
  */
 export async function settleCapturedOrder(
+    orderId: string,
+    options: { paymentId?: string; tenantEmail?: string; client?: typeof pb } = {}
+): Promise<SettleResult> {
+    // Settlement is check-then-act (read payment_status, then write). Three
+    // callers can race on one order — the client confirm, `payment.captured`
+    // and `payment_link.paid` — and a double settlement fulfils twice. Serialize
+    // per order id inside the process (SF-06).
+    return withOrderSettlementLock(orderId, () => settleCapturedOrderInner(orderId, options));
+}
+
+const settlementLocks = new Map<string, Promise<unknown>>();
+
+async function withOrderSettlementLock<T>(orderId: string, task: () => Promise<T>): Promise<T> {
+    const previous = settlementLocks.get(orderId) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(task);
+    settlementLocks.set(
+        orderId,
+        current.finally(() => {
+            if (settlementLocks.get(orderId) === current) settlementLocks.delete(orderId);
+        })
+    );
+    return current;
+}
+
+async function settleCapturedOrderInner(
     orderId: string,
     options: { paymentId?: string; tenantEmail?: string; client?: typeof pb } = {}
 ): Promise<SettleResult> {
@@ -143,7 +168,9 @@ export async function settleCapturedOrder(
     await sendPaidOrderInvoice(orderId, db);
 
     // Customer CRM & loyalty: online orders bump HERE (never at intake).
-    if (updatedOrder.customer) {
+    // The marker makes the bump idempotent even if a previous settlement got
+    // past the PAID check but failed before finishing (SF-06).
+    if (updatedOrder.customer && !aggregatesWereCounted(existingOrder.internal_notes)) {
         const totalAmount = updatedOrder.total || updatedOrder.subtotal || 0;
 
         await applyPurchaseAggregates(pb, updatedOrder.customer, totalAmount).catch((aggErr) => {
@@ -232,22 +259,39 @@ export async function processRazorpayWebhookEvent(
                     return { success: true, orderId, event };
                 }
 
-                // The captured amount must match the order. Settling a mismatch
-                // would hand goods away for the wrong money.
-                const capturedPaise = Number(eventData.payload?.payment?.entity?.amount);
-                if (Number.isFinite(capturedPaise) && capturedPaise > 0) {
-                    const expectedRupees = Number(existingOrder.total ?? existingOrder.subtotal ?? 0);
-                    if (!amountMatchesRupees(expectedRupees, capturedPaise)) {
-                        console.error(
-                            `[webhook] Amount mismatch on order ${orderId}: expected ₹${expectedRupees}, captured ₹${(capturedPaise / 100).toFixed(2)}`
-                        );
-                        return {
-                            success: false,
-                            orderId,
-                            event,
-                            error: 'Captured amount does not match the order total',
-                        };
-                    }
+                // The captured amount and currency must both be proven. The old
+                // check skipped verification whenever the gateway omitted
+                // `payment.amount`, and never looked at the currency (SF-07).
+                const currency = String(
+                    payment?.currency || paymentLink?.currency || ''
+                ).toUpperCase();
+                if (currency && currency !== 'INR') {
+                    console.error(`[webhook] Unsupported currency ${currency} on order ${orderId}`);
+                    return { success: false, orderId, event, error: 'Payment currency is not INR' };
+                }
+
+                const capturedPaise = Number(payment?.amount ?? paymentLink?.amount_paid);
+                if (!Number.isFinite(capturedPaise) || capturedPaise <= 0) {
+                    console.error(`[webhook] Missing captured amount on order ${orderId}`);
+                    return {
+                        success: false,
+                        orderId,
+                        event,
+                        error: 'Webhook did not include a positive captured amount',
+                    };
+                }
+
+                const expectedRupees = Number(existingOrder.total ?? existingOrder.subtotal ?? 0);
+                if (!amountMatchesRupees(expectedRupees, capturedPaise)) {
+                    console.error(
+                        `[webhook] Amount mismatch on order ${orderId}: expected ₹${expectedRupees}, captured ₹${(capturedPaise / 100).toFixed(2)}`
+                    );
+                    return {
+                        success: false,
+                        orderId,
+                        event,
+                        error: 'Captured amount does not match the order total',
+                    };
                 }
 
                 const settled = await settleCapturedOrder(orderId, {

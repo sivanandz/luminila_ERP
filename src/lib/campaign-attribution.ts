@@ -138,8 +138,13 @@ export async function createMarketingCampaign(
     };
 
     try {
-        const pbRecord = await pb.collection(CAMPAIGNS_COLLECTION).create(newRecord);
+        // PocketBase ids are server-generated 15-char strings; sending a custom
+        // `cmp_…` id fails validation and silently dropped the campaign to the
+        // local cache (CRM-11).
+        const { id: _clientId, created_at: _clientCreatedAt, ...payload } = newRecord;
+        const pbRecord = await pb.collection(CAMPAIGNS_COLLECTION).create(payload);
         newRecord.id = pbRecord.id;
+        newRecord.created_at = String(pbRecord.created || newRecord.created_at);
     } catch {
         // Save to local cache
     }

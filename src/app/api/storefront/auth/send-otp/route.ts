@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateAndSaveOtp } from "@/lib/otp-store";
+import { generateAndSaveOtp, releaseOtpAttempt } from "@/lib/otp-store";
 import { sendMessage, getTenantWhatsAppSessionId } from "@/lib/whatsapp";
 import { getStorefrontBinding } from "@/lib/storefront";
 
@@ -9,12 +9,46 @@ const CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
+/**
+ * Per-address throttle. The phone-number limits in the OTP store stop one
+ * number being spammed, but not one client rotating numbers or probing the
+ * endpoint (A-13). In-memory is adequate here: a restart only resets the
+ * window, and the per-phone daily cap still applies.
+ */
+const IP_WINDOW_MS = 10 * 60 * 1000;
+const IP_MAX_REQUESTS = 20;
+const ipAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function clientAddress(req: Request): string {
+    const forwarded = req.headers.get("x-forwarded-for") || "";
+    return (forwarded.split(",")[0] || req.headers.get("x-real-ip") || "unknown").trim();
+}
+
+function ipRateLimited(req: Request): boolean {
+    const key = clientAddress(req);
+    const now = Date.now();
+    const entry = ipAttempts.get(key);
+    if (!entry || entry.resetAt <= now) {
+        ipAttempts.set(key, { count: 1, resetAt: now + IP_WINDOW_MS });
+        return false;
+    }
+    entry.count += 1;
+    return entry.count > IP_MAX_REQUESTS;
+}
+
 export async function OPTIONS() {
     return NextResponse.json({}, { headers: CORS_HEADERS });
 }
 
 export async function POST(req: Request) {
     try {
+        if (ipRateLimited(req)) {
+            return NextResponse.json(
+                { success: false, error: "Too many verification requests. Please try again later." },
+                { status: 429, headers: CORS_HEADERS }
+            );
+        }
+
         const body = await req.json();
         const rawPhone = (body.phone || "").trim();
         const cleanDigits = rawPhone.replace(/\D/g, "");
@@ -75,6 +109,8 @@ _If you did not request this, please ignore this message._`;
         // Fail closed: a code nobody received must not be reported as sent, and
         // the tenant's WhatsApp session id is never echoed to an anonymous caller.
         if (!waDelivered && !allowDevOtp) {
+            // Delivery never happened, so the daily counter must not count it.
+            releaseOtpAttempt(phone10, boundAdminEmail);
             return NextResponse.json(
                 { success: false, error: "We could not send the code on WhatsApp. Please try again." },
                 { status: 502, headers: CORS_HEADERS }

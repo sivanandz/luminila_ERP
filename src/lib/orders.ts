@@ -3,9 +3,10 @@
  * CRUD operations for sales orders using PocketBase
  */
 
-import { pb } from '@/lib/pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from '@/lib/pocketbase';
 import { toast } from 'sonner';
 import type { Customer } from '@/lib/customers';
+import { resolveUnitCostMap } from '@/lib/item-cost';
 // Aliased: this file's local SalesOrder/SalesOrderItem are narrower order-creation
 // payloads, while the database types describe the persisted sales_orders records.
 import type {
@@ -16,7 +17,8 @@ import type {
 import { createInvoice, getStoreSettings } from '@/lib/invoice';
 import { calculateGST, getStateCode, GST_RATES } from '@/lib/gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from '@/lib/sequence-generator';
-import { restoreChannelStockForReference, toStockDb } from '@/lib/channel-stock';
+import { restoreChannelStockForReference, applyChannelStock, toStockDb } from '@/lib/channel-stock';
+import { splitInclusiveLine, toPaise, toRupees } from '@/lib/invoice-math';
 import {
     aggregatesWereCounted,
     applyPurchaseReversal,
@@ -88,6 +90,7 @@ interface SalesOrderItemRecord {
     description: string;
     quantity: number;
     unit_price: number;
+    unit_cost?: number | null;
     tax_rate?: number;
     discount_amount?: number;
     total: number;
@@ -121,8 +124,12 @@ export async function generateOrderNumber(orderType: OrderType = 'sales_order'):
  */
 export async function createOrder(data: OrderInput) {
     try {
+        const tenantEmail = accountScopeEmail();
         // 1. Create Order Header with Unique Retry (WPA-12)
         const orderData = {
+            // Without the tenant stamp the order is invisible to the scoped
+            // reads and shipment/COD helpers reject it as "not this store" (ORD-03).
+            account_email: tenantEmail,
             order_type: data.order_type,
             customer: data.customer_id, // Relation
             customer_name: data.customer_name,
@@ -155,13 +162,27 @@ export async function createOrder(data: OrderInput) {
             }
         );
 
-        // 2. Create Order Items
+        // 2. Create Order Items (with cost snapshot for analytics COGS)
+        const unitCosts = await resolveUnitCostMap(
+            pb,
+            (() => {
+                const model = pb.authStore.model as { email?: string; account_email?: string } | null;
+                return String(model?.account_email || model?.email || '').trim().toLowerCase();
+            })(),
+            data.items.map((item) => ({ variantId: item.variant_id, productId: item.product_id }))
+        ).catch((e) => {
+            console.warn('unit-cost resolution failed; order items will omit unit_cost:', e);
+            return new Map<string, number>();
+        });
+
         const promises = data.items.map(item => {
-            const itemData: SalesOrderItemRecord = {
+            const itemData: SalesOrderItemRecord & { account_email?: string } = {
                 order: order.id,
+                account_email: tenantEmail,
                 description: item.description,
                 quantity: item.quantity,
                 unit_price: item.unit_price,
+                unit_cost: unitCosts.get(item.variant_id || item.product_id || '') ?? null,
                 tax_rate: item.tax_rate || 0,
                 discount_amount: item.discount_amount || 0,
                 total: item.total
@@ -172,6 +193,42 @@ export async function createOrder(data: OrderInput) {
         });
 
         await Promise.all(promises);
+
+        // B2B sales orders consume stock when they are confirmed (or already
+        // beyond). Estimates and drafts do not. Oversell is rejected and the
+        // header/items are removed, so an order can never claim goods the
+        // ledger does not have (ORD-02).
+        const stockLines = data.items
+            .filter((item) => Boolean(item.product_id))
+            .map((item) => ({
+                productId: item.product_id as string,
+                variantId: item.variant_id,
+                quantity: Number(item.quantity) || 0,
+                name: item.description,
+            }))
+            .filter((line) => line.quantity > 0);
+        const consumesStock = data.order_type === 'sales_order'
+            && ['confirmed', 'shipped', 'delivered', 'invoiced'].includes(data.status);
+        if (consumesStock && stockLines.length > 0) {
+            try {
+                await applyChannelStock(toStockDb(pb), stockLines, {
+                    accountEmail: tenantEmail,
+                    channel: 'pos',
+                    referenceId: order.id,
+                    notes: `B2B Sales Order ${allocatedOrderNumber}`,
+                    oversell: 'reject',
+                });
+            } catch (stockErr) {
+                const rows = await pb.collection('sales_order_items')
+                    .getFullList({ filter: `order="${sanitizeFilter(order.id)}"` })
+                    .catch(() => []);
+                for (const row of rows) {
+                    await pb.collection('sales_order_items').delete(row.id).catch(() => {});
+                }
+                await pb.collection('sales_orders').delete(order.id).catch(() => {});
+                throw stockErr;
+            }
+        }
 
         // Hybrid WhatsApp Campaign Attribution (7-day window / promo code)
         try {
@@ -196,15 +253,61 @@ export async function createOrder(data: OrderInput) {
 }
 
 /**
+ * Deduct stock for an order that has just become a confirmed sales order.
+ * Reads its persisted lines so estimates converted later take the same path as
+ * directly-created orders (ORD-02).
+ */
+async function deductStockForConfirmedOrder(orderId: string, orderNumber: string, tenantEmail: string): Promise<void> {
+    const items = await pb.collection('sales_order_items').getFullList<SalesOrderItemRecord>({
+        filter: `order="${sanitizeFilter(orderId)}"`,
+    });
+    const lines = items
+        .filter((item) => Boolean(item.product) && Number(item.quantity) > 0)
+        .map((item) => ({
+            productId: String(item.product),
+            variantId: item.variant || undefined,
+            quantity: Number(item.quantity),
+            name: item.description,
+        }));
+    if (lines.length === 0) return;
+    await applyChannelStock(toStockDb(pb), lines, {
+        accountEmail: tenantEmail,
+        channel: 'pos',
+        referenceId: orderId,
+        notes: `B2B Sales Order ${orderNumber}`,
+        oversell: 'reject',
+    });
+}
+
+/**
  * Convert an Estimate to a Confirmed Sales Order
  */
 export async function convertEstimateToOrder(estimateId: string) {
     try {
+        const estimate = await pb.collection('sales_orders').getOne(estimateId);
+        const tenantEmail = accountScopeEmail();
+        if (tenantEmail && estimate.account_email && estimate.account_email !== tenantEmail) {
+            throw new Error('Order does not belong to this store.');
+        }
+
         await pb.collection('sales_orders').update(estimateId, {
             order_type: 'sales_order',
             status: 'confirmed',
             order_date: new Date().toISOString() // Reset date to confirmation date
         });
+
+        try {
+            await deductStockForConfirmedOrder(estimateId, estimate.order_number || estimateId, tenantEmail);
+        } catch (stockErr) {
+            // Put the estimate back exactly as it was: a conversion that cannot
+            // reserve stock must not leave a confirmed order behind.
+            await pb.collection('sales_orders').update(estimateId, {
+                order_type: estimate.order_type || 'estimate',
+                status: estimate.status || 'draft',
+                order_date: estimate.order_date || new Date().toISOString(),
+            }).catch(() => {});
+            throw stockErr;
+        }
 
         toast.success("Estimate converted to Sales Order");
         return true;
@@ -222,6 +325,10 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
     const pb = db;
     try {
         const order = await pb.collection('sales_orders').getOne(orderId);
+        const tenantEmailForRead = accountScopeEmail();
+        if (tenantEmailForRead && order.account_email && order.account_email !== tenantEmailForRead) {
+            throw new Error('Order does not belong to this store.');
+        }
 
         // Idempotency: a retry after the order status update failed must reuse
         // the invoice that already exists rather than raising a second one for
@@ -229,7 +336,7 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
         const existingInvoices = await pb
             .collection('invoices')
             .getFullList<{ id: string; invoice_number?: string }>({
-                filter: `order="${orderId}"`,
+                filter: `order="${sanitizeFilter(orderId)}"${tenantEmailForRead ? ` && account_email="${sanitizeFilter(tenantEmailForRead)}"` : ''}`,
                 sort: '-created',
             })
             .catch(() => []);
@@ -241,7 +348,7 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
         }
 
         const orderItems = await pb.collection('sales_order_items').getFullList<SalesOrderItemRecord>({
-            filter: `order="${orderId}"`,
+            filter: `order="${sanitizeFilter(orderId)}"${tenantEmailForRead ? ` && account_email="${sanitizeFilter(tenantEmailForRead)}"` : ''}`,
             expand: 'product',
         });
 
@@ -293,6 +400,14 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
         }
         if (!buyerStateCode) buyerStateCode = sellerStateCode;
 
+        // Storefront prices are what the buyer was quoted and already include
+        // GST; treating them as tax-exclusive added 3% on top a second time
+        // (ORD-05). B2B/POS-order prices are quoted before tax.
+        const orderSource = String(
+            (order as unknown as { capture_source?: string }).capture_source || ''
+        ).trim().toLowerCase();
+        const pricesIncludeGst = orderSource === 'storefront';
+
         const invoiceItems = orderItems.map((item, idx: number) => {
             // Taxable value is net of the line discount (sales_order_items stores
             // discount_amount alongside a post-discount total); GST applies to
@@ -305,6 +420,38 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
             const product = item.expand?.product;
             const configuredRate = item.tax_rate ?? product?.gst_rate ?? GST_RATES.JEWELRY;
             const gstRate = isGstRegistered ? configuredRate : 0;
+
+            if (pricesIncludeGst) {
+                const split = splitInclusiveLine(
+                    toPaise(taxable),
+                    gstRate,
+                    sellerStateCode,
+                    buyerStateCode
+                );
+                return {
+                    sr_no: idx + 1,
+                    variant_id: item.variant || '',
+                    description: item.description || 'Jewelry Item',
+                    hsn_code: product?.hsn_code || '7113',
+                    quantity: item.quantity || 1,
+                    unit: 'PCS',
+                    unit_price: item.unit_price || 0,
+                    discount_percent: 0,
+                    discount_amount: item.discount_amount || 0,
+                    taxable_amount: toRupees(split.taxablePaise),
+                    gst_rate: gstRate,
+                    cgst_rate: split.cgstRate,
+                    cgst_amount: toRupees(split.cgstPaise),
+                    sgst_rate: split.sgstRate,
+                    sgst_amount: toRupees(split.sgstPaise),
+                    igst_rate: split.igstRate,
+                    igst_amount: toRupees(split.igstPaise),
+                    cess_rate: split.cessRate,
+                    cess_amount: toRupees(split.cessPaise),
+                    total_amount: toRupees(split.totalPaise),
+                };
+            }
+
             const gst = calculateGST(taxable, sellerStateCode, buyerStateCode, gstRate);
             return {
                 sr_no: idx + 1,

@@ -163,6 +163,12 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
             throw new Error(`Bank account ${transaction.account} not found`);
         }
 
+        // A negative or non-finite amount would bypass the overdraft check and
+        // increase the balance instead of decreasing it (FIN-12).
+        if (!Number.isFinite(transaction.amount) || transaction.amount <= 0) {
+            throw new Error('Transaction amount must be a positive number');
+        }
+
         // Overdraft protection: verify sufficient balance for debits
         if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
             if ((account.current_balance || 0) < transaction.amount) {
@@ -173,6 +179,7 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
         let record: BankTransaction | null = null;
         let destRecord: BankTransaction | null = null;
         let destCredited = false;
+        let sourceUpdated = false;
         try {
             record = await pb.collection('bank_transactions').create<BankTransaction>(transaction);
 
@@ -184,6 +191,7 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
             }
 
             await pb.collection('bank_accounts').update(transaction.account, balanceUpdate);
+            sourceUpdated = true;
 
             // Double-entry inter-account transfer support: credit destination account when specified
             if (
@@ -193,24 +201,27 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
                 transaction.related_entity_id !== transaction.account
             ) {
                 const destAccount = await getBankAccount(transaction.related_entity_id);
-                if (destAccount) {
-                    await pb.collection('bank_accounts').update(transaction.related_entity_id, {
-                        'current_balance+': transaction.amount
-                    });
-                    destCredited = true;
-
-                    // Automatically post matching deposit to destination ledger
-                    destRecord = await pb.collection('bank_transactions').create<BankTransaction>({
-                        account: transaction.related_entity_id,
-                        transaction_date: transaction.transaction_date,
-                        type: 'deposit',
-                        amount: transaction.amount,
-                        description: `Transfer from ${account.account_name}${transaction.description ? `: ${transaction.description}` : ''}`,
-                        reference_number: transaction.reference_number,
-                        related_entity_type: 'bank_account',
-                        related_entity_id: transaction.account
-                    });
+                // Skipping a missing destination debited the source and never
+                // credited anyone. Throw so the source is rolled back (FIN-05).
+                if (!destAccount) {
+                    throw new Error(`Destination bank account ${transaction.related_entity_id} not found; transfer rolled back`);
                 }
+                await pb.collection('bank_accounts').update(transaction.related_entity_id, {
+                    'current_balance+': transaction.amount
+                });
+                destCredited = true;
+
+                // Automatically post matching deposit to destination ledger
+                destRecord = await pb.collection('bank_transactions').create<BankTransaction>({
+                    account: transaction.related_entity_id,
+                    transaction_date: transaction.transaction_date,
+                    type: 'deposit',
+                    amount: transaction.amount,
+                    description: `Transfer from ${account.account_name}${transaction.description ? `: ${transaction.description}` : ''}`,
+                    reference_number: transaction.reference_number,
+                    related_entity_type: 'bank_account',
+                    related_entity_id: transaction.account
+                });
             }
 
             return record as unknown as BankTransaction;
@@ -223,6 +234,16 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
                 await pb.collection('bank_accounts').update(transaction.related_entity_id, {
                     'current_balance-': transaction.amount
                 }).catch(() => {});
+            }
+            // The source was debited before the failure; reverse it or the
+            // account loses money that no transaction records (FIN-03).
+            if (sourceUpdated) {
+                const reversal: Record<string, number> = transaction.type === 'deposit'
+                    ? { 'current_balance-': transaction.amount }
+                    : { 'current_balance+': transaction.amount };
+                await pb.collection('bank_accounts').update(transaction.account, reversal).catch((revErr) => {
+                    console.error('Failed to reverse source account balance after transfer failure:', revErr);
+                });
             }
             if (record?.id) {
                 await pb.collection('bank_transactions').delete(record.id).catch((delErr) => {

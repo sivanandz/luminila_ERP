@@ -3,7 +3,7 @@
  * Handles product returns and credit note generation using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, sanitizeFilter } from './pocketbase';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
 import { calculateGST, GST_RATES } from './gst';
@@ -332,6 +332,38 @@ export async function createCreditNote(
 // STATUS MANAGEMENT
 // ===========================================
 
+/**
+ * Did the document this credit note reverses ever remove stock from the
+ * variant? A credit note must not mint inventory for a sale that never took it
+ * (ORD-06): B2B orders historically never deducted, and manual invoices still
+ * do not. The sale/order ledger is the evidence.
+ */
+async function wasStockDeducted(
+    variantId: string,
+    cn: { original_sale?: string; original_invoice?: string }
+): Promise<boolean> {
+    if (!variantId) return false;
+    const references = [cn.original_sale, cn.original_invoice].filter(Boolean) as string[];
+
+    // A storefront invoice carries its originating sales order; that order id
+    // is what the stock movement references.
+    if (cn.original_invoice) {
+        const invoice = await pb.collection('invoices').getOne(cn.original_invoice).catch(() => null);
+        const linked = String((invoice as { order?: string; sale?: string } | null)?.order
+            || (invoice as { sale?: string } | null)?.sale
+            || '');
+        if (linked) references.push(linked);
+    }
+
+    for (const reference of references) {
+        const rows = await pb.collection('stock_movements').getList(1, 1, {
+            filter: `variant="${sanitizeFilter(variantId)}" && reference_id="${sanitizeFilter(reference)}" && movement_type="sale"`,
+        }).catch(() => null);
+        if (rows && rows.items.length > 0) return true;
+    }
+    return false;
+}
+
 export interface ApproveCreditNoteOptions {
     routeDefectiveToQuarantine?: boolean;
     discrepancyType?: 'damaged' | 'missing' | 'vendor_replacement';
@@ -438,9 +470,21 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                         flagged_by: options?.flaggedBy || 'Staff',
                     }).catch((err) => console.warn('Failed to create stock discrepancy for return:', err));
                 } else {
-                    // 2. Resellable condition: Restore stock to variant
+                    // 2. Resellable condition: Restore stock to variant — only
+                    // if the original document actually deducted it.
                     if (item.variant) {
-                        try {
+                        const deducted = await wasStockDeducted(item.variant, cn as {
+                            original_sale?: string;
+                            original_invoice?: string;
+                        });
+                        if (!deducted) {
+                            console.warn(
+                                `[approveCreditNote] Variant ${item.variant} was never deducted by ` +
+                                `${cn.original_sale || cn.original_invoice || 'the original document'}; ` +
+                                `skipping restock to avoid minting stock.`
+                            );
+                        } else {
+                            try {
                             await pb.collection('product_variants').update(item.variant, {
                                 'stock_level+': item.quantity
                             });
@@ -453,8 +497,9 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                                 source: 'credit_note',
                                 notes: `Restock from Return #${cn.credit_note_number || id}`
                             }).catch((err) => console.warn('Failed to log stock movement for return:', err));
-                        } catch (variantErr) {
-                            console.warn(`Could not restore stock for variant ${item.variant}:`, variantErr);
+                            } catch (variantErr) {
+                                console.warn(`Could not restore stock for variant ${item.variant}:`, variantErr);
+                            }
                         }
                     }
                 }
@@ -554,6 +599,15 @@ export async function processRefund(
 }
 
 export async function cancelCreditNote(id: string): Promise<void> {
+    const cn = await pb.collection('credit_notes').getOne<{ status?: string; credit_note_number?: string }>(id);
+    // An approved note has already moved inventory (restock or quarantine) and
+    // may have paid out a refund. Cancelling it without reversing those effects
+    // corrupts stock, so only a pending note may be cancelled (ORD-06).
+    if (cn.status && cn.status !== 'pending') {
+        throw new Error(
+            `Credit note ${cn.credit_note_number || id} is ${cn.status}; only a pending note can be cancelled.`
+        );
+    }
     await pb.collection('credit_notes').update(id, { status: 'cancelled' });
 }
 

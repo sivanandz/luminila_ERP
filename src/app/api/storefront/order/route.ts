@@ -206,40 +206,71 @@ async function confirmStorefrontPayment(
         );
     }
 
-    const gatewayOrderId = String(order.gateway_order_id || confirm.razorpayOrderId || "");
-    let verified = false;
-    if (confirm.razorpayOrderId && confirm.signature) {
-        verified = verifyGatewaySignature({
+    // The gateway order id must come from the order itself. Falling back to the
+    // client-supplied `razorpayOrderId` let a ₹1 payment signature tuple settle
+    // a high-value order that had no gateway order at all (SF-01).
+    const gatewayOrderId = String(order.gateway_order_id || "");
+    if (!gatewayOrderId) {
+        return NextResponse.json(
+            { success: false, error: "This order has no gateway payment to confirm." },
+            { status: 409, headers: CORS_HEADERS }
+        );
+    }
+    if (confirm.razorpayOrderId && confirm.razorpayOrderId !== gatewayOrderId) {
+        return NextResponse.json(
+            { success: false, error: "The payment belongs to a different gateway order." },
+            { status: 409, headers: CORS_HEADERS }
+        );
+    }
+
+    // One gateway payment may settle one order. A replayed tuple is refused even
+    // if the signature is valid (SF-01).
+    const replayed = await client
+        .collection("sales_orders")
+        .getList(1, 1, {
+            filter: `gateway_payment_id="${sanitizeFilter(confirm.paymentId)}" && id!="${sanitizeFilter(order.id)}"`,
+        })
+        .catch(() => null);
+    if (replayed && replayed.items.length > 0) {
+        return NextResponse.json(
+            { success: false, error: "This payment has already been used to settle another order." },
+            { status: 409, headers: CORS_HEADERS }
+        );
+    }
+
+    const signatureOk = Boolean(
+        confirm.razorpayOrderId
+        && confirm.signature
+        && verifyGatewaySignature({
             orderId: confirm.razorpayOrderId,
             paymentId: confirm.paymentId,
             signature: confirm.signature,
-        });
-        if (verified && gatewayOrderId && confirm.razorpayOrderId !== gatewayOrderId) {
-            verified = false;
-        }
+        })
+    );
+
+    // The signature only proves the tuple; it says nothing about capture state
+    // or amount. Always verify with the gateway and require "captured" — an
+    // authorized-but-uncaptured payment is not money (SF-08).
+    const payment = await fetchGatewayPayment(confirm.paymentId);
+    if (payment.error) {
+        return NextResponse.json(
+            {
+                success: false,
+                error: `Payment could not be verified with the gateway (${payment.error}). Contact support with the payment id ${confirm.paymentId}.`,
+            },
+            { status: 502, headers: CORS_HEADERS }
+        );
     }
-    if (!verified) {
-        const payment = await fetchGatewayPayment(confirm.paymentId);
-        if (payment.error) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    error: `Payment could not be verified with the gateway (${payment.error}). Contact support with the payment id ${confirm.paymentId}.`,
-                },
-                { status: 502, headers: CORS_HEADERS }
-            );
-        }
-        const statusOk = payment.status === "captured" || payment.status === "authorized";
-        const orderOk = !gatewayOrderId || payment.orderId === gatewayOrderId;
-        const amountOk =
-            Math.abs(Number(payment.amountPaise || 0) - Math.round(Number(order.total || 0) * 100)) <= 1;
-        verified = statusOk && orderOk && amountOk;
-        if (!verified) {
-            return NextResponse.json(
-                { success: false, error: "The payment does not match this order; it was not settled." },
-                { status: 409, headers: CORS_HEADERS }
-            );
-        }
+
+    const statusOk = payment.status === "captured";
+    const orderOk = payment.orderId === gatewayOrderId;
+    const amountOk =
+        Math.abs(Number(payment.amountPaise || 0) - Math.round(Number(order.total || 0) * 100)) <= 1;
+    if (!(statusOk && orderOk && amountOk && (signatureOk || !confirm.signature))) {
+        return NextResponse.json(
+            { success: false, error: "The payment does not match this order; it was not settled." },
+            { status: 409, headers: CORS_HEADERS }
+        );
     }
 
     const settled = await settleCapturedOrder(order.id, {
@@ -406,7 +437,7 @@ export async function POST(req: Request) {
             const buyerStateCode = buyerGstin && billingStateCode ? billingStateCode : shippingStateCode;
             const placeOfSupply = buyerStateCode;
 
-            const existing = await findExistingChannelOrder(client, txnId);
+            const existing = await findExistingChannelOrder(client, txnId, boundAdminEmail, cleanPhoneDigits);
             if (existing) {
                 // A retried prepare request must return the same gateway order,
                 // not create a second one (CO-05 idempotency).
@@ -545,6 +576,20 @@ export async function POST(req: Request) {
                 }
 
                 const channelPrices = (dbProd as any).channel_prices || {};
+                // A variant can carry its own price adjustment; ignoring it let
+                // the buyer pay the bare product price (SF-15).
+                let variantAdjustment = 0;
+                const requestedVariantId = typeof item.variantId === "string" && item.variantId ? item.variantId : "";
+                if (requestedVariantId) {
+                    const variant = await client.collection("product_variants").getOne(requestedVariantId).catch(() => null);
+                    if (!variant || (variant.product && variant.product !== item.productId)) {
+                        return NextResponse.json(
+                            { success: false, error: `Variant does not belong to product: ${item.name || item.productId}` },
+                            { status: 400, headers: CORS_HEADERS }
+                        );
+                    }
+                    variantAdjustment = Number(variant.price_adjustment) || 0;
+                }
                 const verifiedPrice = getChannelPriceFromList(
                     {
                         base_price: Number(dbProd.base_price) || 0,
@@ -552,7 +597,8 @@ export async function POST(req: Request) {
                         channel_prices: channelPrices,
                     },
                     "website",
-                    channelDefinitions
+                    channelDefinitions,
+                    variantAdjustment
                 );
 
                 if (verifiedPrice <= 0) {
@@ -570,7 +616,12 @@ export async function POST(req: Request) {
                     name: dbProd.name || item.name || "Jewelry Item",
                     price: verifiedPrice,
                     quantity: qty,
-                    taxRate: typeof dbProd.tax_rate === "number" ? dbProd.tax_rate : null,
+                    // `products` stores the rate on `gst_rate`; reading
+                    // `tax_rate` left every storefront line at null and the
+                    // invoice then guessed 3% (SF-17).
+                    taxRate: typeof dbProd.gst_rate === "number"
+                        ? dbProd.gst_rate
+                        : (typeof dbProd.tax_rate === "number" ? dbProd.tax_rate : null),
                 });
             }
 
@@ -768,11 +819,26 @@ export async function POST(req: Request) {
             // zero-line order. If a write still fails, cancel the header so an
             // order can never survive without its lines (CO-19).
             try {
+                // Resolve variant relations first (cost receipts are variant-keyed).
                 for (const item of validatedItems) {
-                    const variantId = item.variantId
-                        ? item.variantId
-                        : await resolveVariantForProduct(client, item.productId);
-                    item.variantId = variantId;
+                    if (!item.variantId) {
+                        item.variantId = await resolveVariantForProduct(client, item.productId);
+                    }
+                }
+
+                // Cost snapshot per line (analytics COGS); non-fatal on failure.
+                const { resolveUnitCostMap } = await import("@/lib/item-cost");
+                const unitCosts = await resolveUnitCostMap(
+                    client,
+                    boundAdminEmail,
+                    validatedItems.map((item) => ({ variantId: item.variantId, productId: item.productId }))
+                ).catch((e) => {
+                    console.warn("[Storefront Order] unit-cost resolution failed:", e);
+                    return new Map<string, number>();
+                });
+
+                for (const item of validatedItems) {
+                    const variantId = item.variantId;
                     await client.collection("sales_order_items").create({
                         order: salesOrder.id,
                         product: item.productId,
@@ -780,6 +846,10 @@ export async function POST(req: Request) {
                         description: `${item.name} (${item.sku})`,
                         quantity: item.quantity,
                         unit_price: item.price,
+                        // Persist the rate so invoice generation knows the line
+                        // is GST-inclusive instead of adding 3% on top (ORD-05 / SF-17).
+                        tax_rate: item.taxRate ?? 0,
+                        unit_cost: unitCosts.get(variantId || item.productId || "") ?? null,
                         total: item.price * item.quantity,
                         account_email: boundAdminEmail,
                     });

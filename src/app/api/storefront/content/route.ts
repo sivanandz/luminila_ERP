@@ -1,7 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import PocketBase from "pocketbase";
-import { createTenantClient } from "@/lib/pocketbase";
+import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
 import { hasCapability } from "@/lib/api-auth";
+import { DEFAULT_STOREFRONT_TENANT_EMAIL, normalizeBindingEmail } from "@/lib/storefront";
 import { NITHTHIGAL_DEFAULTS, mergeNiththigal } from "@/lib/niththigal-content";
 
 const PB_KEY = "storefront_content";
@@ -253,7 +254,11 @@ export async function OPTIONS() {
 
 export async function GET(req: NextRequest) {
     try {
-        const queryEmail = req.nextUrl.searchParams.get("account_email") || req.headers.get("x-account-email") || "";
+        // A public caller selects a tenant by sending a plain email; anything
+        // else is dropped before it reaches a filter (A-04).
+        const queryEmail = normalizeBindingEmail(
+            req.nextUrl.searchParams.get("account_email") || req.headers.get("x-account-email") || ""
+        );
         // One client per request, authenticated for this tenant.
         const client = await createTenantClient(queryEmail || undefined);
 
@@ -282,24 +287,18 @@ export async function GET(req: NextRequest) {
             }
         }
 
-        const targetEmail = staffEmail || queryEmail;
+        const targetEmail = normalizeBindingEmail(staffEmail) || queryEmail || DEFAULT_STOREFRONT_TENANT_EMAIL;
 
         let record = null;
         const readPb = isAuthorized ? pb : client;
 
-        if (targetEmail) {
-            try {
-                record = await readPb.collection("store_settings").getFirstListItem(
-                    `key="${PB_KEY}" && account_email="${targetEmail}"`
-                );
-            } catch {}
-        }
-
-        if (!record) {
-            try {
-                record = await readPb.collection("store_settings").getFirstListItem(`key="${PB_KEY}"`);
-            } catch {}
-        }
+        // Only the scoped row is readable. An unscoped `key = "storefront_content"`
+        // fallback returns another tenant's CMS (A-08 / SF-05).
+        try {
+            record = await readPb.collection("store_settings").getFirstListItem(
+                `key="${PB_KEY}" && account_email="${sanitizeFilter(targetEmail)}"`
+            );
+        } catch {}
 
         let content = DEFAULT_CONTENT;
         if (record && record.value) {

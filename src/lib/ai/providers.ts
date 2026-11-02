@@ -15,6 +15,7 @@ import type PocketBase from 'pocketbase';
 import { z } from 'zod';
 import type { AiMaxTokensParam, AiProviderConfig, AiProviderPublic } from './types';
 import { decryptSecret, encryptSecret, parseRegistryKey } from '../tenant-secrets';
+import { isBlockedAiHost } from './net-guard';
 
 export const PROVIDERS_COLLECTION = 'ai_providers';
 
@@ -41,11 +42,14 @@ export const providerInputSchema = z.object({
         .refine((value) => {
             try {
                 const url = new URL(value);
-                return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password;
+                return (url.protocol === 'http:' || url.protocol === 'https:')
+                    && !url.username
+                    && !url.password
+                    && !isBlockedAiHost(url.hostname, url.port);
             } catch {
                 return false;
             }
-        }, 'Base URL must be an http(s) URL without embedded credentials.'),
+        }, 'Base URL must be a public http(s) URL without embedded credentials (private ranges and internal ports are blocked).'),
     model: z.string().trim().min(1).max(200),
     apiKey: z.string().max(4_000).optional(),
     models: z.array(z.string().trim().min(1).max(200)).max(200).optional(),

@@ -3,7 +3,13 @@
  * CRUD operations for products and variants using PocketBase
  */
 
-import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
+import { accountScopeEmail, pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
+
+/** `&& account_email = "…"` for queries under a superuser client, or '' when unauthenticated. */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 // ===========================================
 // TYPES
@@ -144,7 +150,13 @@ export async function getProduct(id: string): Promise<Product | null> {
 
 export async function createProduct(product: Omit<Product, 'id' | 'created' | 'updated'>): Promise<Product> {
     try {
-        const record = await pb.collection('products').create(product);
+        // Stamp ownership explicitly: `pb.beforeSend` only covers the browser
+        // client, and an unstamped product would never appear in the tenant's
+        // own `getProducts()` list (INV-01).
+        const record = await pb.collection('products').create({
+            ...product,
+            account_email: getCurrentTenantEmail(),
+        });
         return record as unknown as Product;
     } catch (error) {
         throw error;
@@ -169,6 +181,72 @@ export async function deleteProduct(id: string): Promise<void> {
 }
 
 // ===========================================
+// PERMANENT DELETE (cascade blockers)
+// ===========================================
+
+export interface ProductDeleteReport {
+    productId: string;
+    /** Stock ledger rows for the product's variants, removed with the piece. */
+    removedStockMovements: number;
+    /** Pending label print jobs for the product's variants. */
+    removedLabelQueueEntries: number;
+    /** Vendor catalog mappings to the product's variants. */
+    removedVendorMappings: number;
+}
+
+/**
+ * PocketBase rejects deleting a record while any REQUIRED relation still
+ * references it (400 "not part of a required relation reference"). For a
+ * product those blockers are the relations to its variants:
+ *
+ *   stock_movements.variant, label_print_queue.variant,
+ *   vendor_products.variant  (all required, cascadeDelete: false)
+ *
+ * plus sales_order_items.product/variant, which callers must refuse on their
+ * own — sales history has to stay readable for invoices and order details.
+ *
+ * Non-required references (sale_items, purchase_order_items, grn_items,
+ * invoice_items, credit_note_items, delivery_challan_items,
+ * stock_discrepancies) are cleared automatically by PocketBase and their rows
+ * keep their audit value. Variants and attribute values cascade from the
+ * product delete itself (cascadeDelete: true).
+ */
+export async function deleteProductCascade(id: string): Promise<ProductDeleteReport> {
+    const variants = await getProductVariants(id);
+    const variantIds = variants.map((variant) => variant.id);
+
+    const report: ProductDeleteReport = {
+        productId: id,
+        removedStockMovements: 0,
+        removedLabelQueueEntries: 0,
+        removedVendorMappings: 0,
+    };
+
+    if (variantIds.length > 0) {
+        const variantFilter = variantIds.map((variantId) => `variant="${variantId}"`).join(" || ");
+        report.removedStockMovements = await deleteAllByFilter("stock_movements", variantFilter);
+        report.removedLabelQueueEntries = await deleteAllByFilter("label_print_queue", variantFilter);
+        report.removedVendorMappings = await deleteAllByFilter("vendor_products", variantFilter);
+    }
+
+    await pb.collection('products').delete(id);
+    return report;
+}
+
+async function deleteAllByFilter(collection: string, filter: string): Promise<number> {
+    try {
+        const rows = await pb.collection(collection).getFullList({ filter, fields: 'id' });
+        for (const row of rows) {
+            await pb.collection(collection).delete(row.id);
+        }
+        return rows.length;
+    } catch (error) {
+        console.error(`Failed to clean ${collection} before product delete`, error);
+        throw error;
+    }
+}
+
+// ===========================================
 // VARIANT CRUD
 // ===========================================
 
@@ -186,7 +264,10 @@ export async function getProductVariants(productId: string): Promise<ProductVari
 
 export async function createVariant(variant: Omit<ProductVariant, 'id' | 'created' | 'updated'>): Promise<ProductVariant> {
     try {
-        const record = await pb.collection('product_variants').create(variant);
+        const record = await pb.collection('product_variants').create({
+            ...variant,
+            account_email: getCurrentTenantEmail(),
+        });
         return record as unknown as ProductVariant;
     } catch (error) {
         throw error;
@@ -256,7 +337,7 @@ export async function searchProductsForDocuments(query: string): Promise<Catalog
     if (term.length < 2) return [];
 
     const products = await pb.collection('products').getFullList<Product>({
-        filter: `name~"${term}" || sku~"${term}"`,
+        filter: `(name~"${term}" || sku~"${term}") && is_active = true${tenantClause()}`,
         batch: 200,
     });
     if (products.length === 0) return [];
@@ -265,7 +346,10 @@ export async function searchProductsForDocuments(query: string): Promise<Catalog
     for (let i = 0; i < products.length; i += 30) {
         const filter = products.slice(i, i + 30).map((p) => `product="${p.id}"`).join(' || ');
         variants.push(
-            ...(await pb.collection('product_variants').getFullList<ProductVariant>({ filter, batch: 500 }))
+            ...(await pb.collection('product_variants').getFullList<ProductVariant>({
+                filter: `(${filter})${tenantClause()}`,
+                batch: 500,
+            }))
         );
     }
 
@@ -297,9 +381,9 @@ export async function resolveBarcodeProduct(
     try {
         const product = await pb
             .collection('products')
-            .getFirstListItem<Product>(`sku="${term}" || barcode="${term}"`);
+            .getFirstListItem<Product>(`(sku="${term}" || barcode="${term}") && is_active = true${tenantClause()}`);
         const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
-            filter: `product="${product.id}"`,
+            filter: `product="${product.id}"${tenantClause()}`,
         });
         return { product, variant: variants.items[0] || null };
     } catch {
@@ -312,7 +396,7 @@ export async function getTypeAheadProducts(query: string): Promise<ProductWithVa
 
     // Search variants with product expansion
     try {
-        const tenantEmail = typeof window !== "undefined" ? pb.authStore.model?.email?.trim().toLowerCase() : undefined;
+        const tenantEmail = accountScopeEmail();
         const tenantFilter = tenantEmail ? ` && account_email = "${sanitizeFilter(tenantEmail)}"` : '';
         const records = await pb.collection('product_variants').getList<ProductVariant>(1, 20, {
             filter: `(product.name~"${query}" || product.sku~"${query}" || variant_name~"${query}" || sku_suffix~"${query}") && product.is_active=true${tenantFilter}`,
@@ -348,7 +432,9 @@ export async function getVariantStockSummary(): Promise<{
     materialByProduct: Map<string, string>;
     productByVariant: Map<string, string>;
 }> {
-    const variants = await pb.collection('product_variants').getFullList<ProductVariant>();
+    const variants = await pb.collection('product_variants').getFullList<ProductVariant>({
+        filter: `product.is_active = true${tenantClause()}`,
+    });
     const stockByProduct = new Map<string, number>();
     const materialByProduct = new Map<string, string>();
     const productByVariant = new Map<string, string>();
@@ -375,7 +461,7 @@ export async function recordManualIntakeMovement(input: {
     accountEmail?: string;
 }): Promise<void> {
     await pb.collection('stock_movements').create({
-        account_email: input.accountEmail ?? (pb.authStore.model as { email?: string } | null)?.email ?? '',
+        account_email: input.accountEmail ?? accountScopeEmail() ?? '',
         variant: input.variantId,
         movement_type: 'restock',
         quantity: input.quantity,
@@ -421,7 +507,7 @@ export async function getSellableVariants(): Promise<SellableVariant[]> {
             };
         };
     }>({
-        filter: 'stock_level>0',
+        filter: `stock_level>0 && product.is_active = true${tenantClause()}`,
         sort: 'variant_name',
         expand: 'product',
     });
@@ -540,7 +626,7 @@ export async function findProductBySkuOrBarcode(code: string): Promise<{ items: 
     if (!clean) return { items: [] };
     try {
         const list = await pb.collection('products').getList(1, 1, {
-            filter: `sku = "${sanitizeFilter(clean)}" || barcode = "${sanitizeFilter(clean)}"`,
+            filter: `(sku = "${sanitizeFilter(clean)}" || barcode = "${sanitizeFilter(clean)}") && is_active = true${tenantClause()}`,
         });
         return { items: list.items.map((item) => ({ ...(item as Record<string, unknown>), name: String(item.name || ""), sku: String(item.sku || "") })) as unknown as ScannedProductRecord[] };
     } catch {
@@ -554,7 +640,7 @@ export async function findVariantBySuffixOrBarcode(code: string): Promise<{ item
     if (!clean) return { items: [] };
     try {
         const list = await pb.collection('product_variants').getList(1, 1, {
-            filter: `sku_suffix = "${sanitizeFilter(clean)}" || barcode = "${sanitizeFilter(clean)}"`,
+            filter: `(sku_suffix = "${sanitizeFilter(clean)}" || barcode = "${sanitizeFilter(clean)}") && product.is_active = true${tenantClause()}`,
             expand: 'product',
         });
         return { items: list.items.map((item) => ({ ...(item as Record<string, unknown>), material: item["material"] ? String(item["material"]) : undefined })) as unknown as ScannedVariantRecord[] };
@@ -568,10 +654,12 @@ export async function listVariantsWithProduct(options?: {
     filter?: string;
     sort?: string;
 }): Promise<ProductVariant[]> {
+    const scoped = [`product.is_active = true${tenantClause()}`];
+    if (options?.filter) scoped.unshift(`(${options.filter})`);
     return pb.collection('product_variants').getFullList<ProductVariant>({
         expand: 'product',
         sort: options?.sort || 'variant_name',
-        ...(options?.filter ? { filter: options.filter } : {}),
+        filter: scoped.join(' && '),
     });
 }
 
@@ -582,12 +670,13 @@ export async function searchProductsForPicker(
 ): Promise<Product[]> {
     const term = sanitizeFilter((query || '').trim());
     if (!term) return [];
+    const search = `(name ~ "${term}" || sku ~ "${term}") && is_active = true${tenantClause()}`;
     const result = await pb.collection('products').getList<Product>(
         1,
         options?.limit ?? 10,
         options?.expandVariants
-            ? { filter: `name ~ "${term}" || sku ~ "${term}"`, expand: 'product_variants(product)' }
-            : { filter: `name ~ "${term}" || sku ~ "${term}"` }
+            ? { filter: search, expand: 'product_variants(product)' }
+            : { filter: search }
     );
     return result.items;
 }

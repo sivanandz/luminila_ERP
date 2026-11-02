@@ -4,8 +4,14 @@
  */
 
 import { Customer } from "./customers";
-import { pb } from "./pocketbase";
+import { accountScopeEmail, pb, sanitizeFilter } from "./pocketbase";
 import { Sale } from "@/types/database";
+
+/** `&& account_email = "…"` for tenant-scoped reads (CRM-03). */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 export type RFMSegmentId =
     | "champions"
@@ -89,6 +95,7 @@ export async function computeRFMAnalysis(
     if (rawCustomers.length === 0) {
         try {
             rawCustomers = await pb.collection("customers").getFullList<Customer>({
+                filter: `id != ""${tenantClause()}`,
                 sort: "-total_spent",
             });
         } catch (err) {
@@ -97,27 +104,56 @@ export async function computeRFMAnalysis(
         }
     }
 
-    // 2. Fetch sales to cross-verify real recency
-    const customerLastSaleMap: Record<string, string> = {};
+    // 2. Live purchase aggregates. `customers.total_spent/total_orders` are
+    //    denormalized snapshots that go stale; recency, frequency and monetary
+    //    are computed from the ledgers instead. Storefront mirror `sales` rows
+    //    are excluded because the same revenue also exists as a sales order.
+    const purchaseMap: Record<string, { last: string; total: number; count: number }> = {};
+    const recordPurchase = (customerId: string | undefined, date: string | undefined, total: number) => {
+        if (!customerId || !date) return;
+        const entry = purchaseMap[customerId] || { last: date, total: 0, count: 0 };
+        entry.total += Number(total) || 0;
+        entry.count += 1;
+        if (date > entry.last) entry.last = date;
+        purchaseMap[customerId] = entry;
+    };
+
     try {
         const sales = await pb.collection("sales").getFullList<Sale>({
+            filter: `channel != "storefront"${tenantClause()}`,
             fields: "customer,created,total",
             sort: "-created",
         });
-        for (const s of sales) {
-            if (s.customer && !customerLastSaleMap[s.customer]) {
-                customerLastSaleMap[s.customer] = s.created;
-            }
+        for (const s of sales) recordPurchase(s.customer, s.created, s.total);
+    } catch {
+        // A missing ledger degrades to an empty aggregate, not to stale snapshots.
+    }
+
+    try {
+        const orders = await pb.collection("sales_orders").getFullList({
+            filter: `status != "cancelled" && status != "draft"${tenantClause()}`,
+            fields: "customer,order_date,created,total",
+            sort: "-created",
+        });
+        for (const o of orders) {
+            recordPurchase(
+                String(o.customer || ""),
+                String(o.order_date || o.created || ""),
+                Number(o.total) || 0
+            );
         }
     } catch {
-        // Fallback to customer.last_purchase_date or updated date
+        // Same as above.
     }
 
     const now = new Date();
     const scoredCustomers: RFMCustomer[] = [];
 
     for (const c of rawCustomers) {
-        const lastSaleDateStr = customerLastSaleMap[c.id] || c.last_purchase_date || c.updated || c.created;
+        const live = purchaseMap[c.id];
+        // No updated/created fallback: a prospect who never bought must not look
+        // "recent" (CRM-08).
+        const lastSaleDateStr = live?.last || c.last_purchase_date || '';
         let recencyDays = 999;
         if (lastSaleDateStr) {
             const lastDate = new Date(lastSaleDateStr);
@@ -127,8 +163,8 @@ export async function computeRFMAnalysis(
             }
         }
 
-        const frequency = Math.max(Number(c.total_orders) || 0, customerLastSaleMap[c.id] ? 1 : 0);
-        const monetary = Number(c.total_spent) || 0;
+        const frequency = live?.count ?? 0;
+        const monetary = live?.total ?? 0;
         const avgOrderValue = frequency > 0 ? Math.round(monetary / frequency) : 0;
 
         // Celebrations check (Birthdays or Anniversaries in next 7 days)
@@ -138,20 +174,24 @@ export async function computeRFMAnalysis(
         const hasUpcomingBirthday = daysToBirthday >= 0 && daysToBirthday <= 7;
         const hasUpcomingAnniversary = daysToAnniversary >= 0 && daysToAnniversary <= 7;
 
-        // RFM Segment Classification
+        // RFM Segment Classification. Value tiers are decided before the
+        // celebration override: a VIP with a birthday is still a champion, and
+        // the celebrations cohort is a campaign view, not a demotion (CRM-12).
         let segment: RFMSegmentId = "lead_prospects";
         let segmentLabel = "Lead / Prospect";
 
-        if (hasUpcomingBirthday || hasUpcomingAnniversary) {
-            segment = "celebrations";
-            segmentLabel = hasUpcomingBirthday ? "Upcoming Birthday" : "Upcoming Anniversary";
-        } else if (monetary >= 30000 || (frequency >= 3 && recencyDays <= 45)) {
+        if (monetary >= 30000 || (frequency >= 3 && recencyDays <= 45)) {
             segment = "champions";
             segmentLabel = "VIP Champions";
         } else if (frequency >= 2 && recencyDays <= 60) {
             segment = "loyal";
             segmentLabel = "Loyal Shoppers";
-        } else if (frequency === 1 && recencyDays <= 45) {
+        } else if (hasUpcomingBirthday || hasUpcomingAnniversary) {
+            segment = "celebrations";
+            segmentLabel = hasUpcomingBirthday ? "Upcoming Birthday" : "Upcoming Anniversary";
+        } else if (frequency === 1 && recencyDays <= 60) {
+            // One purchase within two months is a recent new buyer, not a
+            // "No Purchases" prospect (CRM-12).
             segment = "potential_loyalist";
             segmentLabel = "Recent New Buyers";
         } else if (frequency >= 1 && recencyDays > 60 && recencyDays <= 120) {

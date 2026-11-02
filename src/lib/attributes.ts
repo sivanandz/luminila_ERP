@@ -3,7 +3,13 @@
  * CRUD for user-defined custom product fields using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+
+/** `&& account_email = "…"` for tenant-scoped reads under a superuser client. */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 export type AttributeType = 'text' | 'select' | 'number' | 'boolean' | 'date';
 
@@ -38,6 +44,7 @@ export interface ProductAttributeValue {
 export async function getAttributes(): Promise<ProductAttribute[]> {
     try {
         const records = await pb.collection('product_attributes').getFullList<ProductAttribute>({
+            filter: `id != ""${tenantClause()}`,
             sort: 'sort_order'
         });
 
@@ -52,6 +59,9 @@ export async function getAttributes(): Promise<ProductAttribute[]> {
 export async function getAttribute(id: string): Promise<ProductAttribute | null> {
     try {
         const record = await pb.collection('product_attributes').getOne<ProductAttribute>(id);
+        const tenant = accountScopeEmail();
+        if (tenant && (record as { account_email?: string }).account_email
+            && (record as { account_email?: string }).account_email !== tenant) return null;
         return record;
     } catch {
         return null;
@@ -65,7 +75,8 @@ export async function createAttribute(attribute: Omit<ProductAttribute, 'id' | '
         // Ensure options are passed correctly (array or null)
         const record = await pb.collection('product_attributes').create({
             ...attribute,
-            slug
+            slug,
+            account_email: accountScopeEmail(),
         });
         return record as unknown as ProductAttribute;
     } catch (error) {
@@ -100,7 +111,7 @@ export async function deleteAttribute(id: string): Promise<void> {
 export async function getProductAttributeValues(productId: string): Promise<Record<string, string>> {
     try {
         const records = await pb.collection('product_attribute_values').getFullList<ProductAttributeValue>({
-            filter: `product="${productId}"`
+            filter: `product="${sanitizeFilter(productId)}"${tenantClause()}`
         });
 
         const values: Record<string, string> = {};
@@ -122,7 +133,7 @@ export async function setProductAttributeValue(
     try {
         // Check if exists
         const records = await pb.collection('product_attribute_values').getList(1, 1, {
-            filter: `product="${productId}" && attribute="${attributeId}"`
+            filter: `product="${sanitizeFilter(productId)}" && attribute="${sanitizeFilter(attributeId)}"${tenantClause()}`
         });
 
         if (records.items.length > 0) {
@@ -133,6 +144,7 @@ export async function setProductAttributeValue(
         } else {
             // Create
             await pb.collection('product_attribute_values').create({
+                account_email: accountScopeEmail(),
                 product: productId,
                 attribute: attributeId,
                 value

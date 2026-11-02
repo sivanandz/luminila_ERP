@@ -155,8 +155,10 @@ export async function recordPayment(paymentDetails: {
     payment_date: string;
     recorded_by: string;
 }): Promise<void> {
+    const tenantEmail = getCurrentTenantEmail();
     // Record payment in invoice_payments collection (spec schema: reference_number, notes)
     await pb.collection('invoice_payments').create({
+        account_email: tenantEmail,
         invoice: paymentDetails.invoice_id,
         amount: paymentDetails.amount,
         payment_date: paymentDetails.payment_date,
@@ -171,8 +173,12 @@ export async function recordPayment(paymentDetails: {
     // Math.max keeps amounts recorded outside the ledger (e.g. paid at creation, markInvoicePaid,
     // payment-link reconciliation) from being dropped.
     const invoice = await pb.collection('invoices').getOne(paymentDetails.invoice_id);
+    // Refuse to apply a payment to another tenant's invoice under a superuser client.
+    if (invoice.account_email && invoice.account_email !== tenantEmail) {
+        throw new Error('Invoice does not belong to this store.');
+    }
     const ledgerRows = await pb.collection('invoice_payments').getFullList({
-        filter: `invoice="${paymentDetails.invoice_id}"`,
+        filter: `invoice="${sanitizeFilter(paymentDetails.invoice_id)}" && account_email="${sanitizeFilter(tenantEmail)}"`,
         requestKey: null,
     });
     const ledgerTotal = ledgerRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
@@ -429,6 +435,8 @@ export async function generateInvoiceNumber(db: typeof pb = pb): Promise<string>
 
 export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' | 'updated_at'>, db: typeof pb = pb): Promise<Invoice> {
     const pb = db;
+    // Every invoice row carries the owning tenant; reads and rules depend on it (POS-03).
+    const tenantEmail = getCurrentTenantEmail();
     // Honor a caller-supplied number (e.g. from cloneInvoice) verbatim without consuming an
     // extra sequence value; otherwise createWithUniqueRetry below allocates exactly one number.
     const explicitNumber = invoice.invoice_number;
@@ -443,7 +451,7 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
         if (cleanPhone.length === 10) {
             try {
                 const matchedCustomer = await pb.collection('customers').getFirstListItem(
-                    `phone~"${cleanPhone}"`
+                    `phone~"${sanitizeFilter(cleanPhone)}" && account_email="${sanitizeFilter(tenantEmail)}"`
                 ).catch(() => null);
                 if (matchedCustomer) {
                     customerId = matchedCustomer.id;
@@ -466,7 +474,7 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
     const invoicePayload: Record<string, unknown> = {
         invoice_number: explicitNumber || '',
         invoice_date: invoice.invoice_date,
-        account_email: (pb.authStore.model as any)?.email || '',
+        account_email: tenantEmail,
         invoice_type: invoice.invoice_type,
         status: invoiceStatus,
         subtotal: subtotal,
@@ -530,7 +538,7 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
             const itemTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0) + (item.cess_amount || 0);
 
             const itemPayload: Record<string, unknown> = {
-                account_email: (pb.authStore.model as any)?.email || '',
+                account_email: tenantEmail,
                 invoice: invoiceData.id,
                 variant: item.variant_id || item.variant || null,
                 sr_no: index + 1,
@@ -703,18 +711,24 @@ interface InvoicePaymentRecord {
 
 export async function getInvoice(id: string): Promise<Invoice | null> {
     try {
+        const tenantEmail = getCurrentTenantEmail();
         let invoice;
         try {
             invoice = await pb.collection('invoices').getOne(id);
         } catch {
             const cleanQuery = sanitizeFilter(id.trim());
-            invoice = await pb.collection('invoices').getFirstListItem(`invoice_number="${cleanQuery}" || id="${cleanQuery}"`);
+            invoice = await pb.collection('invoices').getFirstListItem(
+                `(invoice_number="${cleanQuery}" || id="${cleanQuery}") && account_email="${sanitizeFilter(tenantEmail)}"`
+            );
         }
         if (!invoice) return null;
+        // A direct id lookup bypasses the list rule for a superuser client, so
+        // verify ownership before returning the record or its children.
+        if (invoice.account_email && invoice.account_email !== tenantEmail) return null;
 
         const recordId = invoice.id;
         const items = await pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
-            filter: `invoice="${recordId}"`,
+            filter: `invoice="${recordId}" && account_email="${sanitizeFilter(tenantEmail)}"`,
             sort: 'sr_no',
         });
 
@@ -722,7 +736,7 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
         let paymentsList: InvoicePaymentRecord[] = [];
         try {
             paymentsList = await pb.collection('invoice_payments').getFullList<InvoicePaymentRecord>({
-                filter: `invoice="${recordId}"`,
+                filter: `invoice="${recordId}" && account_email="${sanitizeFilter(tenantEmail)}"`,
                 sort: '-payment_date',
             });
         } catch {
@@ -844,7 +858,8 @@ export async function getInvoices(filters?: {
     isDeleted?: boolean;
 }): Promise<Invoice[]> {
     try {
-        const filterParts: string[] = [];
+        const tenantEmail = getCurrentTenantEmail();
+        const filterParts: string[] = [`account_email = "${sanitizeFilter(tenantEmail)}"`];
 
         const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
         if (start) {
@@ -879,7 +894,7 @@ export async function getInvoices(filters?: {
         if (invoiceIds.length > 0) {
             const itemFilter = invoiceIds.map(id => `invoice="${id}"`).join(' || ');
             allItems = await pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
-                filter: itemFilter,
+                filter: `(${itemFilter}) && account_email="${sanitizeFilter(tenantEmail)}"`,
             });
         }
 
@@ -1078,7 +1093,22 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
     const storeSettings = await getStoreSettings();
     const isGstRegistered = storeSettings.is_gst_registered !== false;
     const sellerStateCode = storeSettings.store_state_code || '27';
-    const buyerStateCode = sellerStateCode;
+    // A POS sale can be billed to a registered, out-of-state customer. Reading
+    // the linked customer is what decides CGST+SGST vs IGST; hardcoding the
+    // seller's state forced every inter-state/B2B sale into an intra-state B2C
+    // invoice (POS-12).
+    let buyerStateCode = sellerStateCode;
+    let buyerGstin = '';
+    if (sale.customer) {
+        try {
+            const customer = await pb.collection('customers').getOne(sale.customer);
+            const customerState = String(customer.state_code || '').trim();
+            if (customerState) buyerStateCode = customerState;
+            buyerGstin = String(customer.gstin || '').trim();
+        } catch {
+            // Customer record missing: keep the walk-in / intra-state defaults.
+        }
+    }
 
     // POS prices are the amounts the customer was quoted, so they already carry
     // GST. Gross lines are built in paise and the bill discount is allocated
@@ -1175,7 +1205,7 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
         seller_state_code: sellerStateCode,
 
         buyer_name: sale.customer_name || 'Walk-in Customer',
-        buyer_gstin: '',
+        buyer_gstin: buyerGstin,
         buyer_phone: sale.customer_phone || '',
         buyer_email: '',
         buyer_address: sale.customer_address || '',

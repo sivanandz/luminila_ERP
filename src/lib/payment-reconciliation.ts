@@ -15,11 +15,17 @@
  * it on an interval), or call `startPaymentReconciler()` for automatic polling.
  */
 
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { fetchPaymentLinkStatus, isRazorpayConfigured } from './razorpay';
 import { sendPaidOrderInvoice } from './whatsapp-notifications';
-import { earnPoints, calculatePointsToEarn } from './loyalty';
+import { settleCapturedOrder } from './razorpay-webhook-handler';
 import { normalizeE164 } from './whatsapp-crm';
+
+/** `&& account_email = "…"` for tenant-scoped queries (SF-09). */
+function tenantClause(): string {
+    const tenant = accountScopeEmail();
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
 
 export interface ReconciliationSummary {
     checked: number;
@@ -45,46 +51,53 @@ interface PaymentLinkRecord {
     };
 }
 
-let cachedClearingAccountId: string | null = null;
-let clearingAccountPromise: Promise<string> | null = null;
+// Keyed by tenant: a single cached id leaked the first tenant's clearing account
+// into every other tenant's reconciler run (SF-09).
+const clearingAccountCache = new Map<string, string>();
+const clearingAccountPromises = new Map<string, Promise<string>>();
 
 /** Find (or create) the Razorpay clearing account used for settlement entries with concurrency lock. */
 export async function getRazorpayClearingAccountId(): Promise<string> {
-    if (cachedClearingAccountId) return cachedClearingAccountId;
-    if (clearingAccountPromise) return clearingAccountPromise;
+    const tenant = accountScopeEmail();
+    const cached = clearingAccountCache.get(tenant);
+    if (cached) return cached;
+    const inflight = clearingAccountPromises.get(tenant);
+    if (inflight) return inflight;
 
-    clearingAccountPromise = (async () => {
-        try {
-            const existing = await pb.collection('bank_accounts').getFirstListItem(
-                `account_name~"Razorpay"`
-            ).catch(() => null);
-            if (existing) {
-                cachedClearingAccountId = existing.id;
-                return existing.id;
-            }
-
-            const created = await pb.collection('bank_accounts').create({
-                account_name: 'Razorpay Clearing Account',
-                bank_name: 'Razorpay',
-                account_number: 'RZP-SETTLEMENT',
-                opening_balance: 0,
-                current_balance: 0,
-                is_active: true,
-            });
-            cachedClearingAccountId = created.id;
-            return created.id;
-        } finally {
-            clearingAccountPromise = null;
+    const promise = (async () => {
+        const existing = await pb.collection('bank_accounts').getFirstListItem(
+            `account_name~"Razorpay"${tenantClause()}`
+        ).catch(() => null);
+        if (existing) {
+            clearingAccountCache.set(tenant, existing.id);
+            return existing.id;
         }
+
+        const created = await pb.collection('bank_accounts').create({
+            account_email: tenant,
+            account_name: 'Razorpay Clearing Account',
+            bank_name: 'Razorpay',
+            account_number: 'RZP-SETTLEMENT',
+            opening_balance: 0,
+            current_balance: 0,
+            is_active: true,
+        });
+        clearingAccountCache.set(tenant, created.id);
+        return created.id;
     })();
 
-    return clearingAccountPromise;
+    clearingAccountPromises.set(tenant, promise);
+    try {
+        return await promise;
+    } finally {
+        clearingAccountPromises.delete(tenant);
+    }
 }
 
 /** True if a clearing deposit already exists for this payment link (crash-safe retry guard). */
 async function hasClearingEntry(linkRecordId: string): Promise<boolean> {
     const existing = await pb.collection('bank_transactions').getFirstListItem(
-        `related_entity_type="payment_link" && related_entity_id="${linkRecordId}"`
+        `related_entity_type="payment_link" && related_entity_id="${sanitizeFilter(linkRecordId)}"${tenantClause()}`
     ).catch(() => null);
     return !!existing;
 }
@@ -93,7 +106,7 @@ async function hasClearingEntry(linkRecordId: string): Promise<boolean> {
 async function hasInvoicePayment(invoiceId: string, reference: string): Promise<boolean> {
     if (!reference) return false;
     const existing = await pb.collection('invoice_payments').getFirstListItem(
-        `invoice="${invoiceId}" && reference_number="${reference}"`
+        `invoice="${sanitizeFilter(invoiceId)}" && reference_number="${sanitizeFilter(reference)}"${tenantClause()}`
     ).catch(() => null);
     return !!existing;
 }
@@ -101,7 +114,7 @@ async function hasInvoicePayment(invoiceId: string, reference: string): Promise<
 /** True if loyalty points were already awarded for this order (retry guard). */
 async function hasLoyaltyEarnForOrder(orderId: string): Promise<boolean> {
     const existing = await pb.collection('loyalty_transactions').getFirstListItem(
-        `type="earn" && reference_type="sales_order" && reference_id="${orderId}"`
+        `type="earn" && reference_type="sales_order" && reference_id="${sanitizeFilter(orderId)}"${tenantClause()}`
     ).catch(() => null);
     return !!existing;
 }
@@ -117,6 +130,7 @@ async function recordClearingDeposit(
     const account = await pb.collection('bank_accounts').getOne(accountId);
 
     await pb.collection('bank_transactions').create({
+        account_email: accountScopeEmail(),
         account: accountId,
         transaction_date: new Date().toISOString(),
         type: 'deposit',
@@ -140,25 +154,29 @@ async function settleLinkedOrder(
 ): Promise<{ orderNumber: string; pointsCredited: number }> {
     if (!link.order) return { orderNumber: '', pointsCredited: 0 };
 
+    // Delegate to the canonical settlement path. The old code marked the order
+    // PAID here without deducting stock, raising an invoice or bumping customer
+    // aggregates; the next webhook then saw PAID and exited early, so those
+    // steps were lost forever (SF-10).
+    const settled = await settleCapturedOrder(link.order, {
+        paymentId: paymentRef || link.link_id,
+        tenantEmail: accountScopeEmail() || undefined,
+    });
+    if (!settled.success) {
+        throw new Error(settled.error || 'Order settlement failed');
+    }
+
     const order = await pb.collection('sales_orders').getOne(link.order) as unknown as {
         id: string;
-        customer?: string;
         order_number?: string;
-        total?: number;
-        subtotal?: number;
     };
 
-    // 1. Mark sales order PAID and confirmed (idempotent by nature)
-    await pb.collection('sales_orders').update(order.id, {
-        payment_status: 'PAID',
-        status: 'confirmed',
-    });
-
-    // 2. Settle associated invoice if resolvable (idempotent: skips duplicated payments)
+    // Settle the invoice the link points at (settleCapturedOrder raises one from
+    // the order but leaves it pending).
     let invoiceId = link.invoice;
     if (!invoiceId) {
         const matchingInvoice = await pb.collection('invoices').getFirstListItem(
-            `order="${order.id}"`
+            `order="${sanitizeFilter(order.id)}"${tenantClause()}`
         ).catch(() => null);
         if (matchingInvoice) invoiceId = matchingInvoice.id;
     }
@@ -172,6 +190,7 @@ async function settleLinkedOrder(
         const reference = paymentRef || link.link_id;
         if (!(await hasInvoicePayment(invoiceId, reference))) {
             await pb.collection('invoice_payments').create({
+                account_email: accountScopeEmail(),
                 invoice: invoiceId,
                 amount: link.amount,
                 payment_date: new Date().toISOString(),
@@ -182,17 +201,12 @@ async function settleLinkedOrder(
         }
     }
 
-    // 3. Loyalty points on the settled amount — idempotent per order, and pass the
-    //    PURCHASE AMOUNT (not the points) with proper reference fields.
-    let pointsCredited = 0;
-    if (order.customer && !(await hasLoyaltyEarnForOrder(order.id))) {
-        const amount = order.total || order.subtotal || link.amount;
-        const points = await calculatePointsToEarn(amount).catch(() => 0);
-        if (points > 0) {
-            await earnPoints(order.customer, amount, 'sales_order', order.id).catch(() => {});
-            pointsCredited = points;
-        }
-    }
+    // Loyalty is awarded by settleCapturedOrder (idempotently); report the
+    // balance change from the ledger rather than re-awarding here.
+    const earned = await pb.collection('loyalty_transactions').getFirstListItem(
+        `type="earn" && reference_type="sales_order" && reference_id="${sanitizeFilter(order.id)}"${tenantClause()}`
+    ).catch(() => null);
+    const pointsCredited = Number((earned as { points?: number } | null)?.points || 0);
 
     return { orderNumber: order.order_number || order.id, pointsCredited };
 }
@@ -211,7 +225,7 @@ export async function reconcilePendingPaymentLinks(): Promise<ReconciliationSumm
     let pending: PaymentLinkRecord[] = [];
     try {
         pending = await pb.collection('payment_links').getFullList({
-            filter: 'status="created"',
+            filter: `status="created"${tenantClause()}`,
             sort: '-created',
             expand: 'customer',
         }) as unknown as PaymentLinkRecord[];
@@ -243,11 +257,13 @@ export async function reconcilePendingPaymentLinks(): Promise<ReconciliationSumm
                 // "created" and the next pass retries safely (dedupes prevent doubles).
                 let orderNumber = '';
                 let pointsCredited = 0;
+                let settlementFailed = false;
                 if (link.order) {
                     try {
                         ({ orderNumber, pointsCredited } = await settleLinkedOrder(link, paymentRef));
                         summary.details.push(`Order ${orderNumber} settled (pts: +${pointsCredited})`);
                     } catch (err) {
+                        settlementFailed = true;
                         summary.errors++;
                         summary.details.push(`${link.link_id}: order settlement failed — ${(err as Error)?.message}`);
                     }
@@ -256,8 +272,17 @@ export async function reconcilePendingPaymentLinks(): Promise<ReconciliationSumm
                 try {
                     await recordClearingDeposit(link, paymentRef);
                 } catch (err) {
+                    settlementFailed = true;
                     summary.errors++;
                     summary.details.push(`${link.link_id}: bank ledger entry failed — ${(err as Error)?.message}`);
+                }
+
+                // Only mark the link paid once BOTH settlement steps succeeded.
+                // The old code marked it paid even after an error, so the next
+                // pass saw "paid" and never retried the lost work (SF-11).
+                if (settlementFailed) {
+                    summary.details.push(`${link.link_id}: left pending so the next reconciliation pass retries`);
+                    continue;
                 }
 
                 // Final state transition — only after side effects completed

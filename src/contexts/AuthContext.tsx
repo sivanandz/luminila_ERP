@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { pb, autoDiscoverPocketBase, resolveTenantPocketBase } from "@/lib/pocketbase";
+import { pb, autoDiscoverPocketBase, resolveTenantPocketBase, sanitizeFilter } from "@/lib/pocketbase";
 import type { AuthModel, RecordAuthResponse } from "pocketbase";
 import { ClientResponseError } from "pocketbase";
 
@@ -34,7 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (pb.authStore.isSuperuser) return true;
         try {
             const userRoles = await pb.collection("user_roles").getFullList({
-                filter: `user="${model.id}"`,
+                filter: `user="${sanitizeFilter(model.id)}"`,
                 expand: "role"
             });
             return userRoles.some(ur => ur.expand?.role?.name === "Admin" || ur.expand?.role?.name === "Super Admin");
@@ -56,8 +56,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setIsLoading(false);
         };
 
-        // Initialize from stored auth after verifying connection
-        autoDiscoverPocketBase().finally(() => {
+        // Initialize from stored auth after verifying connection. A stored token
+        // proves nothing about the account's current state: deactivated users
+        // keep their old JWT until they reload, so refresh it and drop the
+        // session when the server rejects it (A-20).
+        autoDiscoverPocketBase().finally(async () => {
+            if (pb.authStore.isValid) {
+                try {
+                    await pb.collection("users").authRefresh();
+                } catch (err) {
+                    const status = err instanceof ClientResponseError ? err.status : 0;
+                    if (status === 401 || status === 403) {
+                        pb.authStore.clear();
+                    }
+                }
+            }
             updateAuthState(pb.authStore.model);
         });
 

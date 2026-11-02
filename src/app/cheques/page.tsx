@@ -340,11 +340,11 @@ export default function ChequeRegisterPage() {
                                                         {cheque.status === "deposited" && (
                                                             <Button variant="ghost" size="sm" onClick={() => handleClear(cheque)}>Clear</Button>
                                                         )}
+                                                        {cheque.status === "deposited" && (
+                                                            <Button variant="ghost" size="sm" onClick={() => handleBounce(cheque)}>Bounce</Button>
+                                                        )}
                                                         {(cheque.status === "open" || cheque.status === "deposited") && (
-                                                            <>
-                                                                <Button variant="ghost" size="sm" onClick={() => handleBounce(cheque)}>Bounce</Button>
-                                                                <Button variant="ghost" size="sm" onClick={() => handleCancel(cheque)}>Cancel</Button>
-                                                            </>
+                                                            <Button variant="ghost" size="sm" onClick={() => handleCancel(cheque)}>Cancel</Button>
                                                         )}
                                                         <Button variant="ghost" size="sm" onClick={() => handleDelete(cheque)}>
                                                             <Trash2 className="w-4 h-4" />

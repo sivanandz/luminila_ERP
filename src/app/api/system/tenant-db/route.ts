@@ -4,15 +4,46 @@ import {
     resolvePrimaryPocketBasePort,
     resolveTenantDatabase,
     readTenantRegistry,
+    tenantDatabaseExists,
 } from '@/lib/tenant-db-manager';
-import { authenticateOperator, tenantAccessAllowed } from '@/lib/api-auth';
+import { authenticateOperator, constantTimeEqual, tenantAccessAllowed } from '@/lib/api-auth';
 import { isSingleAccountMode } from '@/lib/deployment-mode';
 
 export const runtime = 'nodejs';
 
-function registryHasTenant(email: string): boolean {
-    const registry = readTenantRegistry();
-    return Boolean(registry.tenants[email]) || registry.activeTenantEmail === email;
+/**
+ * Provisioning is an unauthenticated path during first-run setup, so it is
+ * rate-limited per client address. In-memory is enough: the window that
+ * matters is one setup session, and a restart resets the counter rather than
+ * locking an operator out.
+ */
+const PROVISION_WINDOW_MS = 10 * 60 * 1000;
+const PROVISION_MAX_ATTEMPTS = 5;
+const provisionAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function clientAddress(req: NextRequest): string {
+    const forwarded = req.headers.get('x-forwarded-for') || '';
+    return (forwarded.split(',')[0] || req.headers.get('x-real-ip') || 'unknown').trim();
+}
+
+function rateLimited(req: NextRequest): boolean {
+    const key = clientAddress(req);
+    const now = Date.now();
+    const entry = provisionAttempts.get(key);
+    if (!entry || entry.resetAt <= now) {
+        provisionAttempts.set(key, { count: 1, resetAt: now + PROVISION_WINDOW_MS });
+        return false;
+    }
+    entry.count += 1;
+    return entry.count > PROVISION_MAX_ATTEMPTS;
+}
+
+/** Optional shared secret for provisioning; required when configured. */
+function setupTokenValid(req: NextRequest): boolean {
+    const expected = (process.env.TENANT_SETUP_TOKEN || process.env.SETUP_TOKEN || '').trim();
+    if (!expected) return true;
+    const provided = (req.headers.get('x-setup-token') || '').trim();
+    return Boolean(provided) && constantTimeEqual(provided, expected);
 }
 
 function errorResponse(message: string, status: number) {
@@ -103,12 +134,21 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ success: resolved.success, pbUrl: resolved.pbUrl });
         }
 
+        if (rateLimited(req)) {
+            return errorResponse('Too many provisioning attempts. Try again later.', 429);
+        }
+
         const password = String(body.password || '');
         if (password.length < 8) {
             return errorResponse('Password must be at least 8 characters', 400);
         }
 
-        if (registryHasTenant(email)) {
+        // Any account that already has a database (registry entry, data dir or
+        // a shared slug owner) can only be re-provisioned by a session for that
+        // account. Checking the registry alone let an unauthenticated caller
+        // reset the primary superuser password after the registry was cleared
+        // (A-03).
+        if (tenantDatabaseExists(email)) {
             const session = await authenticateOperator(req, email);
             if (!session.ok) {
                 return errorResponse(
@@ -119,6 +159,8 @@ export async function POST(req: NextRequest) {
             if (!tenantAccessAllowed(session.email, session.isSuperuser, email)) {
                 return errorResponse('You cannot provision another account', 403);
             }
+        } else if (!setupTokenValid(req)) {
+            return errorResponse('A valid setup token is required to provision a new account', 401);
         }
 
         const provisioned = await provisionTenantDatabase({
