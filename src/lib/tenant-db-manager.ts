@@ -279,6 +279,13 @@ function bootstrapTenantDataDir(dataDir: string, email: string, password: string
  * Ensure a PocketBase server process is actively serving `dataDir` on `port`
  */
 export async function ensureTenantPocketBaseRunning(port: number, dataDir: string): Promise<boolean> {
+    // Argument/path hardening for the spawn below: the directory must stay
+    // inside the PocketBase roots and the port must be a real TCP port.
+    assertSafeDataDir(dataDir);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+        throw new Error(`Invalid PocketBase port: ${port}`);
+    }
+
     if (await isPocketBasePortHealthy(port)) {
         return true;
     }
