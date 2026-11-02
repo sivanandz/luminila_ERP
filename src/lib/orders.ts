@@ -582,10 +582,26 @@ export async function getOrderDetails(id: string): Promise<OrderDetail | null> {
         if (tenant && owner && owner !== tenant) return null;
 
         // Fetch items separately as reverse expand is tricky in getOne sometimes if not configured
-        const items = await pb.collection('sales_order_items').getFullList<OrderDetailItem>({
+        const rawItems = await pb.collection('sales_order_items').getFullList<
+            Omit<OrderDetailItem, 'variant'> & {
+                variant?: string | ProductVariant;
+                expand?: { variant?: ProductVariant; product?: { id?: string; sku?: string } };
+            }
+        >({
             filter: `order="${sanitizeFilter(id)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
             expand: 'product,variant'
         });
+
+        // PocketBase keeps relation fields as record-id strings and puts the
+        // expanded records under `expand`. The OrderDetailItem contract (and
+        // every consumer, e.g. the variant attribute line on the detail page)
+        // expects `variant` to be the object, so normalise it here once.
+        const items: OrderDetailItem[] = rawItems.map((item) => ({
+            ...item,
+            variant:
+                item.expand?.variant ??
+                (item.variant && typeof item.variant === 'object' ? item.variant : undefined),
+        }));
 
         return {
             ...order,
