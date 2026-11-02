@@ -20,6 +20,7 @@ export type ScannerContextType =
     | 'shipping_awb'      // Priority 100: Parcels & Logistics AWBs (ST Courier, Delhivery, etc.)
     | 'active_modal'      // Priority 90: Popups & Quick modals
     | 'discrepancy_audit' // Priority 85: Stock audit & tray reconciliation
+    | 'packing_station'   // Priority 80: Packing & dispatch scan verification
     | 'inventory_form'    // Priority 70: Creating/editing product SKU/barcode
     | 'challan_entry'     // Priority 60: Line item entry in Delivery Challans
     | 'invoice_entry'     // Priority 60: Line item entry in Invoices
@@ -32,6 +33,7 @@ export const CONTEXT_PRIORITIES: Record<ScannerContextType, number> = {
     shipping_awb: 100,
     active_modal: 90,
     discrepancy_audit: 85,
+    packing_station: 80,
     inventory_form: 70,
     challan_entry: 60,
     invoice_entry: 60,
@@ -144,7 +146,9 @@ export class MobileScanner {
                     const res = await tauriScanner.scan({
                         windowed: false,
                         cameraDirection: 'back',
-                        formats: ['QRCode', 'Code128', 'EAN13', 'UPCA'],
+                        // DataMatrix: jewelry dumbbell tags default to ECC200 —
+                        // without it the native scanner ignores the most common tag.
+                        formats: ['QRCode', 'Code128', 'EAN13', 'UPCA', 'DataMatrix'],
                     });
                     if (res?.content) {
                         this.dispatchScan(res.content, 'tauri_native');

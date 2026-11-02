@@ -393,6 +393,7 @@ Status vocabulary, applied strictly:
 | Low stock alerts | Live | Threshold per variant; dashboard and inventory badges |
 | Stock movement audit trail | Live | Every increment and decrement logged with source |
 | Excel bulk import | Live | `excel-import.ts` (36 KB) with template download route |
+| Packing & dispatch station | Live | `/packing` scan-verified packing: strict per-line verification of confirmed/invoiced orders via SKU/DataMatrix scans (`packing.ts`, `order_packing` collection), packing slips with Code128 order numbers, packed milestone WhatsApp with parcel photo, handoff to AWB dispatch |
 | SKU generator with jewelry grammar | Live | `sku-generator.ts` encodes category, metal, purity, size |
 | Quick add series memory | Live | Quick Add runs the taxonomy engine with a remembered last series (`quick-add-memory.ts`, PB `store_settings` key `quick_add_memory`): auto-apply + recent-series chips, colour-swatch picks, auto piece names, `Alt+N` / `Enter` shortcuts, camera-first next piece, and clone-a-piece row action that parses architecture SKUs back into taxonomy codes |
 | Metal rate engine | Live | `jewelry-engine.ts` computes rate-based pricing |

@@ -14,6 +14,7 @@ import {
     Calendar,
     MapPin,
     Truck,
+    PackageCheck,
 } from "lucide-react";
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -276,6 +277,18 @@ function OrderDetailContent() {
                             >
                                 <FileText size={18} className="mr-2" />
                                 Generate Invoice
+                            </Button>
+                        )}
+
+                        {!isEstimate && (order.status === 'confirmed' || order.status === 'invoiced') && (
+                            <Button
+                                variant="outline"
+                                onClick={() => router.push(`/packing?order=${order.id}`)}
+                                className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"
+                                title="Verify the pieces at the packing station"
+                            >
+                                <PackageCheck size={18} className="mr-2 text-emerald-400" />
+                                Pack this order
                             </Button>
                         )}
 

@@ -34,6 +34,7 @@ import {
     ChevronRight,
     Store,
     FileText,
+    PackageCheck,
     TrendingUp,
     Headphones,
     UserCog,
@@ -65,6 +66,7 @@ const navGroups: NavItem[] = [
         children: [
             { href: "/pos", icon: <ShoppingCart size={18} />, label: "Point of Sale" },
             { href: "/orders", icon: <Tags size={18} />, label: "Orders & Estimates" },
+            { href: "/packing", icon: <PackageCheck size={18} />, label: "Packing Station" },
             { href: "/invoices", icon: <FileText size={18} />, label: "Invoices" },
             { href: "/challan", icon: <Truck size={18} />, label: "Delivery Challan" },
             { href: "/returns", icon: <Undo2 size={18} />, label: "Returns" },

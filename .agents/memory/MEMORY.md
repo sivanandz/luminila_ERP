@@ -31,4 +31,7 @@
 - [vendor-wholesale-shorthand] In Indian jewelry wholesale messaging, price expressions frequently use shorthand like `500+&` (₹500 + shipping) or `350+ship`. Offer parsing regex must support `\+&` and `\+\s*ship(?:ping)?`.
 - [pocketbase-image-data-limit] When saving base64 image data into PocketBase collections, the `text` field `max` constraint must be explicitly set to 5MB (5242880) in `_collections` to prevent 5000-character constraint validation rejections.
 - [quick-add-series] Quick Add runs the SKU taxonomy engine with a remembered "series" (PB store_settings key `quick_add_memory`); series identity excludes colour, and clone parses architecture SKUs to recover taxonomy codes → tech-decisions.md
+- [packing-station] `/packing` scan-verified packing over `order_packing` sessions; no new order status; variant-strict scan grammar with cross-order guard; slips carry Code128 of order_number; Tauri scanner now decodes DataMatrix → tech-decisions.md
+- [pocketbase-system-dates] Programmatic PB migrations must declare `created`/`updated` autodate fields explicitly or `sort=-created/-updated` 400s and sorted reads silently fail; PB returns relation ids with expanded objects under `expand` (typed objects lie) → tech-decisions.md
 
+- [analytics-v2] Revenue truth: exclude storefront mirror sales rows; unit_cost snapshots at sale time (migration 1793001000); engines in src/lib/analytics-v2 accept {db,tenant} for server reuse; /analytics hub with 5 tabs; range.ts picked-date semantics → tech-decisions.md
