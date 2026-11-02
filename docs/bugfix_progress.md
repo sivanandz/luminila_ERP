@@ -289,7 +289,9 @@ Backup export filters all 31 collections by tenant, and restore handles all 31 i
 
 ### Security scan
 
-- Full Mimosa deep scan completed: `scan-2026-11-02T14-48-51.504Z`, 122 findings (64 high / 58 medium), status **inconclusive** (proof gaps; no verdict). Most findings are in vendored/third-party surfaces (`wppconnect-sidecar`, `server-dist/pocketbase`, `src-tauri/target`, `scratch`). Of the 10 high findings under `src/`, four were hardcoded test credentials (fixed: `test-ai-harness*.ts`, `verify-fresh-store-isolation.ts` now use env/random values); the rest are test-only or false positives (fixed API host, sanitized tenant slug, parameter-array spawn, test harness SQL). No security verdict is being claimed.
+- Full Mimosa deep scan (`scan-2026-11-02T14-48-51.504Z`): 122 findings (64 high / 58 medium), status **inconclusive** (proof gaps; no verdict). Most findings are in vendored/third-party surfaces (`wppconnect-sidecar`, `server-dist/pocketbase`, `src-tauri/target`, `scratch`).
+- Rescan of the final tree after the closures (`scan-2026-11-02T15-00-01.406Z`, normal): 64 findings (23 high / 41 medium). Only two high findings are under `src/`: the encrypted test vector in `test-ai-harness-review.ts:668` (false positive) and the `tenant-db-manager` spawn (CWE-88), which now validates the data directory and port before spawning.
+- Four hardcoded test credentials from the deep scan were removed (`test-ai-harness*.ts`, `verify-fresh-store-isolation.ts` now use env/random values). No security verdict is being claimed.
 
 ---
 
