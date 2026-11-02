@@ -115,6 +115,8 @@ export interface SaleItem extends PBRecord {
     variant: string; // Relation → product_variants
     quantity: number;
     unit_price: number;
+    /** Cost snapshot at sale time (landed → purchase fallback). Missing = backfill pending. */
+    unit_cost?: number;
     total_price: number;
     gross_weight?: number;
     net_weight?: number;
@@ -243,6 +245,8 @@ export interface SalesOrderItem extends PBRecord {
     description?: string;
     quantity: number;
     unit_price: number;
+    /** Cost snapshot at sale time (landed → purchase fallback). Missing = backfill pending. */
+    unit_cost?: number;
     tax_rate: number;
     discount_amount: number;
     total: number;

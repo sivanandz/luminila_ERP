@@ -1,14 +1,25 @@
 /**
  * Analytics Service Layer
  * Dashboard queries and aggregations for Luminila Inventory Management using PocketBase
+ *
+ * 2026-11-02 (Analytics Deep-Insights): all queries now
+ *   - scope via accountScopeEmail() (staff logins previously saw an empty
+ *     dashboard because the raw auth email was used as the tenant key),
+ *   - exclude storefront mirror sales so revenue stops double-counting
+ *     storefront orders (canonical rule in analytics-v2/load.ts),
+ *   - honor per-variant low_stock_threshold instead of a hardcoded <10.
+ * getTopProducts unions POS sale_items with sales_order_items so
+ * storefront/WhatsApp lines no longer vanish from the leaderboard.
  */
 
-import { pb } from './pocketbase';
+import { pb, accountScopeEmail } from './pocketbase';
+import { loadUnifiedLines, loadTxWindow } from './analytics-v2/load';
+import { buildChannelTable } from './analytics-v2/sales-metrics';
+import { resolveRange, compare, type ComparedMetric } from './analytics-v2/range';
 import type {
     ProductVariant,
     PurchaseOrder,
     Sale,
-    SaleItem,
     SalesOrder,
     StockMovement,
     Vendor,
@@ -26,6 +37,12 @@ export interface DashboardStats {
     todayOrders: number;
     pendingOrders: number;
     revenueChange: number;
+    /** 30-day gross margin ₹ (revenue − COGS from unit_cost snapshots) */
+    grossMargin: number;
+    /** 30-day average order value ₹ */
+    aov: number;
+    /** margin % vs previous 30 days, for the KPI delta */
+    marginChange: ComparedMetric;
 }
 
 export interface SalesDataPoint {
@@ -62,7 +79,7 @@ export interface RecentActivity {
 }
 
 /** Sale item with its variant (and the variant's product) expanded */
-export interface SaleItemWithExpand extends SaleItem {
+export interface SaleItemWithExpand extends Record<string, unknown> {
     expand?: {
         variant?: ProductVariant;
     };
@@ -87,82 +104,73 @@ export interface StockMovementWithVariant extends StockMovement {
 // ===========================================
 
 export async function getDashboardStats(): Promise<DashboardStats> {
+    const empty: DashboardStats = {
+        totalRevenue: 0, totalOrders: 0, totalProducts: 0, lowStockCount: 0,
+        todayRevenue: 0, todayOrders: 0, pendingOrders: 0, revenueChange: 0,
+        grossMargin: 0, aov: 0,
+        marginChange: { current: 0, previous: 0, deltaPct: 0 },
+    };
     try {
-        const currentUserEmail = pb.authStore.model?.email;
-        if (!currentUserEmail) {
-            return {
-                totalRevenue: 0, totalOrders: 0, totalProducts: 0, lowStockCount: 0,
-                todayRevenue: 0, todayOrders: 0, pendingOrders: 0, revenueChange: 0,
-            };
-        }
+        const tenant = accountScopeEmail();
+        if (!tenant) return empty;
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const todayISO = today.toISOString();
 
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const thirtyDaysAgoISO = thirtyDaysAgo.toISOString();
+        const win = resolveRange({ preset: '30d' });
 
-        const sixtyDaysAgo = new Date();
-        sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
-        const sixtyDaysAgoISO = sixtyDaysAgo.toISOString();
+        // Canonical, deduped transactions (mirror rows excluded in load.ts)
+        const txs = await loadTxWindow(tenant, win.current);
+        const prevTxs = await loadTxWindow(tenant, win.previous);
 
-        // Fetch sales data
-        const salesData = await pb.collection('sales').getFullList<Sale>({
-            filter: `account_email="${currentUserEmail}" && created>="${sixtyDaysAgoISO}"`,
-        });
+        const sumRevenue = (list: typeof txs) => list.reduce((sum, t) => sum + t.revenue, 0);
 
-        // Fetch sales orders: prioritize order_date (business date), fallback to created
-        let ordersData: SalesOrder[] = [];
-        try {
-            ordersData = await pb.collection('sales_orders').getFullList<SalesOrder>({
-                filter: `account_email="${currentUserEmail}" && (order_date>="${sixtyDaysAgoISO}" || (order_date="" && created>="${sixtyDaysAgoISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
-            });
-        } catch (e) {
-            console.error('Failed to fetch sales_orders for stats:', e);
-        }
+        const totalRevenue = sumRevenue(txs);
+        const totalOrders = txs.length;
 
-        const sumRevenue = (items: Array<{ total?: number }>) => items.reduce((sum, item) => sum + (item.total || 0), 0);
-        const getOrderDate = (o: SalesOrder): string => o.order_date || o.created;
+        const todayTx = txs.filter((t) => t.dateISO >= todayISO);
+        const todayRevenue = sumRevenue(todayTx);
+        const todayOrdersCount = todayTx.length;
 
-        const salesLast30 = salesData.filter((s) => s.created >= thirtyDaysAgoISO);
-        const ordersLast30 = ordersData.filter((o) => getOrderDate(o) >= thirtyDaysAgoISO);
-
-        const salesPrev30 = salesData.filter((s) => s.created < thirtyDaysAgoISO && s.created >= sixtyDaysAgoISO);
-        const ordersPrev30 = ordersData.filter((o) => getOrderDate(o) < thirtyDaysAgoISO && getOrderDate(o) >= sixtyDaysAgoISO);
-
-        const salesToday = salesData.filter((s) => s.created >= todayISO);
-        const ordersToday = ordersData.filter((o) => getOrderDate(o) >= todayISO);
-
-        const totalRevenue = sumRevenue(salesLast30) + sumRevenue(ordersLast30);
-        const totalOrders = salesLast30.length + ordersLast30.length;
-
-        const todayRevenue = sumRevenue(salesToday) + sumRevenue(ordersToday);
-        const todayOrdersCount = salesToday.length + ordersToday.length;
-
-        const prevRevenue = sumRevenue(salesPrev30) + sumRevenue(ordersPrev30);
+        const prevRevenue = sumRevenue(prevTxs);
         const revenueChange = prevRevenue > 0
             ? Math.round(((totalRevenue - prevRevenue) / prevRevenue) * 100)
             : 0;
 
+        // Margin from canonical line items (unit_cost snapshots; current-cost
+        // fallback inside load.ts — unknown costs count as 0-cost).
+        const lines = await loadUnifiedLines(tenant, win.current);
+        const cogs = lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
+        const grossMargin = Math.round(totalRevenue - cogs);
+        const prevLines = await loadUnifiedLines(tenant, win.previous);
+        const prevCogs = prevRevenue - prevLines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
+        const marginChange = compare(grossMargin, Math.round(prevCogs));
+
         // Product count strictly scoped to tenant
-        const products = await pb.collection('products').getList(1, 1, { 
-            filter: `account_email="${currentUserEmail}" && is_active=true` 
+        const products = await pb.collection('products').getList(1, 1, {
+            filter: `account_email="${tenant}" && is_active=true`
         });
         const totalProducts = products.totalItems;
 
-        // Low stock count strictly scoped to tenant and active products only
-        const lowStock = await pb.collection('product_variants').getList(1, 1, { 
-            filter: `account_email="${currentUserEmail}" && stock_level<10 && product.is_active=true` 
-        });
-        const lowStockCount = lowStock.totalItems;
+        // Low stock honors each variant's own threshold (PB can't compare two
+        // columns in a filter, so count over a light tenant-scoped fetch).
+        const variants = await pb.collection('product_variants').getFullList<ProductVariant>({
+            filter: `account_email="${tenant}" && stock_level>0`,
+            expand: 'product',
+            fields: 'id,stock_level,low_stock_threshold,expand.product.is_active',
+        }).catch(() => [] as ProductVariant[]);
+        const lowStockCount = variants.filter((v) => {
+            const product = (v as unknown as { expand?: { product?: { is_active?: boolean } } }).expand?.product;
+            if (product && product.is_active === false) return false;
+            return v.stock_level < (v.low_stock_threshold || 10);
+        }).length;
 
         // Pending orders strictly scoped to tenant
         let pendingOrders = 0;
         try {
             const pending = await pb.collection('sales_orders').getList(1, 1, {
-                filter: `account_email="${currentUserEmail}" && (status="draft" || status="sent" || status="confirmed" || status="shipped")`,
+                filter: `account_email="${tenant}" && (status="draft" || status="sent" || status="confirmed" || status="shipped")`,
             });
             pendingOrders = pending.totalItems;
         } catch (e) {
@@ -170,21 +178,21 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         }
 
         return {
-            totalRevenue,
+            totalRevenue: Math.round(totalRevenue),
             totalOrders,
             totalProducts,
             lowStockCount,
-            todayRevenue,
+            todayRevenue: Math.round(todayRevenue),
             todayOrders: todayOrdersCount,
             pendingOrders,
             revenueChange,
+            grossMargin,
+            aov: totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0,
+            marginChange,
         };
     } catch (error) {
         console.error('Error fetching dashboard stats:', error);
-        return {
-            totalRevenue: 0, totalOrders: 0, totalProducts: 0, lowStockCount: 0,
-            todayRevenue: 0, todayOrders: 0, pendingOrders: 0, revenueChange: 0,
-        };
+        return empty;
     }
 }
 
@@ -194,56 +202,31 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
 export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]> {
     try {
-        const currentUserEmail = pb.authStore.model?.email;
-        if (!currentUserEmail) return [];
+        const tenant = accountScopeEmail();
+        if (!tenant) return [];
 
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - days);
-        startDate.setHours(0, 0, 0, 0);
-        const startDateISO = startDate.toISOString();
-
-        const sales = await pb.collection('sales').getFullList<Sale>({
-            filter: `account_email="${currentUserEmail}" && created>="${startDateISO}"`,
-        });
-
-        let orders: SalesOrder[] = [];
-        try {
-            orders = await pb.collection('sales_orders').getFullList<SalesOrder>({
-                filter: `account_email="${currentUserEmail}" && (order_date>="${startDateISO}" || (order_date="" && created>="${startDateISO}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
-            });
-        } catch (e) {
-            console.error('Failed to fetch sales_orders for trend:', e);
-        }
+        const preset = days <= 7 ? '7d' : days <= 30 ? '30d' : days <= 90 ? '90d' : '12m';
+        const win = resolveRange({ preset: preset as '7d' | '30d' | '90d' | '12m' });
+        const txs = await loadTxWindow(tenant, win.current);
 
         const byDate = new Map<string, { revenue: number; orders: number }>();
-
-        for (let i = 0; i < days; i++) {
-            const date = new Date(startDate);
-            date.setDate(date.getDate() + i);
-            const key = date.toISOString().split('T')[0];
+        for (const key of win.current.days) {
             byDate.set(key, { revenue: 0, orders: 0 });
         }
 
-        const aggregate = (items: Array<{ total?: number; created: string; order_date?: string }>, isOrder = false) => {
-            items.forEach((item) => {
-                const rawDate = isOrder ? (item.order_date || item.created) : item.created;
-                const dateKey = new Date(rawDate).toISOString().split('T')[0];
-                const existing = byDate.get(dateKey);
-                if (existing) {
-                    byDate.set(dateKey, {
-                        revenue: existing.revenue + (item.total || 0),
-                        orders: existing.orders + 1,
-                    });
-                }
-            });
-        };
-
-        aggregate(sales, false);
-        aggregate(orders, true);
+        for (const tx of txs) {
+            const existing = byDate.get(tx.day);
+            if (existing) {
+                byDate.set(tx.day, {
+                    revenue: existing.revenue + tx.revenue,
+                    orders: existing.orders + 1,
+                });
+            }
+        }
 
         return Array.from(byDate.entries()).map(([date, data]) => ({
             date,
-            revenue: data.revenue,
+            revenue: Math.round(data.revenue),
             orders: data.orders,
         }));
     } catch (error) {
@@ -256,39 +239,33 @@ export async function getSalesTrend(days: number = 30): Promise<SalesDataPoint[]
 // TOP PRODUCTS
 // ===========================================
 
+/**
+ * Top products across ALL channels: canonical lines union POS sale_items with
+ * sales_order_items (storefront/WhatsApp were previously invisible here).
+ */
 export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> {
     try {
-        const currentUserEmail = pb.authStore.model?.email;
-        if (!currentUserEmail) return [];
+        const tenant = accountScopeEmail();
+        if (!tenant) return [];
 
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-        const saleItems = await pb.collection('sale_items').getFullList<SaleItemWithExpand>({
-            filter: `account_email="${currentUserEmail}" && created>="${thirtyDaysAgo.toISOString()}"`,
-            expand: 'variant,variant.product',
-        });
+        const win = resolveRange({ preset: '30d' });
+        const lines = await loadUnifiedLines(tenant, win.current);
 
         const byProduct = new Map<string, { name: string; sku: string; sold: number; revenue: number }>();
-
-        saleItems.forEach((item) => {
-            const product = item.expand?.variant?.expand?.product;
-            if (!product) return;
-
-            const itemRevenue = (item.quantity || 0) * (item.unit_price || 0);
-            const existing = byProduct.get(product.id) || {
-                name: product.name,
-                sku: product.sku,
+        for (const line of lines) {
+            if (!line.productId) continue;
+            const existing = byProduct.get(line.productId) || {
+                name: line.productName,
+                sku: line.sku,
                 sold: 0,
                 revenue: 0,
             };
-
-            byProduct.set(product.id, {
+            byProduct.set(line.productId, {
                 ...existing,
-                sold: existing.sold + (item.quantity || 0),
-                revenue: existing.revenue + itemRevenue,
+                sold: existing.sold + line.quantity,
+                revenue: existing.revenue + line.netRevenue,
             });
-        });
+        }
 
         return Array.from(byProduct.entries())
             .map(([id, data]) => ({
@@ -296,7 +273,7 @@ export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> 
                 name: data.name,
                 sku: data.sku,
                 totalSold: data.sold,
-                revenue: data.revenue,
+                revenue: Math.round(data.revenue),
             }))
             .sort((a, b) => b.revenue - a.revenue)
             .slice(0, limit);
@@ -312,56 +289,19 @@ export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> 
 
 export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
     try {
-        const currentUserEmail = pb.authStore.model?.email;
-        if (!currentUserEmail) return [];
+        const tenant = accountScopeEmail();
+        if (!tenant) return [];
 
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const win = resolveRange({ preset: '30d' });
+        const txs = await loadTxWindow(tenant, win.current);
+        const rows = buildChannelTable(txs, []);
 
-        const byChannel = new Map<string, { orders: number; revenue: number }>();
-
-        // Sales Orders
-        try {
-            const salesOrders = await pb.collection('sales_orders').getFullList<SalesOrder>({
-                filter: `account_email="${currentUserEmail}" && (order_date>="${thirtyDaysAgo.toISOString()}" || (order_date="" && created>="${thirtyDaysAgo.toISOString()}")) && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
-            });
-
-            salesOrders.forEach((order) => {
-                const channel = 'B2B / Online';
-                const existing = byChannel.get(channel) || { orders: 0, revenue: 0 };
-                byChannel.set(channel, {
-                    orders: existing.orders + 1,
-                    revenue: existing.revenue + (order.total || 0),
-                });
-            });
-        } catch (e) {
-            console.error('Failed to fetch sales_orders for channel breakdown:', e);
-        }
-
-        // POS Sales
-        const posData = await pb.collection('sales').getFullList<Sale>({
-            filter: `account_email="${currentUserEmail}" && created>="${thirtyDaysAgo.toISOString()}"`,
-        });
-
-        posData.forEach((sale) => {
-            const channel = sale.channel === 'pos' ? 'In-Store (POS)' : (sale.channel || 'Other');
-            const existing = byChannel.get(channel) || { orders: 0, revenue: 0 };
-            byChannel.set(channel, {
-                orders: existing.orders + 1,
-                revenue: existing.revenue + (sale.total || 0),
-            });
-        });
-
-        const totalRevenue = Array.from(byChannel.values()).reduce((sum, c) => sum + c.revenue, 0);
-
-        return Array.from(byChannel.entries())
-            .map(([channel, data]) => ({
-                channel,
-                orders: data.orders,
-                revenue: data.revenue,
-                percentage: totalRevenue > 0 ? Math.round((data.revenue / totalRevenue) * 100) : 0,
-            }))
-            .sort((a, b) => b.revenue - a.revenue);
+        return rows.map((r) => ({
+            channel: r.channel,
+            orders: r.orders,
+            revenue: r.revenue,
+            percentage: r.percentage,
+        }));
     } catch (error) {
         console.error('Error fetching channel breakdown:', error);
         return [];
@@ -374,20 +314,21 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
 
 export async function getRecentActivity(limit: number = 10): Promise<RecentActivity[]> {
     const activities: RecentActivity[] = [];
-    const currentUserEmail = pb.authStore.model?.email;
-    if (!currentUserEmail) return [];
+    const tenant = accountScopeEmail();
+    if (!tenant) return [];
 
     try {
-        // Recent sales
-        const sales = await pb.collection('sales').getList<Sale>(1, 5, { 
-            filter: `account_email="${currentUserEmail}"`,
-            sort: '-created' 
+        // Recent sales (mirror rows still appear in the activity feed — they
+        // are real events, just excluded from revenue math)
+        const sales = await pb.collection('sales').getList<Sale>(1, 5, {
+            filter: `account_email="${tenant}"`,
+            sort: '-created'
         });
         sales.items.forEach((sale) => {
             activities.push({
                 id: sale.id,
                 type: 'sale',
-                title: 'New Sale (POS)',
+                title: sale.channel === 'pos' ? 'New Sale (POS)' : `New Sale (${sale.channel || 'Other'})`,
                 description: sale.customer_name || 'Walk-in customer',
                 amount: sale.total,
                 timestamp: sale.created,
@@ -396,9 +337,9 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
 
         // Recent sales orders
         try {
-            const orders = await pb.collection('sales_orders').getList<SalesOrder>(1, 5, { 
-                filter: `account_email="${currentUserEmail}"`,
-                sort: '-created' 
+            const orders = await pb.collection('sales_orders').getList<SalesOrder>(1, 5, {
+                filter: `account_email="${tenant}"`,
+                sort: '-created'
             });
             orders.items.forEach((order) => {
                 activities.push({
@@ -417,7 +358,7 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
         // Recent purchase orders
         try {
             const purchases = await pb.collection('purchase_orders').getList<PurchaseOrderWithVendor>(1, 5, {
-                filter: `account_email="${currentUserEmail}"`,
+                filter: `account_email="${tenant}"`,
                 sort: '-created',
                 expand: 'vendor',
             });
@@ -438,7 +379,7 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
         // Recent stock movements
         try {
             const movements = await pb.collection('stock_movements').getList<StockMovementWithVariant>(1, 5, {
-                filter: `account_email="${currentUserEmail}"`,
+                filter: `account_email="${tenant}"`,
                 sort: '-created',
                 expand: 'variant,variant.product',
             });
@@ -474,52 +415,18 @@ export async function getRevenueSummary(period: 'today' | 'week' | 'month' | 'ye
     avgOrderValue: number;
 }> {
     try {
-        const currentUserEmail = pb.authStore.model?.email;
-        if (!currentUserEmail) return { revenue: 0, orders: 0, avgOrderValue: 0 };
+        const tenant = accountScopeEmail();
+        if (!tenant) return { revenue: 0, orders: 0, avgOrderValue: 0 };
 
-        const now = new Date();
-        let startDate: Date;
+        const preset = period === 'today' ? '7d' : period === 'week' ? '7d' : period === 'month' ? '30d' : '12m';
+        const win = resolveRange({ preset: preset as '7d' | '30d' | '12m' });
+        const txs = await loadTxWindow(tenant, win.current);
 
-        switch (period) {
-            case 'today':
-                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                break;
-            case 'week':
-                startDate = new Date(now);
-                startDate.setDate(startDate.getDate() - 7);
-                break;
-            case 'month':
-                startDate = new Date(now);
-                startDate.setMonth(startDate.getMonth() - 1);
-                break;
-            case 'year':
-                startDate = new Date(now);
-                startDate.setFullYear(startDate.getFullYear() - 1);
-                break;
-        }
-
-        const startDateISO = startDate.toISOString();
-
-        const sales = await pb.collection('sales').getFullList<Sale>({
-            filter: `account_email="${currentUserEmail}" && created>="${startDateISO}"`,
-        });
-
-        let orders: SalesOrder[] = [];
-        try {
-            orders = await pb.collection('sales_orders').getFullList<SalesOrder>({
-                filter: `account_email="${currentUserEmail}" && created>="${startDateISO}" && (status="confirmed" || status="shipped" || status="delivered" || status="invoiced")`,
-            });
-        } catch (e) {
-            console.error('Failed to fetch sales_orders for revenue summary:', e);
-        }
-
-        const revenue = sales.reduce((sum: number, s) => sum + (s.total || 0), 0) +
-            orders.reduce((sum: number, o) => sum + (o.total || 0), 0);
-
-        const count = sales.length + orders.length;
+        const revenue = txs.reduce((sum, t) => sum + t.revenue, 0);
+        const count = txs.length;
         const avgOrderValue = count > 0 ? Math.round(revenue / count) : 0;
 
-        return { revenue, orders: count, avgOrderValue };
+        return { revenue: Math.round(revenue), orders: count, avgOrderValue };
     } catch (error) {
         console.error('Error fetching revenue summary:', error);
         return { revenue: 0, orders: 0, avgOrderValue: 0 };

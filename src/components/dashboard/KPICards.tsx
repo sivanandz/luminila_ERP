@@ -1,6 +1,6 @@
 "use client";
 
-import { TrendingUp, TrendingDown, Package, ShoppingCart, DollarSign, AlertTriangle } from "lucide-react";
+import { TrendingUp, TrendingDown, Package, ShoppingCart, DollarSign, AlertTriangle, Percent, PiggyBank } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatINR } from "@/lib/gst";
 
@@ -50,14 +50,17 @@ interface KPICardsProps {
         todayOrders: number;
         pendingOrders: number;
         revenueChange: number;
+        grossMargin: number;
+        aov: number;
+        marginChange: { current: number; previous: number; deltaPct: number };
     };
 }
 
 export function KPICards({ stats }: KPICardsProps) {
     return (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 md:gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5 md:gap-4">
             <KPICard
-                title="Monthly Revenue"
+                title="Revenue (30d)"
                 value={formatINR(stats.totalRevenue)}
                 subtitle={`Today: ${formatINR(stats.todayRevenue)}`}
                 change={stats.revenueChange}
@@ -72,6 +75,21 @@ export function KPICards({ stats }: KPICardsProps) {
                 iconColor="text-blue-400"
             />
             <KPICard
+                title="Avg Order Value"
+                value={formatINR(stats.aov)}
+                subtitle="30-day average"
+                icon={<Percent className="w-5 h-5" />}
+                iconColor="text-sky-400"
+            />
+            <KPICard
+                title="Gross Margin"
+                value={formatINR(stats.grossMargin)}
+                subtitle={stats.totalRevenue > 0 ? `${Math.round((stats.grossMargin / Math.max(stats.totalRevenue, 1)) * 1000) / 10}% of revenue` : undefined}
+                change={stats.marginChange.deltaPct}
+                icon={<PiggyBank className="w-5 h-5" />}
+                iconColor="text-purple-400"
+            />
+            <KPICard
                 title="Products"
                 value={stats.totalProducts.toLocaleString()}
                 subtitle={`${stats.pendingOrders} pending orders`}
@@ -81,7 +99,7 @@ export function KPICards({ stats }: KPICardsProps) {
             <KPICard
                 title="Low Stock Items"
                 value={stats.lowStockCount}
-                subtitle="Below threshold"
+                subtitle="Below variant threshold"
                 icon={<AlertTriangle className="w-5 h-5" />}
                 iconColor={stats.lowStockCount > 0 ? "text-yellow-400" : "text-green-400"}
             />

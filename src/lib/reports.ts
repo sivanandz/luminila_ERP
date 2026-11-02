@@ -4,10 +4,11 @@ import { isValidGstin as isValidGstinChecksum } from './gstin';
  * Sales, GST (GSTR-1), Stock, and other report queries using PocketBase
  */
 
-import { pb } from './pocketbase';
+import { pb, accountScopeEmail } from './pocketbase';
 import { allocateLandedCosts, weightedAverageCost } from './valuation';
 import { format } from 'date-fns';
 import { normalizeDateRange, escapeHtml } from './utils';
+import { getCategories } from './categories';
 import type { Customer } from './customers';
 import type { Invoice } from './invoice';
 import type { ProductVariant } from '../types/database';
@@ -50,10 +51,15 @@ export interface GSTR1Row {
 
 export interface StockReportRow {
     productId: string;
+    /** Variant record id (analytics join key — movements/lines are variant-scoped). */
+    variantId: string;
     productName: string;
     sku: string;
     variantName: string;
+    /** Category id as stored on the product ('' when unclassified). */
     category?: string;
+    /** Resolved category display name ('Unclassified' when unclassified). */
+    categoryName?: string;
     currentStock: number;
     reorderLevel: number;
     lastUpdated: string;
@@ -204,7 +210,7 @@ export async function getSalesReport(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `invoice_date>="${start}" && invoice_date<="${end}"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}"`,
             sort: '-invoice_date',
             expand: 'customer',
         });
@@ -247,7 +253,7 @@ export async function getGSTR1Report(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
             sort: 'invoice_date',
         });
 
@@ -330,13 +336,13 @@ interface LandedPurchaseItem {
  * value of all older stock. A variant with no received purchase keeps its bare
  * purchase price and is reported as such.
  */
-async function buildLandedCostMap(): Promise<Map<string, number>> {
+export async function buildLandedCostMap(db: typeof pb = pb, tenant: string = accountScopeEmail()): Promise<Map<string, number>> {
     const landed = new Map<string, number>();
     const receiptsByVariant = new Map<string, Array<{ quantity: number; landedUnitCost: number }>>();
 
     try {
-        const orders = await pb.collection('purchase_orders').getFullList<LandedPurchaseOrder>({
-            filter: 'status="received" || status="partial"',
+        const orders = await db.collection('purchase_orders').getFullList<LandedPurchaseOrder>({
+            filter: `account_email="${tenant}" && (status="received" || status="partial")`,
             sort: 'order_date',
         });
         if (orders.length === 0) return landed;
@@ -344,8 +350,8 @@ async function buildLandedCostMap(): Promise<Map<string, number>> {
         const itemsByOrder = new Map<string, LandedPurchaseItem[]>();
         for (let i = 0; i < orders.length; i += 30) {
             const ids = orders.slice(i, i + 30).map((order) => order.id);
-            const filter = ids.map((id) => `purchase_order="${id}"`).join(' || ');
-            const items = await pb.collection('purchase_order_items').getFullList<LandedPurchaseItem>({
+            const filter = `account_email="${tenant}" && (${ids.map((id) => `purchase_order="${id}"`).join(' || ')})`;
+            const items = await db.collection('purchase_order_items').getFullList<LandedPurchaseItem>({
                 filter,
                 batch: 500,
             }).catch(() => []);
@@ -387,18 +393,23 @@ async function buildLandedCostMap(): Promise<Map<string, number>> {
     return landed;
 }
 
-export async function getStockReport(): Promise<{
+export async function getStockReport(db: typeof pb = pb, tenant: string = accountScopeEmail()): Promise<{
     rows: StockReportRow[];
     summary: { totalProducts: number; lowStock: number; totalValue: number; landedCount: number };
 }> {
     try {
-        const [data, landedCostByVariant] = await Promise.all([
-            pb.collection('product_variants').getFullList<ProductVariant>({
+        const [data, landedCostByVariant, categories] = await Promise.all([
+            db.collection('product_variants').getFullList<ProductVariant>({
+                filter: `account_email="${tenant}"`,
                 sort: 'stock_level',
                 expand: 'product',
             }),
-            buildLandedCostMap(),
+            buildLandedCostMap(db, tenant),
+            getCategories(false).catch(() => []),
         ]);
+        const categoryNameById = new Map(
+            (categories as Array<{ id: string; name: string }>).map((c) => [c.id, c.name])
+        );
 
         const rows: StockReportRow[] = data.map((v) => {
             const product = v.expand?.product;
@@ -407,13 +418,16 @@ export async function getStockReport(): Promise<{
                 : (product?.base_price || 0);
             const stockLevel = v.stock_level || 0;
             const landedCost = landedCostByVariant.get(v.id);
+            const categoryId = String(product?.category || '');
 
             return {
                 productId: product?.id || '',
+                variantId: v.id,
                 productName: product?.name || 'Unknown',
                 sku: (product?.sku || '') + (v.sku_suffix ? `-${v.sku_suffix}` : ''),
                 variantName: v.variant_name || 'Default',
-                category: product?.category,
+                category: categoryId,
+                categoryName: categoryNameById.get(categoryId) || 'Unclassified',
                 currentStock: stockLevel,
                 reorderLevel: v.low_stock_threshold || 10,
                 lastUpdated: formatDateSafe(v.updated),
@@ -466,7 +480,7 @@ export async function getHSNSummary(
         const { start, end } = normalizeDateRange(startDate, endDate);
         // Fetch invoice items with date filter through invoice
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `invoice_date>="${start}" && invoice_date<="${end}"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}"`,
         });
 
         const invoiceIds = invoices.map(inv => inv.id);
@@ -558,7 +572,7 @@ export async function generateGSTR1JSON(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
+            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular"`,
             sort: 'invoice_number',
         });
 

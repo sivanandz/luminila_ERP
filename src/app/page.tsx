@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { RefreshCw } from "lucide-react";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 
@@ -98,7 +99,10 @@ export default function DashboardPage() {
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-sm text-muted-foreground">
-                                    Last 30 days performance
+                                    Last 30 days performance ·{" "}
+                                    <Link href="/analytics" className="text-primary hover:underline font-medium">
+                                        Open full analytics →
+                                    </Link>
                                 </p>
                             </div>
                             <Button

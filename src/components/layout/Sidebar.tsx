@@ -118,6 +118,7 @@ const navGroups: NavItem[] = [
         icon: <TrendingUp size={20} />,
         label: "Reports",
         children: [
+            { href: "/analytics", icon: <BarChart3 size={18} />, label: "Analytics" },
             { href: "/reports", icon: <BarChart3 size={18} />, label: "Business Reports" },
             { href: "/reports/export", icon: <Globe size={18} />, label: "Export Invoice" },
             { href: "/activity", icon: <Activity size={18} />, label: "Activity Log" },
