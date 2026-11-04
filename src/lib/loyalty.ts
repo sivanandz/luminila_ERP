@@ -121,8 +121,15 @@ export async function getLoyaltySettings(db: PocketBase = pb): Promise<LoyaltySe
         return await db.collection('loyalty_settings').getFirstListItem<LoyaltySettings>(
             `is_active=true${tenantClause(db)}`
         );
-    } catch {
-        return DEFAULT_LOYALTY_SETTINGS;
+    } catch (error) {
+        // A missing settings row is a fresh install: the documented defaults
+        // apply. Any other failure must reach the caller — silently accruing
+        // at the default rates hides a DB outage (CUS-11).
+        if ((error as { status?: number })?.status === 404) {
+            return DEFAULT_LOYALTY_SETTINGS;
+        }
+        console.error('Error fetching loyalty settings:', error);
+        throw error;
     }
 }
 
@@ -203,12 +210,25 @@ export async function createLoyaltyAccount(customerId: string, db: PocketBase = 
     }
 }
 
-export async function getOrCreateLoyaltyAccount(customerId: string, db: PocketBase = pb): Promise<LoyaltyAccount | null> {
+/**
+ * Read-or-create without taking the queue lock.
+ *
+ * Only for callers already running inside `enqueueTask('loyalty_<id>')`:
+ * re-entering the same key would wait on its own chain and deadlock.
+ */
+async function ensureLoyaltyAccount(customerId: string, db: PocketBase): Promise<LoyaltyAccount | null> {
     let account = await getLoyaltyAccount(customerId, db);
+    // Re-check inside the task: the read above and the create below are not
+    // atomic with each other, so the serialized re-entry is what prevents a
+    // duplicate account (and a duplicate signup bonus) (CUS-9).
     if (!account) {
         account = await createLoyaltyAccount(customerId, db);
     }
     return account;
+}
+
+export async function getOrCreateLoyaltyAccount(customerId: string, db: PocketBase = pb): Promise<LoyaltyAccount | null> {
+    return enqueueTask(`loyalty_${customerId}`, () => ensureLoyaltyAccount(customerId, db));
 }
 
 // =============================================
@@ -304,7 +324,9 @@ export async function earnPoints(
     db: PocketBase = pb
 ): Promise<{ pointsEarned: number; newBalance: number } | null> {
     return enqueueTask(`loyalty_${customerId}`, async () => {
-        const account = await getOrCreateLoyaltyAccount(customerId, db);
+        // Already inside the loyalty lock — use the unlocked helper to avoid
+        // re-entering enqueueTask on the same key (deadlock).
+        const account = await ensureLoyaltyAccount(customerId, db);
         if (!account) return null;
 
         const pointsToEarn = await calculatePointsToEarn(purchaseAmount, account.tier, db);
@@ -431,49 +453,67 @@ export async function adjustPoints(
         throw new Error('Adjustment must be a non-zero number');
     }
 
-    const account = await getLoyaltyAccount(customerId, db);
-    if (!account) return null;
+    // Serialized with earn/redeem so the negative-balance compensation cannot
+    // interleave with another balance write (CUS-10).
+    return enqueueTask(`loyalty_${customerId}`, async () => {
+        const account = await getLoyaltyAccount(customerId, db);
+        if (!account) return null;
 
-    try {
-        // Operators, not a value read a moment ago: a concurrent earn or redeem
-        // between the read and the write would otherwise be overwritten.
-        const updated = await db.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
-            'current_balance+': pointsAdjustment,
-            ...(pointsAdjustment > 0 && { 'total_points_earned+': pointsAdjustment }),
-            last_activity: new Date().toISOString(),
-        });
+        try {
+            // Operators, not a value read a moment ago: a concurrent earn or redeem
+            // between the read and the write would otherwise be overwritten.
+            const updated = await db.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
+                'current_balance+': pointsAdjustment,
+                ...(pointsAdjustment > 0 && { 'total_points_earned+': pointsAdjustment }),
+                last_activity: new Date().toISOString(),
+            });
 
-        const newBalance = updated.current_balance;
-        if (newBalance < 0) {
-            // Compensate and refuse; the pre-read cannot prove the balance.
-            await db.collection('loyalty_accounts').update(account.id, {
-                'current_balance+': -pointsAdjustment,
+            const newBalance = updated.current_balance;
+            if (newBalance < 0) {
+                // Compensate and refuse; the pre-read cannot prove the balance.
+                // A failed compensation leaves a negative balance behind, so it
+                // must never be swallowed (CUS-10).
+                try {
+                    await db.collection('loyalty_accounts').update(account.id, {
+                        'current_balance+': -pointsAdjustment,
+                    });
+                } catch (compensationError) {
+                    console.error(
+                        '[loyalty] CRITICAL: negative-balance compensation failed; manual correction required',
+                        { customerId, accountId: account.id, pointsAdjustment, compensationError }
+                    );
+                    throw new Error(
+                        `Adjustment would result in negative balance and the compensating write failed: ${
+                            compensationError instanceof Error ? compensationError.message : String(compensationError)
+                        }`
+                    );
+                }
+                throw new Error('Adjustment would result in negative balance');
+            }
+
+            // Sync balance to customer record
+            await db.collection('customers').update(customerId, {
+                loyalty_points: newBalance,
             }).catch(() => {});
-            throw new Error('Adjustment would result in negative balance');
+
+            // Record transaction
+            await recordTransaction(
+                account.id,
+                'adjust',
+                pointsAdjustment,
+                newBalance,
+                reason,
+                'manual',
+                undefined,
+                db
+            );
+
+            return { newBalance };
+        } catch (error) {
+            console.error('Error adjusting loyalty points:', error);
+            throw error;
         }
-
-        // Sync balance to customer record
-        await db.collection('customers').update(customerId, {
-            loyalty_points: newBalance,
-        }).catch(() => {});
-
-        // Record transaction
-        await recordTransaction(
-            account.id,
-            'adjust',
-            pointsAdjustment,
-            newBalance,
-            reason,
-            'manual',
-            undefined,
-            db
-        );
-
-        return { newBalance };
-    } catch (error) {
-        console.error('Error adjusting loyalty points:', error);
-        throw error;
-    }
+    });
 }
 
 // =============================================

@@ -10,12 +10,65 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'node:crypto';
 import type { NextRequest } from 'next/server';
 import {
     DEFAULT_SALES_CHANNELS,
     getChannelPriceFromList,
     type SalesChannelDefinition,
 } from './pricing-rules';
+import { decryptSecret, encryptSecret, isEncryptedSecret, parseRegistryKey } from './tenant-secrets';
+
+/**
+ * Opaque tenant handle for public catalog image links.
+ *
+ * The link handed to Meta used to embed `account_email`, exposing tenant PII to
+ * anyone holding the URL (ENG-3). The tenant is encrypted with a dedicated
+ * secret instead; the image route decrypts it server-side. The token wraps an
+ * identifier only (never a credential), so the already-provisioned registry key
+ * is an acceptable fallback when no dedicated secret is configured.
+ */
+function catalogTokenKey(env: NodeJS.ProcessEnv): Buffer | null {
+    const secret = (env.CATALOG_TOKEN_SECRET || '').trim();
+    if (secret) return crypto.createHash('sha256').update(`catalog-tenant-token:${secret}`).digest();
+    const registry = parseRegistryKey(env.TENANT_REGISTRY_KEY);
+    if (registry) return crypto.createHash('sha256').update(registry).digest();
+    const fallback = (env.CUSTOMER_SESSION_SECRET || env.JWT_SECRET || '').trim();
+    if (!fallback) return null;
+    return crypto.createHash('sha256').update(`catalog-tenant-token:${fallback}`).digest();
+}
+
+export function buildCatalogTenantToken(
+    tenantEmail: string,
+    env: NodeJS.ProcessEnv = process.env
+): string {
+    const email = tenantEmail.trim().toLowerCase();
+    if (!email) throw new Error('A tenant email is required to build catalog image links.');
+    const key = catalogTokenKey(env);
+    if (!key) {
+        throw new Error(
+            'Set CATALOG_TOKEN_SECRET, TENANT_REGISTRY_KEY or CUSTOMER_SESSION_SECRET before publishing catalog image links.'
+        );
+    }
+    return encryptSecret(email, key);
+}
+
+export function readCatalogTenantToken(
+    token: string,
+    env: NodeJS.ProcessEnv = process.env
+): string | null {
+    const value = (token || '').trim();
+    // Plaintext/absent tokens fail closed: only the encrypted form is trusted.
+    if (!value || !isEncryptedSecret(value)) return null;
+    const key = catalogTokenKey(env);
+    if (!key) return null;
+    try {
+        const email = decryptSecret(value, key).trim().toLowerCase();
+        return email || null;
+    } catch {
+        return null;
+    }
+}
 
 export interface MetaBatchItemData {
     id: string; // Retailer SKU
@@ -38,14 +91,46 @@ export interface MetaBatchItemData {
  */
 export function resolvePublicCatalogOrigin(req: NextRequest): string {
     const envBase = (process.env.PUBLIC_BASE_URL || process.env.NEXT_PUBLIC_SITE_URL || '').trim().replace(/\/+$/, '');
-    if (envBase && envBase.startsWith('http') && !envBase.includes('localhost') && !envBase.includes('127.0.0.1')) {
+    const isPublicHttpsOrigin = (value: string): boolean => {
+        try {
+            const url = new URL(value);
+            return url.protocol === 'https:'
+                && !['localhost', '127.0.0.1', '::1'].includes(url.hostname.toLowerCase());
+        } catch {
+            return false;
+        }
+    };
+    if (isPublicHttpsOrigin(envBase)) {
         return envBase;
     }
 
-    const forwardedHost = req.headers.get('x-forwarded-host')?.trim();
-    const forwardedProto = req.headers.get('x-forwarded-proto')?.trim() || 'https';
-    if (forwardedHost && !forwardedHost.includes('localhost') && !forwardedHost.includes('127.0.0.1')) {
-        return `${forwardedProto}://${forwardedHost}`.replace(/\/+$/, '');
+    // The forwarded host is client-controlled unless it names a host we already
+    // trust: the request's own Host header or the configured public origin.
+    // Reflecting it verbatim let a spoofed header rewrite every catalog link (ENG-2).
+    const hostOnly = (value: string | null | undefined): string => {
+        const raw = (value || '').trim().toLowerCase();
+        if (!raw) return '';
+        try {
+            return new URL(`https://${raw}`).hostname.toLowerCase();
+        } catch {
+            return '';
+        }
+    };
+    const trustedHosts = new Set<string>();
+    const requestHost = hostOnly(req.headers.get('host') || req.nextUrl.host);
+    if (requestHost) trustedHosts.add(requestHost);
+    const envHost = hostOnly(envBase);
+    if (envHost) trustedHosts.add(envHost);
+
+    const forwardedHost = hostOnly(req.headers.get('x-forwarded-host')?.split(',')[0]);
+    const forwardedProto = (req.headers.get('x-forwarded-proto')?.split(',')[0] || '').trim().toLowerCase();
+    if (
+        forwardedHost
+        && forwardedProto === 'https'
+        && trustedHosts.has(forwardedHost)
+        && !['localhost', '127.0.0.1', '::1'].includes(forwardedHost)
+    ) {
+        return `https://${forwardedHost}`;
     }
 
     const reqOrigin = req.nextUrl.origin.replace(/\/+$/, '');
@@ -123,7 +208,8 @@ export function buildMetaBatchRequests(
     brandName: string = 'Niththigal Jewellery',
     channels: SalesChannelDefinition[] = DEFAULT_SALES_CHANNELS,
     /** Tenant whose image proxy the feed links to; without it every image fell
-     * back to the generic placeholder (SF-19). */
+     * back to the generic placeholder (SF-19). The raw email never goes into the
+     * URL: an opaque encrypted handle does (ENG-3). */
     tenantEmail: string = ''
 ): MetaBatchRequest[] {
     const variantsByProduct = new Map<string, typeof variants>();
@@ -133,6 +219,15 @@ export function buildMetaBatchRequests(
         }
         variantsByProduct.get(v.product)!.push(v);
     }
+
+    let tenantHandle: string | null = null;
+    const imageLinkFor = (productId: string): string => {
+        if (!tenantEmail.trim()) {
+            throw new Error('A tenant email is required to publish catalog image links.');
+        }
+        if (!tenantHandle) tenantHandle = buildCatalogTenantToken(tenantEmail);
+        return `${origin}/api/catalog/image?id=${encodeURIComponent(productId)}&tenant=${encodeURIComponent(tenantHandle)}`;
+    };
 
     const requests: MetaBatchRequest[] = [];
 
@@ -151,7 +246,7 @@ export function buildMetaBatchRequests(
         const cleanDesc = (p.description || p.name || 'Fine Jewelry').replace(/[\r\n]+/g, ' ').slice(0, 5000);
         const imageLink = (p.image_url && p.image_url.startsWith('http'))
             ? p.image_url
-            : `${origin}/api/catalog/image?id=${p.id}&account_email=${encodeURIComponent(tenantEmail)}`;
+            : imageLinkFor(p.id);
 
         if (action === 'DELETE' || p.is_active === false) {
             // Mark out of stock or delete

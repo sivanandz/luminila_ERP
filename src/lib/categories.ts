@@ -91,8 +91,20 @@ export async function createCategory(category: Omit<Category, 'id' | 'created' |
     }
 }
 
+/** Refuse a record id that is not owned by the signed-in tenant. */
+async function assertOwnedCategory(id: string): Promise<void> {
+    const tenant = accountScopeEmail();
+    if (!tenant) throw new Error('No tenant account resolved; refusing to modify a category.');
+    const record = await pb.collection('categories').getOne(id);
+    const owner = String((record as { account_email?: string }).account_email || '').trim().toLowerCase();
+    if (owner && owner !== tenant) {
+        throw new Error('Category not found for this account.');
+    }
+}
+
 export async function updateCategory(id: string, updates: Partial<Category>): Promise<Category> {
     try {
+        await assertOwnedCategory(id);
         const record = await pb.collection('categories').update(id, updates);
         return record as unknown as Category;
     } catch (error) {
@@ -103,6 +115,7 @@ export async function updateCategory(id: string, updates: Partial<Category>): Pr
 
 export async function deleteCategory(id: string): Promise<void> {
     try {
+        await assertOwnedCategory(id);
         await pb.collection('categories').delete(id);
     } catch (error) {
         console.error('Error deleting category:', error);

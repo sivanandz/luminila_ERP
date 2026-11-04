@@ -77,8 +77,12 @@ export async function getCategoryDeepDive(range: AnalyticsRange): Promise<Catego
     // ---- price bands ----
     const bands = PRICE_BANDS.map((b) => ({ ...b, units: 0, revenue: 0, cogs: 0 }));
     for (const l of lines) {
-        const price = l.quantity > 0 ? l.gross / l.quantity : 0;
-        const band = bands.find((b) => price >= b.min && price < b.max) || bands[bands.length - 1];
+        // A negative unit price is a refund, not a sale. Clamp it into the
+        // lowest band, and never fall back to the last band: the old
+        // `|| bands[last]` put refunds into '₹2L+' (AN2-9).
+        const rawPrice = l.quantity > 0 ? l.gross / l.quantity : 0;
+        const price = Number.isFinite(rawPrice) ? Math.max(0, rawPrice) : 0;
+        const band = bands.find((b) => price >= b.min && price < b.max) || bands[0];
         band.units += l.quantity;
         band.revenue += l.netRevenue;
         band.cogs += l.quantity * l.unitCost;

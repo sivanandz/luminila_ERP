@@ -29,6 +29,7 @@ import {
     Layers,
 } from "lucide-react";
 import { toast } from "sonner";
+import { usePermissions } from "@/hooks/usePermissions";
 import { getTypeAheadProducts } from "@/lib/products";
 import { getVendors, type Vendor } from "@/lib/vendors";
 import {
@@ -80,6 +81,9 @@ export function VendorIngestionModal({
     sourceContext,
     onIngested,
 }: VendorIngestionModalProps) {
+    const { hasPermission, isAdmin } = usePermissions();
+    // CMP-7: creating products/stock from a chat is an inventory write.
+    const canWriteInventory = () => isAdmin || hasPermission("inventory", "create");
     const parsed = useMemo(() => (isOpen ? parseVendorOffer(messageBody) : null), [isOpen, messageBody]);
 
     const [taxonomies, setTaxonomies] = useState<SKUTaxonomies>(getSKUTaxonomies());
@@ -191,9 +195,15 @@ export function VendorIngestionModal({
         if (!isOpen) return;
         let cancelled = false;
         const prefix = `${skuGenre}${skuCategory}${skuSubcat}`.toUpperCase().replace(/[^A-Z0-9]/g, "");
-        computeNextSkuSequence(prefix).then(seq => {
-            if (!cancelled) setNextSkuSeq(seq);
-        });
+        computeNextSkuSequence(prefix)
+            .then(seq => {
+                if (!cancelled) setNextSkuSeq(seq);
+            })
+            .catch((err) => {
+                // The allocator refuses to guess a sequence; keep the preview
+                // empty rather than showing a number that will collide.
+                if (!cancelled) console.error('Could not allocate a SKU sequence', err);
+            });
         return () => { cancelled = true; };
     }, [isOpen, skuGenre, skuCategory, skuSubcat]);
 
@@ -257,6 +267,10 @@ export function VendorIngestionModal({
     }, [skuCategory, skuBaseMetal, skuStone]);
 
     const handleIngest = async () => {
+        if (!canWriteInventory()) {
+            toast.error('You do not have permission to create inventory.');
+            return;
+        }
         if (!name.trim() || !(parseFloat(costPrice) > 0)) {
             toast.error('Product name and a cost price above zero are required');
             return;
@@ -782,6 +796,9 @@ export function AddExistingInventoryModal({
     sourceContext,
     onAdded,
 }: AddExistingInventoryModalProps) {
+    const { hasPermission, isAdmin } = usePermissions();
+    // CMP-7: recording received stock is an inventory write.
+    const canWriteInventory = () => isAdmin || hasPermission("inventory", "update");
     const parsed = useMemo(() => (isOpen ? parseVendorOffer(messageBody) : null), [isOpen, messageBody]);
     const [query, setQuery] = useState('');
     const [results, setResults] = useState<VariantResult[]>([]);
@@ -837,6 +854,10 @@ export function AddExistingInventoryModal({
     }, [query]);
 
     const handleConfirm = async () => {
+        if (!canWriteInventory()) {
+            toast.error('You do not have permission to update inventory.');
+            return;
+        }
         if (!selected || !(parseInt(quantity, 10) > 0)) {
             toast.error('Select a variant and enter a quantity');
             return;

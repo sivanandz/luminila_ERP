@@ -48,6 +48,10 @@ export function WhatsAppDrawer() {
     const [draft, setDraft] = useState("");
     const [sending, setSending] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    // CMP-1/CMP-4: sequence + identity guards so a slow response for a previous
+    // chat cannot paint over the currently open one.
+    const openSeqRef = useRef(0);
+    const activeChatIdRef = useRef<string | null>(null);
 
     // Context Action Engine state (spec §8)
     const [actionMenu, setActionMenu] = useState<{
@@ -99,6 +103,9 @@ export function WhatsAppDrawer() {
             for (const s of stored) typeMap[s.chat_id] = s.contact_type as ContactType;
             setContactTypes(typeMap);
             setChats(sidecarChats.sort((a, b) => b.timestamp - a.timestamp));
+        } catch (error) {
+            console.error("Failed to load WhatsApp chats:", error);
+            toast.error("Could not load WhatsApp chats.");
         } finally {
             setLoading(false);
         }
@@ -109,9 +116,14 @@ export function WhatsAppDrawer() {
     }, [isOpen, loadChats]);
 
     const openConversation = async (chat: WPPChat) => {
+        const seq = ++openSeqRef.current;
+        activeChatIdRef.current = chat.id;
         setActiveChat(chat);
         setMessages([]);
         setLoadingMessages(true);
+        // Clear the previous chat's vendor immediately; a stale attribution must
+        // never be usable for an ingest while the new lookup is in flight.
+        setActiveVendor(null);
 
         // Ensure chat record exists in PocketBase for transcript persistence (spec §9/§12.1)
         ensureChat({ chatId: chat.id, contactName: chat.name }).catch(() => {});
@@ -120,21 +132,31 @@ export function WhatsAppDrawer() {
         const digits = (chat.id || '').replace(/\D/g, '').slice(-10);
         if (digits) {
             findVendorByPhone(digits).then((v) => {
-                if (v) setActiveVendor({ id: v.id, name: v.name });
-            }).catch(() => setActiveVendor(null));
-        } else {
-            setActiveVendor(null);
+                // CMP-1: apply only to the chat that issued the lookup, and always
+                // assign (no-match clears) so a previous vendor cannot leak over.
+                if (openSeqRef.current !== seq || activeChatIdRef.current !== chat.id) return;
+                setActiveVendor(v ? { id: v.id, name: v.name } : null);
+            }).catch(() => {
+                if (openSeqRef.current !== seq || activeChatIdRef.current !== chat.id) return;
+                setActiveVendor(null);
+            });
         }
 
         try {
             const msgs = await getChatMessages(whatsappManager.getSessionIdSafe(), chat.id, 30);
+            // CMP-4: a newer openConversation supersedes this response.
+            if (openSeqRef.current !== seq) return;
             setMessages(msgs);
             if (chat.unreadCount > 0) {
                 markAsRead(whatsappManager.getSessionIdSafe(), chat.id).catch(() => {});
                 setChats((prev) => prev.map((c) => (c.id === chat.id ? { ...c, unreadCount: 0 } : c)));
             }
+        } catch (error) {
+            if (openSeqRef.current !== seq) return;
+            console.error("Failed to load WhatsApp messages:", error);
+            toast.error("Could not load this conversation.");
         } finally {
-            setLoadingMessages(false);
+            if (openSeqRef.current === seq) setLoadingMessages(false);
         }
     };
 
@@ -148,11 +170,18 @@ export function WhatsAppDrawer() {
                 staffName: user?.name || undefined,
                 staffUserId: user?.id,
             });
-            if (ok) {
-                setDraft("");
-                const msgs = await getChatMessages(whatsappManager.getSessionIdSafe(), activeChat.id, 30);
-                setMessages(msgs);
+            if (!ok) {
+                // CMP-9: ok===false previously failed silently and kept the draft
+                // looking unsent-but-sent; tell the user instead.
+                toast.error("WhatsApp did not confirm the message was sent.");
+                return;
             }
+            setDraft("");
+            const msgs = await getChatMessages(whatsappManager.getSessionIdSafe(), activeChat.id, 30);
+            setMessages(msgs);
+        } catch (error) {
+            console.error("Failed to send WhatsApp message:", error);
+            toast.error("Failed to send the message. Your draft was kept.");
         } finally {
             setSending(false);
         }
@@ -528,6 +557,7 @@ export function WhatsAppDrawer() {
                 senderName={(actionMenu.message as WPPMessageWithFromName)?.fromName || actionMenu.message?.sender?.pushname || actionMenu.message?.sender?.name}
                 chatName={activeChat?.name}
                 position={actionMenu.position}
+                messageBody={actionMenu.message?.caption || actionMenu.message?.body || ''}
                 detectedAmount={(() => {
                     const text = actionMenu.message?.caption || actionMenu.message?.body || '';
                     const m = text.match(/₹?\s*([\d,]{2,7})/);

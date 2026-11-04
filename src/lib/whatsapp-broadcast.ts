@@ -46,6 +46,8 @@ export interface CampaignQueueResult {
     queued: number;
     skippedOptOut: number;
     skippedNoPhone: number;
+    /** Recipients already queued in this campaign run (WA-11). */
+    skippedDuplicate: number;
 }
 
 interface CustomerRow {
@@ -228,7 +230,13 @@ export function renderMergeTags(
         .replace(/\{\{\s*total_spent\s*\}\}/gi, `₹${(member.total_spent || 0).toLocaleString('en-IN')}`);
 }
 
-/** Marketing messages already sent today (quota guard, spec §11.4). */
+/**
+ * Marketing messages already sent today (quota guard, spec §11.4).
+ *
+ * Throws when the count cannot be read (WA-6): returning 0 turned a failed
+ * quota read into "nothing sent today", silently lifting the 150/day anti-ban
+ * cap. Callers that can afford to miss the number must catch explicitly.
+ */
 export async function sentTodayCount(): Promise<number> {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -237,8 +245,9 @@ export async function sentTodayCount(): Promise<number> {
             filter: withTenantFilter(`status="sent" && sent_at>="${startOfDay.toISOString()}"`),
         });
         return records.totalItems;
-    } catch {
-        return 0;
+    } catch (err) {
+        console.error('[broadcast] sentTodayCount failed; the daily marketing quota cannot be verified:', err);
+        throw err;
     }
 }
 
@@ -284,13 +293,20 @@ export async function resolveCustomRecipients(
     let skippedOptOut = 0;
     for (const row of rows) {
         const requested = unique.get(row.id);
-        const rawPhone = row.phone || requested?.phone || '';
+        // WA-7: never fall back to a caller-supplied phone. The tenant row is
+        // the authority; a recipient with no number on file is skipped.
+        const rawPhone = row.phone || '';
         const digits = rawPhone.replace(/\D/g, '');
         if (!rawPhone || digits.length < 10) {
             skippedNoPhone++;
             continue;
         }
         if (row.whatsapp_opt_out) {
+            skippedOptOut++;
+            continue;
+        }
+        // WA-7: same marketing-consent gate as the segment path (CRM-10).
+        if (row.opt_in_marketing === false) {
             skippedOptOut++;
             continue;
         }
@@ -325,6 +341,11 @@ export async function queueCampaign(input: {
     createdBy?: string;
     /** Explicit cohort (ids are re-validated against the tenant). */
     customRecipients?: CustomBroadcastRecipient[];
+    /**
+     * WA-11: a caller fanning out over several segments in one campaign passes
+     * the same set so a customer in `all_active` and `vip_tiers` is queued once.
+     */
+    seenRecipients?: Set<string>;
 }): Promise<CampaignQueueResult> {
     const resolved = input.customRecipients && input.customRecipients.length > 0
         ? await resolveCustomRecipients(input.customRecipients)
@@ -335,11 +356,24 @@ export async function queueCampaign(input: {
         queued: 0,
         skippedOptOut,
         skippedNoPhone,
+        skippedDuplicate: 0,
     };
     const tiers = await loadLoyaltyTiers();
+    const seen = input.seenRecipients ?? new Set<string>();
 
     let slotOffset = 0;
     for (const member of members) {
+        // WA-11: dedupe by customer id and by phone within the campaign run;
+        // overlapping segments used to send the same message twice.
+        const idKey = member.id ? `id:${member.id}` : '';
+        const phoneKey = member.phone ? `phone:${member.phone}` : '';
+        if ((idKey && seen.has(idKey)) || (phoneKey && seen.has(phoneKey))) {
+            result.skippedDuplicate++;
+            continue;
+        }
+        if (idKey) seen.add(idKey);
+        if (phoneKey) seen.add(phoneKey);
+
         const body = renderMergeTags(input.template, member, tiers) + '\n\n_Reply STOP to opt out._';
         slotOffset += getHumanizedJitterDelayMs();
 
@@ -364,6 +398,34 @@ export async function queueCampaign(input: {
 }
 
 /**
+ * WA-6: claim a queued row before sending it.
+ *
+ * PocketBase has no conditional update, so the row is re-read and its `updated`
+ * stamp compared immediately before the status flip: a concurrent drain that
+ * got there first changes the stamp (or the status), and this drain backs off
+ * instead of sending the same message twice.
+ */
+async function claimQueuedMessage(entryId: string): Promise<boolean> {
+    try {
+        const before = await pb.collection('broadcast_messages').getOne<{ status?: string; updated?: string }>(
+            entryId,
+            { fields: 'status,updated' }
+        );
+        if (String(before.status) !== 'queued') return false;
+        const after = await pb.collection('broadcast_messages').getOne<{ status?: string; updated?: string }>(
+            entryId,
+            { fields: 'status,updated' }
+        );
+        if (String(after.status) !== 'queued' || after.updated !== before.updated) return false;
+        await pb.collection('broadcast_messages').update(entryId, { status: 'sending' });
+        return true;
+    } catch (err) {
+        console.warn('[broadcast] could not claim queued message', entryId, (err as Error)?.message);
+        return false;
+    }
+}
+
+/**
  * Drain the broadcast queue: sends every queued message whose jittered slot
  * is due, one at a time, respecting the daily quota and opt-out registry.
  * Call repeatedly (e.g. every 10–15s) from a long-lived surface.
@@ -379,7 +441,15 @@ export async function processBroadcastQueue(): Promise<{
     isProcessingQueue = true;
 
     try {
-        const quotaUsed = await sentTodayCount();
+        let quotaUsed: number;
+        try {
+            quotaUsed = await sentTodayCount();
+        } catch (err) {
+            // WA-6: an unverifiable quota must block sending, not lift the cap.
+            console.error('[broadcast] Queue drain blocked: the daily quota could not be verified:', err);
+            stats.quotaRemaining = 0;
+            return stats;
+        }
         const quotaRemaining = Math.max(0, DAILY_MARKETING_QUOTA - quotaUsed);
         stats.quotaRemaining = quotaRemaining;
         if (quotaRemaining <= 0) return stats;
@@ -421,10 +491,12 @@ export async function processBroadcastQueue(): Promise<{
                 continue;
             }
 
-            // Mark as sending to guard against duplicate pickup
-            await pb.collection('broadcast_messages').update(entry.id, {
-                status: 'sending',
-            }).catch(() => {});
+            // WA-6: flip queued→sending only after the re-read/compare, so a
+            // concurrent drain cannot also send this row.
+            if (!(await claimQueuedMessage(entry.id))) {
+                stats.skipped++;
+                continue;
+            }
 
             try {
                 const ok = await whatsappManager.sendMessage(entry.recipient_phone, entry.body || '');
@@ -457,10 +529,12 @@ export async function processBroadcastQueue(): Promise<{
     }
 }
 
-/** Register a STOP opt-out for a customer (inbound "STOP" handler). */
-export async function registerStopOptOut(phoneOrChatId: string, customerId?: string): Promise<void> {
+/** Register a STOP opt-out for a customer (inbound "STOP" handler). Returns false when a leg failed. */
+export async function registerStopOptOut(phoneOrChatId: string, customerId?: string): Promise<boolean> {
     const { setWhatsAppOptOut } = await import('./whatsapp-crm');
-    await setWhatsAppOptOut(phoneOrChatId, customerId, 'stop');
+    const ok = await setWhatsAppOptOut(phoneOrChatId, customerId, 'stop');
+    if (!ok) console.error('[broadcast] STOP opt-out was only partially recorded for', phoneOrChatId);
+    return ok;
 }
 
 /** Campaign queue snapshot for the composer UI. */
@@ -476,7 +550,8 @@ export async function getCampaignQueueSnapshot(campaign?: string): Promise<{ que
             sentTodayCount(),
         ]);
         return { queued: queued.totalItems, sentToday };
-    } catch {
+    } catch (err) {
+        console.warn('[broadcast] campaign snapshot failed:', (err as Error)?.message);
         return { queued: 0, sentToday: 0 };
     }
 }
@@ -669,6 +744,8 @@ export async function broadcastProductsToDestinations(
 
     // 4. QUEUE TO CUSTOMER BROADCAST LISTS (if requested)
     if (destinations.customerSegments && destinations.customerSegments.length > 0) {
+        // WA-11: one campaign run, one message per customer — segments overlap.
+        const seenRecipients = new Set<string>();
         for (const segment of destinations.customerSegments) {
             try {
                 const queueRes = await queueCampaign({
@@ -676,6 +753,7 @@ export async function broadcastProductsToDestinations(
                     template: messageText,
                     segment,
                     createdBy: options.createdBy,
+                    seenRecipients,
                 });
                 result.customersQueued += queueRes.queued;
                 result.totalRecipients += queueRes.queued;

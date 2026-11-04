@@ -119,8 +119,14 @@ export function parseSseText(text: string): SseFrame[] {
     return [...parser.push(text), ...parser.flush()];
 }
 
+/** Event names reach the browser verbatim: anything else could inject fields. */
+const SSE_EVENT_NAME = /^[a-z0-9_-]+$/i;
+
 /** Encode one SSE frame for a `Response` body. */
 export function encodeSseEvent(event: string, data: unknown): string {
+    if (!SSE_EVENT_NAME.test(event)) {
+        throw new Error('Invalid SSE event name.');
+    }
     const payload = typeof data === 'string' ? data : JSON.stringify(data);
     const safePayload = payload.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = safePayload.split('\n').map((line) => `data: ${line}`).join('\n');

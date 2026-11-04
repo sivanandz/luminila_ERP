@@ -31,6 +31,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
+// PG-14: 4 letters + "0" + 6 alphanumerics (RBI IFSC format).
+const IFSC_PATTERN = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
 export default function BankingPage() {
     const router = useRouter();
     const [accounts, setAccounts] = useState<BankAccount[]>([]);
@@ -71,19 +74,35 @@ export default function BankingPage() {
     }
 
     async function handleCreateAccount() {
+        const accountNumber = newAccount.account_number.trim();
+        const ifsc = newAccount.ifsc_code.trim().toUpperCase();
+
         if (!newAccount.account_name || !newAccount.bank_name) {
             toast.error("Please fill required fields");
             return;
         }
 
+        // PG-14: an account with no number cannot be reconciled, and a malformed
+        // IFSC breaks every later transfer — validate both before creating.
+        if (!accountNumber) {
+            toast.error("Please enter the account number");
+            return;
+        }
+        if (!IFSC_PATTERN.test(ifsc)) {
+            toast.error("Enter a valid IFSC code (e.g. HDFC0001234)");
+            return;
+        }
+
+        const openingBalance = parseFloat(newAccount.opening_balance);
         setSubmitting(true);
         try {
             await createBankAccount({
                 account_name: newAccount.account_name,
-                account_number: newAccount.account_number,
+                account_number: accountNumber,
                 bank_name: newAccount.bank_name,
-                ifsc_code: newAccount.ifsc_code,
-                opening_balance: parseFloat(newAccount.opening_balance) || 0,
+                ifsc_code: ifsc,
+                // PG-14: a negative opening balance started the ledger in debt.
+                opening_balance: Number.isFinite(openingBalance) ? Math.max(0, openingBalance) : 0,
                 currency: newAccount.currency,
                 is_active: true
             });

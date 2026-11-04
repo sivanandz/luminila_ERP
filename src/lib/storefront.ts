@@ -55,15 +55,17 @@ export function resolveOrderTenant(
  */
 export async function getStorefrontBinding(preferredEmail?: string): Promise<StorefrontBinding> {
     const cleanEmail = normalizeBindingEmail(preferredEmail);
+    // The caller may be anonymous, but the lookup may not be: a bare
+    // `key="storefront_content"` read returns whichever tenant owns the first
+    // row and would bind a public storefront to an arbitrary account (SYN-3).
+    // Without a tenant there is nothing tenant-specific to resolve.
+    if (!cleanEmail) return DEFAULT_BINDING;
     try {
         // A per-request client keeps this lookup out of the module-global
         // `pb` session, which concurrent requests for different tenants would
         // otherwise overwrite mid-flight (A-09).
-        const client = await createTenantClient(cleanEmail || undefined);
-        let query = 'key="storefront_content"';
-        if (cleanEmail) {
-            query += ` && account_email="${sanitizeFilter(cleanEmail)}"`;
-        }
+        const client = await createTenantClient(cleanEmail);
+        const query = `key="storefront_content" && account_email="${sanitizeFilter(cleanEmail)}"`;
 
         const record = await client.collection("store_settings").getFirstListItem(query).catch(() => null);
 
@@ -79,20 +81,18 @@ export async function getStorefrontBinding(preferredEmail?: string): Promise<Sto
         // honor it only when that tenant actually has settings in this database.
         // Previously any caller-supplied address was accepted, so an unknown
         // storefront name was echoed back and used as the tenant.
-        if (cleanEmail) {
-            const nameRecord = await client
-                .collection("store_settings")
-                .getFirstListItem(`key="store_name" && account_email="${sanitizeFilter(cleanEmail)}"`)
-                .catch(() => null);
-            if (nameRecord) {
-                return {
-                    boundAdminEmail: cleanEmail,
-                    brandName: nameRecord.value ? String(nameRecord.value) : DEFAULT_BINDING.brandName,
-                    customDomain: DEFAULT_BINDING.customDomain,
-                };
-            }
-            console.warn("[getStorefrontBinding] Requested storefront has no settings, using the default binding");
+        const nameRecord = await client
+            .collection("store_settings")
+            .getFirstListItem(`key="store_name" && account_email="${sanitizeFilter(cleanEmail)}"`)
+            .catch(() => null);
+        if (nameRecord) {
+            return {
+                boundAdminEmail: cleanEmail,
+                brandName: nameRecord.value ? String(nameRecord.value) : DEFAULT_BINDING.brandName,
+                customDomain: DEFAULT_BINDING.customDomain,
+            };
         }
+        console.warn("[getStorefrontBinding] Requested storefront has no settings, using the default binding");
     } catch (e) {
         console.warn("[getStorefrontBinding] Error resolving storefront binding:", e);
     }

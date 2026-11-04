@@ -3,7 +3,7 @@
  * Supports Multi-PoS Counters, Multi-Warehouses, Safe Vaults, and Inter-Location Stock Transfers.
  */
 
-import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey } from "./pocketbase";
+import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
 import { ClientResponseError } from "pocketbase";
 import { toast } from "sonner";
 import { generateId } from "./utils";
@@ -116,6 +116,23 @@ const getLocationsStorageKey = () => getTenantStorageKey("luminila_inventory_loc
 const getTransfersStorageKey = () => getTenantStorageKey("luminila_stock_transfers_v1");
 const getProductLocStockKey = () => getTenantStorageKey("luminila_product_location_stocks_v1");
 
+/**
+ * Tenant scope for every filter. Refuses to run without one rather than
+ * matching shared/legacy rows cross-tenant with an empty predicate (BNK-11).
+ */
+function tenantScope(): string {
+    const email = String(getCurrentTenantEmail() || "").trim().toLowerCase();
+    if (!email) {
+        throw new Error("No tenant is selected; refusing an unscoped inventory operation.");
+    }
+    return email;
+}
+
+/** True only when the collection itself is absent (older/local installs). */
+function isMissingCollection(err: unknown): boolean {
+    return (err as { status?: number })?.status === 404;
+}
+
 // ============================================
 // LOCATION SERVICE APIS
 // ============================================
@@ -125,13 +142,13 @@ const getProductLocStockKey = () => getTenantStorageKey("luminila_product_locati
  */
 export async function getInventoryLocations(): Promise<InventoryLocation[]> {
     ensureAuth();
-    const userEmail = getCurrentTenantEmail();
+    const userEmail = tenantScope();
     const storageKey = getLocationsStorageKey();
 
     // 1. Try PocketBase
     try {
         const records = await pb.collection("inventory_locations").getFullList<InventoryLocation>({
-            filter: `is_active = true && account_email = "${userEmail}"`,
+            filter: `is_active = true && account_email = "${sanitizeFilter(userEmail)}"`,
             sort: "name",
         });
         if (records && records.length > 0) {
@@ -184,7 +201,7 @@ export async function getWarehouseLocations(): Promise<InventoryLocation[]> {
  */
 export async function saveInventoryLocation(loc: Partial<InventoryLocation>): Promise<InventoryLocation> {
     ensureAuth();
-    const userEmail = getCurrentTenantEmail();
+    const userEmail = tenantScope();
     const storageKey = getLocationsStorageKey();
     const id = loc.id || `loc_${generateId()}`;
     const fullLoc: InventoryLocation = {
@@ -213,8 +230,12 @@ export async function saveInventoryLocation(loc: Partial<InventoryLocation>): Pr
         } else {
             await pb.collection("inventory_locations").create(fullLoc);
         }
-    } catch {
-        // Fallback local persistence
+    } catch (err) {
+        // A failed write used to be swallowed and reported as success through
+        // the local mirror. Only a missing collection may fall back to the
+        // tenant cache; every other error surfaces to the caller (BNK-12).
+        if (!isMissingCollection(err)) throw err;
+        console.warn("inventory_locations is unavailable; keeping the location in the tenant cache only:", err);
     }
 
     if (typeof window !== "undefined") {
@@ -323,7 +344,7 @@ export async function adjustLocationStock(
     delta: number,
     reason: string = "POS Sale",
     globalStock?: number
-): Promise<{ newLocationStock: number; newTotalStock: number }> {
+): Promise<{ newLocationStock: number; newTotalStock: number; shortfall: number }> {
     const stockMap = getLocalStockMap();
     if (!stockMap[itemId] || Object.keys(stockMap[itemId]).length === 0) {
         const locations = await getInventoryLocations();
@@ -347,7 +368,11 @@ export async function adjustLocationStock(
     }
 
     const currentLocQty = Number(stockMap[itemId][locationId] || 0);
-    const updatedLocQty = Math.max(0, currentLocQty + delta);
+    const requestedQty = currentLocQty + delta;
+    const updatedLocQty = Math.max(0, requestedQty);
+    // A deduction larger than the balance is only partially applied; report
+    // the missing units instead of silently clamping them away (BNK-10).
+    const shortfall = requestedQty < 0 ? Math.abs(requestedQty) : 0;
     stockMap[itemId][locationId] = updatedLocQty;
     saveLocalStockMap(stockMap);
 
@@ -368,6 +393,7 @@ export async function adjustLocationStock(
     return {
         newLocationStock: updatedLocQty,
         newTotalStock,
+        shortfall,
     };
 }
 
@@ -377,12 +403,12 @@ export async function adjustLocationStock(
 
 export async function getStockTransfers(): Promise<StockTransfer[]> {
     ensureAuth();
-    const userEmail = getCurrentTenantEmail();
+    const userEmail = tenantScope();
     const storageKey = getTransfersStorageKey();
 
     try {
         const records = await pb.collection("inventory_transfers").getFullList<StockTransfer>({
-            filter: `account_email = "${userEmail}"`,
+            filter: `account_email = "${sanitizeFilter(userEmail)}"`,
             sort: "-created",
         });
         if (records && records.length > 0) {
@@ -439,7 +465,7 @@ export async function createStockTransfer(params: {
     }
 
     const now = new Date();
-    const userEmail = getCurrentTenantEmail();
+    const userEmail = tenantScope();
     const storageKey = getTransfersStorageKey();
     const transferSeq = `TRF-${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, "0")}-${Math.floor(1000 + Math.random() * 9000)}`;
 
@@ -474,31 +500,71 @@ export async function createStockTransfer(params: {
         updated: now.toISOString(),
     };
 
-    // 1. Deduct stock from source location
-    for (const item of transferItems) {
-        const idToDeduct = item.variant_id || item.product_id;
-        await adjustLocationStock(
-            idToDeduct,
-            source.id,
-            -item.dispatched_quantity,
-            `Stock Transfer Out [${transferSeq}] to ${dest.name}`
-        );
-    }
-
-    // 2. Persist transfer
+    // 1. Persist the transfer before touching stock: the old order debited the
+    //    source and then swallowed a failed create, losing the units with no
+    //    transfer record (BNK-4/BNK-12).
+    let pbPersisted = false;
     try {
         const record = await pb.collection("inventory_transfers").create(transfer);
         if (record && record.id) {
             transfer.id = record.id;
         }
+        pbPersisted = true;
     } catch (err) {
-        console.warn("Could not persist transfer to PocketBase:", err);
+        if (!isMissingCollection(err)) throw err;
+        console.warn("inventory_transfers is unavailable; keeping the transfer in the tenant cache only:", err);
+    }
+
+    // 2. Deduct source stock. A shortfall (or any error) reverses the
+    //    deductions applied so far and removes the transfer, so the ledger and
+    //    the register cannot disagree (BNK-4).
+    const appliedDeductions: { itemId: string; quantity: number }[] = [];
+    try {
+        for (const item of transferItems) {
+            const idToDeduct = item.variant_id || item.product_id;
+            const result = await adjustLocationStock(
+                idToDeduct,
+                source.id,
+                -item.dispatched_quantity,
+                `Stock Transfer Out [${transferSeq}] to ${dest.name}`
+            );
+            appliedDeductions.push({
+                itemId: idToDeduct,
+                // Only the units actually deducted can be restored: a clamped
+                // deduction applied less than the requested quantity.
+                quantity: item.dispatched_quantity - result.shortfall,
+            });
+            if (result.shortfall > 0) {
+                throw new Error(
+                    `Insufficient stock for ${item.name || item.sku} at ${source.name}: ${result.shortfall} unit(s) short`
+                );
+            }
+        }
+    } catch (deductErr) {
+        for (const applied of appliedDeductions.reverse()) {
+            await adjustLocationStock(
+                applied.itemId,
+                source.id,
+                applied.quantity,
+                `Stock Transfer Rollback [${transferSeq}]`
+            ).catch((rollbackErr) =>
+                console.error("Stock transfer rollback failed:", rollbackErr)
+            );
+        }
+        if (pbPersisted) {
+            await pb.collection("inventory_transfers").delete(transfer.id).catch((deleteErr) =>
+                console.error("Could not remove the rolled-back transfer:", deleteErr)
+            );
+        }
+        throw deductErr;
     }
 
     if (typeof window !== "undefined") {
         const existing = await getStockTransfers();
-        existing.unshift(transfer);
-        localStorage.setItem(storageKey, JSON.stringify(existing));
+        // The PB read already contains the row we just wrote; replace by id
+        // rather than unshifting a second copy.
+        const others = existing.filter((t) => t.id !== transfer.id);
+        localStorage.setItem(storageKey, JSON.stringify([transfer, ...others]));
     }
 
     return transfer;
@@ -521,17 +587,50 @@ export async function receiveStockTransfer(
     if (transfer.status === "received") {
         throw new Error("Transfer has already been fully received");
     }
+    // Only a dispatched/in-transit transfer can be received; accepting a
+    // cancelled one minted destination stock for goods never dispatched (BNK-5).
+    if (transfer.status !== "dispatched" && transfer.status !== "in_transit") {
+        throw new Error(`A ${transfer.status} transfer cannot be received`);
+    }
 
     const now = new Date().toISOString();
 
+    // Clamp every received quantity to [0, dispatched] so a bad payload cannot
+    // receive more than left the source (BNK-5).
+    const receivedQuantities = new Map<string, number>();
+    for (const item of transfer.items) {
+        const dispatched = Math.max(0, Number(item.dispatched_quantity) || 0);
+        const requested = receivedItems?.find((r) => r.variantId === item.variant_id)?.quantity;
+        const requestedNumber = requested === undefined ? dispatched : Number(requested);
+        const receivedQty = Number.isFinite(requestedNumber)
+            ? Math.min(dispatched, Math.max(0, requestedNumber))
+            : dispatched;
+        receivedQuantities.set(item.variant_id || item.product_id, receivedQty);
+    }
+
+    // Persist the status change before stock moves: a failed write used to be
+    // swallowed after destination stock was already minted (BNK-12).
+    try {
+        await pb.collection("inventory_transfers").update(transfer.id, {
+            status: "received",
+            received_by: pb.authStore.model?.email || "Store Manager",
+            received_at: now,
+            items: transfer.items.map((item) => ({
+                ...item,
+                received_quantity: receivedQuantities.get(item.variant_id || item.product_id) ?? 0,
+            })),
+        });
+    } catch (err) {
+        if (!isMissingCollection(err)) throw err;
+        console.warn("inventory_transfers is unavailable; receiving into the tenant cache only:", err);
+    }
+
     // Reconcile and add stock to destination location
     for (const item of transfer.items) {
-        const receivedQty = receivedItems
-            ? receivedItems.find((r) => r.variantId === item.variant_id)?.quantity ?? item.dispatched_quantity
-            : item.dispatched_quantity;
-
+        const receivedQty = receivedQuantities.get(item.variant_id || item.product_id) ?? 0;
         item.received_quantity = receivedQty;
 
+        if (receivedQty <= 0) continue;
         const idToAdd = item.variant_id || item.product_id;
         await adjustLocationStock(
             idToAdd,
@@ -545,15 +644,6 @@ export async function receiveStockTransfer(
     transfer.received_by = pb.authStore.model?.email || "Store Manager";
     transfer.received_at = now;
     transfer.updated = now;
-
-    try {
-        await pb.collection("inventory_transfers").update(transfer.id, {
-            status: "received",
-            received_by: transfer.received_by,
-            received_at: now,
-            items: transfer.items,
-        });
-    } catch {}
 
     if (typeof window !== "undefined") {
         localStorage.setItem(storageKey, JSON.stringify(transfers));

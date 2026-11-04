@@ -85,8 +85,20 @@ export async function createAttribute(attribute: Omit<ProductAttribute, 'id' | '
     }
 }
 
+/** Refuse a record id that is not owned by the signed-in tenant. */
+async function assertOwnedAttribute(id: string): Promise<void> {
+    const tenant = accountScopeEmail();
+    if (!tenant) throw new Error('No tenant account resolved; refusing to modify an attribute.');
+    const record = await pb.collection('product_attributes').getOne(id);
+    const owner = String((record as { account_email?: string }).account_email || '').trim().toLowerCase();
+    if (owner && owner !== tenant) {
+        throw new Error('Attribute not found for this account.');
+    }
+}
+
 export async function updateAttribute(id: string, updates: Partial<ProductAttribute>): Promise<ProductAttribute> {
     try {
+        await assertOwnedAttribute(id);
         const record = await pb.collection('product_attributes').update(id, updates);
         return record as unknown as ProductAttribute;
     } catch (error) {
@@ -97,6 +109,7 @@ export async function updateAttribute(id: string, updates: Partial<ProductAttrib
 
 export async function deleteAttribute(id: string): Promise<void> {
     try {
+        await assertOwnedAttribute(id);
         await pb.collection('product_attributes').delete(id);
     } catch (error) {
         console.error('Error deleting attribute:', error);
@@ -167,12 +180,16 @@ export async function setProductAttributeValues(
 
 export async function deleteProductAttributeValues(productId: string): Promise<void> {
     try {
+        const scope = tenantClause();
+        if (!scope) throw new Error('No tenant account resolved; refusing to delete attribute values.');
         const records = await pb.collection('product_attribute_values').getFullList({
-            filter: `product="${productId}"`
+            filter: `product="${sanitizeFilter(productId)}"${scope}`
         });
 
         await Promise.all(records.map(r => pb.collection('product_attribute_values').delete(r.id)));
     } catch (error) {
+        // Callers must not believe values were removed when the delete failed.
         console.error('Error deleting attribute values:', error);
+        throw error;
     }
 }

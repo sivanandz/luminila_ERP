@@ -710,11 +710,19 @@ export async function commitBulkInventoryImport(
     });
 
     const poRecordMap = new Map<string, any>();
+    const poScope = accountEmail ? ` && account_email="${sanitizeFilter(accountEmail)}"` : '';
     for (const poRef of allPoRefs) {
         try {
-            let po = await pbClient.collection('purchase_orders').getFirstListItem(`po_number="${sanitizeFilter(poRef)}"`).catch(() => null);
+            let po = await pbClient.collection('purchase_orders').getFirstListItem(`po_number="${sanitizeFilter(poRef)}"${poScope}`).catch(() => null);
             if (!po) {
                 po = await pbClient.collection('purchase_orders').getOne(poRef).catch(() => null);
+            }
+            // The id fallback bypasses the tenant predicate, so never absorb
+            // overhead or reconcile against another store's PO (PUR-7).
+            const poOwner = String((po as any)?.account_email || '').trim().toLowerCase();
+            if (po && accountEmail && poOwner && poOwner !== accountEmail.trim().toLowerCase()) {
+                console.warn(`Ignoring PO ${poRef}: it belongs to another store.`);
+                po = null;
             }
             if (po) {
                 const { meta } = decodePOMetadata(po.notes);

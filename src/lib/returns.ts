@@ -15,7 +15,7 @@ import { validateReturnQuantities } from './returns-policy';
 import { splitExclusiveLine, toPaise, toRupees } from './invoice-math';
 import { executeInwardQcInspection, type QcDispositionGrade } from './returns-qc-engine';
 import { reverseDiscountUsage } from './discounts';
-import type { ProductVariant } from '@/types/database';
+import type { Product, ProductVariant } from '@/types/database';
 
 // ===========================================
 // TYPES
@@ -37,8 +37,7 @@ export interface CreditNote {
     original_invoice_id?: string;
     original_sale_id?: string;
     return_reason: ReturnReason;
-    notes?: string;
-    buyer_name: string;
+    notes?: string;    buyer_name: string;
     buyer_address?: string;
     buyer_gstin?: string;
     buyer_state_code?: string;
@@ -119,6 +118,20 @@ interface CreditNoteItemRecord {
     total_amount: number;
 }
 
+/**
+ * Machine-readable QC deduction marker appended to `credit_notes.notes` at
+ * approval. processRefund reads it back so a restocking / reverse-logistics
+ * deduction produced by the QC engine is actually withheld from the refund
+ * (RET-10) without a schema migration.
+ */
+const QC_DEDUCTION_MARKER = 'RefundDeductions:';
+
+function parseQcDeduction(notes?: string): number {
+    const match = String(notes || '').match(/RefundDeductions:\s*([0-9]+(?:\.[0-9]+)?)/);
+    const value = match ? Number(match[1]) : 0;
+    return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 // Raw invoice_items record fields consumed when building a return from an invoice.
 interface InvoiceItemRecord {
     id: string;
@@ -165,7 +178,7 @@ export async function getCreditNotes(filters?: {
         const filterParts: string[] = [`account_email="${sanitizeFilter(getCurrentTenantEmail())}"`];
 
         if (filters?.status) {
-            filterParts.push(`status="${filters.status}"`);
+            filterParts.push(`status="${sanitizeFilter(filters.status)}"`);
         }
         const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
         if (start) {
@@ -301,27 +314,39 @@ export async function createCreditNote(
         }
     );
 
-    // Create items
-    for (const item of items) {
-        await pb.collection('credit_note_items').create({
-            account_email: accountEmail,
-            credit_note: cn.id,
-            variant: item.variant_id || '',
-            original_invoice_item: item.original_invoice_item_id || '',
-            description: item.description,
-            hsn_code: item.hsn_code || '',
-            quantity: item.quantity,
-            unit_price: item.unit_price,
-            discount_percent: item.discount_percent || 0,
-            discount_amount: item.discount_amount || 0,
-            taxable_amount: item.taxable_amount,
-            gst_rate: item.gst_rate,
-            cgst_amount: item.cgst_amount,
-            sgst_amount: item.sgst_amount,
-            igst_amount: item.igst_amount,
-            total_amount: item.total_amount,
-            total: item.total_amount,
-        });
+    // Create items. A failure part-way through must not leave a credit note
+    // behind with missing lines, so undo the note and the rows already
+    // written before rethrowing (RET-11).
+    const createdItemIds: string[] = [];
+    try {
+        for (const item of items) {
+            const itemRecord = await pb.collection('credit_note_items').create({
+                account_email: accountEmail,
+                credit_note: cn.id,
+                variant: item.variant_id || '',
+                original_invoice_item: item.original_invoice_item_id || '',
+                description: item.description,
+                hsn_code: item.hsn_code || '',
+                quantity: item.quantity,
+                unit_price: item.unit_price,
+                discount_percent: item.discount_percent || 0,
+                discount_amount: item.discount_amount || 0,
+                taxable_amount: item.taxable_amount,
+                gst_rate: item.gst_rate,
+                cgst_amount: item.cgst_amount,
+                sgst_amount: item.sgst_amount,
+                igst_amount: item.igst_amount,
+                total_amount: item.total_amount,
+                total: item.total_amount,
+            });
+            createdItemIds.push(itemRecord.id);
+        }
+    } catch (itemErr) {
+        for (const itemId of createdItemIds) {
+            await pb.collection('credit_note_items').delete(itemId).catch(() => {});
+        }
+        await pb.collection('credit_notes').delete(cn.id).catch(() => {});
+        throw itemErr;
     }
 
     return {
@@ -353,10 +378,12 @@ async function wasStockDeducted(
     // A storefront invoice carries its originating sales order; that order id
     // is what the stock movement references.
     if (cn.original_invoice) {
-        const invoice = await pb.collection('invoices').getOne(cn.original_invoice).catch(() => null);
-        const linked = String((invoice as { order?: string; sale?: string } | null)?.order
-            || (invoice as { sale?: string } | null)?.sale
-            || '');
+        // An unreadable invoice must fail the approval: reading it as "not a
+        // storefront order" silently skipped a legitimate restock (RET-9).
+        const invoice = await pb.collection('invoices').getOne<{ order?: string; sale?: string }>(
+            cn.original_invoice
+        );
+        const linked = String(invoice.order || invoice.sale || '');
         if (linked) references.push(linked);
     }
 
@@ -379,6 +406,10 @@ export interface ApproveCreditNoteOptions {
     qcGrade?: QcDispositionGrade;
     /** Artisan or workshop that receives items graded for repair. */
     karigarName?: string;
+    /** Reverse-logistics fee withheld from the refund (RET-10). */
+    reverseShippingFeeDeduction?: number;
+    /** Restocking fee percentage withheld from the refund for non-fault returns (RET-10). */
+    restockingFeePercent?: number;
 }
 
 /**
@@ -523,7 +554,7 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                         status: 'active',
                         flagged_by: options?.flaggedBy || 'Staff',
                         account_email: accountScopeEmail() || getCurrentTenantEmail(),
-                    }).catch((err) => console.warn('Failed to create stock discrepancy for return:', err));
+                    });
                 } else {
                     // 2. Resellable condition: Restore stock to variant — only
                     // if the original document actually deducted it.
@@ -539,7 +570,9 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                                 `skipping restock to avoid minting stock.`
                             );
                         } else {
-                            try {
+                            // A failed restock must abort the approval: the old
+                            // warn-and-continue left the note approved while the
+                            // items never returned to inventory (RET-7).
                             await pb.collection('product_variants').update(item.variant, {
                                 'stock_level+': item.quantity
                             });
@@ -553,9 +586,6 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                                 notes: `Restock from Return #${cn.credit_note_number || id}`,
                                 account_email: accountScopeEmail() || getCurrentTenantEmail(),
                             }).catch((err) => console.warn('Failed to log stock movement for return:', err));
-                            } catch (variantErr) {
-                                console.warn(`Could not restore stock for variant ${item.variant}:`, variantErr);
-                            }
                         }
                     }
                 }
@@ -573,6 +603,17 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
         }
     } catch (itemErr) {
         console.error('Error handling inventory for credit note:', itemErr);
+        // Inventory side effects did not complete. Leaving the note 'approved'
+        // let the caller report success and blocked retries through the
+        // idempotency guard, so hand it back as 'pending' (RET-7).
+        await pb.collection('credit_notes').update(id, { status: 'pending' }).catch((revertErr) =>
+            console.error('Could not revert credit note to pending after inventory failure:', revertErr)
+        );
+        throw new Error(
+            `Inventory update failed for credit note ${cn.credit_note_number || id}; the note was returned to pending. ${
+                itemErr instanceof Error ? itemErr.message : String(itemErr)
+            }`
+        );
     }
 }
 
@@ -919,6 +960,18 @@ export interface ExchangeItem {
     quantity: number;
     unit_price: number;
     description: string;
+    /** GST percentage for this line; falls back to the store default when absent (RET-14). */
+    gst_rate?: number;
+}
+
+/**
+ * GST rate for a replacement line: the line's own rate when supplied, else the
+ * store default. Replacement goods used to be taxed at JEWELRY for every line
+ * regardless of the item's configured rate (RET-14).
+ */
+function exchangeLineGstRate(line: ExchangeItem, fallbackRate: number): number {
+    const rate = Number(line.gst_rate);
+    return Number.isFinite(rate) && rate > 0 ? rate : fallbackRate;
 }
 
 export interface ProcessExchangeOptions {
@@ -926,17 +979,6 @@ export interface ProcessExchangeOptions {
     paymentReference?: string;
     notes?: string;
     processedBy?: string;
-}
-
-export interface ExchangeResult {
-    creditNoteId: string;
-    exchangedItems: ExchangeItem[];
-    creditUsed: number;
-    replacementTotal: number; // tax-inclusive (incl. GST) replacement value
-    balanceDue: number; // >0: customer paid extra, <0: store refunded difference, 0: exact match
-    paymentMethod?: string;
-    paymentReference?: string;
-    invoicePaymentId?: string;
 }
 
 export interface ExchangeResult {
@@ -968,9 +1010,10 @@ async function createExchangeInvoice(
     const sellerState = store.store_state_code || '27';
     const buyerState = creditNote.buyer_state_code || sellerState;
     const gstEnabled = store.is_gst_registered !== false;
-    const rate = gstEnabled ? GST_RATES.JEWELRY : 0;
+    const defaultRate = gstEnabled ? GST_RATES.JEWELRY : 0;
 
     const items: InvoiceItem[] = lines.map((line, index) => {
+        const rate = exchangeLineGstRate(line, defaultRate);
         const split = splitExclusiveLine(toPaise(line.unit_price * line.quantity), rate, sellerState, buyerState);
         return {
             variant_id: line.variant_id,
@@ -1081,9 +1124,13 @@ export async function processExchange(
             throw new Error(`Variant ID missing for replacement item "${item.description}"`);
         }
         if (!variantCache.has(item.variant_id)) {
+            // Expand the product so the replacement line can take its own
+            // configured GST rate instead of the JEWELRY default (RET-14).
             variantCache.set(
                 item.variant_id,
-                await pb.collection('product_variants').getOne<ProductVariant>(item.variant_id)
+                await pb.collection('product_variants').getOne<ProductVariant>(item.variant_id, {
+                    expand: 'product',
+                })
             );
         }
     }
@@ -1118,13 +1165,29 @@ export async function processExchange(
     // from the document (POS-09).
     const store = await getStoreSettings();
     const gstEnabled = store.is_gst_registered !== false;
-    const replacementRate = gstEnabled ? GST_RATES.JEWELRY : 0;
+    const defaultRate = gstEnabled ? GST_RATES.JEWELRY : 0;
     const replacementState = creditNote.buyer_state_code || store.store_state_code || '';
+
+    // Price every line at its own GST rate (line override, then the variant's
+    // product rate), so the exchange invoice and the balance agree (RET-14).
+    const pricedItems: ExchangeItem[] = newItems.map((line) => {
+        const productRate = Number(
+            (variantCache.get(line.variant_id)?.expand?.product as Product | undefined)?.gst_rate
+        );
+        const ownRate = Number(line.gst_rate);
+        const resolved = Number.isFinite(ownRate) && ownRate > 0
+            ? ownRate
+            : Number.isFinite(productRate) && productRate > 0
+                ? productRate
+                : defaultRate;
+        return { ...line, gst_rate: gstEnabled ? resolved : 0 };
+    });
+
     let replacementTotalPaise = 0;
-    for (const item of newItems) {
+    for (const item of pricedItems) {
         const split = splitExclusiveLine(
             toPaise(item.unit_price * item.quantity),
-            replacementRate,
+            exchangeLineGstRate(item, defaultRate),
             store.store_state_code || replacementState,
             replacementState
         );
@@ -1168,7 +1231,7 @@ export async function processExchange(
         if (exchangeInvoiceId) {
             const exchangeItems = await pb
                 .collection('invoice_items')
-                .getFullList<{ id: string }>({ filter: `invoice="${exchangeInvoiceId}"` })
+                .getFullList<{ id: string }>({ filter: `invoice="${sanitizeFilter(exchangeInvoiceId)}"` })
                 .catch(() => []);
             for (const item of exchangeItems) {
                 await pb.collection('invoice_items').delete(item.id).catch(() => {});
@@ -1178,7 +1241,12 @@ export async function processExchange(
             );
         }
         if (markedExchanged) {
-            await pb.collection('credit_notes').update(creditNoteId, { status: 'approved' }).catch((err) =>
+            await pb.collection('credit_notes').update(creditNoteId, {
+                status: 'approved',
+                refund_method: '',
+                refund_reference: '',
+                refunded_at: '',
+            }).catch((err) =>
                 console.error('Rollback: could not restore credit note status to approved:', err)
             );
         }
@@ -1186,7 +1254,7 @@ export async function processExchange(
 
     try {
         // 3a. INVENTORY UPDATE: Deduct stock for replacement items
-        for (const item of newItems) {
+        for (const item of pricedItems) {
             try {
                 // Deduct from sellable inventory
                 await pb.collection('product_variants').update(item.variant_id, {
@@ -1222,7 +1290,7 @@ export async function processExchange(
         // against the original invoice, which corrupted its paid_amount and
         // recorded no output tax for the replacement.
         if (creditNote.original_invoice_id) {
-            const exchange = await createExchangeInvoice(creditNote, newItems, balanceDue, paymentMethod);
+            const exchange = await createExchangeInvoice(creditNote, pricedItems, balanceDue, paymentMethod);
             exchangeInvoiceId = exchange.invoiceId;
             exchangeInvoiceNumber = exchange.invoiceNumber;
 
@@ -1258,7 +1326,7 @@ export async function processExchange(
         const updatedNotes = [
             creditNote.notes,
             `[Exchange Settlement]: ${financialSummary}`,
-            `[Replacement Items Issued]: ${newItems.map(i => `${i.description} (Qty: ${i.quantity} @ ₹${i.unit_price})`).join('; ')}`,
+            `[Replacement Items Issued]: ${pricedItems.map(i => `${i.description} (Qty: ${i.quantity} @ ₹${i.unit_price})`).join('; ')}`,
             exchangeInvoiceNumber ? `[Exchange Invoice]: ${exchangeInvoiceNumber}` : '',
             options.notes ? `Staff Notes: ${options.notes}` : '',
         ].filter(Boolean).join('\n\n');
@@ -1285,7 +1353,16 @@ export async function processExchange(
                     `Exchange refund for credit note ${creditNote.credit_note_number || creditNoteId}`,
                     userId
                 );
-                if (!recorded) console.warn('Exchange completed but the cash refund drawer entry failed');
+                if (!recorded) {
+                    // The drawer never recorded the payout, so abort the
+                    // exchange and let the tracked rollback restore the note
+                    // to 'approved', matching processRefund (RET-12).
+                    throw new Error(
+                        `Exchange refund of ${refundAmount} could not be recorded in the cash drawer for credit note ${
+                            creditNote.credit_note_number || creditNoteId
+                        }; the exchange was rolled back.`
+                    );
+                }
             } else {
                 await pb.collection('activity_logs').create({
                     action: 'CASH_REFUND_OUTSIDE_SHIFT',
@@ -1303,7 +1380,7 @@ export async function processExchange(
 
     return {
         creditNoteId,
-        exchangedItems: newItems,
+        exchangedItems: pricedItems,
         creditUsed: Math.min(creditValue, replacementTotal),
         replacementTotal,
         balanceDue,
@@ -1326,26 +1403,4 @@ export async function getExchangeEligibleCreditNotes(): Promise<CreditNote[]> {
             credit_note_number: cn.credit_note_number,
             original_invoice_id: cn.original_invoice,
             original_sale_id: cn.original_sale,
-            return_reason: cn.return_reason,
-            notes: cn.notes,
-            buyer_name: cn.buyer_name,
-            buyer_address: cn.buyer_address,
-            buyer_gstin: cn.buyer_gstin,
-            buyer_state_code: cn.buyer_state_code,
-            taxable_value: cn.taxable_value,
-            cgst_amount: cn.cgst_amount || 0,
-            sgst_amount: cn.sgst_amount || 0,
-            igst_amount: cn.igst_amount || 0,
-            total_tax: cn.total_tax || 0,
-            grand_total: cn.grand_total,
-            status: cn.status,
-            refund_method: cn.refund_method,
-            refund_reference: cn.refund_reference,
-            refunded_at: cn.refunded_at,
-            created_at: cn.created,
-        }));
-    } catch (error) {
-        console.error('Error fetching exchange-eligible credit notes:', error);
-        return [];
-    }
-}
+            return_reason: cn.return_reason

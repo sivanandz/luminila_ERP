@@ -20,12 +20,22 @@ import {
 
 const SETTINGS_KEY = 'manufacturing_jobs';
 
-/** `store_settings` row key for the signed-in tenant (INV-08). */
-function settingsFilter(): string {
+/**
+ * The tenant that owns the jobs. Fail closed: a missing/'default' tenant used
+ * to fall back to a bare `key="manufacturing_jobs"` row, one global blob shared
+ * (and clobbered) by every store (SET-1).
+ */
+function requireTenantEmail(): string {
     const tenant = getCurrentTenantEmail();
-    return tenant
-        ? `key="${SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
-        : `key="${SETTINGS_KEY}"`;
+    if (!tenant || tenant === 'default') {
+        throw new Error('No tenant account resolved; manufacturing jobs are unavailable.');
+    }
+    return tenant;
+}
+
+/** `store_settings` row key for the signed-in tenant (INV-08). */
+function settingsFilter(tenant: string): string {
+    return `key="${SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`;
 }
 
 export interface KarigarJobInput {
@@ -159,32 +169,34 @@ function parseJobs(value: unknown): KarigarJobRecord[] {
 }
 
 async function readJobs(): Promise<KarigarJobRecord[]> {
+    const tenant = requireTenantEmail();
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(settingsFilter())
+        .getFirstListItem(settingsFilter(tenant))
         .catch(() => null);
     if (!row) return [];
     return parseJobs(row.value);
 }
 
 async function writeJobs(jobs: KarigarJobRecord[]): Promise<void> {
+    const tenant = requireTenantEmail();
     const value = JSON.stringify(jobs);
     const row = await pb
         .collection('store_settings')
-        .getFirstListItem(settingsFilter())
+        .getFirstListItem(settingsFilter(tenant))
         .catch(() => null);
 
     if (row) {
         await pb.collection('store_settings').update(row.id, {
             value,
-            account_email: getCurrentTenantEmail(),
+            account_email: tenant,
         });
     } else {
         await pb.collection('store_settings').create({
             key: SETTINGS_KEY,
             value,
             category: 'manufacturing',
-            account_email: getCurrentTenantEmail(),
+            account_email: tenant,
         });
     }
 }

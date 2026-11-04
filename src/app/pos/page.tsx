@@ -239,6 +239,8 @@ export default function POSPage() {
         subtotal: number;
         discount: number;
         total: number;
+        // Tax already inside `total`, snapshotted at sale time (PG-4).
+        gstIncluded?: number;
         paymentMethod: string;
         cashTendered?: number;
         changeGiven?: number;
@@ -792,6 +794,13 @@ export default function POSPage() {
         setDiscount(0);
         setPaymentMethod(null);
         setShowPhonePeModal(false);
+        // PG-2: a finished/parked sale must not leave its customer attached to
+        // the next cart, or a walk-in sale accrues points to the wrong person.
+        setSelectedCustomer(null);
+        setSelectedCustomerId(null);
+        // PG-3: drop the tender so the next cash sale cannot prefill stale
+        // cash/change figures.
+        setCashTendered("");
         // Reset loyalty redemption so it can never carry into the next sale
         setPointsToRedeem(0);
         setRedemptionValue(0);
@@ -1132,17 +1141,10 @@ export default function POSPage() {
         return true;
     };
 
-    // Process sale
-    const processSale = async () => {
-        // Re-entrancy guard: the keyboard shortcut path (F12) and rapid clicks can
-        // fire again during the createPOSSale await â€” state alone updates too late,
-        // so a duplicate sale/double stock deduction must be rejected synchronously.
-        if (isProcessingRef.current) return;
-        if (!paymentMethod || cart.length === 0 || !currentShift || !userId) return;
-
-        // P11: ask the server what is actually in stock now. The product stock
-        // snapshot in the cart is stale by the time checkout runs, and two
-        // terminals can both pass a client-side check.
+    // PG-1 / PG-5: server-side stock re-assert shared by the cash/card path and
+    // the PhonePe success path. The cart's stock snapshot is stale by checkout,
+    // and two terminals can both pass a client-side check.
+    const assertCartStock = async (): Promise<boolean> => {
         try {
             const availability = await assertStockAvailable(
                 toStockDb(pb),
@@ -1159,15 +1161,26 @@ export default function POSPage() {
                 toast.error(
                     `Cannot complete sale: "${shortage.name}" has only ${shortage.available} in stock (requested ${shortage.requested}).`
                 );
-                return;
+                return false;
             }
+            return true;
         } catch (stockError) {
             console.error("Stock availability check failed:", stockError);
             toast.error(
                 stockError instanceof Error ? stockError.message : "Could not verify stock availability. Sale cancelled."
             );
-            return;
+            return false;
         }
+    };
+
+    // Process sale body — processSale() owns the synchronous re-entrancy guard.
+    const runProcessSale = async () => {
+        if (!paymentMethod || cart.length === 0 || !currentShift || !userId) return;
+
+        // P11: ask the server what is actually in stock now. The product stock
+        // snapshot in the cart is stale by the time checkout runs, and two
+        // terminals can both pass a client-side check.
+        if (!(await assertCartStock())) return;
 
         // P8: cash must be tendered explicitly. An empty field used to complete
         // the sale and record â‚¹0 cash against it.
@@ -1189,9 +1202,6 @@ export default function POSPage() {
             setShowPhonePeModal(true);
             return;
         }
-
-        setIsProcessing(true);
-        isProcessingRef.current = true;
 
         try {
             // Save sale to PocketBase and generate invoice
@@ -1249,6 +1259,9 @@ export default function POSPage() {
                 subtotal,
                 discount: discountAmount + redemptionValue,
                 total,
+                // PG-4: snapshot the tax now — clearCart() empties the cart that
+                // gstIncluded is derived from before the receipt renders.
+                gstIncluded,
                 paymentMethod,
                 cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) || 0 : undefined,
                 changeGiven: paymentMethod === 'cash' ? changeAmount : undefined,
@@ -1276,6 +1289,20 @@ export default function POSPage() {
         } catch (error) {
             console.error('Error processing sale:', error);
             alert('Failed to process sale. Please try again.');
+        }
+    };
+
+    // PG-1: claim the re-entrancy guard synchronously, before the first await,
+    // so a second click/F12 cannot start a parallel sale while the stock assert
+    // or loyalty validation is in flight (double redemption/stock deduction).
+    const processSale = async () => {
+        if (isProcessingRef.current) return;
+        if (!paymentMethod || cart.length === 0 || !currentShift || !userId) return;
+
+        isProcessingRef.current = true;
+        setIsProcessing(true);
+        try {
+            await runProcessSale();
         } finally {
             isProcessingRef.current = false;
             setIsProcessing(false);
@@ -1303,6 +1330,9 @@ export default function POSPage() {
                 toast.error(`Cannot complete sale: "${oversoldItem.name}" exceeds available stock (${oversoldItem.quantity} in cart, ${oversoldItem.stock} in stock).`);
                 return;
             }
+            // PG-5: the cart snapshot above is stale — re-assert against the
+            // server exactly as the cash/card path does before committing.
+            if (!(await assertCartStock())) return;
             // Save sale to PocketBase and generate invoice
             const result = await createPOSSale({
                 channel: selectedChannel as import('@/types/database').SalesChannel,
@@ -1358,6 +1388,8 @@ export default function POSPage() {
                 subtotal,
                 discount: discountAmount + redemptionValue,
                 total,
+                // PG-4: snapshot before clearCart() empties the cart.
+                gstIncluded,
                 paymentMethod: 'phonepe',
             });
 
@@ -2254,7 +2286,7 @@ export default function POSPage() {
                                     discount={lastTransaction.discount}
                                     total={lastTransaction.total}
                                     paymentMethod={lastTransaction.paymentMethod}
-                                    gstIncluded={gstIncluded}
+                                    gstIncluded={lastTransaction.gstIncluded ?? 0}
                                 />
                             </div>
 

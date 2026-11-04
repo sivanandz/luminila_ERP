@@ -8,6 +8,7 @@
  */
 
 import PocketBase from 'pocketbase';
+import { createHash } from 'node:crypto';
 import { resolveTenantDatabase } from './tenant-db-manager';
 import { isSingleAccountMode } from './deployment-mode';
 import { sanitizeFilter } from './pocketbase';
@@ -124,12 +125,16 @@ export async function authenticateOperator(req: Request, hintEmail?: string): Pr
 /**
  * Comparison for shared secrets that does not leak length or content through
  * timing. Used for the catalog sync key instead of `===`.
+ *
+ * Both inputs are hashed first so the byte loop always runs over the same
+ * number of bytes: an early `length` check would reveal the secret's length.
  */
 export function constantTimeEqual(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
+    const digestA = createHash('sha256').update(a, 'utf8').digest();
+    const digestB = createHash('sha256').update(b, 'utf8').digest();
     let diff = 0;
-    for (let i = 0; i < a.length; i += 1) {
-        diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    for (let i = 0; i < digestA.length; i += 1) {
+        diff |= digestA[i] ^ digestB[i];
     }
     return diff === 0;
 }
@@ -166,16 +171,16 @@ export async function hasCapability(
 ): Promise<boolean> {
     if (!session.ok || !session.client) return false;
     if (session.isSuperuser) return true;
-    if (!session.userId) return false;
+    if (!session.userId || !session.accountEmail) return false;
 
     try {
         // Role links are tenant-scoped. The user id already narrows the rows,
         // but without the tenant predicate a link planted by another tenant
-        // would still grant capability here. Empty is tolerated only so rows
-        // created before the backfill keep working.
-        const tenant = session.accountEmail ? `account_email = "${sanitizeFilter(session.accountEmail)}" || account_email = ""` : "";
+        // would still grant capability here. A row with an empty `account_email`
+        // is a legacy/unowned link and must never grant anything (AI-2).
+        const filter = `user="${session.userId}" && account_email = "${sanitizeFilter(session.accountEmail)}"`;
         const roles = await session.client.collection('user_roles').getFullList({
-            filter: tenant ? `user="${session.userId}" && (${tenant})` : `user="${session.userId}"`,
+            filter,
             expand: 'role',
         });
 

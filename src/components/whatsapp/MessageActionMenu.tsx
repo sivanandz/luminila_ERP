@@ -65,6 +65,8 @@ export interface MessageActionMenuProps {
     onDelete?: () => void;
     /** Only own outbound messages can be deleted for everyone. */
     canDelete?: boolean;
+    /** CMP-11: the text this menu acts on — copying must not depend on a page selection. */
+    messageBody?: string;
 }
 
 /**
@@ -98,10 +100,17 @@ export function MessageActionMenu({
     onForward,
     onDelete,
     canDelete,
+    messageBody,
 }: MessageActionMenuProps) {
     const menuRef = useRef<HTMLDivElement>(null);
     const [copied, setCopied] = React.useState(false);
+    const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const { isDesktop } = useViewport();
+
+    // CMP-11: never leave a state update queued against an unmounted menu.
+    useEffect(() => () => {
+        if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    }, []);
 
     // Dismiss on outside click / Escape (both surfaces)
     useEffect(() => {
@@ -248,9 +257,11 @@ export function MessageActionMenu({
             icon: copied ? <Check size={15} className="text-emerald-500" /> : <Copy size={15} />,
             accent: 'text-muted-foreground',
             handler: () => {
-                navigator.clipboard?.writeText(window.getSelection()?.toString() || '');
+                const text = messageBody ?? window.getSelection()?.toString() ?? '';
+                if (text) navigator.clipboard?.writeText(text);
                 setCopied(true);
-                setTimeout(() => { setCopied(false); onClose(); }, 500);
+                if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+                copyTimerRef.current = setTimeout(() => { setCopied(false); onClose(); }, 500);
             },
         },
     ].filter(Boolean) as MessageAction[];

@@ -11,6 +11,10 @@ const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 const SHAPE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
+/** GST state codes are 01-38; 00 and 39+ are not assigned (ENG-14). */
+const MIN_STATE_CODE = 1;
+const MAX_STATE_CODE = 38;
+
 function charValue(char: string): number {
     return ALPHABET.indexOf(char.toUpperCase());
 }
@@ -36,10 +40,15 @@ export function gstinCheckDigit(first14: string): string | null {
     return ALPHABET[checkValue];
 }
 
-/** True only when shape and check digit both pass. */
+/** True only when shape, state code and check digit all pass. */
 export function isValidGstin(gstin?: string): boolean {
     const value = (gstin || '').toUpperCase().trim();
     if (value.length !== 15 || !SHAPE.test(value)) return false;
+    // The regex only enforces two digits; the assigned state codes are 01-38.
+    const stateCode = Number(value.slice(0, 2));
+    if (!Number.isInteger(stateCode) || stateCode < MIN_STATE_CODE || stateCode > MAX_STATE_CODE) {
+        return false;
+    }
     return gstinCheckDigit(value.slice(0, 14)) === value[14];
 }
 

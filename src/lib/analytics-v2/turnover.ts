@@ -366,9 +366,16 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
         };
         const margin = agg.revenue - agg.cogs;
         const weeklyUnits = agg.units / weeks;
-        const avgUnits = (stock.startUnits + stock.stock) / 2;
-        const turnover = safeDiv(agg.cogs, avgUnits > 0 ? avgUnits * (stock.stockValue / Math.max(stock.stock, 1)) : 0);
-        const gmroi = stock.stockValue > 0 ? margin / ((stock.stockValue + (stock.stockValue * stock.startUnits) / Math.max(stock.stock, 1)) / 2) : null;
+        // Unit cost for the window: the current valuation when stock remains,
+        // otherwise the realised COGS per sold unit. Sold-out items have
+        // stockValue 0, which used to price start inventory at zero and
+        // collapse turnover/GMROI to null (RPT-13).
+        const unitValue = stock.stock > 0
+            ? stock.stockValue / stock.stock
+            : (agg.units > 0 ? agg.cogs / agg.units : 0);
+        const avgValue = (stock.startUnits * unitValue + stock.stockValue) / 2;
+        const turnover = safeDiv(agg.cogs, avgValue);
+        const gmroi = avgValue > 0 ? margin / avgValue : null;
         const startPlusReceipts = stock.startUnits + stock.receipts;
         const sellThrough = startPlusReceipts > 0 ? (agg.units / startPlusReceipts) * 100 : null;
 

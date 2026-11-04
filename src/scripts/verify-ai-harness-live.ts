@@ -138,7 +138,7 @@ async function main(): Promise<void> {
             model: 'verify-model',
         });
         conversationId = conversation.id;
-        await updateConversation(client, conversationId, { status: 'completed', title: 'Verification conversation' });
+        await updateConversation(client, testAccountEmail, conversationId, { status: 'completed', title: 'Verification conversation' }, adminEmail);
 
         const events: AiEvent[] = [
             { type: 'turn/start', turn: 1, profileId: 'analyst', model: 'verify-model', systemPrompt: 'verify' },

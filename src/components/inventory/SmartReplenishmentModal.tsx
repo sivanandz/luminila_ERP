@@ -74,7 +74,11 @@ export function SmartReplenishmentModal({
     }, [open]);
 
     const handleCreateDraftPO = async (group: VendorRestockGroup) => {
-        setCreatingPOForVendor(group.vendorId || "unassigned");
+        if (!group.vendorId) {
+            toast.error("Please assign a supplier to these items before creating a Purchase Order.");
+            return;
+        }
+        setCreatingPOForVendor(group.vendorId);
         try {
             const todayStr = new Date().toISOString().split("T")[0];
             const items = group.items.map((it) => {
@@ -220,7 +224,8 @@ export function SmartReplenishmentModal({
                                                     size="sm"
                                                     disabled={isBusy || !group.vendorId}
                                                     onClick={() => void handleCreateDraftPO(group)}
-                                                    className="h-8 text-xs font-bold bg-primary text-primary-foreground"
+                                                    title={!group.vendorId ? "Assign a supplier in Vendor Mappings first" : "Create 1-Click Draft PO"}
+                                                    className="h-8 text-xs font-bold bg-primary text-primary-foreground disabled:opacity-50"
                                                 >
                                                     {isBusy ? (
                                                         <Loader2 size={13} className="animate-spin mr-1" />

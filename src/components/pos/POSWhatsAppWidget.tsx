@@ -3,10 +3,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MessageCircle, Send, Loader2, BadgeCheck, CreditCard, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import { getTenantStorageKey } from "@/lib/pocketbase";
 import { getCustomerSummary } from "@/lib/customers";
 import { createPaymentLinkLedger } from "@/lib/payment-links";
-import { whatsappManager, checkNumberStatus } from "@/lib/whatsapp";
+import { whatsappManager, checkNumberStatus, getTenantWhatsAppSessionId } from "@/lib/whatsapp";
 import { createPaymentLink, isRazorpayConfigured } from "@/lib/razorpay";
 import {
     calculateGatewayMarkup,
@@ -16,6 +15,7 @@ import {
     DEFAULT_UPI_DISCOUNT_THRESHOLD,
 } from "@/lib/channel-pricing";
 import { formatPrice } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 // ============================================
 // Shared receipt dispatcher (spec §5 format)
@@ -89,6 +89,7 @@ export function POSWhatsAppWidget({
     autoSendRef,
     onSent,
 }: POSWhatsAppWidgetProps) {
+    const { user } = useAuth();
     const [customer, setCustomer] = useState<{ name: string; phone: string } | null>(null);
     const [waVerified, setWaVerified] = useState<boolean | null>(null);
     const [autoSend, setAutoSend] = useState(true);
@@ -159,7 +160,8 @@ export function POSWhatsAppWidget({
         if (!phone) { setWaVerified(null); return; }
         (async () => {
             try {
-                const sessionId = localStorage.getItem(getTenantStorageKey('wpp_session_id')) || 'luminila';
+                // CMP-3: tenant-scoped session, never the shared hardcoded default.
+                const sessionId = getTenantWhatsAppSessionId(user?.id || user?.email);
                 const { exists } = await checkNumberStatus(sessionId, phone);
                 if (!cancelled) setWaVerified(exists);
             } catch {
@@ -167,7 +169,7 @@ export function POSWhatsAppWidget({
             }
         })();
         return () => { cancelled = true; };
-    }, [customer?.phone]);
+    }, [customer?.phone, user?.id, user?.email]);
 
     // Report the auto-send preference up to the POS page
     useEffect(() => {
@@ -244,6 +246,9 @@ export function POSWhatsAppWidget({
             } else {
                 toast.error('Could not reach WhatsApp sidecar — link not sent');
             }
+        } catch (error) {
+            console.error('Failed to send payment link:', error);
+            toast.error(error instanceof Error ? error.message : 'Failed to send the payment link');
         } finally {
             setSendingLink(false);
         }
@@ -266,6 +271,9 @@ export function POSWhatsAppWidget({
             } else {
                 toast.error('Failed to send receipt');
             }
+        } catch (error) {
+            console.error('Failed to send WhatsApp receipt:', error);
+            toast.error(error instanceof Error ? error.message : 'Failed to send the receipt');
         } finally {
             setSendingReceipt(false);
         }

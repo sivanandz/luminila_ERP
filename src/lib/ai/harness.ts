@@ -8,7 +8,7 @@
  * registry enforces the allow-list.
  */
 
-import type { AiHarnessProfile } from './types';
+import type { AiHarnessProfile, AiToolKind } from './types';
 
 export const DEFAULT_PROFILE_ID = 'analyst';
 
@@ -57,8 +57,17 @@ export function getHarnessProfile(id: string | undefined): AiHarnessProfile {
     return { ...(found ?? PROFILE_DEFINITIONS[0]) };
 }
 
-/** True when a profile includes a tool name. */
-export function profileAllowsTool(profile: AiHarnessProfile, toolName: string): boolean {
+/**
+ * True when a profile includes a tool. `kind` is mandatory so the write
+ * exclusion cannot be forgotten by a caller: a read-only profile never allows
+ * a write tool, even when its allow-list is `'*'` (AI-19).
+ */
+export function profileAllowsTool(
+    profile: AiHarnessProfile,
+    toolName: string,
+    kind: AiToolKind
+): boolean {
+    if (kind === 'write' && !profile.allowWrites) return false;
     if (profile.allowedTools === '*') return true;
     return profile.allowedTools.includes(toolName);
 }

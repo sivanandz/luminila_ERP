@@ -125,6 +125,45 @@ export async function generateOrderNumber(orderType: OrderType = 'sales_order'):
 export async function createOrder(data: OrderInput) {
     try {
         const tenantEmail = accountScopeEmail();
+        // Totals are recomputed from the lines instead of trusting the payload
+        // (ORD-3): the client-supplied header/item totals fed invoice discounts,
+        // COD settlement and loyalty, so a tampered or stale payload could
+        // change what the store charged. Same arithmetic the order create page
+        // shows: GST applies to the post-discount base.
+        const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+        const lines = data.items.map((item) => {
+            const quantity = Number(item.quantity);
+            const unitPrice = Number(item.unit_price);
+            if (!Number.isFinite(quantity) || quantity < 0) {
+                throw new Error(`Invalid quantity for "${item.description || item.product_id}"`);
+            }
+            if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+                throw new Error(`Invalid unit price for "${item.description || item.product_id}"`);
+            }
+            const taxRate = Math.max(0, Number(item.tax_rate) || 0);
+            const gross = round2(quantity * unitPrice);
+            const requestedDiscount = Math.max(0, Number(item.discount_amount) || 0);
+            const discount = Math.min(requestedDiscount, gross);
+            const taxable = round2(gross - discount);
+            const tax = round2((taxable * taxRate) / 100);
+            return {
+                ...item,
+                quantity,
+                unit_price: unitPrice,
+                tax_rate: taxRate,
+                discount_amount: discount,
+                total: round2(taxable + tax),
+                gross,
+                taxable,
+                tax,
+            };
+        });
+        const subtotal = round2(lines.reduce((sum, line) => sum + line.gross, 0));
+        const taxTotal = round2(lines.reduce((sum, line) => sum + line.tax, 0));
+        const discountTotal = round2(lines.reduce((sum, line) => sum + line.discount_amount, 0));
+        const shippingCharges = round2(Math.max(0, Number(data.shipping_charges) || 0));
+        const grandTotal = round2(subtotal - discountTotal + taxTotal + shippingCharges);
+
         // 1. Create Order Header with Unique Retry (WPA-12)
         const orderData = {
             // Without the tenant stamp the order is invisible to the scoped
@@ -143,11 +182,11 @@ export async function createOrder(data: OrderInput) {
             status: data.status,
             notes: data.notes,
             internal_notes: data.internal_notes,
-            subtotal: data.subtotal,
-            tax_total: data.tax_total,
-            discount_total: data.discount_total,
-            shipping_charges: data.shipping_charges,
-            total: data.total,
+            subtotal,
+            tax_total: taxTotal,
+            discount_total: discountTotal,
+            shipping_charges: shippingCharges,
+            total: grandTotal,
         };
 
         let allocatedOrderNumber = '';
@@ -177,7 +216,7 @@ export async function createOrder(data: OrderInput) {
 
         const createdItemIds: string[] = [];
         try {
-            for (const item of data.items) {
+            for (const item of lines) {
                 const itemData: SalesOrderItemRecord & { account_email?: string } = {
                     order: order.id,
                     account_email: tenantEmail,
@@ -206,7 +245,7 @@ export async function createOrder(data: OrderInput) {
         // beyond). Estimates and drafts do not. Oversell is rejected and the
         // header/items are removed, so an order can never claim goods the
         // ledger does not have (ORD-02).
-        const stockLines = data.items
+        const stockLines = lines
             .filter((item) => Boolean(item.product_id))
             .map((item) => ({
                 productId: item.product_id as string,
@@ -244,7 +283,7 @@ export async function createOrder(data: OrderInput) {
             await attributeOrderToCampaign({
                 id: order.id,
                 customerPhone: data.customer_phone,
-                total: data.total,
+                total: grandTotal,
                 promoCode: (data.notes || '').match(/([A-Z0-9]{4,15})/)?.[1],
                 created: (order as any).created || new Date().toISOString(),
             });
@@ -363,6 +402,11 @@ export async function convertEstimateToOrder(estimateId: string) {
     }
 }
 
+/** True only when a PocketBase read failed because nothing matched. */
+function isNotFoundError(err: unknown): boolean {
+    return (err as { status?: number })?.status === 404;
+}
+
 /**
  * Generate an Invoice from a Sales Order
  */
@@ -387,13 +431,24 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
         // Idempotency: a retry after the order status update failed must reuse
         // the invoice that already exists rather than raising a second one for
         // the same order.
-        const existingInvoices = await pb
-            .collection('invoices')
-            .getFullList<{ id: string; invoice_number?: string }>({
-                filter: `order="${sanitizeFilter(orderId)}"${tenantEmailForRead ? ` && account_email="${sanitizeFilter(tenantEmailForRead)}"` : ''}`,
-                sort: '-created',
-            })
-            .catch(() => []);
+        const invoiceTenantClause = tenantEmailForRead
+            ? ` && account_email="${sanitizeFilter(tenantEmailForRead)}"`
+            : '';
+        const listInvoicesForOrder = async (): Promise<{ id: string; invoice_number?: string }[]> => {
+            try {
+                return await pb.collection('invoices').getFullList<{ id: string; invoice_number?: string }>({
+                    filter: `order="${sanitizeFilter(orderId)}"${invoiceTenantClause}`,
+                    sort: 'created,id',
+                });
+            } catch (err) {
+                // Only a genuine "nothing matched" may be read as "no invoice
+                // exists"; a transient error was silently treated as such and
+                // let a retry raise a duplicate invoice (ORD-2).
+                if (isNotFoundError(err)) return [];
+                throw err;
+            }
+        };
+        const existingInvoices = await listInvoicesForOrder();
         if (existingInvoices.length > 0) {
             if (order.status !== 'invoiced') {
                 await pb.collection('sales_orders').update(orderId, { status: 'invoiced' }).catch(() => {});
@@ -580,6 +635,32 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
             items: invoiceItems
         }, db);
 
+        // Two concurrent calls can both pass the pre-check because the
+        // collection has no unique constraint on `order`. Re-read after the
+        // create and converge on the oldest invoice: the loser removes its own
+        // header and lines, so the order is never double-invoiced (ORD-2).
+        const invoicesAfterCreate = await listInvoicesForOrder();
+        const canonical = invoicesAfterCreate[0];
+        if (canonical && invoice.id && canonical.id !== invoice.id) {
+            const createdItems = await pb
+                .collection('invoice_items')
+                .getFullList<{ id: string }>({
+                    filter: `invoice="${sanitizeFilter(invoice.id)}"${invoiceTenantClause}`,
+                })
+                .catch((err) => {
+                    if (isNotFoundError(err)) return [];
+                    throw err;
+                });
+            for (const item of createdItems) {
+                await pb.collection('invoice_items').delete(item.id).catch(() => {});
+            }
+            await pb.collection('invoices').delete(invoice.id).catch(() => {});
+            if (order.status !== 'invoiced') {
+                await pb.collection('sales_orders').update(orderId, { status: 'invoiced' }).catch(() => {});
+            }
+            return { success: true, order, invoice: canonical, alreadyInvoiced: true };
+        }
+
         // Mark order as invoiced
         await pb.collection('sales_orders').update(orderId, { status: 'invoiced' });
 
@@ -597,7 +678,10 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
 export async function getOrders(type?: OrderType, status?: OrderStatus) {
     try {
         const tenant = accountScopeEmail();
-        const filterParts: string[] = [tenant ? `account_email="${sanitizeFilter(tenant)}"` : 'id != ""'];
+        // No resolved tenant means no tenant's register may be listed; the old
+        // `id != ""` placeholder returned every tenant's orders (ORD-15).
+        if (!tenant) return [];
+        const filterParts: string[] = [`account_email="${sanitizeFilter(tenant)}"`];
         if (type) filterParts.push(`order_type="${type}"`);
         if (status) filterParts.push(`status="${status}"`);
 
@@ -681,6 +765,8 @@ export interface DispatchableOrder {
 /** Sales orders that can still be dispatched. */
 export async function getDispatchableOrders(): Promise<DispatchableOrder[]> {
     const tenant = accountScopeEmail();
+    // Same tenant rule as getOrders: no scope, no list (ORD-15).
+    if (!tenant) return [];
     const records = await pb.collection('sales_orders').getList(1, 30, {
         // Only real sales orders that reached a fulfilable state and are either
         // paid or cash-on-delivery. Estimates, drafts and unpaid online orders
@@ -688,17 +774,50 @@ export async function getDispatchableOrders(): Promise<DispatchableOrder[]> {
         filter:
             `order_type = "sales_order" && (status = "confirmed" || status = "invoiced")` +
             ` && (payment_status = "PAID" || payment_method = "cash" || payment_method = "cod" || payment_method = "cash_on_delivery")` +
-            `${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ' && id != ""'}`,
+            ` && account_email="${sanitizeFilter(tenant)}"`,
         sort: '-created',
     });
     return records.items;
 }
 
 export async function markSalesOrderShipped(orderId: string): Promise<void> {
-    const order = await pb.collection('sales_orders').getOne(orderId);
+    const order = await pb.collection('sales_orders').getOne<{
+        status?: string;
+        account_email?: string;
+        payment_status?: string;
+        payment_method?: string;
+    }>(orderId);
     const tenant = accountScopeEmail();
     if (tenant && order.account_email && order.account_email !== tenant) {
         throw new Error('Order does not belong to this store.');
+    }
+    const status = String(order.status || '');
+    if (status !== 'confirmed' && status !== 'invoiced') {
+        throw new Error(
+            `Only confirmed or invoiced orders can be marked shipped (order is "${status || 'unknown'}").`
+        );
+    }
+    // Same dispatch gate as getDispatchableOrders: paid, or explicitly COD.
+    // Flipping the status directly let unpaid online orders ship (ORD-12).
+    const method = String(order.payment_method || '').toLowerCase();
+    const isCashOnDelivery = ['cash', 'cod', 'cash_on_delivery'].includes(method);
+    if (String(order.payment_status || '').toUpperCase() !== 'PAID' && !isCashOnDelivery) {
+        throw new Error('Only paid orders (or COD) can be marked shipped.');
+    }
+    // Dispatch needs a carrier record; without an AWB there is no shipment
+    // trail to track or reconcile.
+    let shipment: { id: string } | null = null;
+    try {
+        shipment = await pb.collection('shipments').getFirstListItem<{ id: string }>(
+            `order_id="${sanitizeFilter(orderId)}" && awb_number != ""${
+                tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''
+            }`
+        );
+    } catch (err) {
+        if (!isNotFoundError(err)) throw err;
+    }
+    if (!shipment) {
+        throw new Error('Create a shipment with an AWB number before marking the order shipped.');
     }
     await pb.collection('sales_orders').update(orderId, { status: 'shipped' });
 }
@@ -745,7 +864,15 @@ export async function cancelSalesOrder(
         order_number?: string;
         total?: number;
         customer?: string;
+        account_email?: string;
     }>(orderId);
+
+    // Cancelling restored stock and reversed counters by bare id, so any tenant
+    // holding an order id could cancel another store's order (ORD-1).
+    const tenant = accountScopeEmail();
+    if (tenant && order.account_email && order.account_email !== tenant) {
+        throw new Error('Order does not belong to this store.');
+    }
 
     if (order.status === 'cancelled') {
         return { success: true, orderId, restored: 0, alreadyRestored: true, alreadyCancelled: true };
@@ -766,6 +893,8 @@ export async function cancelSalesOrder(
 
     const restore = await restoreChannelStockForReference(toStockDb(pb), {
         referenceId: orderId,
+        // The order's own owner is the only tenant whose variants may be restored.
+        accountEmail: order.account_email || tenant,
         notes: options.reason ? `Cancelled: ${options.reason}` : undefined,
     });
 
@@ -794,11 +923,15 @@ export async function cancelSalesOrder(
         }
     }
 
-    // Close any still-open payment links for this order (CO-15).
+    // Close any still-open payment links for this order (CO-15). Scoped to the
+    // tenant: an unscoped, unsanitized `order` filter let a cancel touch
+    // another store's links (ORD-1).
     const openLinks = await pb
         .collection('payment_links')
         .getFullList<{ id: string; status?: string }>({
-            filter: `order="${orderId}" && status != "cancelled" && status != "paid"`,
+            filter:
+                `order="${sanitizeFilter(orderId)}" && status != "cancelled" && status != "paid"` +
+                `${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
         })
         .catch(() => []);
     for (const link of openLinks) {
@@ -809,7 +942,11 @@ export async function cancelSalesOrder(
     if (order.order_number) {
         const mirrors = await pb
             .collection('sales')
-            .getFullList<{ id: string }>({ filter: `channel_order_id="${order.order_number}"` })
+            .getFullList<{ id: string }>({
+                filter:
+                    `channel_order_id="${sanitizeFilter(order.order_number)}"` +
+                    `${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
+            })
             .catch(() => []);
         for (const mirror of mirrors) {
             await pb.collection('sales').update(mirror.id, { status: 'cancelled' }).catch(() => {});

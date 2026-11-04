@@ -143,6 +143,7 @@ export async function getConversation(
 
 export async function updateConversation(
     client: PocketBase,
+    accountEmail: string,
     conversationId: string,
     patch: Partial<{
         title: string;
@@ -151,8 +152,20 @@ export async function updateConversation(
         model: string;
         status: AiTurnStatus | 'idle';
         lastMessageAt: string;
-    }>
+    }>,
+    operatorEmail: string = accountEmail
 ): Promise<void> {
+    // The AI collections are superuser-owned and updated by id: without this
+    // scope check any caller-supplied conversationId could mutate another
+    // tenant's transcript (AI-9).
+    const record = await client.collection(CONVERSATIONS_COLLECTION).getOne(conversationId);
+    const row = record as Record<string, unknown>;
+    if (asText(row.account_email) !== accountEmail) {
+        throw new Error('Conversation not found for this account.');
+    }
+    if (asText(row.created_by).trim().toLowerCase() !== operatorEmail.trim().toLowerCase()) {
+        throw new Error('Conversation not found for this operator.');
+    }
     const payload: Record<string, unknown> = {};
     if (patch.title !== undefined) payload.title = patch.title;
     if (patch.profileId !== undefined) payload.profile_id = patch.profileId;
@@ -223,6 +236,13 @@ export async function appendEvent(
     client: PocketBase,
     input: AppendEventInput
 ): Promise<AiEventRecord> {
+    // Events are created with the caller-supplied conversation id on a
+    // superuser client: verify the conversation belongs to this tenant first,
+    // or an event could be injected into another account's transcript (AI-11).
+    const conversation = await client.collection(CONVERSATIONS_COLLECTION).getOne(input.conversationId);
+    if (asText((conversation as Record<string, unknown>).account_email) !== input.accountEmail) {
+        throw new Error('Conversation not found for this account.');
+    }
     const event = input.event;
     const payload: Record<string, unknown> = {
         conversation: input.conversationId,

@@ -100,9 +100,14 @@ export async function findMatchingProducts(imageDataUrl: string, threshold = 0.6
         // `image_data` (base64 gallery/camera captures) is as valid a source as
         // `image_url`; matching only image_url silently skipped those (INV-14).
         const tenant = accountScopeEmail();
-        const tenantClause = tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+        if (!tenant) {
+            // Without a tenant the query would match every account's catalog
+            // (ENG-1): refuse instead of running unscoped.
+            console.warn('[ImageMatcher] No tenant account resolved; skipping image match.');
+            return [];
+        }
         const products = await pb.collection('products').getFullList({
-            filter: `is_active = true && (image_url != "" || image_data != "")${tenantClause}`,
+            filter: `is_active = true && (image_url != "" || image_data != "") && account_email = "${sanitizeFilter(tenant)}"`,
         });
 
         const results: MatchResult[] = [];

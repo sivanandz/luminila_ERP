@@ -34,6 +34,7 @@ import {
 
 import { getInvoice, type Invoice } from "@/lib/invoice";
 import { createReturnFromInvoice, type ReturnReason } from "@/lib/returns";
+import { pb, sanitizeFilter } from "@/lib/pocketbase";
 import { formatINR } from "@/lib/gst";
 import { toast } from "sonner";
 
@@ -88,24 +89,53 @@ function CreateReturnContent() {
             setInvoice(data);
             toast.success(`Loaded invoice ${data.invoice_number}`);
 
+            // PG-10: cap each line at what is still returnable. Seeding max_qty
+            // from the invoice quantity lets the UI commit more than remains
+            // after earlier credit notes (the lib then rejects the submit).
+            let priorByItem: Map<string, number> | null = null;
+            try {
+                const priorReturns = await pb
+                    .collection('credit_note_items')
+                    .getFullList<{ original_invoice_item?: string; quantity?: number }>({
+                        filter: `credit_note.original_invoice="${sanitizeFilter(id)}" && credit_note.status != "cancelled"`,
+                        fields: 'original_invoice_item,quantity',
+                    });
+                priorByItem = new Map<string, number>();
+                for (const prior of priorReturns) {
+                    if (!prior.original_invoice_item) continue;
+                    priorByItem.set(
+                        prior.original_invoice_item,
+                        (priorByItem.get(prior.original_invoice_item) || 0) + (prior.quantity || 0)
+                    );
+                }
+            } catch (historyError) {
+                // Fail closed: without the prior-return history every line stays
+                // at 0 so nothing can be credited twice on a DB hiccup.
+                console.error("Error loading prior credit notes:", historyError);
+                toast.error("Could not check previously returned quantities. Reload the invoice to retry.");
+            }
+
             // Initialize return items from invoice items
             if (data?.items) {
                 setReturnItems(
-                    data.items.map((item) => ({
-                        invoice_item_id: item.id!,
-                        description: item.description,
-                        max_qty: item.quantity,
-                        quantity: 0,
-                        unit_price: item.unit_price,
-                        // POS lines already include GST; adding 3% again
-                        // over-estimated the refund (POS-17).
-                        tax_inclusive_unit: (
-                            Number(item.taxable_amount || 0)
-                            + Number(item.cgst_amount || 0)
-                            + Number(item.sgst_amount || 0)
-                            + Number(item.igst_amount || 0)
-                        ) / Math.max(1, Number(item.quantity) || 1),
-                    }))
+                    data.items.map((item) => {
+                        const alreadyReturned = priorByItem?.get(item.id!) || 0;
+                        return {
+                            invoice_item_id: item.id!,
+                            description: item.description,
+                            max_qty: priorByItem ? Math.max(0, item.quantity - alreadyReturned) : 0,
+                            quantity: 0,
+                            unit_price: item.unit_price,
+                            // POS lines already include GST; adding 3% again
+                            // over-estimated the refund (POS-17).
+                            tax_inclusive_unit: (
+                                Number(item.taxable_amount || 0)
+                                + Number(item.cgst_amount || 0)
+                                + Number(item.sgst_amount || 0)
+                                + Number(item.igst_amount || 0)
+                            ) / Math.max(1, Number(item.quantity) || 1),
+                        };
+                    })
                 );
             }
         } catch (error) {

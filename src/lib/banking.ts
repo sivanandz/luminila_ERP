@@ -79,6 +79,11 @@ function joinFilter(...parts: string[]): string {
     return parts.filter(Boolean).join(' && ');
 }
 
+/** Money is stored in rupees with at most two decimals (BNK-13). */
+function round2(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
 /**
  * Ownership check for records read by id (getOne/update cannot take a filter).
  * Legacy rows without a stamp are treated as the single account's, matching
@@ -122,8 +127,8 @@ export async function getBankAccount(id: string): Promise<BankAccount | null> {
 
 export async function createBankAccount(account: NewBankAccount): Promise<BankAccount> {
     try {
-        const opening = Number(account.opening_balance) || 0;
-        const current = account.current_balance !== undefined ? Number(account.current_balance) || 0 : opening;
+        const opening = round2(Number(account.opening_balance) || 0);
+        const current = account.current_balance !== undefined ? round2(Number(account.current_balance) || 0) : opening;
         const payload = {
             ...account,
             account_email: accountScopeEmail(),
@@ -147,12 +152,11 @@ export async function updateBankAccount(id: string, updates: Partial<BankAccount
         }
         const payload: Record<string, unknown> = { ...updates };
         delete payload.account_email;
-        if (updates.opening_balance !== undefined) {
-            payload.opening_balance = Number(updates.opening_balance) || 0;
-        }
-        if (updates.current_balance !== undefined) {
-            payload.current_balance = Number(updates.current_balance) || 0;
-        }
+        // Balances are ledger-derived: accepting them here bypassed the
+        // overdraft guard and double-entry entirely. All movements must go
+        // through createBankTransaction/transferFunds (BNK-8).
+        delete payload.current_balance;
+        delete payload.opening_balance;
         const record = await pb.collection('bank_accounts').update(id, payload);
         return record as unknown as BankAccount;
     } catch (error) {
@@ -206,15 +210,18 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
         }
 
         // A negative or non-finite amount would bypass the overdraft check and
-        // increase the balance instead of decreasing it (FIN-12).
-        if (!Number.isFinite(transaction.amount) || transaction.amount <= 0) {
+        // increase the balance instead of decreasing it (FIN-12). Paise are
+        // capped at two decimals so balance modifiers do not accumulate drift
+        // (BNK-13).
+        const amount = round2(Number(transaction.amount));
+        if (!Number.isFinite(amount) || amount <= 0) {
             throw new Error('Transaction amount must be a positive number');
         }
 
         // Overdraft protection: verify sufficient balance for debits
         if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
-            if ((account.current_balance || 0) < transaction.amount) {
-                throw new Error(`Insufficient funds: account balance (₹${account.current_balance || 0}) is less than transaction amount (₹${transaction.amount})`);
+            if ((account.current_balance || 0) < amount) {
+                throw new Error(`Insufficient funds: account balance (₹${account.current_balance || 0}) is less than transaction amount (₹${amount})`);
             }
         }
 
@@ -225,18 +232,36 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
         try {
             record = await pb.collection('bank_transactions').create<BankTransaction>({
                 ...transaction,
+                amount,
                 account_email: accountScopeEmail(),
             });
 
             const balanceUpdate: Record<string, number> = {};
             if (transaction.type === 'deposit') {
-                balanceUpdate['current_balance+'] = transaction.amount;
+                balanceUpdate['current_balance+'] = amount;
             } else if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
-                balanceUpdate['current_balance-'] = transaction.amount;
+                balanceUpdate['current_balance-'] = amount;
             }
 
             await pb.collection('bank_accounts').update(transaction.account, balanceUpdate);
             sourceUpdated = true;
+
+            // The overdraft guard above is only a pre-read: another tab or
+            // process can debit between the check and this atomic decrement
+            // (BNK-2). Re-read after the write and undo it when the account
+            // went negative, so the ledger row never survives an overdraft.
+            if (transaction.type === 'withdrawal' || transaction.type === 'transfer') {
+                const after = await pb.collection('bank_accounts').getOne<BankAccount>(transaction.account);
+                if (Number(after.current_balance) < 0) {
+                    await pb.collection('bank_accounts').update(transaction.account, {
+                        'current_balance+': amount,
+                    });
+                    sourceUpdated = false;
+                    throw new Error(
+                        `Insufficient funds: account balance went negative after this transaction (₹${after.current_balance})`
+                    );
+                }
+            }
 
             // Double-entry inter-account transfer support: credit destination account when specified
             if (
@@ -252,7 +277,7 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
                     throw new Error(`Destination bank account ${transaction.related_entity_id} not found; transfer rolled back`);
                 }
                 await pb.collection('bank_accounts').update(transaction.related_entity_id, {
-                    'current_balance+': transaction.amount
+                    'current_balance+': amount
                 });
                 destCredited = true;
 
@@ -261,7 +286,7 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
                     account: transaction.related_entity_id,
                     transaction_date: transaction.transaction_date,
                     type: 'deposit',
-                    amount: transaction.amount,
+                    amount,
                     description: `Transfer from ${account.account_name}${transaction.description ? `: ${transaction.description}` : ''}`,
                     reference_number: transaction.reference_number,
                     related_entity_type: 'bank_account',
@@ -278,15 +303,15 @@ export async function createBankTransaction(transaction: NewBankTransaction): Pr
             }
             if (destCredited && transaction.related_entity_id) {
                 await pb.collection('bank_accounts').update(transaction.related_entity_id, {
-                    'current_balance-': transaction.amount
+                    'current_balance-': amount
                 }).catch(() => {});
             }
             // The source was debited before the failure; reverse it or the
             // account loses money that no transaction records (FIN-03).
             if (sourceUpdated) {
                 const reversal: Record<string, number> = transaction.type === 'deposit'
-                    ? { 'current_balance-': transaction.amount }
-                    : { 'current_balance+': transaction.amount };
+                    ? { 'current_balance-': amount }
+                    : { 'current_balance+': amount };
                 await pb.collection('bank_accounts').update(transaction.account, reversal).catch((revErr) => {
                     console.error('Failed to reverse source account balance after transfer failure:', revErr);
                 });
@@ -311,7 +336,8 @@ export async function transferFunds(
     if (fromAccountId === toAccountId) {
         throw new Error('Source and destination accounts cannot be identical');
     }
-    if (amount <= 0) {
+    const transferAmount = round2(Number(amount));
+    if (!Number.isFinite(transferAmount) || transferAmount <= 0) {
         throw new Error('Transfer amount must be greater than zero');
     }
 
@@ -320,7 +346,7 @@ export async function transferFunds(
         account: fromAccountId,
         transaction_date: txDate,
         type: 'transfer',
-        amount,
+        amount: transferAmount,
         description: description || `Transfer to account ${toAccountId}`,
         reference_number: referenceNumber,
         related_entity_type: 'bank_account',

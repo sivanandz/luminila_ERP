@@ -15,7 +15,7 @@
  *    order instead of creating a second one.
  */
 
-import { pb, getCurrentTenantEmail } from './pocketbase';
+import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
 import { getChannelPriceFromList } from './pricing-rules';
 import { loadTenantChannelDefinitions } from './server-pricing';
 import {
@@ -97,13 +97,18 @@ function cleanKey(raw?: string): string {
 
 async function existingOrderResult(
     txnId: string,
-    orderNumber: string
+    orderNumber: string,
+    tenantEmail: string
 ): Promise<ChatSaleResult | null> {
-    const existing = await findExistingChannelOrder(pb, orderNumber);
+    const existing = await findExistingChannelOrder(pb, orderNumber, tenantEmail);
     if (!existing) return null;
+    // The order lookup is tenant-scoped, but these two are keyed only by a
+    // caller-controlled txn id / relation: without the tenant clause a retry
+    // could return another account's sale/payment link (BIZ-4).
+    const tenantFilter = `account_email = "${sanitizeFilter(tenantEmail)}"`;
     const [sale, link] = await Promise.all([
-        pb.collection('sales').getFirstListItem(`channel_order_id = "${txnId}"`).catch(() => null),
-        pb.collection('payment_links').getFirstListItem(`order = "${existing.id}"`).catch(() => null),
+        pb.collection('sales').getFirstListItem(`channel_order_id = "${sanitizeFilter(txnId)}" && ${tenantFilter}`).catch(() => null),
+        pb.collection('payment_links').getFirstListItem(`order = "${sanitizeFilter(existing.id)}" && ${tenantFilter}`).catch(() => null),
     ]);
     return {
         saleId: sale?.id || '',
@@ -133,7 +138,7 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
     const orderNumber = `ORD-${txnId}`;
 
     if (key) {
-        const duplicate = await existingOrderResult(txnId, orderNumber);
+        const duplicate = await existingOrderResult(txnId, orderNumber, tenantEmail);
         if (duplicate) return duplicate;
     }
 
@@ -222,6 +227,12 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
     if ((!address || !state || !companyName || !gstin) && input.customerId) {
         const profile = await pb.collection('customers').getOne(input.customerId).catch(() => null);
         if (profile) {
+            // A caller-supplied customer id must not pull another tenant's
+            // address/GSTIN into this order (BIZ-3).
+            const owner = String((profile as { account_email?: string }).account_email || '').trim().toLowerCase();
+            if (owner && owner !== tenantEmail.toLowerCase()) {
+                throw new Error('The selected customer does not belong to this account.');
+            }
             address = address || String(profile.address || '');
             city = city || String(profile.city || '');
             state = state || String(profile.state || '');
@@ -339,7 +350,7 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
                     ''
             );
             if (!/unique/i.test(msg)) throw createErr;
-            const duplicate = await existingOrderResult(txnId, orderNumber);
+            const duplicate = await existingOrderResult(txnId, orderNumber, tenantEmail);
             if (!duplicate) throw createErr;
             return duplicate;
         }
@@ -406,10 +417,10 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
                 }`,
             });
             saleId = sale.id;
+            const failedLines: string[] = [];
             for (const line of lines) {
-                await pb
-                    .collection('sale_items')
-                    .create({
+                try {
+                    await pb.collection('sale_items').create({
                         sale: sale.id,
                         product: line.productId,
                         variant: line.variantId,
@@ -419,8 +430,30 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
                         total: line.price * line.quantity,
                         discount: 0,
                         account_email: tenantEmail,
-                    })
-                    .catch(() => {});
+                    });
+                } catch (lineErr) {
+                    console.error('[chat-sales] sale_items insert failed for mirror sale:', lineErr);
+                    failedLines.push(line.name);
+                }
+            }
+            if (failedLines.length > 0) {
+                // A mirror with missing lines would count revenue with no COGS in
+                // POS reports. Remove the partial mirror instead of silently
+                // keeping it; the sales order remains the source of truth (BIZ-9).
+                console.warn(
+                    `[chat-sales] mirror sale ${sale.id} discarded: ${failedLines.length} line(s) could not be written (${failedLines.join(', ')}). Order ${orderNumber} is unaffected.`
+                );
+                const createdItems = await pb
+                    .collection('sale_items')
+                    .getFullList({ filter: `sale = "${sanitizeFilter(sale.id)}"` })
+                    .catch(() => []);
+                for (const item of createdItems) {
+                    await pb.collection('sale_items').delete(item.id).catch(() => undefined);
+                }
+                await pb.collection('sales').delete(sale.id).catch((deleteErr) => {
+                    console.error('[chat-sales] could not remove the partial mirror sale:', deleteErr);
+                });
+                saleId = '';
             }
         } catch (mirrorErr) {
             console.warn('[chat-sales] sales mirror write failed (order is durable):', mirrorErr);
@@ -475,9 +508,12 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
             if (stockApplied) {
                 await restoreChannelStockForReference(stockDb, {
                     referenceId: orderId,
+                    accountEmail: tenantEmail,
                     channel: 'whatsapp',
                     notes: 'Compensated failed chat order creation',
-                }).catch(() => {});
+                }).catch((restoreError) => {
+                    console.warn('Compensating stock restore failed for', orderId, restoreError);
+                });
             }
             await pb.collection('sales_orders').update(orderId, { status: 'cancelled' }).catch(() => {});
         }
@@ -485,10 +521,12 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
     }
 }
 
-/** Look up a chat-created order by its WhatsApp txn reference. */
+/** Look up a chat-created order by its WhatsApp txn reference (tenant-scoped). */
 export async function findChatSaleByRef(txnId: string): Promise<{ orderId: string } | null> {
+    const tenantEmail = getCurrentTenantEmail();
+    if (!tenantEmail) throw new Error('No tenant is selected, so the order cannot be looked up.');
     const order = await pb.collection('sales_orders').getFirstListItem(
-        `order_number = "${txnId.replace(/"/g, '')}"`
+        `order_number = "${sanitizeFilter(txnId)}" && account_email = "${sanitizeFilter(tenantEmail)}"`
     ).catch(() => null);
     return order ? { orderId: order.id } : null;
 }

@@ -10,7 +10,7 @@ import { isValidGstin as isValidGstinChecksum } from './gstin';
  * - Configure credentials in store_settings
  */
 
-import { getCurrentTenantEmail, pb } from './pocketbase';
+import { canActOnTenant, getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
 import { getStoreSettings, type Invoice, type InvoiceItem } from './invoice';
 import { getEwayBillConfig as loadEwayBillCredentials } from './eway-bill-settings';
 import CryptoJS from 'crypto-js';
@@ -259,11 +259,16 @@ function formatDateForEway(date: Date | string): string {
     return `${day}/${month}/${year}`;
 }
 
-function encryptWithPublicKey(data: string): string {
-    // Note: In production, you'd use RSA encryption with NIC's public key
-    // For now, we'll use Base64 encoding as a placeholder
-    // Real implementation needs: RSA encryption with NIC's public key (available on their portal)
-    return CryptoJS.enc.Base64.stringify(CryptoJS.enc.Utf8.parse(data));
+/**
+ * The NIC e-way bill API requires the ACCESSTOKEN request to be encrypted with
+ * the public key issued on the NIC portal. That key/certificate is not present
+ * in this repository, and Base64 is not encryption, so this refuses to send the
+ * username/password/app key in a decodable form (INV-14).
+ */
+function encryptWithPublicKey(_data: string): never {
+    throw new Error(
+        'E-way bill NIC authentication is not implemented: RSA encryption with the NIC-issued public key is required, and no such key is configured in this project. Refusing to transmit credentials in plaintext.'
+    );
 }
 
 function encryptWithSEK(data: string, sek: string): string {
@@ -614,14 +619,36 @@ export async function cancelEwayBill(
 // GENERATE FROM INVOICE
 // ============================================
 
-export async function generateEwayBillFromInvoice(invoiceId: string): Promise<EwayBillResponse> {
-    // Fetch invoice with items
-    const invoice = await pb.collection('invoices').getOne<Invoice>(invoiceId, {
+/** Destination/transport values the invoice row does not carry. */
+export interface EwayGenerationOptions {
+    /** Destination place (buyer city) as required by NIC. */
+    toPlace?: string;
+    /** Destination PIN code (6 digits). */
+    toPincode?: number | string;
+    /** Transport distance in km, required by NIC for the bill's validity. */
+    transDistanceKm?: number;
+}
+
+export async function generateEwayBillFromInvoice(
+    invoiceId: string,
+    options: EwayGenerationOptions = {}
+): Promise<EwayBillResponse> {
+    // Fetch invoice with items. Ownership is verified before anything is read
+    // further: the service client may run as superuser, so an unscoped id would
+    // expose another tenant's invoice and buyer PII (INV-6).
+    const invoice = await pb.collection('invoices').getOne<Invoice & { account_email?: string }>(invoiceId, {
         expand: 'sale',
     });
+    if (!canActOnTenant(invoice.account_email)) {
+        throw new Error('E-way bill not generated: invoice not found for this account.');
+    }
 
+    // Scope the line query to the verified owner so a filter mistake can never
+    // pull rows from another tenant.
+    const ownerEmail = String(invoice.account_email || '').trim().toLowerCase();
+    const ownerClause = ownerEmail ? ` && account_email="${sanitizeFilter(ownerEmail)}"` : '';
     const invoiceItems = await pb.collection('invoice_items').getFullList<InvoiceItem>({
-        filter: `invoice="${invoiceId}"`,
+        filter: `invoice="${sanitizeFilter(invoiceId)}"${ownerClause}`,
     });
 
     const storeSettings = await getStoreSettings();
@@ -645,6 +672,24 @@ export async function generateEwayBillFromInvoice(invoiceId: string): Promise<Ew
         throw new Error('Set the buyer state code or GSTIN before generating an e-way bill.');
     }
 
+    // NIC validates the pin codes and distance, so a placeholder (0 / '') files
+    // an invalid bill. Refuse instead of calling the portal with dummy values
+    // (INV-6).
+    const fromPincode = parseInt(String(storeSettings.store_pincode ?? ''), 10) || 0;
+    const toPlace = String(options.toPlace ?? '').trim();
+    const toPincode = parseInt(String(options.toPincode ?? ''), 10) || 0;
+    const transDistance = Number(options.transDistanceKm);
+    const missing: string[] = [];
+    if (!/^\d{6}$/.test(String(fromPincode))) missing.push('store PIN code');
+    if (!toPlace) missing.push('destination place (buyer city)');
+    if (!/^\d{6}$/.test(String(toPincode))) missing.push('destination PIN code');
+    if (!Number.isFinite(transDistance) || transDistance <= 0) missing.push('transport distance in km');
+    if (missing.length > 0) {
+        throw new Error(
+            `E-way bill not generated: ${missing.join(', ')} missing or invalid. NIC rejects placeholder values, so supply them before calling the portal.`
+        );
+    }
+
     // Build E-way Bill request from invoice data
     const request: EwayBillRequest = {
         supplyType: 'O', // Outward supply
@@ -656,16 +701,16 @@ export async function generateEwayBillFromInvoice(invoiceId: string): Promise<Ew
         fromTrdName: storeSettings.store_name,
         fromAddr1: storeSettings.store_address,
         fromPlace: storeSettings.store_city,
-        fromPincode: parseInt(storeSettings.store_pincode) || 0,
+        fromPincode,
         fromStateCode,
         toGstin: invoice.buyer_gstin || 'URP', // URP for unregistered
         toTrdName: invoice.buyer_name,
         toAddr1: invoice.buyer_address,
-        toPlace: '', // Would need buyer city
-        toPincode: 0, // Would need buyer pincode
+        toPlace,
+        toPincode,
         toStateCode,
         transactionType: 1, // Regular
-        transDistance: 0, // To be filled by user
+        transDistance,
         totalValue: invoice.taxable_value,
         cgstValue: invoice.cgst_amount,
         sgstValue: invoice.sgst_amount,

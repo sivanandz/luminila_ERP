@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
 
         const result = await testProviderConnection(provider);
         if (parsed.body.id && parsed.body.id !== 'environment') {
-            await markProviderTested(auth.context.adminClient, parsed.body.id, result.ok);
+            await markProviderTested(auth.context.adminClient, auth.context.accountEmail, parsed.body.id, result.ok);
         }
         return jsonOk({ ...result });
     } catch (error) {

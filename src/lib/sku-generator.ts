@@ -377,21 +377,33 @@ export function getSubcategoriesForCategory(
 /**
  * Queries PocketBase for existing SKUs with the given prefix
  * and calculates the next gapless sequence counter (e.g. 1 -> 00001).
+ *
+ * A lookup failure is thrown, never replaced by a guessed sequence (BIZ-8).
+ * The candidate is re-read right before it is returned, and a collision (a
+ * concurrent create consumed it) restarts from a fresh read, bounded.
  */
 export async function computeNextSkuSequence(prefix: string, fallbackSeq: number = 1): Promise<number> {
-    try {
+    // Kept for signature compatibility; a fallback sequence guarantees a
+    // duplicate SKU when the real counter is unknown.
+    void fallbackSeq;
+    const MAX_ATTEMPTS = 5;
+    const cleanPrefix = prefix.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    // Sequences are per tenant: another shop's SKUs must not advance this one's
+    // counter (INV-16).
+    const tenant = accountScopeEmail();
+    if (!tenant) {
+        throw new Error("No tenant account resolved; cannot allocate a SKU sequence.");
+    }
+    const tenantFilter = ` && account_email = "${sanitizeFilter(tenant)}"`;
+    const seq5Regex = new RegExp(`^${cleanPrefix}(\\d{5})`);
+    const seq4Regex = new RegExp(`^${cleanPrefix}(\\d{4})`);
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
         let nextSeq = 1;
-        const cleanPrefix = prefix.toUpperCase().replace(/[^A-Z0-9]/g, "");
-        // Sequences are per tenant: another shop's SKUs must not advance this one's
-        // counter (INV-16).
-        const tenant = accountScopeEmail();
-        const tenantFilter = tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
         const rows = await pb.collection('products').getFullList({
             filter: `sku ~ "${sanitizeFilter(cleanPrefix)}"${tenantFilter}`,
             fields: 'sku',
         });
-        const seq5Regex = new RegExp(`^${cleanPrefix}(\\d{5})`);
-        const seq4Regex = new RegExp(`^${cleanPrefix}(\\d{4})`);
         rows.forEach(row => {
             const skuStr = String((row as { sku?: string }).sku || '').toUpperCase();
             const match5 = skuStr.match(seq5Regex);
@@ -399,11 +411,21 @@ export async function computeNextSkuSequence(prefix: string, fallbackSeq: number
             const match4 = skuStr.match(seq4Regex);
             if (match4) nextSeq = Math.max(nextSeq, parseInt(match4[1], 10) + 1);
         });
-        return nextSeq;
-    } catch (err) {
-        console.error("SKU sequence lookup failed, using fallback sequence", err);
-        return Math.max(1, fallbackSeq);
+
+        // Re-check this exact candidate immediately before returning it. The
+        // list read above is not a reservation; a concurrent create can claim
+        // the same number. `~` also catches child SKUs (`PREFIX00001-…`).
+        const candidate = `${cleanPrefix}${String(nextSeq).padStart(5, '0')}`;
+        const taken = await pb
+            .collection('products')
+            .getFirstListItem(`sku ~ "${sanitizeFilter(candidate)}"${tenantFilter}`, { fields: 'id' })
+            .catch((error: unknown) => {
+                if ((error as { status?: number } | null)?.status === 404) return null;
+                throw error;
+            });
+        if (!taken) return nextSeq;
     }
+    throw new Error("Could not allocate a unique SKU sequence after several attempts; try again.");
 }
 
 /**
@@ -424,7 +446,7 @@ export async function loadSKUTaxonomies(): Promise<SKUTaxonomies> {
     const tenantEmail = getCurrentTenantEmail();
     try {
         const filter = tenantEmail && tenantEmail !== "default"
-            ? `key="${PB_KEY}" && account_email="${tenantEmail}"`
+            ? `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`
             : `key="${PB_KEY}"`;
         const record = await pb.collection("store_settings").getFirstListItem(filter).catch(() => null);
         if (record && record.value) {
@@ -467,7 +489,7 @@ export async function saveSKUTaxonomies(taxonomies: SKUTaxonomies): Promise<void
     try {
         const tenantEmail = getCurrentTenantEmail();
         const filter = tenantEmail && tenantEmail !== "default"
-            ? `key="${PB_KEY}" && account_email="${tenantEmail}"`
+            ? `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`
             : `key="${PB_KEY}"`;
         const existing = await pb.collection("store_settings").getFirstListItem(filter).catch(() => null);
         if (existing) {

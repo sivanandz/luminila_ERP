@@ -102,6 +102,31 @@ function toolSchemaFingerprint(schemas: unknown): string {
     return hash.toString(16).padStart(8, '0');
 }
 
+/**
+ * Browser-safe turn error. The raw `error.message` can embed collection names,
+ * filter strings or record data, so it is logged server-side and replaced with
+ * a fixed message before it reaches SSE or the persisted `turn/end` (AI-21).
+ */
+function publicTurnError(error: unknown): { message: string; code: string } {
+    if (error instanceof AiProviderError) {
+        // Transport messages are already redacted, but keep them bounded.
+        return { message: capText(error.message, MAX_SUMMARY_CHARS), code: error.code };
+    }
+    if (error instanceof AiTurnError) {
+        const messages: Record<string, string> = {
+            empty_turn: 'Provide a message or an approvals list to continue.',
+            no_pending_approvals: 'There are no tool calls waiting for approval.',
+            empty_response: 'The model returned an empty response.',
+        };
+        return {
+            message: messages[error.code] ?? 'The assistant could not complete this turn.',
+            code: error.code,
+        };
+    }
+    console.error('[ai] turn failed:', error);
+    return { message: 'The assistant could not complete this turn.', code: 'turn_error' };
+}
+
 export async function runAgentTurn(options: RunAgentTurnOptions): Promise<RunAgentTurnResult> {
     const { provider, profile, systemPrompt, tools, providerTools, emit, appendEvent, capabilityCheck, signal } = options;
     const events: AiEventRecord[] = [...options.history].sort((a, b) => a.seq - b.seq);
@@ -292,17 +317,17 @@ export async function runAgentTurn(options: RunAgentTurnOptions): Promise<RunAge
                 let mode: ToolCallMode = 'auto';
                 if (tool?.kind === 'write') {
                     mode = isCallApproved(approvedIds, call.callId) ? 'approve' : 'deny';
-                    // Persist the operator's decision before acting on it: the log is
-                    // the consent audit trail, not the request body.
-                    await append({
-                        type: 'approval/decision',
-                        callId: call.callId,
-                        name: call.name,
-                        approved: mode === 'approve',
-                        decidedBy: actorEmail,
-                        at: new Date().toISOString(),
-                    });
                 }
+                // Persist the decision for EVERY resumed pending call, not just
+                // writes: the log is the consent/execution audit trail (AI-25).
+                await append({
+                    type: 'approval/decision',
+                    callId: call.callId,
+                    name: call.name,
+                    approved: tool?.kind !== 'write' || mode === 'approve',
+                    decidedBy: actorEmail,
+                    at: new Date().toISOString(),
+                });
                 const outcome = await runToolCall(call, mode);
                 if (outcome === 'awaiting') {
                     status = 'awaiting_approval';
@@ -390,10 +415,20 @@ export async function runAgentTurn(options: RunAgentTurnOptions): Promise<RunAge
             const executable = toolCalls.slice(0, profile.maxToolCallsPerStep);
             const excess = toolCalls.slice(profile.maxToolCallsPerStep);
             let awaiting = false;
-            for (const call of executable) {
+            for (let index = 0; index < executable.length; index += 1) {
+                const call = executable[index];
                 const outcome = await runToolCall({ callId: call.id, name: call.name, arguments: call.arguments }, 'auto');
                 if (outcome === 'awaiting') {
                     awaiting = true;
+                    // The calls after this one were selected in the same step.
+                    // Leaving them unresolved broke log pairing and hid them from
+                    // the approval UI (AI-22): close them explicitly instead.
+                    for (const remaining of executable.slice(index + 1)) {
+                        await denyCall(
+                            { callId: remaining.id, name: remaining.name, arguments: remaining.arguments },
+                            'The turn paused for approval of an earlier tool call. Re-run this action to continue.'
+                        );
+                    }
                     break;
                 }
             }
@@ -411,15 +446,9 @@ export async function runAgentTurn(options: RunAgentTurnOptions): Promise<RunAge
         }
     } catch (error) {
         status = 'error';
-        const message = error instanceof Error ? error.message : 'The turn failed.';
-        errorMessage = message;
-        const code =
-            error instanceof AiProviderError
-                ? error.code
-                : error instanceof AiTurnError
-                    ? error.code
-                    : 'turn_error';
-        emit({ event: 'error', data: { message, code } });
+        const mapped = publicTurnError(error);
+        errorMessage = mapped.message;
+        emit({ event: 'error', data: mapped });
     }
 
     // A finished/cancelled/failed turn must not leave unresolved tool calls in
@@ -447,7 +476,9 @@ export async function runAgentTurn(options: RunAgentTurnOptions): Promise<RunAge
         await append({ type: 'turn/end', status, ...(errorMessage ? { error: errorMessage } : {}) });
     } catch (error) {
         if (!errorMessage) {
-            errorMessage = error instanceof Error ? error.message : 'Could not persist the turn result.';
+            // Keep the raw persistence error out of the transcript.
+            console.error('[ai] turn/end could not be persisted:', error);
+            errorMessage = 'The turn result could not be saved.';
             status = 'error';
         }
     }

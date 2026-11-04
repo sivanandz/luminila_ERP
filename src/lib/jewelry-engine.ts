@@ -164,7 +164,10 @@ export function calculateJewelryPrice(input: JewelryPricingInput): JewelryPricin
 
     let makingChargesAmount = 0;
     if (makingType === 'per_gram') {
-        makingChargesAmount = roundDecimal(grossWeight * makingRate, 2);
+        // Per-gram making applies to the metal the customer receives — net of
+        // stone weight. Billing it on grossWeight charged making on stone grams
+        // (ENG-7).
+        makingChargesAmount = roundDecimal(netWeight * makingRate, 2);
     } else if (makingType === 'percent') {
         makingChargesAmount = roundDecimal(metalAmount * (makingRate / 100), 2);
     } else if (makingType === 'fixed') {

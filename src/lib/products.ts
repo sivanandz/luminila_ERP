@@ -473,6 +473,7 @@ export async function getVariantStockSummary(): Promise<{
     stockByProduct: Map<string, number>;
     materialByProduct: Map<string, string>;
     productByVariant: Map<string, string>;
+    primaryVariantByProduct: Map<string, string>;
 }> {
     const variants = await pb.collection('product_variants').getFullList<ProductVariant>({
         filter: `product.is_active = true${tenantClause()}`,
@@ -480,18 +481,22 @@ export async function getVariantStockSummary(): Promise<{
     const stockByProduct = new Map<string, number>();
     const materialByProduct = new Map<string, string>();
     const productByVariant = new Map<string, string>();
+    const primaryVariantByProduct = new Map<string, string>();
 
     for (const variant of variants) {
         const productId = variant.product;
         if (!productId) continue;
         productByVariant.set(variant.id, productId);
+        if (!primaryVariantByProduct.has(productId)) {
+            primaryVariantByProduct.set(productId, variant.id);
+        }
         stockByProduct.set(productId, (stockByProduct.get(productId) || 0) + (variant.stock_level || 0));
         if (variant.material && !materialByProduct.has(productId)) {
             materialByProduct.set(productId, variant.material);
         }
     }
 
-    return { stockByProduct, materialByProduct, productByVariant };
+    return { stockByProduct, materialByProduct, productByVariant, primaryVariantByProduct };
 }
 
 /** Log a manual inward movement against a variant, stamped with the tenant. */

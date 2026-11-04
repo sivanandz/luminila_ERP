@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/table";
 import { formatINR } from "@/lib/gst";
 import { getBankAccounts, type BankAccount } from "@/lib/banking";
+import { usePermissions } from "@/hooks/usePermissions";
 import {
     addCheque,
     advanceCheque,
@@ -52,6 +53,9 @@ function today(): string {
 }
 
 export default function ChequeRegisterPage() {
+    // PG-19: destructive cheque actions re-check the permission server-side of the UI.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canDeleteCheques = () => isAdmin || hasPermission("invoices", "delete");
     const [cheques, setCheques] = useState<ChequeRecord[]>([]);
     const [accounts, setAccounts] = useState<BankAccount[]>([]);
     const [depositAccountId, setDepositAccountId] = useState("");
@@ -171,6 +175,10 @@ export default function ChequeRegisterPage() {
     };
 
     const handleCancel = async (cheque: ChequeRecord) => {
+        if (!canDeleteCheques()) {
+            toast.error("You do not have permission to cancel cheques.");
+            return;
+        }
         try {
             const { cheques: next } = await advanceCheque(cheque.id, "cancelled");
             setCheques(next);
@@ -182,6 +190,10 @@ export default function ChequeRegisterPage() {
     };
 
     const handleDelete = async (cheque: ChequeRecord) => {
+        if (!canDeleteCheques()) {
+            toast.error("You do not have permission to delete cheques.");
+            return;
+        }
         if (!confirm(`Delete cheque ${cheque.chequeNumber}?`)) return;
         try {
             setCheques(await deleteCheque(cheque.id));

@@ -64,14 +64,27 @@ test('pruning drops only expired windows', () => {
     assert.equal(limiter.size(), 1);
 });
 
-test('the client key prefers the first forwarded hop', () => {
+test('the client key uses the right-most untrusted forwarded hop', () => {
     const headers = new Headers({ 'x-forwarded-for': '203.0.113.9, 10.0.0.2' });
-    assert.equal(clientKeyFromHeaders(headers), '203.0.113.9');
+    assert.equal(clientKeyFromHeaders(headers), '10.0.0.2');
+
+    // TRUSTED_PROXY_HOPS moves the selection left past our own proxies.
+    process.env.TRUSTED_PROXY_HOPS = '1';
+    try {
+        assert.equal(clientKeyFromHeaders(headers), '203.0.113.9');
+    } finally {
+        delete process.env.TRUSTED_PROXY_HOPS;
+    }
 
     const realIp = new Headers({ 'x-real-ip': '198.51.100.4' });
     assert.equal(clientKeyFromHeaders(realIp), '198.51.100.4');
 
-    assert.equal(clientKeyFromHeaders(new Headers()), 'unknown');
+    // No forwarding header: a separate bucket per request, never a shared
+    // "unknown" that one caller can exhaust for everyone.
+    const first = clientKeyFromHeaders(new Headers());
+    const second = clientKeyFromHeaders(new Headers());
+    assert.ok(first.startsWith('direct:'));
+    assert.notEqual(first, second);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

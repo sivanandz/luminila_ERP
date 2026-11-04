@@ -9,6 +9,7 @@ import { allocateLandedCosts, weightedAverageCost } from './valuation';
 import { format } from 'date-fns';
 import { normalizeDateRange, escapeHtml } from './utils';
 import { getCategories } from './categories';
+import { getStoreSettings } from './invoice';
 import type { Customer } from './customers';
 import type { Invoice } from './invoice';
 import type { ProductVariant } from '../types/database';
@@ -249,13 +250,19 @@ export async function getSalesReport(
 export async function getGSTR1Report(
     startDate: string,
     endDate: string
-): Promise<{ b2b: GSTR1Row[]; b2c: GSTR1Row[]; summary: GSTR1Summary }> {
+): Promise<{ b2b: GSTR1Row[]; b2c: GSTR1Row[]; summary: GSTR1Summary; error?: string }> {
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
             filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
             sort: 'invoice_date',
         });
+
+        // Seller state for the inter-state test: the invoice's own snapshot
+        // first, then the store settings. Missing both used to make every
+        // inter-state B2C-Large sale look intra-state (RPT-11).
+        const store = await getStoreSettings();
+        const storeStateCode = String(store.store_state_code || store.store_gstin || '').substring(0, 2);
 
         const b2b: GSTR1Row[] = [];
         const b2c: GSTR1Row[] = [];
@@ -289,9 +296,11 @@ export async function getGSTR1Report(
             } else {
                 // Only an inter-state invoice above ₹2.5L is B2C Large; the old
                 // code labelled every unregistered buyer that way (FIN-21).
-                const sellerState = String((inv as { seller_state_code?: string }).seller_state_code || '').substring(0, 2);
+                const sellerState = String((inv as { seller_state_code?: string }).seller_state_code || storeStateCode).substring(0, 2);
                 const pos = String(row.placeOfSupply || '').substring(0, 2);
-                const isInterState = Boolean(sellerState) && Boolean(pos) && pos !== sellerState;
+                // IGST > 0 is itself proof of an inter-state supply, which
+                // covers rows where neither state code was recorded.
+                const isInterState = (Boolean(sellerState) && Boolean(pos) && pos !== sellerState) || invIgst > 0;
                 row.invoiceType = isInterState && row.invoiceValue > 250000 ? 'B2C Large' : 'B2C Small';
                 b2c.push(row);
             }
@@ -309,7 +318,14 @@ export async function getGSTR1Report(
         return { b2b, b2c, summary };
     } catch (error) {
         console.error('Error fetching GSTR-1:', error);
-        return { b2b: [], b2c: [], summary: {} };
+        // Never present an empty result as a valid zero-tax period: the page
+        // must surface the failure instead of rendering ₹0 totals (RPT-2).
+        return {
+            b2b: [],
+            b2c: [],
+            summary: {},
+            error: error instanceof Error ? error.message : 'Failed to load GSTR-1 data',
+        };
     }
 }
 
@@ -353,13 +369,23 @@ export async function buildLandedCostMap(db: typeof pb = pb, tenant: string = ac
         if (orders.length === 0) return landed;
 
         const itemsByOrder = new Map<string, LandedPurchaseItem[]>();
+        let droppedOrders = 0;
         for (let i = 0; i < orders.length; i += 30) {
             const ids = orders.slice(i, i + 30).map((order) => order.id);
             const filter = `account_email="${sanitizeFilter(tenant)}" && (${ids.map((id) => `purchase_order="${sanitizeFilter(id)}"`).join(' || ')})`;
             const items = await db.collection('purchase_order_items').getFullList<LandedPurchaseItem>({
                 filter,
                 batch: 500,
-            }).catch(() => []);
+            }).catch((error) => {
+                // Dropping the chunk silently made those receipts look like they
+                // carried no freight, understating inventory value (RPT-5).
+                droppedOrders += ids.length;
+                console.error(
+                    `Landed cost: purchase_order_items fetch failed for ${ids.length} orders; valuation falls back to purchase price for those receipts:`,
+                    error
+                );
+                return [] as LandedPurchaseItem[];
+            });
             for (const item of items) {
                 const orderId = item.purchase_order || '';
                 const list = itemsByOrder.get(orderId) || [];
@@ -390,6 +416,11 @@ export async function buildLandedCostMap(db: typeof pb = pb, tenant: string = ac
         for (const [variantId, receipts] of receiptsByVariant) {
             const average = weightedAverageCost(receipts);
             if (average > 0) landed.set(variantId, average);
+        }
+        if (droppedOrders > 0) {
+            console.error(
+                `Landed cost valuation degraded: ${droppedOrders} of ${orders.length} purchase orders were not priced.`
+            );
         }
     } catch (error) {
         console.warn('Landed cost valuation unavailable, falling back to purchase price:', error);
@@ -457,6 +488,9 @@ export async function getStockReport(db: typeof pb = pb, tenant: string = accoun
 // Helper to fetch invoice items in chunks to avoid URL length limit overflow (HTTP 414 / 400)
 export async function fetchInvoiceItemsForInvoices(invoiceIds: string[]): Promise<InvoiceItemRecord[]> {
     if (!invoiceIds || invoiceIds.length === 0) return [];
+    // Dual-layer tenancy: the parent invoices are tenant-filtered, and the
+    // items must be too (RPT-8).
+    const tenant = sanitizeFilter(accountScopeEmail());
     const CHUNK_SIZE = 25; // max 25 IDs per query keeps URL length ~700 chars, well below 2KB/4KB proxy limits
     const chunks: string[][] = [];
     for (let i = 0; i < invoiceIds.length; i += CHUNK_SIZE) {
@@ -464,8 +498,10 @@ export async function fetchInvoiceItemsForInvoices(invoiceIds: string[]): Promis
     }
     const results = await Promise.all(
         chunks.map(chunk => {
-            const filter = chunk.map(id => `invoice="${id}"`).join(' || ');
-            return pb.collection('invoice_items').getFullList<InvoiceItemRecord>({ filter });
+            const ids = chunk.map(id => `invoice="${sanitizeFilter(id)}"`).join(' || ');
+            return pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
+                filter: `account_email="${tenant}" && (${ids})`,
+            });
         })
     );
     return results.flat();
@@ -527,7 +563,11 @@ export async function getHSNSummary(
         }));
     } catch (error) {
         console.error('Error fetching HSN summary:', error);
-        return [];
+        // An empty HSN table must never be emitted as if the period had no
+        // taxable supplies: the JSON export would fail GSTN validation (RPT-12).
+        throw new Error(
+            `HSN summary could not be loaded: ${error instanceof Error ? error.message : String(error)}`
+        );
     }
 }
 
@@ -626,11 +666,20 @@ export async function generateGSTR1JSON(
         invoices.forEach((inv) => {
             const invDate = format(new Date(inv.invoice_date), 'dd-MM-yyyy');
             const pos = inv.place_of_supply?.substring(0, 2) || inv.buyer_state_code || '';
+            // GSTN requires a place of supply on every transaction row. An
+            // empty pos also made `pos !== sellerState` true, filing B2CL with
+            // pos="" (rejected) (RPT-10).
+            if (!pos) {
+                console.warn('[GSTR1] Skipping invoice with no place of supply:', inv.invoice_number);
+                return;
+            }
             const isInterState = pos !== gstin.substring(0, 2);
             const invValue = inv.grand_total;
             const items = getInvoiceItemsByRate(inv);
 
-            if (inv.buyer_gstin && inv.buyer_gstin.length >= 15) {
+            // Classify by the same checksum helper the report uses: a
+            // 15-character string is not necessarily a valid GSTIN (RPT-10).
+            if (inv.buyer_gstin && isValidGstinChecksum(inv.buyer_gstin)) {
                 const existingBuyer = b2b.find(b => b.ctin === inv.buyer_gstin);
                 const invDetail = {
                     inum: inv.invoice_number,

@@ -58,6 +58,12 @@ interface CreditNoteRow {
     id: string;
     credit_note_number?: string;
     created?: string;
+    /** Document/issue date, when the row records one (RPT-9). */
+    note_date?: string;
+    credit_note_date?: string;
+    issue_date?: string;
+    document_date?: string;
+    date?: string;
     original_invoice?: string;
     buyer_name?: string;
     buyer_gstin?: string;
@@ -124,6 +130,16 @@ function parseDate(value?: string): Date | null {
 function inRange(value: string | undefined, start: Date, end: Date): boolean {
     const parsed = parseDate(value);
     return Boolean(parsed && parsed >= start && parsed <= end);
+}
+
+/**
+ * Filing date for a credit note: the document/issue date when recorded, else
+ * the row's created timestamp. Keying only off `created` filed notes into the
+ * wrong month when they were entered late (RPT-9).
+ */
+function creditNoteDate(note: CreditNoteRow): string {
+    return note.note_date || note.credit_note_date || note.issue_date || note.document_date
+        || note.date || note.created || '';
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -202,7 +218,7 @@ export async function buildGstr1OfficialPayload(
 
     // Pending notes are not filed yet; cancelled notes stay for Table 13.
     const periodNotes = allNotes.filter(
-        (note) => note.status !== 'draft' && note.status !== 'pending' && inRange(note.created, start, end)
+        (note) => note.status !== 'draft' && note.status !== 'pending' && inRange(creditNoteDate(note), start, end)
     );
 
     const noteItems = await loadItemsByParent(
@@ -252,7 +268,7 @@ export async function buildGstr1OfficialPayload(
             return {
                 id: note.id,
                 invoice_number: note.credit_note_number || note.id,
-                invoice_date: note.created || '',
+                invoice_date: creditNoteDate(note),
                 invoice_type: 'credit_note' as const,
                 buyer_name: note.buyer_name || 'Walk-in Customer',
                 buyer_gstin: note.buyer_gstin || '',

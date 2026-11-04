@@ -89,10 +89,20 @@ export function calculateGatewayMarkup(
 }
 
 /**
- * Converts INR Rupees to Paise (integer subunits)
+ * Converts INR Rupees to Paise (integer subunits).
+ *
+ * `Math.round(rupees * 100)` loses boundary amounts because the product lands
+ * just below the half (`1.005 * 100 === 100.49999999999999`), and even
+ * `Number((1.005).toFixed(2))` is 1 for the same reason. Shifting the decimal
+ * point textually parses `1.005e2` as the exactly representable 100.5, so the
+ * rounding is honest (PAY-13).
  */
 export function toPaise(rupees: number): number {
-    return Math.round(rupees * 100);
+    const amount = Number(rupees);
+    if (!Number.isFinite(amount)) return 0;
+    const [mantissa, exponent] = String(amount).split('e');
+    const shifted = Number(`${mantissa}e${Number(exponent || 0) + 2}`);
+    return Number.isFinite(shifted) ? Math.round(shifted) : 0;
 }
 
 /**
@@ -312,9 +322,12 @@ export async function createPaymentLink(
                 ...(params.notify?.whatsapp !== undefined ? { whatsapp: params.notify.whatsapp } : {}),
             },
             notes: {
+                // PAY-2: client notes spread FIRST, then the routing fields are
+                // forced. The old order let a caller overwrite `order_id` (and
+                // therefore settle an arbitrary order in the webhook).
+                ...(params.notes || {}),
                 order_id: refId,
                 source: 'luminila_erp',
-                ...(params.notes || {}),
             },
         };
 

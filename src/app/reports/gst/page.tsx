@@ -34,6 +34,7 @@ import {
 import { getGSTR1Report, generateGSTR1JSON, exportToJSON, exportToCSV, type GSTR1Row } from "@/lib/reports";
 import { buildGstr1OfficialPayload } from "@/lib/gstr1-report";
 import { formatINR } from "@/lib/gst";
+import { toast } from "sonner";
 
 // GSTR-1 period totals as returned by getGSTR1Report; fields absent until the report loads
 interface GSTR1Summary {
@@ -63,6 +64,7 @@ export default function GSTReportPage() {
     const [b2b, setB2B] = useState<GSTR1Row[]>([]);
     const [b2c, setB2C] = useState<GSTR1Row[]>([]);
     const [summary, setSummary] = useState<GSTR1Summary>({});
+    const [loadError, setLoadError] = useState<string | null>(null);
     const [gstin, setGstin] = useState("");
     const [activeGstTab, setActiveGstTab] = useState<"b2b" | "b2c">("b2b");
     const [officialBusy, setOfficialBusy] = useState(false);
@@ -76,12 +78,30 @@ export default function GSTReportPage() {
     );
 
     const loadReport = async () => {
+        // ISO yyyy-MM-dd strings compare correctly lexicographically.
+        if (startDate && endDate && startDate > endDate) {
+            const message = "Start date must be on or before the end date.";
+            setLoadError(message);
+            setLoading(false);
+            toast.error(message);
+            return;
+        }
         setLoading(true);
-        const { b2b, b2c, summary } = await getGSTR1Report(startDate, endDate);
-        setB2B(b2b);
-        setB2C(b2c);
-        setSummary(summary);
-        setLoading(false);
+        try {
+            const { b2b, b2c, summary, error } = await getGSTR1Report(startDate, endDate);
+            setB2B(b2b);
+            setB2C(b2c);
+            setSummary(summary);
+            // A fetch failure must not look like a zero-tax filing period (RPT-2).
+            setLoadError(error || null);
+        } catch (err) {
+            console.error("Failed to load GSTR-1 report:", err);
+            const message = err instanceof Error ? err.message : "Failed to load the GST report.";
+            setLoadError(message);
+            toast.error("Could not load the GST report.");
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => {
@@ -204,7 +224,16 @@ export default function GSTReportPage() {
                     </div>
                 </div>
 
+                {/* Load failure: never render the summary as ₹0.00 totals */}
+                {loadError && (
+                    <div className="mb-6 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                        GSTR-1 data could not be loaded, so totals are hidden rather than shown as ₹0.
+                        <span className="mt-1 block text-xs text-red-300/80">{loadError}</span>
+                    </div>
+                )}
+
                 {/* Summary */}
+                {!loadError && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
                     <Card className="bg-card border-border">
                         <CardContent className="pt-6">
@@ -247,6 +276,7 @@ export default function GSTReportPage() {
                         </CardContent>
                     </Card>
                 </div>
+                )}
 
                 {/* Tabs */}
                 <Tabs value={activeGstTab} onValueChange={(v) => setActiveGstTab(v as any)} className="w-full">
@@ -290,7 +320,7 @@ export default function GSTReportPage() {
                                     <div className="text-center py-8 text-muted-foreground">Loading...</div>
                                 ) : b2b.length === 0 ? (
                                     <div className="text-center py-8 text-muted-foreground">
-                                        No B2B invoices for this period
+                                        {loadError ? "GSTR-1 data unavailable — see the error above." : "No B2B invoices for this period"}
                                     </div>
                                 ) : (
                                     <div className="overflow-x-auto">
@@ -346,7 +376,7 @@ export default function GSTReportPage() {
                                     <div className="text-center py-8 text-muted-foreground">Loading...</div>
                                 ) : b2c.length === 0 ? (
                                     <div className="text-center py-8 text-muted-foreground">
-                                        No B2C invoices for this period
+                                        {loadError ? "GSTR-1 data unavailable — see the error above." : "No B2C invoices for this period"}
                                     </div>
                                 ) : (
                                     <div className="overflow-x-auto">

@@ -105,6 +105,47 @@ export interface POSCartBroadcastItem {
 // ===========================================
 
 /**
+ * WA-15: prove ownership before an id-based write. A caller-supplied chat or
+ * variant id is never trusted on its own — the owner is re-read from the
+ * server and the write is refused when it belongs to another tenant.
+ */
+async function assertWritableChatRecord(chatRecordId: string, label: string): Promise<string> {
+    const id = String(chatRecordId || '').trim();
+    const tenant = tenantScopeEmail();
+    if (!id) throw new Error(`${label}: a chat record id is required`);
+    if (!tenant) throw new Error(`${label}: no tenant account resolved; refusing the write`);
+    const row = await pb.collection('whatsapp_chats').getOne<{ account_email?: string }>(id, {
+        fields: 'account_email',
+    });
+    if (!recordBelongsToTenant(row, tenant)) {
+        throw new Error(`${label}: chat does not belong to this store`);
+    }
+    return id;
+}
+
+/**
+ * WA-15: the variant equivalent. Variants inherit their owner from the product
+ * when the row predates the account_email stamp, so both are checked.
+ */
+async function assertWritableVariantId(variantId: string, label: string): Promise<string> {
+    const id = String(variantId || '').trim();
+    const tenant = tenantScopeEmail();
+    if (!id) throw new Error(`${label}: a variant id is required`);
+    if (!tenant) throw new Error(`${label}: no tenant account resolved; refusing the write`);
+    const variant = await pb.collection('product_variants').getOne<{
+        account_email?: string;
+        expand?: { product?: { account_email?: string } };
+    }>(id, { expand: 'product' });
+    const owner = String(
+        variant.account_email || variant.expand?.product?.account_email || ''
+    ).trim().toLowerCase();
+    if (!owner || owner !== tenant) {
+        throw new Error(`${label}: variant does not belong to this store`);
+    }
+    return id;
+}
+
+/**
  * The account_email that owns the signed-in session (tenant owner, never the
  * staff member's personal address). Empty when there is no usable session, in
  * which case PocketBase rules are the only gate and callers must not write.
@@ -122,20 +163,34 @@ export function tenantScopeEmail(): string {
 export function withTenantFilter(base?: string, tenantEmail?: string): string {
     const email = (tenantEmail ?? tenantScopeEmail()).trim().toLowerCase();
     const inner = (base || '').trim();
-    if (!email) return inner;
+    // WA-14: fail closed. Returning the bare filter widened every scoped query
+    // to all tenants after a session hiccup; match nothing and make the cause
+    // visible in the console instead.
+    if (!email) {
+        console.error('[whatsapp-crm] withTenantFilter called without a resolved tenant; matching no rows');
+        return 'id = ""';
+    }
     const scope = `account_email = "${sanitizeFilter(email)}"`;
     return inner ? `(${inner}) && ${scope}` : scope;
 }
 
-/** True when a record belongs to the given tenant (or predates account_email). */
+/**
+ * True when a record belongs to the given tenant. A record with no
+ * `account_email` cannot be proven to belong to this tenant, so it is refused
+ * (WA-14) and a missing tenant resolves to false.
+ */
 export function recordBelongsToTenant(
     record: { account_email?: string } | null | undefined,
     tenantEmail = tenantScopeEmail()
 ): boolean {
     if (!record) return false;
+    const tenant = String(tenantEmail || '').trim().toLowerCase();
+    if (!tenant) {
+        console.error('[whatsapp-crm] recordBelongsToTenant called without a resolved tenant; refusing the record');
+        return false;
+    }
     const stored = String(record.account_email || '').trim().toLowerCase();
-    if (!stored) return true;
-    return !tenantEmail || stored === tenantEmail;
+    return stored === tenant;
 }
 
 // ===========================================
@@ -313,7 +368,9 @@ export async function setChatContactType(
     if (links?.customer !== undefined) patch.customer = links.customer;
     if (links?.vendor !== undefined) patch.vendor = links.vendor;
     if (links?.labels !== undefined) patch.labels = links.labels;
-    await pb.collection('whatsapp_chats').update(chatRecordId, patch);
+    // WA-15: re-read the chat under the tenant scope before writing by raw id.
+    const scopedId = await assertWritableChatRecord(chatRecordId, 'setChatContactType');
+    await pb.collection('whatsapp_chats').update(scopedId, patch);
 }
 
 /**
@@ -371,7 +428,10 @@ export async function setChatVendorGroup(
 
 export async function markChatRead(chatRecordId: string): Promise<void> {
     try {
-        await pb.collection('whatsapp_chats').update(chatRecordId, { unread_count: 0 });
+        // WA-15: same ownership gate as other id-based writes; the catch below
+        // keeps this UI best-effort while never touching a foreign chat.
+        const scopedId = await assertWritableChatRecord(chatRecordId, 'markChatRead');
+        await pb.collection('whatsapp_chats').update(scopedId, { unread_count: 0 });
     } catch (err) {
         console.warn('[whatsapp-crm] markChatRead failed:', err);
     }
@@ -899,6 +959,10 @@ export async function addToExistingInventory(input: {
     vendorId?: string;
     notes?: string;
 }): Promise<void> {
+    // WA-15: `stock_level+` on an unchecked id let a crafted variantId mutate
+    // another tenant's stock. Prove ownership before any write (GRN included).
+    const variantId = await assertWritableVariantId(input.variantId, 'addToExistingInventory');
+
     if (input.vendorId && input.quantity > 0) {
         // createGRN automatically updates product_variants.stock_level AND logs a stock_movements entry
         try {
@@ -909,7 +973,7 @@ export async function addToExistingInventory(input: {
                 received_by: 'WhatsApp Ingestion',
                 notes: input.notes || 'Auto-GRN from vendor chat',
                 items: [{
-                    variant_id: input.variantId,
+                    variant_id: variantId,
                     quantity_received: input.quantity,
                     quantity_rejected: 0,
                     rejection_reason: '',
@@ -922,12 +986,12 @@ export async function addToExistingInventory(input: {
     }
 
     // Fallback or non-vendor restock: manual atomic increment and movement record
-    await pb.collection('product_variants').update(input.variantId, {
+    await pb.collection('product_variants').update(variantId, {
         'stock_level+': Math.max(0, input.quantity),
     });
 
     await pb.collection('stock_movements').create({
-        variant: input.variantId,
+        variant: variantId,
         movement_type: 'purchase',
         quantity: input.quantity,
         reference_id: input.vendorId || '',
@@ -1098,73 +1162,157 @@ export async function sendProductCard(opts: {
 // OPT-OUT / STOP COMPLIANCE (spec §11.5)
 // ===========================================
 
-/** Register an opt-out (STOP) for a phone number. Idempotent across both whatsapp_opt_outs and customers table. */
+/**
+ * Register an opt-out (STOP) for a phone number. Idempotent across both
+ * whatsapp_opt_outs and customers table.
+ *
+ * WA-5: every leg is written independently and its failure is logged and
+ * reported through the return value. The old single try/catch swallowed both
+ * the customer flag and the registry row, so a STOP could vanish while the
+ * customer kept receiving marketing.
+ */
 export async function setWhatsAppOptOut(
     phoneOrChatId: string,
     customerId?: string,
     reason: 'stop' | 'manual' = 'stop',
     db: typeof pb = pb
-): Promise<void> {
+): Promise<boolean> {
     const pb = db;
     const digits = phoneOrChatId.replace(/\D/g, '').slice(-10);
-    if (!digits || digits.length < 10) return;
-    try {
-        let custId = customerId;
-        if (!custId) {
-            const matched = await pb
-                .collection('customers')
-                .getFirstListItem(withTenantFilter(`phone~"${sanitizeFilter(digits)}"`))
-                .catch(() => null);
-            if (matched) custId = matched.id;
-        }
-
-        // Update customer profile opt-out flag if customer found, and append the
-        // decision to the consent ledger (A30) so the opt-out is auditable.
-        if (custId) {
-            await pb.collection('customers').update(custId, { whatsapp_opt_out: true }).catch(() => {});
-        }
-        const consentBase = {
-            customerId: custId,
-            phone: digits,
-            channel: 'whatsapp' as const,
-            granted: false,
-            source: `opt_out:${reason}`,
-        };
-        await recordConsentEvent(db, { ...consentBase, purpose: 'whatsapp_service' });
-        await recordConsentEvent(db, { ...consentBase, purpose: 'marketing' });
-
-        const existing = await pb.collection('whatsapp_opt_outs').getFirstListItem(
-            withTenantFilter(`phone~"${sanitizeFilter(digits)}"`)
-        ).catch(() => null);
-        if (existing) return;
-        await pb.collection('whatsapp_opt_outs').create({
-            phone: normalizeE164(phoneOrChatId),
-            customer: custId || '',
-            reason,
-            created_at: new Date().toISOString(),
-            account_email: tenantScopeEmail(),
-        });
-    } catch (err) {
-        console.warn('[whatsapp-crm] setWhatsAppOptOut failed:', err);
+    if (!digits || digits.length < 10) {
+        console.warn('[whatsapp-crm] setWhatsAppOptOut ignored an unusable phone:', phoneOrChatId);
+        return false;
     }
+    const tenant = tenantEmailForClient(db);
+    if (!tenant) {
+        console.error('[whatsapp-crm] setWhatsAppOptOut has no resolved tenant; refusing to write an unscoped opt-out');
+        return false;
+    }
+
+    let ok = true;
+
+    // Resolve the customer first so both the registry row and the profile flag
+    // carry the link. A failed lookup is reported but must not block the
+    // authoritative registry write below.
+    let custId = customerId;
+    if (!custId) {
+        try {
+            const matched = await pb.collection('customers')
+                .getFirstListItem(withTenantFilter(`phone~"${sanitizeFilter(digits)}"`, tenant))
+                .catch((err) => {
+                    if (isNotFoundError(err)) return null;
+                    throw err;
+                });
+            if (matched) custId = matched.id;
+        } catch (err) {
+            ok = false;
+            console.error('[whatsapp-crm] setWhatsAppOptOut could not resolve the customer:', err);
+        }
+    }
+
+    // 1) Registry row first: `whatsapp_opt_outs` is what the dispatcher consults.
+    try {
+        const existing = await pb.collection('whatsapp_opt_outs')
+            .getFirstListItem(withTenantFilter(`phone~"${sanitizeFilter(digits)}"`, tenant))
+            .catch((err) => {
+                if (isNotFoundError(err)) return null;
+                throw err;
+            });
+        if (!existing) {
+            await pb.collection('whatsapp_opt_outs').create({
+                phone: normalizeE164(phoneOrChatId),
+                customer: custId || '',
+                reason,
+                created_at: new Date().toISOString(),
+                account_email: tenant,
+            });
+        }
+    } catch (err) {
+        ok = false;
+        console.error('[whatsapp-crm] setWhatsAppOptOut could not write the opt-out registry row:', err);
+    }
+
+    // 2) Flip the customer profile flag (independent of step 1).
+    try {
+        if (custId) {
+            await pb.collection('customers').update(custId, { whatsapp_opt_out: true });
+        }
+    } catch (err) {
+        ok = false;
+        console.error('[whatsapp-crm] setWhatsAppOptOut could not flag the customer profile:', err);
+    }
+
+    // 3) Append the decision to the consent ledger (A30) so it stays auditable.
+    const consentBase = {
+        customerId: custId,
+        phone: digits,
+        channel: 'whatsapp' as const,
+        granted: false,
+        source: `opt_out:${reason}`,
+    };
+    for (const purpose of ['whatsapp_service', 'marketing'] as const) {
+        try {
+            await recordConsentEvent(db, { ...consentBase, purpose });
+        } catch (err) {
+            ok = false;
+            console.error(`[whatsapp-crm] setWhatsAppOptOut could not append the ${purpose} consent event:`, err);
+        }
+    }
+
+    return ok;
+}
+
+/** True only when PocketBase reports "no matching record" (404), not a transport failure. */
+function isNotFoundError(err: unknown): boolean {
+    return (err as { status?: number } | null)?.status === 404;
+}
+
+/**
+ * Tenant email for a specific client. A caller-supplied per-tenant client (the
+ * server webhook/reconciler) carries the tenant as its superuser record, and the
+ * module-level session may not exist there — so the client record is preferred
+ * and the module scope is the fallback.
+ */
+function tenantEmailForClient(db: typeof pb): string {
+    const record = db.authStore.record as { email?: string; account_email?: string } | null;
+    const fromClient = String(record?.account_email || record?.email || '').trim().toLowerCase();
+    return fromClient || tenantScopeEmail();
 }
 
 export async function isWhatsAppOptedOut(phone: string, db: typeof pb = pb): Promise<boolean> {
     const pb = db;
     const digits = phone.replace(/\D/g, '').slice(-10);
     if (!digits || digits.length < 10) return false;
+    // WA-4: without a resolved tenant the scoped reads match nothing, which
+    // would read as "consented". Consent checks fail closed.
+    const tenant = tenantEmailForClient(db);
+    if (!tenant) {
+        console.error('[whatsapp-crm] isWhatsAppOptedOut has no resolved tenant; treating the number as opted out');
+        return true;
+    }
     try {
-        const existing = await pb.collection('whatsapp_opt_outs').getFirstListItem(
-            withTenantFilter(`phone~"${sanitizeFilter(digits)}"`)
-        ).catch(() => null);
+        const existing = await pb.collection('whatsapp_opt_outs')
+            .getFirstListItem(withTenantFilter(`phone~"${sanitizeFilter(digits)}"`, tenant))
+            .catch((err) => {
+                if (isNotFoundError(err)) return null;
+                throw err;
+            });
         if (existing) return true;
 
-        const customer = await pb.collection('customers').getFirstListItem(
-            withTenantFilter(`phone~"${sanitizeFilter(digits)}" && whatsapp_opt_out=true`)
-        ).catch(() => null);
+        const customer = await pb.collection('customers')
+            .getFirstListItem(
+                withTenantFilter(`phone~"${sanitizeFilter(digits)}" && whatsapp_opt_out=true`, tenant)
+            )
+            .catch((err) => {
+                if (isNotFoundError(err)) return null;
+                throw err;
+            });
         return !!customer;
-    } catch {
-        return false;
+    } catch (err) {
+        // WA-4: a failed consent lookup must never read as consent — treat the
+        // number as opted out and log so the suppressed send is visible.
+        console.error('[whatsapp-crm] isWhatsAppOptedOut failed to verify consent; treating as opted out:', err);
+        return true;
     }
 }
 
@@ -1174,6 +1322,23 @@ export async function isWhatsAppOptedOut(phone: string, db: typeof pb = pb): Pro
 
 const POS_CART_CHANNEL = 'pos_cart';
 const POS_CART_STORAGE_KEY = 'pos:cart-updated';
+const POS_CART_DEDUPE_MS = 5_000;
+
+// WA-13: the same broadcast arrives over BroadcastChannel *and* the storage
+// event in every other tab, so a receiver must collapse the pair by message id
+// or the item lands in the POS cart twice.
+const recentPOSCartMessageIds = new Map<string, number>();
+
+function shouldHandlePOSCartMessage(messageId: string): boolean {
+    if (!messageId) return true;
+    const now = Date.now();
+    for (const [id, seenAt] of recentPOSCartMessageIds) {
+        if (now - seenAt > POS_CART_DEDUPE_MS) recentPOSCartMessageIds.delete(id);
+    }
+    if (recentPOSCartMessageIds.has(messageId)) return false;
+    recentPOSCartMessageIds.set(messageId, now);
+    return true;
+}
 
 // Both the channel and the storage event are scoped to the tenant; a shared
 // name let one store's "add to cart" appear in another store's POS tab (WA-16).
@@ -1191,6 +1356,7 @@ export function broadcastAddToPOS(item: POSCartBroadcastItem): void {
 
     const payload = {
         type: 'pos:add-item',
+        messageId: `pos-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
         item,
         ts: Date.now(),
     };
@@ -1216,20 +1382,22 @@ export function subscribeRemoteCartItems(
 ): () => void {
     if (typeof window === 'undefined') return () => {};
 
+    const deliver = (data: { type?: string; messageId?: string; item?: POSCartBroadcastItem } | null | undefined) => {
+        if (data?.type !== 'pos:add-item' || !data.item) return;
+        if (!shouldHandlePOSCartMessage(String(data.messageId || ''))) return;
+        handler(data.item);
+    };
+
     let channel: BroadcastChannel | null = null;
     try {
         channel = new BroadcastChannel(posCartChannelName());
-        channel.onmessage = (event) => {
-            const data = event?.data;
-            if (data?.type === 'pos:add-item' && data.item) handler(data.item as POSCartBroadcastItem);
-        };
+        channel.onmessage = (event) => deliver(event?.data);
     } catch { /* ignore */ }
 
     const onStorage = (event: StorageEvent) => {
         if (event.key !== posCartStorageKey() || !event.newValue) return;
         try {
-            const data = JSON.parse(event.newValue);
-            if (data?.type === 'pos:add-item' && data.item) handler(data.item as POSCartBroadcastItem);
+            deliver(JSON.parse(event.newValue));
         } catch { /* ignore malformed */ }
     };
     window.addEventListener('storage', onStorage);

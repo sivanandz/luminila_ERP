@@ -68,6 +68,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import { usePermissions } from "@/hooks/usePermissions";
 
 import {
     getCustomers,
@@ -127,6 +128,10 @@ const CRM_TABS: { value: "directory" | "rfm" | "campaigns" | "lifecycle"; label:
 
 export default function CustomersPage() {
     const router = useRouter();
+    // PG-19: dispatching campaign messages is destructive (customer-facing,
+    // rate-limited); re-check the permission in the handlers.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canDispatchCampaigns = () => isAdmin || hasPermission("customers", "update");
 
     // Active View Tab
     const [activeTab, setActiveTab] = useState<"directory" | "rfm" | "campaigns" | "lifecycle">("directory");
@@ -433,6 +438,10 @@ export default function CustomersPage() {
     // Handle Dispatch Reviewed Recipients
     const handleDispatchReviewedRecipients = async () => {
         if (!previewFlow) return;
+        if (!canDispatchCampaigns()) {
+            toast.error("You do not have permission to dispatch campaign messages.");
+            return;
+        }
         const toSend = previewRecipients
             .filter((r) => selectedRecipients[r.customer.id])
             .map((r) => ({
@@ -496,6 +505,10 @@ export default function CustomersPage() {
 
     // Handle Dispatch All Reviewed Scan Recipients
     const handleDispatchScanRecipients = async () => {
+        if (!canDispatchCampaigns()) {
+            toast.error("You do not have permission to dispatch campaign messages.");
+            return;
+        }
         const approved = allScanRecipients.filter((item) => scanSelected[`${item.flowId}_${item.recipient.customer.id}`]);
         if (approved.length === 0) {
             toast.error("Please select at least one recipient to dispatch");

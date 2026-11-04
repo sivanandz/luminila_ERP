@@ -51,7 +51,6 @@ export interface ChequeTransitionResult {
     ledgerEffect: {
         bankAccountId?: string;
         bankBalanceDelta: number; // Change to bank account balance
-        partyReceivableDelta: number; // Change to party receivable/payable
         bouncePenaltyApplied: number;
         description: string;
     };
@@ -174,7 +173,6 @@ export function transitionChequeStatus(
             cheque,
             ledgerEffect: {
                 bankBalanceDelta: 0,
-                partyReceivableDelta: 0,
                 bouncePenaltyApplied: 0,
                 description: `Illegal transition from ${fromStatus} to ${newStatus}`,
             },
@@ -191,7 +189,6 @@ export function transitionChequeStatus(
             cheque,
             ledgerEffect: {
                 bankBalanceDelta: 0,
-                partyReceivableDelta: 0,
                 bouncePenaltyApplied: 0,
                 description: 'Target bank account required for deposit',
             },
@@ -200,7 +197,6 @@ export function transitionChequeStatus(
     }
 
     let bankBalanceDelta = 0;
-    let partyReceivableDelta = 0;
     let bouncePenaltyApplied = 0;
     let description = '';
 
@@ -212,11 +208,9 @@ export function transitionChequeStatus(
     if (newStatus === 'cleared' && fromStatus !== 'cleared') {
         if (cheque.direction === 'received') {
             bankBalanceDelta = cheque.amount; // Received cheque credits company bank
-            partyReceivableDelta = 0; // Already settled when invoice was issued
             description = `Cheque #${cheque.chequeNumber} cleared: Credited ₹${cheque.amount} to ${effectiveBankName || 'bank'}`;
         } else {
             bankBalanceDelta = -cheque.amount; // Issued cheque debits company bank
-            partyReceivableDelta = 0;
             description = `Cheque #${cheque.chequeNumber} cleared: Debited ₹${cheque.amount} from ${effectiveBankName || 'bank'}`;
         }
     }
@@ -231,21 +225,20 @@ export function transitionChequeStatus(
         }
     }
     // 3. Bounced
-    // Re-marking an already bounced cheque must not re-apply the receivable
-    // reinstatement or the penalty (FIN-16).
+    // Re-marking an already bounced cheque must not re-apply the penalty (FIN-16).
+    // There is no party-receivable ledger in this schema, so the bounce posts
+    // only the bank fee; the reinstated receivable is described, not silently
+    // dropped as a dead `partyReceivableDelta` field used to be (BNK-9).
     else if (newStatus === 'bounced' && fromStatus !== 'bounced') {
         const penalty = Math.max(0, Number(options.bouncePenaltyCharge) || 0);
         bouncePenaltyApplied = penalty;
 
         if (cheque.direction === 'received') {
-            // Re-instate party debt (they owe us the cheque amount again + bounce fee)
-            partyReceivableDelta = cheque.amount + penalty;
-            // Bank charges us penalty fee
+            // Bank charges us the penalty fee; the party owes the cheque again.
             bankBalanceDelta = -penalty;
             description = `Cheque #${cheque.chequeNumber} BOUNCED (${options.bounceReason || 'Dishonored'}): Debited ₹${penalty} bank fee, reinstated ₹${cheque.amount + penalty} receivable on ${cheque.partyName}`;
         } else {
-            // Issued cheque bounced: party payable reinstated
-            partyReceivableDelta = -(cheque.amount + penalty);
+            // Issued cheque bounced: party payable reinstated.
             bankBalanceDelta = -penalty;
             description = `Issued Cheque #${cheque.chequeNumber} BOUNCED: Debited ₹${penalty} fee, restored payable to ${cheque.partyName}`;
         }
@@ -279,7 +272,6 @@ export function transitionChequeStatus(
         ledgerEffect: {
             bankAccountId: effectiveBankId,
             bankBalanceDelta: Math.round(bankBalanceDelta * 100) / 100,
-            partyReceivableDelta: Math.round(partyReceivableDelta * 100) / 100,
             bouncePenaltyApplied,
             description,
         },

@@ -55,22 +55,46 @@ function getStorageKey(): string {
 
 const PB_KEY = "sales_channel_definitions";
 
-let currentChannels: SalesChannelDefinition[] = [...DEFAULT_SALES_CHANNELS];
+/**
+ * Configured channels belong to one tenant. A module-global array leaked the
+ * last-loaded channel config into every other tenant resolved by the same
+ * server process, so the cache is keyed by tenant (SYN-7).
+ */
+const channelsByTenant = new Map<string, SalesChannelDefinition[]>();
 const channelListeners = new Set<(channels: SalesChannelDefinition[]) => void>();
+
+/** Cache key for the signed-in tenant; "default" is the anonymous bucket. */
+function channelsTenantKey(): string {
+    const email = (accountScopeEmail() || pb.authStore.model?.email || "").trim().toLowerCase();
+    return email || "default";
+}
+
+function channelsForTenant(key: string): SalesChannelDefinition[] {
+    const cached = channelsByTenant.get(key);
+    return cached ? [...cached] : [...DEFAULT_SALES_CHANNELS];
+}
+
+/** Publish a tenant's channels to the cache and to subscribers. */
+function commitChannels(key: string, channels: SalesChannelDefinition[]): SalesChannelDefinition[] {
+    const next = [...channels];
+    channelsByTenant.set(key, next);
+    channelListeners.forEach((l) => l([...next]));
+    return [...next];
+}
 
 function mergeChannels(loaded: SalesChannelDefinition[]): SalesChannelDefinition[] {
     return normalizeChannelDefinitions(loaded);
 }
 
 export function getConfiguredChannels(): SalesChannelDefinition[] {
-    return [...currentChannels];
+    return channelsForTenant(channelsTenantKey());
 }
 
 export function subscribeConfiguredChannels(
     callback: (channels: SalesChannelDefinition[]) => void
 ): () => void {
     channelListeners.add(callback);
-    callback([...currentChannels]);
+    callback(channelsForTenant(channelsTenantKey()));
     return () => {
         channelListeners.delete(callback);
     };
@@ -78,6 +102,7 @@ export function subscribeConfiguredChannels(
 
 export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]> {
     const currentUserEmail = accountScopeEmail() || pb.authStore.model?.email;
+    const tenantKey = channelsTenantKey();
     if (!currentUserEmail) {
         if (typeof window !== "undefined") {
             try {
@@ -85,16 +110,12 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
                 if (cached) {
                     const parsed = JSON.parse(cached);
                     if (Array.isArray(parsed) && parsed.length > 0) {
-                        currentChannels = mergeChannels(parsed);
-                        channelListeners.forEach((l) => l([...currentChannels]));
-                        return [...currentChannels];
+                        return commitChannels(tenantKey, mergeChannels(parsed));
                     }
                 }
             } catch { /* ignore */ }
         }
-        currentChannels = [...DEFAULT_SALES_CHANNELS];
-        channelListeners.forEach((l) => l([...currentChannels]));
-        return [...currentChannels];
+        return commitChannels(tenantKey, DEFAULT_SALES_CHANNELS);
     }
 
     try {
@@ -106,12 +127,11 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
         if (record && record.value) {
             const val = typeof record.value === "string" ? JSON.parse(record.value) : record.value;
             if (Array.isArray(val) && val.length > 0) {
-                currentChannels = mergeChannels(val);
+                const merged = mergeChannels(val);
                 if (typeof window !== "undefined") {
-                    localStorage.setItem(getStorageKey(), JSON.stringify(currentChannels));
+                    localStorage.setItem(getStorageKey(), JSON.stringify(merged));
                 }
-                channelListeners.forEach((l) => l([...currentChannels]));
-                return [...currentChannels];
+                return commitChannels(tenantKey, merged);
             }
         } else {
             // Check localStorage cache if DB has no record
@@ -121,20 +141,16 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
                     try {
                         const parsed = JSON.parse(cached);
                         if (Array.isArray(parsed) && parsed.length > 0) {
-                            currentChannels = mergeChannels(parsed);
-                            channelListeners.forEach((l) => l([...currentChannels]));
-                            return [...currentChannels];
+                            return commitChannels(tenantKey, mergeChannels(parsed));
                         }
                     } catch { /* ignore */ }
                 }
             }
             // Fresh tenant with no custom channels yet - reset to default channels
-            currentChannels = [...DEFAULT_SALES_CHANNELS];
             if (typeof window !== "undefined") {
-                localStorage.setItem(getStorageKey(), JSON.stringify(currentChannels));
+                localStorage.setItem(getStorageKey(), JSON.stringify(DEFAULT_SALES_CHANNELS));
             }
-            channelListeners.forEach((l) => l([...currentChannels]));
-            return [...currentChannels];
+            return commitChannels(tenantKey, DEFAULT_SALES_CHANNELS);
         }
     } catch (e) {
         console.warn("Failed to load sales channels from PocketBase:", e);
@@ -144,30 +160,27 @@ export async function loadConfiguredChannels(): Promise<SalesChannelDefinition[]
                 if (cached) {
                     const parsed = JSON.parse(cached);
                     if (Array.isArray(parsed) && parsed.length > 0) {
-                        currentChannels = mergeChannels(parsed);
-                        channelListeners.forEach((l) => l([...currentChannels]));
-                        return [...currentChannels];
+                        return commitChannels(tenantKey, mergeChannels(parsed));
                     }
                 }
             } catch { /* ignore */ }
         }
     }
-    return [...currentChannels];
+    return channelsForTenant(tenantKey);
 }
 
 export async function saveConfiguredChannels(
     channels: SalesChannelDefinition[]
 ): Promise<void> {
     const currentUserEmail = accountScopeEmail() || pb.authStore.model?.email;
-    currentChannels = [...channels];
-    if (typeof window !== "undefined") {
-        localStorage.setItem(getStorageKey(), JSON.stringify(currentChannels));
-    }
-    channelListeners.forEach((l) => l([...currentChannels]));
+    const tenantKey = channelsTenantKey();
+    const next = [...channels];
 
-    if (!currentUserEmail) return;
-
-    try {
+    // Persist first. Committing the local state before PocketBase accepted the
+    // write told every listener the save succeeded while other sessions kept
+    // the old config; a failure now surfaces to the caller and leaves the
+    // cache untouched (SYN-15).
+    if (currentUserEmail) {
         const existing = await pb
             .collection("store_settings")
             .getFirstListItem(`key="${PB_KEY}" && account_email="${sanitizeFilter(currentUserEmail)}"`)
@@ -175,21 +188,24 @@ export async function saveConfiguredChannels(
 
         if (existing) {
             await pb.collection("store_settings").update(existing.id, {
-                value: currentChannels,
+                value: next,
                 category: "sales_config",
                 account_email: currentUserEmail,
             });
         } else {
             await pb.collection("store_settings").create({
                 key: PB_KEY,
-                value: currentChannels,
+                value: next,
                 category: "sales_config",
                 account_email: currentUserEmail,
             });
         }
-    } catch (e) {
-        console.warn("Failed to persist sales channels to PocketBase:", e);
     }
+
+    if (typeof window !== "undefined") {
+        localStorage.setItem(getStorageKey(), JSON.stringify(next));
+    }
+    commitChannels(tenantKey, next);
 }
 
 /**
@@ -201,6 +217,7 @@ export async function addCustomChannel(
     const cleanId = channel.id.toLowerCase().replace(/[^a-z0-9_-]/g, "").trim();
     if (!cleanId) throw new Error("Channel ID is required");
 
+    const currentChannels = getConfiguredChannels();
     const existingIndex = currentChannels.findIndex((c) => c.id === cleanId);
     const newChan: SalesChannelDefinition = {
         ...channel,
@@ -230,6 +247,7 @@ export async function updateChannel(
     channelId: string,
     updates: Partial<Omit<SalesChannelDefinition, "id">>
 ): Promise<SalesChannelDefinition[]> {
+    const currentChannels = getConfiguredChannels();
     const existingIndex = currentChannels.findIndex((c) => c.id === channelId);
     if (existingIndex === -1) throw new Error(`Channel ${channelId} not found`);
 
@@ -251,7 +269,7 @@ export async function updateChannel(
  * Remove a custom channel (default channels cannot be removed)
  */
 export async function removeCustomChannel(channelId: string): Promise<SalesChannelDefinition[]> {
-    const updated = currentChannels.filter((c) => c.id !== channelId || c.isDefault);
+    const updated = getConfiguredChannels().filter((c) => c.id !== channelId || c.isDefault);
     await saveConfiguredChannels(updated);
     return updated;
 }
@@ -269,7 +287,7 @@ export function getChannelPrice(
     channelId: string = "pos",
     variantAdjustment: number = 0
 ): number {
-    return resolveChannelPrice(product, channelId, currentChannels, variantAdjustment).price;
+    return resolveChannelPrice(product, channelId, channelsForTenant(channelsTenantKey()), variantAdjustment).price;
 }
 
 /**
@@ -292,7 +310,7 @@ export function getProductChannelBreakdown(
         channel_prices?: Record<string, number> | null;
     }
 ): { channelId: string; label: string; shortLabel: string; price: number; isCustom: boolean }[] {
-    return getChannelBreakdownFromList(product, currentChannels).map((row) => ({
+    return getChannelBreakdownFromList(product, channelsForTenant(channelsTenantKey())).map((row) => ({
         channelId: row.channelId,
         label: row.label,
         shortLabel: row.shortLabel,

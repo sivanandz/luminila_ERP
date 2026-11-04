@@ -107,8 +107,13 @@ export function startTurnStream(options: StartTurnStreamOptions): Response {
                 await options.onFinished(status, result.events);
                 emit({ event: 'done', data: { status, conversationId: options.conversationId } });
             } catch (error) {
-                const message = error instanceof Error ? error.message : 'The AI turn failed.';
-                emit({ event: 'error', data: { message, code: 'turn_failed' } });
+                // The raw failure may name a collection or filter; log it here
+                // and send a fixed message to the browser (AI-21).
+                console.error('[ai] chat stream failed:', error);
+                emit({
+                    event: 'error',
+                    data: { message: 'The assistant could not complete this turn.', code: 'turn_failed' },
+                });
                 emit({ event: 'done', data: { status: 'error', conversationId: options.conversationId } });
                 try {
                     await options.onFinished('error', []);

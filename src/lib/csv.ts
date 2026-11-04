@@ -26,19 +26,25 @@ interface ParseResult<T> {
 
 /**
  * Parse CSV string to array of objects
+ *
+ * Records are split with a quote-aware scanner and the header row goes through
+ * `parseCSVLine`, so quoted commas/newlines in a field no longer shift columns
+ * or split one record into two (INF-13).
  */
 export function parseCSV<T extends Record<string, string>>(csvString: string): ParseResult<T> {
-    const lines = csvString.trim().split("\n");
+    const text = csvString.replace(/^\uFEFF/, "");
+    const lines = splitCSVRecords(text);
     const errors: { row: number; message: string }[] = [];
 
     if (lines.length < 2) {
         return { success: false, data: [], errors: [{ row: 0, message: "CSV must have header and data rows" }] };
     }
 
-    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
+    const headers = parseCSVLine(lines[0]).map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
     const data: T[] = [];
 
     for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trim() === "") continue; // blank record between rows
         const values = parseCSVLine(lines[i]);
 
         if (values.length !== headers.length) {
@@ -55,6 +61,39 @@ export function parseCSV<T extends Record<string, string>>(csvString: string): P
     }
 
     return { success: errors.length === 0, data, errors };
+}
+
+/**
+ * Split CSV text into records on unquoted newlines only (LF, CRLF or lone CR).
+ * Quotes are preserved for `parseCSVLine`, which owns field-level unescaping.
+ */
+function splitCSVRecords(text: string): string[] {
+    const records: string[] = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+
+        if (char === '"') {
+            current += char;
+            if (inQuotes && text[i + 1] === '"') {
+                current += text[i + 1];
+                i++; // Escaped quote: stay inside the quoted field
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if ((char === "\n" || char === "\r") && !inQuotes) {
+            if (char === "\r" && text[i + 1] === "\n") i++;
+            records.push(current);
+            current = "";
+        } else {
+            current += char;
+        }
+    }
+
+    if (current.length > 0 || records.length === 0) records.push(current);
+    return records;
 }
 
 /**
@@ -175,7 +214,10 @@ export function exportProductsToCSV(products: {
  */
 function escapeCSVField(field: string): string {
     let sanitized = field;
-    if (/^[=+@|\t\r-]/.test(sanitized)) {
+    // INF-15: a formula can hide behind leading whitespace/control characters,
+    // so test the first non-space character rather than the raw start.
+    const firstContent = sanitized.replace(/^[\s\u0000-\u001f]+/, "");
+    if (/^[=+\-@]/.test(firstContent)) {
         sanitized = `'${sanitized}`;
     }
     if (sanitized.includes(",") || sanitized.includes('"') || sanitized.includes("\n") || sanitized.includes("\r")) {

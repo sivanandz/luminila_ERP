@@ -23,6 +23,10 @@ const PB_PORTS: [u16; 3] = [8090, 8091, 8092];
 #[cfg(desktop)]
 const NEXT_SERVER_PORT: u16 = 3210;
 
+/// Loopback port `tauri.conf.json`'s `devUrl` serves the frontend from.
+#[cfg(desktop)]
+const DEV_SERVER_PORT: u16 = 3000;
+
 /// Owns the Next server child process so the app can stop it on exit.
 #[cfg(desktop)]
 #[derive(Default)]
@@ -146,10 +150,74 @@ struct PocketBaseProcess {
 ///
 /// Generated at runtime and handed to the sidecar through its environment and to
 /// the webview by script injection, so no token is ever compiled into the app
-/// bundle. RandomState is seeded from OS entropy, which is enough for a token
-/// that only ever crosses loopback.
+/// bundle.
 #[cfg(desktop)]
 fn generate_sidecar_token() -> String {
+    let mut bytes = [0u8; 32];
+    if !fill_os_random(&mut bytes) {
+        // The OS CSPRNG is the only acceptable source (SIDE-10); if it is
+        // unavailable the app still has to start, so fall back to the previous
+        // entropy mix but make the degradation visible in the log.
+        log::error!("OS CSPRNG unavailable; sidecar token entropy is degraded for this launch");
+        return generate_fallback_token();
+    }
+
+    let mut token = String::with_capacity(64);
+    for byte in bytes {
+        token.push_str(&format!("{:02x}", byte));
+    }
+    token
+}
+
+/// Fill `buf` from the operating system CSPRNG.
+///
+/// No `rand`/`getrandom` crate is in this crate's dependency list, so this calls
+/// the platform source directly: `BCryptGenRandom` on Windows, `/dev/urandom`
+/// elsewhere. Both are OS CSPRNGs.
+#[cfg(desktop)]
+#[cfg(windows)]
+fn fill_os_random(buf: &mut [u8]) -> bool {
+    #[link(name = "bcrypt")]
+    extern "system" {
+        fn BCryptGenRandom(
+            h_algorithm: *mut std::ffi::c_void,
+            pb_buffer: *mut u8,
+            cb_buffer: u32,
+            dw_flags: u32,
+        ) -> i32;
+    }
+
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+    if buf.len() > u32::MAX as usize {
+        return false;
+    }
+
+    // SAFETY: `buf` is a valid writable slice and its length is passed verbatim.
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    status == 0
+}
+
+#[cfg(desktop)]
+#[cfg(not(windows))]
+fn fill_os_random(buf: &mut [u8]) -> bool {
+    use std::io::Read;
+
+    match std::fs::File::open("/dev/urandom") {
+        Ok(mut file) => file.read_exact(buf).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Last-resort token when the OS CSPRNG cannot be read (logged as degraded).
+#[cfg(desktop)]
+fn generate_fallback_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
 
@@ -176,6 +244,26 @@ fn sidecar_token() -> &'static str {
     SIDECAR_TOKEN.get_or_init(generate_sidecar_token).as_str()
 }
 
+/// Origins allowed to receive the sidecar token: the bundled Next server, the
+/// dev server it replaces, and the Tauri asset scheme. Any other URL means the
+/// webview left the app, and the token must not be injected there (SIDE-1).
+#[cfg(desktop)]
+fn is_trusted_frontend_origin(url: &tauri::Url) -> bool {
+    if url.scheme() == "tauri" {
+        return url.host_str() == Some("localhost");
+    }
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return false;
+    }
+    if !matches!(url.host_str(), Some("127.0.0.1") | Some("localhost")) {
+        return false;
+    }
+    matches!(
+        url.port_or_known_default(),
+        Some(port) if port == NEXT_SERVER_PORT || port == DEV_SERVER_PORT
+    )
+}
+
 /// Owns the WPPConnect sidecar child so restart/health-monitor/path exits cannot
 /// leave duplicate processes behind (AI-SYS-14).
 #[cfg(desktop)]
@@ -185,7 +273,17 @@ struct SidecarProcess(Mutex<Option<CommandChild>>);
 /// Check if WPPConnect sidecar is healthy
 #[cfg(desktop)]
 async fn check_sidecar_health() -> bool {
-    match reqwest::get("http://127.0.0.1:21465/health").await {
+    // Same 900ms budget as the PocketBase/Next probes: a hung socket must not
+    // stall the health loop (SIDE-7).
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(900))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+
+    match client.get("http://127.0.0.1:21465/health").send().await {
         Ok(response) => response.status().is_success(),
         Err(_) => false,
     }
@@ -554,13 +652,22 @@ pub fn run() {
         // The sidecar token must exist on every document, including after the
         // webview is navigated to the bundled Next server. Injecting it from a
         // page-load hook (rather than a one-off eval before navigation, which
-        // the navigation wiped) keeps it available to the app (AI-SYS-15).
+        // the navigation wiped) keeps it available to the app (AI-SYS-15) —
+        // but only the app's own origin may receive it (SIDE-1).
         .on_page_load(|webview, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                let script = format!("window.__WPPCONNECT_SECRET__ = {:?};", sidecar_token());
-                if let Err(e) = webview.eval(script) {
-                    log::warn!("Could not inject the sidecar token into the webview: {}", e);
-                }
+            if !matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                return;
+            }
+            if !is_trusted_frontend_origin(payload.url()) {
+                log::warn!(
+                    "Not injecting the sidecar token: {} is outside the app origin",
+                    payload.url()
+                );
+                return;
+            }
+            let script = format!("window.__WPPCONNECT_SECRET__ = {:?};", sidecar_token());
+            if let Err(e) = webview.eval(script) {
+                log::warn!("Could not inject the sidecar token into the webview: {}", e);
             }
         });
 

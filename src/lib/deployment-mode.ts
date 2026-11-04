@@ -24,12 +24,35 @@ function readEnv(value: string | undefined): string | undefined {
     return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function toMode(value: string | undefined): DeploymentMode | undefined {
+    const raw = readEnv(value)?.toLowerCase();
+    if (!raw) return undefined;
+    return raw === 'multi' ? 'multi' : 'single';
+}
+
+let mismatchLogged = false;
+
+interface ModeMismatch {
+    publicMode: DeploymentMode;
+    serverMode: DeploymentMode;
+}
+
+function modeMismatch(): ModeMismatch | null {
+    const publicMode = toMode(process.env.NEXT_PUBLIC_TENANT_MODE);
+    const serverMode = toMode(process.env.TENANT_MODE);
+    if (!publicMode || !serverMode || publicMode === serverMode) return null;
+    return { publicMode, serverMode };
+}
+
 /**
  * Which account model this deployment runs.
  *
- * Multi is enabled only when TENANT_MODE or NEXT_PUBLIC_TENANT_MODE trims down
- * to "multi" (case-insensitive). Everything else — unset, empty or
- * whitespace-only — means single, which is the default.
+ * Single source of truth: `TENANT_MODE` (server) and `NEXT_PUBLIC_TENANT_MODE`
+ * (browser) must agree. When both are set and disagree, the mismatch is logged
+ * loudly and the trusted value for the current context wins — the server value
+ * on the server, the public value in the browser. Server-side auth entry points
+ * call `assertDeploymentModeConsistent()` and refuse to run a split deployment
+ * (INF-12).
  *
  * Constraint: NEXT_PUBLIC_TENANT_MODE is inlined into the client bundle at
  * build time, so re-enabling multi requires BOTH env vars to be set AND a
@@ -37,9 +60,38 @@ function readEnv(value: string | undefined): string | undefined {
  * browser bundle in single mode.
  */
 export function getDeploymentMode(): DeploymentMode {
-    const publicMode = readEnv(process.env.NEXT_PUBLIC_TENANT_MODE)?.toLowerCase();
-    const serverMode = readEnv(process.env.TENANT_MODE)?.toLowerCase();
-    return publicMode === 'multi' || serverMode === 'multi' ? 'multi' : 'single';
+    const mismatch = modeMismatch();
+    if (mismatch) {
+        const isServer = typeof window === 'undefined';
+        if (!mismatchLogged) {
+            mismatchLogged = true;
+            console.error(
+                `[deployment-mode] NEXT_PUBLIC_TENANT_MODE="${mismatch.publicMode}" disagrees with ` +
+                `TENANT_MODE="${mismatch.serverMode}". Using the ${isServer ? 'server' : 'browser'} value; ` +
+                'set both to the same mode and rebuild.'
+            );
+        }
+        return isServer ? mismatch.serverMode : mismatch.publicMode;
+    }
+    return toMode(process.env.NEXT_PUBLIC_TENANT_MODE)
+        ?? toMode(process.env.TENANT_MODE)
+        ?? 'single';
+}
+
+/**
+ * Refuse to serve a split single/multi deployment on the server.
+ *
+ * The browser bundle cannot see `TENANT_MODE`, so a disagreement means the
+ * server and the shipped client would scope records differently. Called from
+ * the server auth entry points, which fail closed instead of silently splitting.
+ */
+export function assertDeploymentModeConsistent(): void {
+    const mismatch = modeMismatch();
+    if (!mismatch || typeof window !== 'undefined') return;
+    throw new Error(
+        `Deployment mode mismatch: NEXT_PUBLIC_TENANT_MODE="${mismatch.publicMode}" ` +
+        `but TENANT_MODE="${mismatch.serverMode}". Refusing to serve a split single/multi deployment.`
+    );
 }
 
 /** True when this deployment runs the single-account model (the default). */

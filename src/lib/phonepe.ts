@@ -362,10 +362,17 @@ export async function checkPaymentStatus(
 // ============================================================================
 
 /**
- * Convert amount in rupees to paise
+ * Convert amount in rupees to paise.
+ *
+ * Decimal-shift rather than `Math.round(rupees * 100)`, which loses boundary
+ * amounts to IEEE-754 (1.005 * 100 → 100.4999… → 100 paise) — PAY-13.
  */
 export function toPaise(rupees: number): number {
-    return Math.round(rupees * 100);
+    const amount = Number(rupees);
+    if (!Number.isFinite(amount)) return 0;
+    const [mantissa, exponent] = String(amount).split('e');
+    const shifted = Number(`${mantissa}e${Number(exponent || 0) + 2}`);
+    return Number.isFinite(shifted) ? Math.round(shifted) : 0;
 }
 
 /**

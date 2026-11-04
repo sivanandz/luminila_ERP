@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createTenantClient, sanitizeFilter } from '@/lib/pocketbase';
+import { readCatalogTenantToken } from '@/lib/meta-catalog-batch';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,7 +11,10 @@ export async function GET(req: NextRequest) {
     try {
         const { searchParams } = new URL(req.url);
         const id = searchParams.get('id');
-        const accountEmail = (searchParams.get('account_email') || '').trim().toLowerCase();
+        // New links carry an opaque encrypted tenant token; the legacy
+        // `account_email` parameter keeps older catalog entries working.
+        const tokenTenant = readCatalogTenantToken(searchParams.get('tenant') || '');
+        const accountEmail = (tokenTenant || searchParams.get('account_email') || '').trim().toLowerCase();
 
         if (!id || !accountEmail) {
             // Without a tenant there is nothing safe to serve: the product lookup

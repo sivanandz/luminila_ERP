@@ -130,10 +130,10 @@ export interface Gstr1DocSection {
 export interface Gstr1OfficialPayload {
     gstin: string;
     fp: string;      // Financial Period MMYYYY
-    gt: number;      // Gross turnover preceding FY
-    cur_gt: number;  // Current turnover
+    gt?: number;     // Gross turnover preceding FY (omitted when unknown)
+    cur_gt?: number; // Current turnover (omitted when unknown)
     version: string;
-    hash: string;
+    hash?: string;   // GSTN checksum; omitted because it cannot be computed locally
     b2b: Gstr1B2BRecipient[];
     b2cl: Gstr1B2CLGroup[];
     b2cs: Gstr1B2CSEntry[];
@@ -212,16 +212,44 @@ export function extractStateCode(gstinOrCode?: string): string {
 }
 
 /**
- * Format date to standard GSTN format DD-MM-YYYY
+ * Raised when the source data cannot be turned into a statutory GSTR-1 payload
+ * without inventing values (missing dates, missing item rows). Named so callers
+ * can distinguish a data problem from a transport/runtime failure.
  */
-export function formatGstnDate(dateStr?: string): string {
-    if (!dateStr) return '01-01-2026';
+export class Gstr1CompileError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'Gstr1CompileError';
+    }
+}
+
+/**
+ * Format date to standard GSTN format DD-MM-YYYY.
+ * Returns null for a missing or invalid date: filing a fabricated date is worse
+ * than refusing the return (INV-8).
+ */
+export function formatGstnDate(dateStr?: string): string | null {
+    if (!dateStr) return null;
     const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return '01-01-2026';
+    if (isNaN(d.getTime())) return null;
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const year = d.getFullYear();
     return `${day}-${month}-${year}`;
+}
+
+/**
+ * Strict variant used after the compile-time date gate, so a document that
+ * reaches a GSTN table always carries a real date.
+ */
+function requireGstnDate(dateStr: string | undefined, label: string): string {
+    const formatted = formatGstnDate(dateStr);
+    if (!formatted) {
+        throw new Gstr1CompileError(
+            `${label} has no valid date ("${dateStr ?? ''}"). Correct the date before filing GSTR-1.`
+        );
+    }
+    return formatted;
 }
 
 /**
@@ -267,6 +295,37 @@ export function compileGstr1Payload(
     const regularInvoices = invoices.filter(inv => inv.invoice_type !== 'credit_note' && inv.invoice_type !== 'debit_note');
     const creditNotes = invoices.filter(inv => inv.invoice_type === 'credit_note' || inv.invoice_type === 'debit_note');
 
+    // Compile-time data gates. Every document that reaches a GSTN table needs a
+    // real date and real item rows; fabricating either files wrong data under
+    // the taxpayer's GSTIN (INV-8, INV-9). Validate all documents up front and
+    // name the ones that must be fixed.
+    const invalidDates: string[] = [];
+    const missingItems: string[] = [];
+    for (const inv of regularInvoices) {
+        if (inv.status === 'cancelled' || inv.status === 'draft') continue;
+        const label = `Invoice ${inv.invoice_number || inv.id}`;
+        if (!formatGstnDate(inv.invoice_date)) invalidDates.push(label);
+        if (!inv.items || inv.items.length === 0) missingItems.push(label);
+    }
+    for (const cn of creditNotes) {
+        if (cn.status === 'cancelled' || cn.status === 'draft') continue;
+        const label = `${cn.invoice_type === 'debit_note' ? 'Debit' : 'Credit'} note ${cn.invoice_number || cn.id}`;
+        if (!formatGstnDate(cn.invoice_date)) invalidDates.push(label);
+        if (cn.original_invoice_date && !formatGstnDate(cn.original_invoice_date)) {
+            invalidDates.push(`${label} (original invoice date)`);
+        }
+    }
+    if (invalidDates.length > 0) {
+        throw new Gstr1CompileError(
+            `GSTR-1 compilation stopped: missing or invalid date on ${invalidDates.join(', ')}. Correct the dates and recompile.`
+        );
+    }
+    if (missingItems.length > 0) {
+        throw new Gstr1CompileError(
+            `GSTR-1 compilation stopped: ${missingItems.join(', ')} has no line items, so the GST rate and HSN cannot be derived. Add the invoice lines and recompile.`
+        );
+    }
+
     // Document numbers tracker. Drafts were never issued; cancelled documents
     // stay in the range so Table 13 can report them (FIN-18).
     const sortInvoiceNumbers = (numbers: string[]) =>
@@ -291,23 +350,14 @@ export function compileGstr1Payload(
             || extractStateCode(inv.buyer_state_code)
             || (hasValidBuyerGstin ? buyerGstin.substring(0, 2) : supplierState);
         const isInterState = pos !== supplierState;
-        const invDate = formatGstnDate(inv.invoice_date);
+        const invDate = requireGstnDate(inv.invoice_date, `Invoice ${inv.invoice_number || inv.id}`);
         const invValue = round2(inv.grand_total);
 
-        // Group items by rate
+        // Group items by rate. The compile-time gate above rejects documents
+        // with no lines instead of synthesising an HSN 7113 row at a guessed
+        // rate (INV-9).
         const rateGroups = new Map<number, Gstr1ItemDetail>();
-        const items = inv.items && inv.items.length > 0 ? inv.items : [{
-            description: 'Jewelry / General Outward Supply',
-            hsn_code: '7113',
-            quantity: 1,
-            unit: 'GMS',
-            taxable_amount: inv.taxable_value || round2(invValue / 1.03),
-            gst_rate: isInterState ? (inv.igst_amount ? 3.0 : 0) : 3.0,
-            cgst_amount: inv.cgst_amount || 0,
-            sgst_amount: inv.sgst_amount || 0,
-            igst_amount: inv.igst_amount || 0,
-            total: invValue,
-        }];
+        const items = inv.items ?? [];
 
         for (const itm of items) {
             const rt = Number(itm.gst_rate) || 0;
@@ -422,8 +472,11 @@ export function compileGstr1Payload(
         const pos = extractStateCode(cn.place_of_supply)
             || extractStateCode(cn.buyer_state_code)
             || (hasValidBuyerGstin ? buyerGstin.substring(0, 2) : supplierState);
-        const cnDate = formatGstnDate(cn.invoice_date);
-        const origDate = formatGstnDate(cn.original_invoice_date || cn.invoice_date);
+        const cnDate = requireGstnDate(cn.invoice_date, `${cn.invoice_type === 'debit_note' ? 'Debit' : 'Credit'} note ${cn.invoice_number || cn.id}`);
+        const origDate = requireGstnDate(
+            cn.original_invoice_date || cn.invoice_date,
+            `Original invoice for ${cn.invoice_number || cn.id}`
+        );
         const cnValue = round2(cn.grand_total);
         const ntty: 'C' | 'D' = cn.invoice_type === 'debit_note' ? 'D' : 'C';
 
@@ -602,10 +655,14 @@ export function compileGstr1Payload(
     return {
         gstin: supplierGstin,
         fp: options.financialPeriod,
-        gt: options.grossTurnoverPrecedingFy || 0,
-        cur_gt: options.currentTurnover || 0,
+        // Omit turnover when the caller did not supply it. A placeholder zero
+        // reads as "no turnover" on the GSTN form, which is a filed fact, not a
+        // default (INV-10).
+        ...(Number.isFinite(options.grossTurnoverPrecedingFy) ? { gt: options.grossTurnoverPrecedingFy } : {}),
+        ...(Number.isFinite(options.currentTurnover) ? { cur_gt: options.currentTurnover } : {}),
         version: 'GST3.0.4',
-        hash: 'hash',
+        // No `hash`: the GSTN checksum cannot be computed locally, and the old
+        // literal "hash" was not a checksum at all (INV-10).
         b2b,
         b2cl,
         b2cs,

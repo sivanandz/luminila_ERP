@@ -6,8 +6,10 @@
  * 1. Intra-process serialized queue (mutex) per sequence name to prevent in-process race conditions.
  * 2. Cross-process optimistic concurrency retry loop with randomized backoff jitter on number_sequences.
  * 3. Atomic schema-safe dual-write of current_value and current_number on number_sequences.
- * 4. Automatic retry on document unique constraint collision (T7-F1) via createWithUniqueRetry.
- * 5. Audit trail in activity_logs upon sequence exhaustion fallback for GST compliance (T7-F2).
+ * 4. Automatic retry on document unique constraint collision (T7-F1) via createWithUniqueRetry,
+ *    reusing the allocated number instead of burning another sequence value.
+ * 5. Audit trail in activity_logs upon sequence exhaustion, and a hard failure instead of a
+ *    non-sequential fallback number (GST compliance, T7-F2).
  */
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
@@ -158,20 +160,23 @@ export async function getNextSequenceNumber(options: SequenceOptions, db: typeof
             }
         }
 
-        const fallbackSerial = `${prefix}-${Date.now()}`;
+        const exhaustionError = new Error(
+            `Sequence '${seqName}' could not be allocated after ${maxRetries} attempts. Refusing to issue a non-sequential document number for GST compliance.`,
+            { cause: lastError }
+        );
         console.error(`[sequence-generator] Failed sequence allocation for '${seqName}' after ${maxRetries} attempts:`, lastError);
 
-        // T7-F2: Surface allocator exhaustion fallback to activity_logs for GST compliance & audit trail
+        // T7-F2: Surface allocator exhaustion to activity_logs for GST compliance & audit trail.
+        // No document number is issued; the caller must abort, not fall back to a timestamp.
         try {
             await pb.collection('activity_logs').create({
                 action: 'sync',
                 entity_type: 'settings',
                 entity_id: seqName,
                 account_email: tenant,
-                description: `[CRITICAL GST NOTICE] Sequence allocator exhausted ${maxRetries} attempts for '${seqName}'. Fallback non-sequential document number generated: ${fallbackSerial}. Accountant manual reconciliation / sequence gap explanation required under Indian GST law.`,
+                description: `[CRITICAL GST NOTICE] Sequence allocator exhausted ${maxRetries} attempts for '${seqName}'. Document creation aborted; no invoice number was issued. Accountant manual reconciliation required under Indian GST law.`,
                 metadata: {
                     seqName,
-                    fallbackSerial,
                     exhaustedAttempts: maxRetries,
                     error:
                         String(
@@ -183,10 +188,10 @@ export async function getNextSequenceNumber(options: SequenceOptions, db: typeof
                 },
             });
         } catch (logErr) {
-            console.error('[sequence-generator] Failed to write fallback notice to activity_logs:', logErr);
+            console.error('[sequence-generator] Failed to write exhaustion notice to activity_logs:', logErr);
         }
 
-        return fallbackSerial;
+        throw exhaustionError;
     });
 }
 
@@ -223,33 +228,67 @@ export function isUniqueConstraintError(err: unknown): boolean {
 }
 
 /**
- * Executes an entity creation with automatic sequence re-allocation on UNIQUE constraint collision.
+ * Records a document number that was allocated but never issued, so the gap in
+ * the statutory series is documented instead of silently consumed.
+ */
+async function logSkippedDocumentNumber(docNumber: string): Promise<void> {
+    try {
+        const tenant = (accountScopeEmail() || '').trim().toLowerCase();
+        await pb.collection('activity_logs').create({
+            action: 'sync',
+            entity_type: 'settings',
+            entity_id: docNumber,
+            account_email: tenant,
+            description: `Document number '${docNumber}' was allocated but no record was created after repeated unique-constraint collisions. This is a skipped number in the document series and must be explained in the GST reconciliation.`,
+            metadata: {
+                skippedDocumentNumber: docNumber,
+                reason: 'unique_constraint_exhausted',
+                timestamp: new Date().toISOString(),
+            },
+        });
+    } catch (logErr) {
+        console.error('[sequence-generator] Failed to log skipped document number:', logErr);
+    }
+}
+
+/**
+ * Executes an entity creation with automatic retry on UNIQUE constraint collision.
  * Resolves T7-F1 (cross-process document collision self-healing).
+ *
+ * The document number is allocated once. Re-generating it on every retry burned
+ * a fresh financial-year sequence value per attempt, leaving unlogged gaps in
+ * the invoice series (INV-12). A number that is finally never issued is logged
+ * as a skipped number instead.
  */
 export async function createWithUniqueRetry<T>(
     generatorFn: () => Promise<string>,
     createFn: (docNumber: string) => Promise<T>,
     maxRetries = 3
 ): Promise<T> {
-    let attempt = 0;
+    const docNumber = await generatorFn();
     let lastError: unknown = null;
-    while (attempt < maxRetries) {
-        attempt++;
-        const docNumber = await generatorFn();
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             return await createFn(docNumber);
         } catch (err) {
             lastError = err;
-            if (isUniqueConstraintError(err) && attempt < maxRetries) {
+            if (!isUniqueConstraintError(err)) {
+                throw err;
+            }
+            if (attempt < maxRetries) {
                 console.warn(
-                    `[sequence-generator] Unique collision on document number '${docNumber}'. Retrying with fresh sequence (${attempt + 1}/${maxRetries})...`
+                    `[sequence-generator] Unique collision on document number '${docNumber}'. Retrying with the same allocated number (${attempt + 1}/${maxRetries})...`
                 );
                 const jitter = Math.floor(Math.random() * 50) + 20;
                 await new Promise((res) => setTimeout(res, jitter));
-                continue;
             }
-            throw err;
         }
     }
-    throw new Error(`Failed to create record after ${maxRetries} unique constraint collision retries.`, { cause: lastError });
+
+    await logSkippedDocumentNumber(docNumber);
+    throw new Error(
+        `Failed to create record with allocated document number '${docNumber}' after ${maxRetries} unique constraint collision retries.`,
+        { cause: lastError }
+    );
 }

@@ -106,8 +106,14 @@ export async function getMarketingCampaigns(): Promise<MarketingCampaign[]> {
             persistLocalCampaigns(records);
             return records;
         }
-    } catch {
-        // Collection may not exist yet in PocketBase, use local store fallback
+    } catch (error) {
+        // Only a missing collection may fall back to the local cache; an
+        // outage/permission failure must not masquerade as an empty store and
+        // resurface stale localStorage rows (ENG-10).
+        if ((error as { status?: number } | null)?.status !== 404) {
+            console.error("[campaigns] campaign fetch failed:", error);
+            throw error;
+        }
     }
 
     if (typeof window !== "undefined") {
@@ -157,8 +163,13 @@ export async function createMarketingCampaign(
         const pbRecord = await pb.collection(CAMPAIGNS_COLLECTION).create(payload);
         newRecord.id = pbRecord.id;
         newRecord.created_at = String(pbRecord.created || newRecord.created_at);
-    } catch {
-        // Save to local cache
+    } catch (error) {
+        // A missing collection is the only case where a local-only campaign is
+        // acceptable; any other failure must be surfaced (ENG-10).
+        if ((error as { status?: number } | null)?.status !== 404) {
+            console.error("[campaigns] campaign create failed:", error);
+            throw error;
+        }
     }
 
     const updated = [newRecord, ...memoryCampaigns];
@@ -182,9 +193,16 @@ export async function updateCampaignQueueCounts(
     );
     persistLocalCampaigns(updated);
     if (!campaignId.startsWith("cmp_")) {
-        await pb.collection(CAMPAIGNS_COLLECTION).update(campaignId, {
-            total_recipients: totalRecipients,
-        }).catch((err: unknown) => console.warn("[campaigns] recipient count update failed:", err));
+        try {
+            await pb.collection(CAMPAIGNS_COLLECTION).update(campaignId, {
+                total_recipients: totalRecipients,
+            });
+        } catch (error) {
+            // The recipient count is reporting data, not order data: log it and
+            // let the caller decide whether the broadcast should fail (ENG-11).
+            console.error("[campaigns] recipient count update failed:", error);
+            throw error;
+        }
     }
 }
 
@@ -237,8 +255,14 @@ export async function attributeOrderToCampaign(order: {
                         await recordCampaignConversion(c.id, order.total);
                         return { attributed: true, campaignId: c.id, campaignTitle: c.title };
                     }
-                } catch {
-                    // Not found in this campaign
+                } catch (error) {
+                    // A 404 is "this campaign never dispatched to this phone".
+                    // Anything else (outage, permission, bad filter) must not be
+                    // mistaken for "not attributed" (ENG-13).
+                    if ((error as { status?: number } | null)?.status !== 404) {
+                        console.error("[campaigns] recipient lookup failed:", error);
+                        throw error;
+                    }
                 }
             }
         }
@@ -248,25 +272,44 @@ export async function attributeOrderToCampaign(order: {
 }
 
 /**
- * Increment attributed conversions and revenue for a campaign
+ * Increment attributed conversions and revenue for a campaign.
+ *
+ * Uses PocketBase's atomic `+` operator: the previous read-modify-write lost
+ * increments whenever two attributed orders settled concurrently (ENG-6).
  */
 export async function recordCampaignConversion(campaignId: string, orderRevenue: number): Promise<void> {
+    const revenue = Number(orderRevenue);
+    if (!Number.isFinite(revenue) || revenue < 0) {
+        throw new Error("Campaign conversion requires a finite, non-negative order revenue.");
+    }
+
     const campaigns = await getMarketingCampaigns();
     const target = campaigns.find((c) => c.id === campaignId);
     if (!target) return;
 
-    target.orders_converted = (target.orders_converted || 0) + 1;
-    target.attributed_revenue = (target.attributed_revenue || 0) + Number(orderRevenue);
+    // Local-only campaigns (`cmp_…`) never reached PocketBase; keep their cache
+    // counters consistent with the same rules.
+    if (campaignId.startsWith("cmp_")) {
+        target.orders_converted = (target.orders_converted || 0) + 1;
+        target.attributed_revenue = (target.attributed_revenue || 0) + revenue;
+        persistLocalCampaigns(campaigns);
+        return;
+    }
 
     try {
         await pb.collection(CAMPAIGNS_COLLECTION).update(campaignId, {
-            orders_converted: target.orders_converted,
-            attributed_revenue: target.attributed_revenue,
+            "orders_converted+": 1,
+            "attributed_revenue+": revenue,
         });
-    } catch {
-        // Updated in memory
+    } catch (error) {
+        // Do not increment the local cache when the server rejected the write:
+        // that was the source of permanent analytics drift (ENG-11).
+        console.error("[campaigns] conversion increment failed; analytics are behind:", error);
+        throw error;
     }
 
+    target.orders_converted = (target.orders_converted || 0) + 1;
+    target.attributed_revenue = (target.attributed_revenue || 0) + revenue;
     persistLocalCampaigns(campaigns);
 }
 

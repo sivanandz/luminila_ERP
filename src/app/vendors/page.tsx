@@ -44,21 +44,33 @@ import {
 
 import { VendorForm } from "@/components/vendor/VendorForm";
 import { getVendors, deleteVendor, type Vendor } from "@/lib/vendors";
+import { usePermissions } from "@/hooks/usePermissions";
+import { toast } from "sonner";
 
 export default function VendorsPage() {
     const router = useRouter();
+    // PG-19: the delete handler re-checks the permission, not just the button.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canDeleteVendors = () => isAdmin || hasPermission("vendors", "delete");
     const [vendors, setVendors] = useState<Vendor[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
     const [showForm, setShowForm] = useState(false);
     const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
     const [deletingVendor, setDeletingVendor] = useState<Vendor | null>(null);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     const fetchVendors = async () => {
         setLoading(true);
-        const data = await getVendors();
-        setVendors(data);
-        setLoading(false);
+        try {
+            const data = await getVendors();
+            setVendors(data);
+        } catch (error) {
+            console.error("Error loading vendors:", error);
+            toast.error("Could not load vendors. Please retry.");
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => {
@@ -76,12 +88,22 @@ export default function VendorsPage() {
 
     const handleDelete = async () => {
         if (!deletingVendor) return;
+        if (!canDeleteVendors()) {
+            toast.error("You do not have permission to delete vendors.");
+            setDeletingVendor(null);
+            return;
+        }
+        if (isDeleting) return;
+        setIsDeleting(true);
         try {
             await deleteVendor(deletingVendor.id);
             setVendors(vendors.filter((v) => v.id !== deletingVendor.id));
+            toast.success("Vendor deleted");
         } catch (error) {
             console.error("Error deleting vendor:", error);
+            toast.error(error instanceof Error ? error.message : "Could not delete the vendor");
         } finally {
+            setIsDeleting(false);
             setDeletingVendor(null);
         }
     };
@@ -258,7 +280,7 @@ export default function VendorsPage() {
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">
+                        <AlertDialogAction onClick={handleDelete} disabled={isDeleting} className="bg-red-600 hover:bg-red-700">
                             Delete
                         </AlertDialogAction>
                     </AlertDialogFooter>

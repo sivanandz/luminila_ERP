@@ -91,14 +91,20 @@ export function InventoryBulkActionBar({
         router.push("/labels");
     };
 
+/** Helper to process bulk database writes in sequential chunks to avoid SQLite lock contention */
+async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => Promise<unknown>): Promise<void> {
+    for (let i = 0; i < items.length; i += batchSize) {
+        const chunk = items.slice(i, i + batchSize);
+        await Promise.all(chunk.map(fn));
+    }
+}
+
     // 2. Bulk Move Tray Location
     const handleConfirmMoveLocation = async (newLocation: string) => {
         setBusy(true);
         try {
-            await Promise.all(
-                selectedIds.map((id) =>
-                    pb.collection("products").update(id, { location: newLocation })
-                )
+            await batchProcess(selectedIds, 15, (id) =>
+                pb.collection("products").update(id, { location: newLocation })
             );
             toast.success(`Moved ${selectedIds.length} items to ${newLocation}!`);
             setMoveLocationModalOpen(false);
@@ -123,20 +129,18 @@ export function InventoryBulkActionBar({
 
         setBusy(true);
         try {
-            await Promise.all(
-                selectedProducts.map((p) => {
-                    let nextPrice = p.price;
-                    if (!isNaN(pct)) {
-                        nextPrice = Math.round(nextPrice * (1 + pct / 100));
-                    }
-                    if (!isNaN(fixed)) {
-                        nextPrice = Math.max(0, nextPrice + fixed);
-                    }
-                    return pb.collection("products").update(p.id, {
-                        base_price: nextPrice,
-                    });
-                })
-            );
+            await batchProcess(selectedProducts, 15, (p) => {
+                let nextPrice = p.price;
+                if (!isNaN(pct)) {
+                    nextPrice = Math.round(nextPrice * (1 + pct / 100));
+                }
+                if (!isNaN(fixed)) {
+                    nextPrice = Math.max(0, nextPrice + fixed);
+                }
+                return pb.collection("products").update(p.id, {
+                    base_price: nextPrice,
+                });
+            });
             toast.success(`Adjusted pricing on ${selectedIds.length} products!`);
             setPriceAdjustModalOpen(false);
             onClearSelection();
@@ -153,10 +157,8 @@ export function InventoryBulkActionBar({
     const handleToggleActive = async (setActive: boolean) => {
         setBusy(true);
         try {
-            await Promise.all(
-                selectedIds.map((id) =>
-                    pb.collection("products").update(id, { is_active: setActive })
-                )
+            await batchProcess(selectedIds, 15, (id) =>
+                pb.collection("products").update(id, { is_active: setActive })
             );
             toast.success(
                 `${setActive ? "Published" : "Moved to Draft"} ${selectedIds.length} products!`

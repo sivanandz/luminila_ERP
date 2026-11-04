@@ -264,7 +264,7 @@ export async function POST(req: NextRequest) {
                 );
             },
             onFinished: async (status, finalEvents) => {
-                await updateConversation(context.adminClient, conversationId, {
+                await updateConversation(context.adminClient, context.accountEmail, conversationId, {
                     status,
                     lastMessageAt: new Date().toISOString(),
                     title:
@@ -274,7 +274,7 @@ export async function POST(req: NextRequest) {
                     profileId: profile.id,
                     providerId: provider.provider.id,
                     model: provider.provider.model,
-                });
+                }, context.operatorEmail);
             },
             releaseLock,
         });

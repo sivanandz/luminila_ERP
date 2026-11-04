@@ -64,8 +64,7 @@ export function findTool(name: string): AiTool | undefined {
 
 /** Tools visible in a profile, before role-capability filtering. */
 export function toolsForProfile(profile: AiHarnessProfile): AiTool[] {
-    return ALL_TOOLS.filter((tool) => profileAllowsTool(profile, tool.name))
-        .filter((tool) => tool.kind === 'read' || profile.allowWrites);
+    return ALL_TOOLS.filter((tool) => profileAllowsTool(profile, tool.name, tool.kind));
 }
 
 /**

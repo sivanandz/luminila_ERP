@@ -121,10 +121,24 @@ export function calculateChannelStock(
 }
 
 /**
- * In-memory temporary cart reservation tracker with TTL
+ * In-memory temporary cart reservation tracker with TTL.
+ *
+ * SINGLE-PROCESS ONLY (ENG-12): reservations live in this process's memory.
+ * A restart drops every hold, and a second app instance counts NONE of the
+ * first instance's holds — the oversell guarantee is per process, not per store.
+ * There is no shared reservations collection in PocketBase today; if one is
+ * added, move this class onto it with the same TTL semantics. The constructor
+ * warns once per instance so an operator running multiple instances notices.
  */
 export class CartReservationManager {
     private reservations: Map<string, ActiveCartReservation[]> = new Map();
+
+    constructor() {
+        console.warn(
+            '[omnichannel-buffer] Cart reservations are process-local: restarts drop holds and ' +
+            'multi-instance deployments are unsupported — oversell protection would be per-process only (ENG-12).'
+        );
+    }
 
     /**
      * Attempts to acquire stock reservation for checkout

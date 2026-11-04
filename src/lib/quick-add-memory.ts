@@ -13,7 +13,7 @@
  * of spamming the recent stack.
  */
 
-import { pb, getCurrentTenantEmail, getTenantStorageKey } from "./pocketbase";
+import { pb, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
 import type { SKUTaxonomies } from "./sku-generator";
 
 export interface QuickAddSeriesEntry {
@@ -218,7 +218,7 @@ async function persistToPocketBase() {
         const tenantEmail = getCurrentTenantEmail();
         const filter =
             tenantEmail && tenantEmail !== "default"
-                ? `key="${PB_KEY}" && account_email="${tenantEmail}"`
+                ? `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`
                 : `key="${PB_KEY}"`;
         const existing = await pb.collection("store_settings").getFirstListItem(filter).catch(() => null);
         if (existing) {
@@ -271,7 +271,7 @@ export async function loadQuickAddMemory(): Promise<QuickAddMemory> {
     try {
         const filter =
             tenantEmail && tenantEmail !== "default"
-                ? `key="${PB_KEY}" && account_email="${tenantEmail}"`
+                ? `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`
                 : `key="${PB_KEY}"`;
         const record = await pb
             .collection("store_settings")

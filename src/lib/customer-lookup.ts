@@ -224,6 +224,14 @@ export async function createCustomerFromChat(
     const cleanName = (chatName || '').trim();
     const safeName = cleanName || (formattedPhone ? `WhatsApp Lead (${formattedPhone})` : 'WhatsApp Lead');
 
+    // Re-check immediately before create: the check above is not atomic with
+    // the write, so a concurrent chat/webhook could insert the same phone in
+    // between and leave two customer rows for one number (CUS-8).
+    if (formattedPhone) {
+        const existing = await findCustomerByPhone(formattedPhone);
+        if (existing) return existing;
+    }
+
     try {
         const result = await pb.collection('customers').create<CustomerRecord>({
             // Tenant stamp: without it the row is unowned and every
@@ -240,6 +248,12 @@ export async function createCustomerFromChat(
 
         return mapCustomerRecord(result);
     } catch (error) {
+        // A concurrent create may have won the race — return that row instead
+        // of reporting a failure for a customer that now exists (CUS-8).
+        if (formattedPhone) {
+            const raced = await findCustomerByPhone(formattedPhone);
+            if (raced) return raced;
+        }
         console.error(
             'Failed to create customer:',
             error instanceof ClientResponseError ? error.data : error instanceof Error ? error.message : String(error)

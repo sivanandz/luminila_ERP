@@ -139,6 +139,7 @@ import {
 } from "@/lib/products";
 import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
+import { usePermissions } from "@/hooks/usePermissions";
 
 // UI Product interface (flat structure)
 interface Product {
@@ -180,6 +181,10 @@ interface ProductRecordWithCategory extends PbProduct {
 function InventoryContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
+    // PG-19: destructive handlers re-check the permission; hiding the button is
+    // not a security boundary.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canDeleteProducts = () => isAdmin || hasPermission("inventory", "delete");
     const [activeInwardPo, setActiveInwardPo] = useState<string>("");
 
     useEffect(() => {
@@ -451,7 +456,14 @@ function InventoryContent() {
         // Dictionary codes only (A-Z0-9): used both as the pb.filter bound value
         // and as the literal regex anchor below.
         const prefix = `${skuGenre}${skuCategory}${skuSubcat}`.toUpperCase().replace(/[^A-Z0-9]/g, "");
-        const nextSeq = await computeNextSkuSequence(prefix, products.length + 1);
+        let nextSeq: number;
+        try {
+            // The allocator fails loudly instead of guessing a colliding number.
+            nextSeq = await computeNextSkuSequence(prefix);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Could not allocate a SKU sequence.");
+            return;
+        }
         const parent = generateParentSKU(skuGenre, skuCategory, skuSubcat, nextSeq);
         const child = generateChildSKU(parent, skuPlating, skuColor, skuSize);
         const finalSKU = generateWholesaleSKU(child, skuPackagingTier);
@@ -478,9 +490,13 @@ function InventoryContent() {
         if (!showSkuArchitect) return;
         let cancelled = false;
         const prefix = `${skuGenre}${skuCategory}${skuSubcat}`.toUpperCase().replace(/[^A-Z0-9]/g, "");
-        computeNextSkuSequence(prefix, products.length + 1).then(seq => {
-            if (!cancelled) setNextSkuSeq(seq);
-        });
+        computeNextSkuSequence(prefix)
+            .then(seq => {
+                if (!cancelled) setNextSkuSeq(seq);
+            })
+            .catch((err) => {
+                if (!cancelled) console.error("Could not allocate a SKU sequence", err);
+            });
         return () => { cancelled = true; };
     }, [showSkuArchitect, skuGenre, skuCategory, skuSubcat, products]);
 
@@ -513,6 +529,7 @@ function InventoryContent() {
                 stockByProduct: variantMap,
                 materialByProduct: variantMaterialMap,
                 productByVariant: variantToProduct,
+                primaryVariantByProduct,
             } = await getVariantStockSummary();
 
             // Calculate pending stock from active Purchase Orders
@@ -564,6 +581,7 @@ function InventoryContent() {
                     occasion: p.occasion || "",
                     base_metal: p.base_metal || "",
                     is_active: p.is_active !== false,
+                    variant_id: primaryVariantByProduct.get(p.id) || '',
                     is_bundle: Boolean((p as any).is_bundle),
                     bundle_items: Array.isArray((p as any).bundle_items) ? (p as any).bundle_items : [],
                 };
@@ -858,13 +876,19 @@ function InventoryContent() {
     };
 
     const handleDeleteProduct = async (id: string) => {
+        if (!canDeleteProducts()) {
+            toast.error("You do not have permission to delete products.");
+            return;
+        }
         if (!confirm("Delete this product permanently? This cannot be undone.")) return;
         try {
             // A product with sales or order history must stay readable for invoices and
             // order details, so it is refused rather than orphaned.
+            // PG-18: fail closed — a failed history query aborts the delete (the
+            // outer catch toasts) instead of being read as "no history".
             const [orderHistory, posHistory] = await Promise.all([
-                pb.collection("sales_order_items").getList(1, 1, { filter: `product="${id}"` }).catch(() => null),
-                pb.collection("sale_items").getList(1, 1, { filter: `product="${id}"` }).catch(() => null),
+                pb.collection("sales_order_items").getList(1, 1, { filter: `product="${id}"` }),
+                pb.collection("sale_items").getList(1, 1, { filter: `product="${id}"` }),
             ]);
             if ((orderHistory && orderHistory.totalItems > 0) || (posHistory && posHistory.totalItems > 0)) {
                 toast.error("This product has sales history and cannot be deleted. Unpublish it instead.");
@@ -875,9 +899,9 @@ function InventoryContent() {
             if (variants.length > 0) {
                 const variantFilter = variants.map(v => `variant="${v.id}"`).join(" || ");
                 const [orderVarHistory, posVarHistory, invVarHistory] = await Promise.all([
-                    pb.collection("sales_order_items").getList(1, 1, { filter: variantFilter }).catch(() => null),
-                    pb.collection("sale_items").getList(1, 1, { filter: variantFilter }).catch(() => null),
-                    pb.collection("invoice_items").getList(1, 1, { filter: variantFilter }).catch(() => null),
+                    pb.collection("sales_order_items").getList(1, 1, { filter: variantFilter }),
+                    pb.collection("sale_items").getList(1, 1, { filter: variantFilter }),
+                    pb.collection("invoice_items").getList(1, 1, { filter: variantFilter }),
                 ]);
                 if (
                     (orderVarHistory && orderVarHistory.totalItems > 0) ||

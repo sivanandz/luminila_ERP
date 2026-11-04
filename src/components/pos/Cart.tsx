@@ -15,8 +15,10 @@ function inlineProductName(variant: ProductVariant): string | undefined {
 
 interface CartProps {
     items: CartItem[];
-    onUpdateQuantity: (variantId: string, delta: number) => void;
-    onRemoveItem: (variantId: string) => void;
+    // CMP-12: both handlers receive the cart-line id (variant ids collide when a
+    // variant is added twice), matching what the component passes below.
+    onUpdateQuantity: (lineId: string, delta: number) => void;
+    onRemoveItem: (lineId: string) => void;
     onClear: () => void;
 }
 

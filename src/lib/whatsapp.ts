@@ -21,9 +21,12 @@ declare global {
 /**
  * Resolve the sidecar bearer token, in trust order:
  * 1. the desktop shell's per-launch value injected at runtime,
- * 2. a value the operator stored for this browser,
- * 3. a build-time value, which exists only to keep `npm run dev` usable and is
- *    documented as dev-only.
+ * 2. a value the operator stored for this browser.
+ *
+ * `callerValue` is an explicit caller-supplied token (also used by the unit
+ * test); production call sites must NOT pass a build-time environment value —
+ * `NEXT_PUBLIC_*` values are inlined into the shipped client bundle, which
+ * exposed the sidecar bearer token to anyone reading the JS (WA-9).
  *
  * A token shorter than 16 characters is ignored, because the sidecar refuses to
  * start with one.
@@ -31,9 +34,9 @@ declare global {
 export function resolveWppSecret(
     runtimeValue?: string | null,
     storedValue?: string | null,
-    buildValue?: string | null
+    callerValue?: string | null
 ): string {
-    for (const candidate of [runtimeValue, storedValue, buildValue]) {
+    for (const candidate of [runtimeValue, storedValue, callerValue]) {
         const value = (candidate || "").trim();
         if (value.length >= 16) return value;
     }
@@ -42,7 +45,10 @@ export function resolveWppSecret(
 
 function readSidecarSecret(): string {
     if (typeof window === "undefined") {
-        return resolveWppSecret(undefined, undefined, process.env.NEXT_PUBLIC_WPPCONNECT_SECRET);
+        // WA-9: server rendering has no sidecar session, and there is no
+        // build-time token in this bundle any more. Only the desktop shell's
+        // runtime injection or an operator-stored value can authenticate.
+        return "";
     }
     let stored: string | null = null;
     try {
@@ -62,7 +68,7 @@ function readSidecarSecret(): string {
     } catch {
         stored = null;
     }
-    return resolveWppSecret(window.__WPPCONNECT_SECRET__, stored, process.env.NEXT_PUBLIC_WPPCONNECT_SECRET);
+    return resolveWppSecret(window.__WPPCONNECT_SECRET__, stored);
 }
 
 /**

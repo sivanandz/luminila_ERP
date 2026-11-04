@@ -25,6 +25,16 @@ import type { RecordModel } from 'pocketbase';
 const DAYS = z.number().int().min(1).max(365);
 const LIMIT = z.number().int().min(1).max(25);
 
+/** Model-visible fields for `get_record_details` (no cost/supplier internals). */
+const PRODUCT_RECORD_FIELDS = [
+    'id', 'name', 'sku', 'description', 'category', 'base_price', 'is_active',
+    'image_url', 'hsn_code', 'created', 'updated',
+] as const;
+const VARIANT_RECORD_FIELDS = [
+    'id', 'product', 'variant_name', 'sku_suffix', 'price_adjustment', 'stock_level',
+    'low_stock_threshold', 'color', 'material', 'is_active', 'created', 'updated',
+] as const;
+
 const overviewInput = z.object({
     days: DAYS.optional().describe('Rolling window in days for the revenue summary. Default 7.').default(7),
 });
@@ -98,10 +108,6 @@ function asSalesRows(records: RecordModel[]): SalesRow[] {
     });
 }
 
-function currencySummary(storeCurrency: string): string {
-    return storeCurrency || 'INR';
-}
-
 export const readTools: AiTool[] = [
     {
         name: 'get_store_overview',
@@ -158,7 +164,6 @@ export const readTools: AiTool[] = [
 
             const data = {
                 windowDays: args.days,
-                currency: currencySummary(''),
                 revenue: Math.round(revenue * 100) / 100,
                 revenueToday: Math.round(revenueToday * 100) / 100,
                 salesCount: rows.length,
@@ -169,7 +174,7 @@ export const readTools: AiTool[] = [
                 outstandingReceivable: Math.round(outstanding * 100) / 100,
             };
             const summary =
-                `Last ${args.days} days: ${data.salesCount} sales, revenue ${data.revenue} ${data.currency}` +
+                `Last ${args.days} days: ${data.salesCount} sales, revenue ${data.revenue}` +
                 ` (today ${data.revenueToday}). Pending orders ${data.pendingSalesOrders}, low-stock variants ${data.lowStockVariantCount},` +
                 ` unpaid invoices ${data.unpaidInvoiceCount} worth ${data.outstandingReceivable}.`;
             return { summary, data };
@@ -571,9 +576,14 @@ export const readTools: AiTool[] = [
             if (!record) {
                 return { summary: 'No record found with that id in this store.', data: { found: false } };
             }
-            const plain = { ...(record as Record<string, unknown>) };
-            delete plain.collectionId;
-            delete plain.collectionName;
+            // Explicit projection: a spread of the full row leaked internal,
+            // cost and supplier fields into the model context and event log (AI-24).
+            const source = record as Record<string, unknown>;
+            const allowed = args.collection === 'products' ? PRODUCT_RECORD_FIELDS : VARIANT_RECORD_FIELDS;
+            const plain: Record<string, unknown> = {};
+            for (const field of allowed) {
+                if (field in source) plain[field] = source[field];
+            }
             return { summary: `Found ${args.collection} record ${args.id}.`, data: { found: true, record: plain } };
         },
     },

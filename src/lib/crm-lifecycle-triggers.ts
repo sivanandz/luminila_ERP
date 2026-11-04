@@ -4,7 +4,7 @@
  * and queues personalized messages into the staggered WhatsApp broadcast queue.
  */
 
-import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey } from "./pocketbase";
+import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
 import { Customer } from "./customers";
 import { computeRFMAnalysis, getDaysUntilMilestone } from "./crm-rfm";
 import { getHumanizedJitterDelayMs } from "./whatsapp-broadcast";
@@ -135,6 +135,9 @@ export function updateLifecycleConfig(
     flowId: LifecycleFlowId,
     patch: Partial<LifecycleFlowConfig>
 ): LifecycleFlowConfig[] {
+    // Refresh the tenant's configs before writing: the cached array may still
+    // belong to the previous account after a tenant switch (CUS-13).
+    ensureFlowTenant();
     const updated = cachedFlowConfigs.map((flow) =>
         flow.id === flowId ? { ...flow, ...patch } : flow
     );
@@ -175,7 +178,7 @@ export async function getEligibleRecipientsForFlow(
         const delivered = await pb
             .collection("sales_orders")
             .getFullList<{ customer_phone?: string }>({
-                filter: `status="delivered" && account_email="${tenant}" && updated>="${since}"`,
+                filter: `status="delivered" && account_email="${sanitizeFilter(tenant)}" && updated>="${since}"`,
                 fields: "customer_phone",
             })
             .catch(() => []);
@@ -228,7 +231,9 @@ export async function getEligibleRecipientsForFlow(
             // (CRM-09).
             if (await isWhatsAppOptedOut(c.phone)) continue;
             const consent = await getConsentState(pb, { phone: c.phone });
-            if (consent.marketing === false) continue;
+            // Consent must be POSITIVELY granted: `null` (no event) and a
+            // ledger read error (fail-closed state) are not consent (CUS-7).
+            if (consent.marketing !== true) continue;
             const msg = flow.template
                 .replace(/\{\{customer_name\}\}/gi, c.name || "Valued Customer")
                 .replace(/\{\{first_name\}\}/gi, (c.name || "Customer").split(" ")[0])
@@ -284,8 +289,8 @@ export async function scanAndDispatchLifecycleTriggers(): Promise<{
             const campaignTag = `Lifecycle: ${flow.name}`;
             try {
                 const recent = await pb.collection("broadcast_messages").getFirstListItem(
-                    `campaign="${campaignTag}" && recipient_phone~"${r.phone.slice(-10)}"` +
-                    ` && account_email="${tenant}" && created>="${dedupeSince}"`
+                    `campaign="${sanitizeFilter(campaignTag)}" && recipient_phone~"${sanitizeFilter(r.phone.slice(-10))}"` +
+                    ` && account_email="${sanitizeFilter(tenant)}" && created>="${dedupeSince}"`
                 );
                 if (recent) {
                     skippedCount++;
@@ -339,6 +344,8 @@ export async function dispatchCustomRecipientsMessages(
     let skippedCount = 0;
     let slotOffset = 0;
 
+    // Tenant refresh before reading the module-level config cache (CUS-12).
+    ensureFlowTenant();
     const flow = cachedFlowConfigs.find((f) => f.id === flowId);
     const campaignTag = flow ? `Lifecycle: ${flow.name}` : `Lifecycle: Custom Trigger`;
     const tenant = getCurrentTenantEmail();
@@ -360,8 +367,8 @@ export async function dispatchCustomRecipientsMessages(
         // queue reads and bypasses the daily quota (audit N-D2/CRM-09).
         try {
             const recent = await pb.collection("broadcast_messages").getFirstListItem(
-                `campaign="${campaignTag}" && recipient_phone~"${r.phone.slice(-10)}"` +
-                (tenant ? ` && account_email="${tenant}"` : '') +
+                `campaign="${sanitizeFilter(campaignTag)}" && recipient_phone~"${sanitizeFilter(r.phone.slice(-10))}"` +
+                (tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : '') +
                 ` && created>="${dedupeSince}"`
             );
             if (recent) {

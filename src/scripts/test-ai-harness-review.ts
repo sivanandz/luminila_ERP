@@ -477,7 +477,8 @@ test('GUARD-1: tool policy enforces profile, capability and write approval in or
 test('GUARD-2: unknown profile ids fall back to the safe read-only profile', () => {
     const profile = getHarnessProfile('does-not-exist');
     assert.equal(profile.allowWrites, false);
-    assert.equal(profileAllowsTool(profile, 'create_customer'), true); // allowedTools '*' but writes filtered by kind
+    assert.equal(profileAllowsTool(profile, 'get_store_overview', 'read'), true);
+    assert.equal(profileAllowsTool(profile, 'create_customer', 'write'), false); // read-only profile never allows writes
     assert.equal(toolsForProfile(profile).some((tool) => tool.kind === 'write'), false);
 });
 

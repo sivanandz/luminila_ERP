@@ -58,8 +58,19 @@ export function decryptSecret(value: string, key: Buffer | null): string {
     ]).toString('utf8');
 }
 
-/** Convenience for call sites: key from the environment, decrypt if needed. */
+/**
+ * Convenience for call sites: key from the environment, decrypt if needed.
+ *
+ * Production fails closed: a value that is not `enc:v1:` in NODE_ENV=production
+ * is refused rather than passed through, because the "incremental migration"
+ * allowance otherwise becomes a permanent plaintext secret (SCR-3).
+ */
 export function readRegistrySecret(value: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
     if (!value) return '';
+    if (env.NODE_ENV === 'production' && !isEncryptedSecret(value)) {
+        throw new Error(
+            'Registry value is stored in plaintext; encrypt it with TENANT_REGISTRY_KEY before running in production.'
+        );
+    }
     return decryptSecret(value, parseRegistryKey(env.TENANT_REGISTRY_KEY));
 }

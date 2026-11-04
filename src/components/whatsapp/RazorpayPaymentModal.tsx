@@ -70,12 +70,13 @@ export function RazorpayPaymentModal({
     const upiDiscountInfo = useMemo(() => {
         return calculateUpiSurchargeDiscount(
             amount,
-            true,
+            // CMP-10: eligibility must come from the threshold check, not a literal.
+            isUpiEligible,
             upiDiscountEnabled,
             DEFAULT_UPI_DISCOUNT_THRESHOLD,
             DEFAULT_RAZORPAY_FEE_PERCENT
         );
-    }, [amount, upiDiscountEnabled]);
+    }, [amount, isUpiEligible, upiDiscountEnabled]);
 
     const isDiscountApplied = includeMarkup && upiDiscountInfo.applicable;
     const finalChargeAmount = isDiscountApplied
@@ -95,6 +96,21 @@ export function RazorpayPaymentModal({
     }, [isOpen, defaultAmount, customerName, customerPhone]);
 
     if (!isOpen) return null;
+
+    // CMP-5: only ever open a well-formed https URL, and never hand it window.opener.
+    const handleOpenLink = () => {
+        let parsed: URL | null = null;
+        try {
+            parsed = new URL(generatedLink?.url || "");
+        } catch {
+            parsed = null;
+        }
+        if (!parsed || parsed.protocol !== "https:") {
+            setError("Refusing to open a payment link that is not HTTPS.");
+            return;
+        }
+        window.open(parsed.toString(), "_blank", "noopener,noreferrer");
+    };
 
     const handleCreateLink = async () => {
         if (!amount || amount <= 0) {
@@ -417,7 +433,7 @@ export function RazorpayPaymentModal({
                                 Send into WhatsApp Chat
                             </button>
                             <button
-                                onClick={() => window.open(generatedLink.url, "_blank")}
+                                onClick={handleOpenLink}
                                 className="p-2.5 bg-muted hover:bg-muted/80 rounded-xl border border-border text-xs flex items-center gap-1.5 font-medium"
                                 title="Open in browser"
                             >

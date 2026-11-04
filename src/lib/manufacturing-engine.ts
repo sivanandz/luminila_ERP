@@ -217,9 +217,14 @@ export function reconcileMetalBalance(
 
 /**
  * Validate manufacturing order before assembly
+ *
+ * Every numeric guard is NaN-aware: `NaN <= 0` and `NaN < 0` are both false,
+ * so a NaN cost or weight used to pass validation and only surface downstream
+ * as a `Number(x) || 0` zero (SET-9).
  */
 export function validateManufacturingOrder(order: ManufacturingOrder): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
+    const isFiniteNumber = (value: unknown): boolean => Number.isFinite(Number(value));
 
     if (!order.orderNumber || order.orderNumber.trim() === '') {
         errors.push('Order number is required.');
@@ -233,8 +238,12 @@ export function validateManufacturingOrder(order: ManufacturingOrder): { valid: 
         for (let i = 0; i < order.rawMaterials.length; i++) {
             const m = order.rawMaterials[i];
             if (!m.variantId) errors.push(`Raw material #${i + 1} variantId is required.`);
-            if (m.quantity <= 0) errors.push(`Raw material #${i + 1} (${m.name || 'unnamed'}) quantity must be greater than 0.`);
-            if (m.unitCostPrice < 0) errors.push(`Raw material #${i + 1} unitCostPrice cannot be negative.`);
+            if (!isFiniteNumber(m.quantity) || m.quantity <= 0) {
+                errors.push(`Raw material #${i + 1} (${m.name || 'unnamed'}) quantity must be a finite number greater than 0.`);
+            }
+            if (!isFiniteNumber(m.unitCostPrice) || m.unitCostPrice < 0) {
+                errors.push(`Raw material #${i + 1} unitCostPrice must be a finite number and cannot be negative.`);
+            }
         }
     }
 
@@ -244,15 +253,38 @@ export function validateManufacturingOrder(order: ManufacturingOrder): { valid: 
         for (let i = 0; i < order.finishedItems.length; i++) {
             const item = order.finishedItems[i];
             if (!item.variantId) errors.push(`Finished item #${i + 1} variantId is required.`);
-            if (item.quantityProduced <= 0) errors.push(`Finished item #${i + 1} quantityProduced must be >= 1.`);
-            if (item.grossWeightGrams <= 0) errors.push(`Finished item #${i + 1} grossWeightGrams must be greater than 0.`);
-            if (item.netWeightGrams <= 0) errors.push(`Finished item #${i + 1} netWeightGrams must be greater than 0.`);
-            if (item.netWeightGrams > item.grossWeightGrams) {
+            if (!isFiniteNumber(item.quantityProduced) || item.quantityProduced <= 0) {
+                errors.push(`Finished item #${i + 1} quantityProduced must be a finite number >= 1.`);
+            }
+            if (!isFiniteNumber(item.grossWeightGrams) || item.grossWeightGrams <= 0) {
+                errors.push(`Finished item #${i + 1} grossWeightGrams must be a finite number greater than 0.`);
+            }
+            if (!isFiniteNumber(item.netWeightGrams) || item.netWeightGrams <= 0) {
+                errors.push(`Finished item #${i + 1} netWeightGrams must be a finite number greater than 0.`);
+            }
+            if (isFiniteNumber(item.netWeightGrams) && isFiniteNumber(item.grossWeightGrams)
+                && item.netWeightGrams > item.grossWeightGrams) {
                 errors.push(`Finished item #${i + 1} netWeightGrams (${item.netWeightGrams}g) cannot exceed grossWeightGrams (${item.grossWeightGrams}g).`);
             }
             if (item.huidCode && !validateHUID(item.huidCode)) {
                 errors.push(`Finished item #${i + 1} HUID "${item.huidCode}" is invalid. Must be exactly 6 alphanumeric characters.`);
             }
+        }
+    }
+
+    if (order.allowedLossTolerancePercent !== undefined
+        && (!isFiniteNumber(order.allowedLossTolerancePercent) || order.allowedLossTolerancePercent < 0)) {
+        errors.push('allowedLossTolerancePercent must be a finite number and cannot be negative.');
+    }
+
+    const scrapRecoveries = order.scrapRecoveries || [];
+    for (let i = 0; i < scrapRecoveries.length; i++) {
+        const scrap = scrapRecoveries[i];
+        if (!isFiniteNumber(scrap.recoveredWeightGrams) || scrap.recoveredWeightGrams < 0) {
+            errors.push(`Scrap recovery #${i + 1} recoveredWeightGrams must be a finite number and cannot be negative.`);
+        }
+        if (!isFiniteNumber(scrap.valuationRatePerGram) || scrap.valuationRatePerGram < 0) {
+            errors.push(`Scrap recovery #${i + 1} valuationRatePerGram must be a finite number and cannot be negative.`);
         }
     }
 

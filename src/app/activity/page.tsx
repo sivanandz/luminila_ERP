@@ -34,6 +34,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 
 import {
     getActivityLogs,
@@ -92,17 +93,23 @@ export default function ActivityPage() {
 
     const loadData = async () => {
         setLoading(true);
-        const [logsData, statsData] = await Promise.all([
-            getActivityLogs({
-                action: actionFilter !== "all" ? actionFilter as ActivityAction : undefined,
-                entity_type: entityFilter !== "all" ? entityFilter as EntityType : undefined,
-                search: search || undefined,
-            }, 100),
-            getActivityStats(),
-        ]);
-        setLogs(logsData.logs);
-        setStats(statsData);
-        setLoading(false);
+        try {
+            const [logsData, statsData] = await Promise.all([
+                getActivityLogs({
+                    action: actionFilter !== "all" ? actionFilter as ActivityAction : undefined,
+                    entity_type: entityFilter !== "all" ? entityFilter as EntityType : undefined,
+                    search: search || undefined,
+                }, 100),
+                getActivityStats(),
+            ]);
+            setLogs(logsData.logs);
+            setStats(statsData);
+        } catch (error) {
+            console.error("Failed to load activity log:", error);
+            toast.error("Could not load the activity log.");
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => {

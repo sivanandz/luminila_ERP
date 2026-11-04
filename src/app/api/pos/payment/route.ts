@@ -50,9 +50,17 @@ export async function POST(req: Request) {
             if (!Number.isFinite(amount) || amount <= 0) {
                 return NextResponse.json({ success: false, error: "A positive amount is required" }, { status: 400 });
             }
+            const tenantEmail = String(session.accountEmail || session.email || "").trim().toLowerCase();
             const result = await serverCreateRazorpayLink({
                 ...(p as unknown as CreatePaymentLinkParams),
                 amount,
+                // PAY-2: the authenticated tenant is stamped after the client
+                // notes, so a caller cannot redirect settlement to another
+                // account through `notes.account_email`.
+                notes: {
+                    ...((p.notes && typeof p.notes === "object" ? p.notes : {}) as Record<string, string>),
+                    ...(tenantEmail ? { account_email: tenantEmail } : {}),
+                },
             });
             return NextResponse.json(result, { status: result.success ? 200 : 400 });
         }

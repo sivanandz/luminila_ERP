@@ -15,7 +15,7 @@
 import { pb, accountScopeEmail, sanitizeFilter } from './pocketbase';
 import { loadUnifiedLines, loadTxWindow } from './analytics-v2/load';
 import { buildChannelTable } from './analytics-v2/sales-metrics';
-import { resolveRange, compare, type ComparedMetric } from './analytics-v2/range';
+import { resolveRange, compare, dayKey, pbBound, type ComparedMetric } from './analytics-v2/range';
 import type {
     ProductVariant,
     PurchaseOrder,
@@ -43,6 +43,11 @@ export interface DashboardStats {
     aov: number;
     /** margin % vs previous 30 days, for the KPI delta */
     marginChange: ComparedMetric;
+    /**
+     * True when a secondary fetch (low-stock variants) failed, so counts in
+     * this payload are partial rather than a true zero (RPT-14).
+     */
+    degraded?: boolean;
 }
 
 export interface SalesDataPoint {
@@ -118,6 +123,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         today.setHours(0, 0, 0, 0);
         const todayISO = today.toISOString();
 
+        // PB compares datetimes as strings; a T-format bound sorts after the
+        // space-format dates stored on rows, so the boundary must be converted
+        // (RPT-1). pbBound also expands date-only order dates to UTC midnight.
+        const todayBound = pbBound(todayISO);
+
         const win = resolveRange({ preset: '30d' });
 
         // Canonical, deduped transactions (mirror rows excluded in load.ts)
@@ -129,7 +139,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         const totalRevenue = sumRevenue(txs);
         const totalOrders = txs.length;
 
-        const todayTx = txs.filter((t) => t.dateISO >= todayISO);
+        const todayTx = txs.filter((t) => pbBound(t.dateISO) >= todayBound);
         const todayRevenue = sumRevenue(todayTx);
         const todayOrdersCount = todayTx.length;
 
@@ -155,11 +165,19 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
         // Low stock honors each variant's own threshold (PB can't compare two
         // columns in a filter, so count over a light tenant-scoped fetch).
+        // Zero-stock variants are low stock too — the old `stock_level>0`
+        // bound excluded them (RPT-14). A fetch error sets the degraded flag
+        // instead of reporting a trustworthy-looking zero.
+        let degraded = false;
         const variants = await pb.collection('product_variants').getFullList<ProductVariant>({
-            filter: `account_email="${sanitizeFilter(tenant)}" && stock_level>0`,
+            filter: `account_email="${sanitizeFilter(tenant)}"`,
             expand: 'product',
             fields: 'id,stock_level,low_stock_threshold,expand.product.is_active',
-        }).catch(() => [] as ProductVariant[]);
+        }).catch((error) => {
+            console.error('Failed to fetch low-stock variants:', error);
+            degraded = true;
+            return [] as ProductVariant[];
+        });
         const lowStockCount = variants.filter((v) => {
             const product = (v as unknown as { expand?: { product?: { is_active?: boolean } } }).expand?.product;
             if (product && product.is_active === false) return false;
@@ -189,10 +207,12 @@ export async function getDashboardStats(): Promise<DashboardStats> {
             grossMargin,
             aov: totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0,
             marginChange,
+            degraded,
         };
     } catch (error) {
         console.error('Error fetching dashboard stats:', error);
-        return empty;
+        // A failed load is not a genuinely empty dashboard (RPT-14).
+        return { ...empty, degraded: true };
     }
 }
 
@@ -293,8 +313,13 @@ export async function getChannelBreakdown(): Promise<ChannelBreakdown[]> {
         if (!tenant) return [];
 
         const win = resolveRange({ preset: '30d' });
-        const txs = await loadTxWindow(tenant, win.current);
-        const rows = buildChannelTable(txs, []);
+        const [txs, prevTxs] = await Promise.all([
+            loadTxWindow(tenant, win.current),
+            // The previous window makes the per-channel delta real; passing []
+            // reported +100% for every channel (RPT-7).
+            loadTxWindow(tenant, win.previous),
+        ]);
+        const rows = buildChannelTable(txs, prevTxs);
 
         return rows.map((r) => ({
             channel: r.channel,
@@ -418,8 +443,15 @@ export async function getRevenueSummary(period: 'today' | 'week' | 'month' | 'ye
         const tenant = accountScopeEmail();
         if (!tenant) return { revenue: 0, orders: 0, avgOrderValue: 0 };
 
-        const preset = period === 'today' ? '7d' : period === 'week' ? '7d' : period === 'month' ? '30d' : '12m';
-        const win = resolveRange({ preset: preset as '7d' | '30d' | '12m' });
+        const preset = period === 'today'
+            ? 'custom'
+            : period === 'week' ? '7d' : period === 'month' ? '30d' : '12m';
+        // 'today' used to reuse the 7d preset, so the "Today" KPI showed a
+        // week of revenue (RPT-15). Custom bounds give a real one-day window.
+        const todayKey = dayKey(new Date());
+        const win = preset === 'custom'
+            ? resolveRange({ preset: 'custom', start: todayKey, end: todayKey })
+            : resolveRange({ preset: preset as '7d' | '30d' | '12m' });
         const txs = await loadTxWindow(tenant, win.current);
 
         const revenue = txs.reduce((sum, t) => sum + t.revenue, 0);

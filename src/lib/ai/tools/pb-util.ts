@@ -93,7 +93,12 @@ export async function listRecords(
     return page.items;
 }
 
-/** Fetch one record by id inside the tenant scope; undefined when absent. */
+/** PocketBase signals "no row matched" with a 404; everything else is a fault. */
+function isNotFound(error: unknown): boolean {
+    return (error as { status?: number } | null)?.status === 404;
+}
+
+/** Fetch one record by id inside the tenant scope; undefined only when absent. */
 export async function findRecordById(
     client: PocketBase,
     collection: string,
@@ -109,8 +114,10 @@ export async function findRecordById(
             .getFirstListItem(`${accountFilter(accountEmail)} && id="${escapeFilterValue(id)}"`, {
                 ...(expand ? { expand } : {}),
             });
-    } catch {
-        return undefined;
+    } catch (error) {
+        // A PB outage must not read as "no such record" (AI-15).
+        if (isNotFound(error)) return undefined;
+        throw error;
     }
 }
 
@@ -129,8 +136,9 @@ export async function findFirstRecord(
                 ...(options.expand ? { expand: options.expand } : {}),
             });
         return record;
-    } catch {
-        return undefined;
+    } catch (error) {
+        if (isNotFound(error)) return undefined;
+        throw error;
     }
 }
 

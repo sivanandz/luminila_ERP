@@ -268,11 +268,13 @@ function PurchaseOrderDetailContent() {
             await cancelPurchaseOrder(po.id!);
             toast.success("Purchase order cancelled");
             fetchPO();
+            // PG-13: close the dialog only on success — a failed cancel must not
+            // look like it succeeded.
+            setShowCancelConfirm(false);
         } catch (error) {
             console.error("Error:", error);
             toast.error("Failed to cancel purchase order");
         }
-        setShowCancelConfirm(false);
     };
 
     const handleReceiveGoods = async () => {

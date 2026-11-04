@@ -5,8 +5,8 @@
  * - `ai_providers` rows are readable and writable only through the server
  *   (PocketBase API rules are null), so a browser can never enumerate keys.
  * - `api_key` is encrypted at rest with AES-256-GCM via `tenant-secrets.ts`.
- *   `AI_SECRET_KEY` takes precedence; `TENANT_REGISTRY_KEY` is accepted as the
- *   local-install fallback because it is already provisioned here.
+ *   `AI_SECRET_KEY` is required; the tenant registry key is deliberately NOT a
+ *   fallback so one compromised key cannot unlock both stores (AI-30).
  * - The browser-safe projection (`AiProviderPublic`) never contains key
  *   material or ciphertext.
  */
@@ -15,7 +15,7 @@ import type PocketBase from 'pocketbase';
 import { z } from 'zod';
 import type { AiMaxTokensParam, AiProviderConfig, AiProviderPublic } from './types';
 import { decryptSecret, encryptSecret, parseRegistryKey } from '../tenant-secrets';
-import { isBlockedAiHost } from './net-guard';
+import { isBlockedAiHost, isLoopbackAiHost } from './net-guard';
 
 export const PROVIDERS_COLLECTION = 'ai_providers';
 
@@ -42,14 +42,18 @@ export const providerInputSchema = z.object({
         .refine((value) => {
             try {
                 const url = new URL(value);
-                return (url.protocol === 'http:' || url.protocol === 'https:')
+                // Cleartext keys are only acceptable to a loopback endpoint;
+                // everything else must be https (AI-20).
+                const allowedProtocol = url.protocol === 'https:'
+                    || (url.protocol === 'http:' && isLoopbackAiHost(url.hostname));
+                return allowedProtocol
                     && !url.username
                     && !url.password
                     && !isBlockedAiHost(url.hostname, url.port);
             } catch {
                 return false;
             }
-        }, 'Base URL must be a public http(s) URL without embedded credentials (private ranges and internal ports are blocked).'),
+        }, 'Base URL must be a public https URL without embedded credentials (http is only allowed for loopback; private ranges and internal ports are blocked).'),
     model: z.string().trim().min(1).max(200),
     apiKey: z.string().max(4_000).optional(),
     models: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
@@ -93,11 +97,15 @@ export interface ProviderRow {
     updated?: string;
 }
 
-/** Resolve the encryption key for provider secrets. */
+/**
+ * Resolve the encryption key for provider secrets.
+ *
+ * Only the dedicated `AI_SECRET_KEY` is accepted: falling back to
+ * `TENANT_REGISTRY_KEY` meant one key compromise exposed both the tenant
+ * registry and every provider API key (AI-30).
+ */
 export function getProviderSecretKey(env: NodeJS.ProcessEnv = process.env): Buffer | null {
-    const direct = parseRegistryKey(env.AI_SECRET_KEY);
-    if (direct) return direct;
-    return parseRegistryKey(env.TENANT_REGISTRY_KEY);
+    return parseRegistryKey(env.AI_SECRET_KEY);
 }
 
 export function encryptProviderKey(plain: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -105,7 +113,7 @@ export function encryptProviderKey(plain: string, env: NodeJS.ProcessEnv = proce
     const key = getProviderSecretKey(env);
     if (!key) {
         throw new AiConfigError(
-            'Set AI_SECRET_KEY (64 hex characters) or TENANT_REGISTRY_KEY before saving a provider API key.',
+            'Set AI_SECRET_KEY (64 hex characters) before saving a provider API key.',
             'missing_secret_key'
         );
     }
@@ -115,6 +123,12 @@ export function encryptProviderKey(plain: string, env: NodeJS.ProcessEnv = proce
 function decryptProviderKey(value: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
     if (!value) return '';
     const key = getProviderSecretKey(env);
+    if (!key) {
+        throw new AiConfigError(
+            'Set AI_SECRET_KEY (64 hex characters) before reading a provider API key.',
+            'missing_secret_key'
+        );
+    }
     try {
         return decryptSecret(value, key);
     } catch {
@@ -365,11 +379,13 @@ export async function saveProvider(
     }
 
     if (shouldBeDefault) {
+        // A swallowed failure here left the tenant with two defaults (or none
+        // after a delete); surface it so the caller can report the broken state.
         await Promise.all(
             rows
                 .filter((row) => row.id !== recordId && row.is_default === true)
                 .map((row) =>
-                    adminClient.collection(PROVIDERS_COLLECTION).update(row.id, { is_default: false }).catch(() => null)
+                    adminClient.collection(PROVIDERS_COLLECTION).update(row.id, { is_default: false })
                 )
         );
     }
@@ -393,24 +409,34 @@ export async function deleteProvider(
         );
         const promoted = remaining[0];
         if (promoted) {
-            await adminClient
-                .collection(PROVIDERS_COLLECTION)
-                .update(promoted.id, { is_default: true })
-                .catch(() => null);
+            try {
+                await adminClient.collection(PROVIDERS_COLLECTION).update(promoted.id, { is_default: true });
+            } catch (error) {
+                throw new AiConfigError(
+                    'The provider was deleted, but the next default provider could not be promoted. Open AI settings and choose a default.',
+                    'default_promotion_failed'
+                );
+            }
         }
     }
 }
 
 export async function markProviderTested(
     adminClient: PocketBase,
+    accountEmail: string,
     providerId: string,
     ok: boolean
 ): Promise<void> {
     if (providerId === 'environment') return;
+    // `ai_providers` is a shared, superuser-owned collection: updating by id
+    // alone let one tenant flip another tenant's test status (AI-18). Resolve
+    // the row inside the caller's tenant scope first.
+    const row = await getProviderRow(adminClient, accountEmail, providerId);
+    // A failed status write must reach the caller instead of silently leaving a
+    // stale "last tested" badge (AI-27).
     await adminClient
         .collection(PROVIDERS_COLLECTION)
-        .update(providerId, { last_test_ok: ok, last_tested_at: new Date().toISOString() })
-        .catch(() => null);
+        .update(row.id, { last_test_ok: ok, last_tested_at: new Date().toISOString() });
 }
 
 /** Build a throwaway provider config for "test before save" requests. */

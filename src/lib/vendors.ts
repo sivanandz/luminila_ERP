@@ -5,10 +5,15 @@
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 
-/** `&& account_email = "…"` for tenant-scoped reads under a superuser client. */
+/**
+ * `&& account_email = "…"` for tenant-scoped reads under a superuser client.
+ *
+ * Fails closed: an unresolved tenant matches nothing instead of dropping the
+ * scope and reading every store's vendors (SET-6).
+ */
 function tenantClause(): string {
     const tenant = accountScopeEmail();
-    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : ' && id = ""';
 }
 
 // ===========================================
@@ -86,7 +91,9 @@ export async function getVendor(id: string): Promise<VendorWithProducts | null> 
     try {
         const vendor = await pb.collection('vendors').getOne<Vendor>(id);
         const tenant = accountScopeEmail();
-        if (tenant && vendor.account_email && vendor.account_email !== tenant) return null;
+        // Fail closed: without a resolved tenant no vendor is readable.
+        if (!tenant) return null;
+        if (vendor.account_email && vendor.account_email !== tenant) return null;
 
         // Fetch products manually as reverse expand implies list
         const products = await getVendorsForProductByVendor(id);
@@ -115,8 +122,36 @@ export async function createVendor(vendor: Omit<Vendor, 'id' | 'created' | 'upda
     }
 }
 
+/**
+ * Fetch a vendor and refuse it unless the resolved tenant owns it. The
+ * mutators used to write by bare id under the superuser client, so a vendor id
+ * from another store could be edited or deleted (SET-7).
+ */
+async function requireOwnedVendor(id: string): Promise<Vendor> {
+    const tenant = accountScopeEmail();
+    if (!tenant) throw new Error('No tenant account resolved; vendor changes are unavailable.');
+    const vendor = await pb.collection('vendors').getOne<Vendor>(id);
+    if (vendor.account_email && vendor.account_email !== tenant) {
+        throw new Error('Vendor does not belong to this store.');
+    }
+    return vendor;
+}
+
+/** Same ownership guard for a vendor↔variant mapping row. */
+async function requireOwnedVendorProduct(id: string): Promise<void> {
+    const tenant = accountScopeEmail();
+    if (!tenant) throw new Error('No tenant account resolved; vendor changes are unavailable.');
+    const record = await pb
+        .collection('vendor_products')
+        .getOne<{ id: string; account_email?: string }>(id);
+    if (record.account_email && record.account_email !== tenant) {
+        throw new Error('Vendor product does not belong to this store.');
+    }
+}
+
 export async function updateVendor(id: string, updates: Partial<Vendor>): Promise<Vendor> {
     try {
+        await requireOwnedVendor(id);
         const record = await pb.collection('vendors').update(id, updates);
         return record as unknown as Vendor;
     } catch (error) {
@@ -127,17 +162,16 @@ export async function updateVendor(id: string, updates: Partial<Vendor>): Promis
 
 export async function deleteVendor(id: string): Promise<void> {
     try {
-        const tenant = accountScopeEmail();
-        const tenantFilter = tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+        await requireOwnedVendor(id);
         const pos = await pb.collection('purchase_orders').getList(1, 1, {
-            filter: `vendor="${sanitizeFilter(id)}"${tenantFilter}`,
+            filter: `vendor="${sanitizeFilter(id)}"${tenantClause()}`,
         });
         if (pos.totalItems > 0) {
             throw new Error('Cannot delete vendor with existing purchase orders. Archive or deactivate instead.');
         }
         // Clean up vendor product mappings
         const mappings = await pb.collection('vendor_products').getFullList({
-            filter: `vendor="${sanitizeFilter(id)}"${tenantFilter}`,
+            filter: `vendor="${sanitizeFilter(id)}"${tenantClause()}`,
         });
         for (const mapping of mappings) {
             await pb.collection('vendor_products').delete(mapping.id).catch(() => {});
@@ -181,6 +215,7 @@ export async function updateVendorProduct(
     updates: Partial<Pick<VendorProduct, 'vendor_sku' | 'vendor_price' | 'lead_time_days'>>
 ): Promise<VendorProduct> {
     try {
+        await requireOwnedVendorProduct(id);
         const record = await pb.collection('vendor_products').update(id, updates);
         return record as unknown as VendorProduct;
     } catch (error) {
@@ -191,6 +226,7 @@ export async function updateVendorProduct(
 
 export async function removeVendorProduct(id: string): Promise<void> {
     try {
+        await requireOwnedVendorProduct(id);
         await pb.collection('vendor_products').delete(id);
     } catch (error) {
         console.error('Error removing vendor product:', error);

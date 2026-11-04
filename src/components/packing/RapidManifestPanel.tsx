@@ -112,13 +112,14 @@ export function RapidManifestPanel({ queue, onQueueRefresh }: RapidManifestPanel
 
         setDispatching(true);
         try {
-            // 1. Create shipment with preset weight
+            // 1. Create shipment with preset weight (notifyCustomer: false to prevent duplicate notifications since dispatchOrderMilestoneWhatsApp handles the rich milestone)
             const shipmentRes = await createShipmentForOrder(pb, getCurrentTenantEmail(), {
                 orderId: activeOrder.id,
                 carrier,
                 awbNumber: cleanAwb,
                 trackingUrl,
                 weightGrams: selectedWeightGrams,
+                notifyCustomer: false,
             });
 
             if (!shipmentRes.success) {

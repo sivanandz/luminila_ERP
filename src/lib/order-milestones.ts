@@ -9,7 +9,7 @@
  */
 
 import { whatsappManager } from './whatsapp';
-import { pb } from './pocketbase';
+import { accountScopeEmail, pb } from './pocketbase';
 
 export type OrderMilestoneType =
     | 'quality_checked'
@@ -156,6 +156,7 @@ export async function dispatchOrderMilestoneWhatsApp(
         try {
             if (payload.orderId) {
                 await pb.collection('activity_logs').create({
+                    account_email: accountScopeEmail(),
                     action: 'whatsapp_milestone_dispatched',
                     entity_type: 'order',
                     entity_id: payload.orderId,

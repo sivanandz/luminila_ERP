@@ -5,10 +5,15 @@
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 
-/** `&& account_email = "…"` for tenant-scoped reads (POS-22). */
+/**
+ * `&& account_email = "…"` for tenant-scoped reads (POS-22).
+ *
+ * Fails closed: with no resolved tenant the clause matches nothing rather than
+ * dropping the scope and returning every store's coupons (SET-3).
+ */
 function tenantClause(): string {
     const tenant = accountScopeEmail();
-    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : ' && id = ""';
 }
 
 // ===========================================
@@ -150,14 +155,33 @@ export async function getDiscounts(activeOnly: boolean = false): Promise<Discoun
 
 export async function getDiscount(id: string): Promise<Discount | null> {
     try {
-        const d = await pb.collection('discounts').getOne<DiscountRecord>(id);
+        const d = await pb.collection('discounts').getOne<DiscountRecord & { account_email?: string }>(id);
         const tenant = accountScopeEmail();
-        const owner = (d as DiscountRecord & { account_email?: string }).account_email;
-        if (tenant && owner && owner !== tenant) return null;
+        // Fail closed: no resolved tenant means no coupon is readable.
+        if (!tenant) return null;
+        const owner = d.account_email;
+        if (owner && owner !== tenant) return null;
         return mapDiscountRecord(d);
     } catch {
         return null;
     }
+}
+
+/**
+ * Fetch a discount by id and refuse it unless the resolved tenant owns it.
+ * Every mutator used to write by bare id, so a coupon id from another store
+ * could be edited, disabled or deleted (SET-8).
+ */
+async function requireOwnedDiscount(id: string): Promise<DiscountRecord & { account_email?: string }> {
+    const tenant = accountScopeEmail();
+    if (!tenant) throw new Error('No tenant account resolved; discount changes are unavailable.');
+    const d = await pb
+        .collection('discounts')
+        .getOne<DiscountRecord & { account_email?: string }>(id);
+    if (d.account_email && d.account_email !== tenant) {
+        throw new Error('Discount does not belong to this store.');
+    }
+    return d;
 }
 
 export async function getDiscountByCode(code: string): Promise<Discount | null> {
@@ -201,6 +225,7 @@ export async function createDiscount(discount: Omit<Discount, 'id' | 'used_count
 }
 
 export async function updateDiscount(id: string, updates: Partial<Discount>): Promise<Discount> {
+    await requireOwnedDiscount(id);
     const cleanUpdates: DiscountUpdatePayload = { ...updates };
     if (cleanUpdates.code) {
         cleanUpdates.code = cleanUpdates.code.toUpperCase();
@@ -236,10 +261,12 @@ export async function updateDiscount(id: string, updates: Partial<Discount>): Pr
 }
 
 export async function deleteDiscount(id: string): Promise<void> {
+    await requireOwnedDiscount(id);
     await pb.collection('discounts').delete(id);
 }
 
 export async function toggleDiscountActive(id: string, isActive: boolean): Promise<void> {
+    await requireOwnedDiscount(id);
     await pb.collection('discounts').update(id, { is_active: isActive });
 }
 
@@ -289,8 +316,15 @@ export async function validateDiscount(
             if (usages.length >= discount.per_customer_limit) {
                 return { valid: false, error: 'You have already used this discount', discountAmount: 0 };
             }
-        } catch {
-            // Ignore error, continue validation
+        } catch (error) {
+            // Fail closed: an unreadable usage table must not turn the
+            // per-customer cap into "unlimited" (SET-10).
+            console.warn('Discount usage check failed; refusing the discount:', error);
+            return {
+                valid: false,
+                error: 'Could not verify the discount usage limit. Please try again.',
+                discountAmount: 0,
+            };
         }
     }
 
@@ -362,8 +396,10 @@ export async function recordDiscountUsage(
 ): Promise<void> {
     const discount = await pb.collection('discounts').getOne<DiscountRecord>(discountId);
     const tenant = accountScopeEmail();
+    // Fail closed: an unresolved tenant must not redeem (or stamp) a coupon.
+    if (!tenant) throw new Error('No tenant account resolved; discounts are unavailable.');
     const owner = (discount as DiscountRecord & { account_email?: string }).account_email;
-    if (tenant && owner && owner !== tenant) {
+    if (owner && owner !== tenant) {
         throw new Error('Discount does not belong to this store.');
     }
 
@@ -415,6 +451,10 @@ export async function recordDiscountUsage(
 /**
  * Return a discount use to the pool when the order it was applied to comes
  * back. Without this, a returned sale permanently burns the coupon.
+ *
+ * Each row is handled on its own: one failure must not silently burn the rest
+ * (or leave the count decremented for a row that still exists). Every failure
+ * is reported to the caller once the loop is done (SET-11).
  */
 export async function reverseDiscountUsage(options: {
     saleId?: string;
@@ -427,16 +467,68 @@ export async function reverseDiscountUsage(options: {
     if (options.invoiceId) filters.push(`invoice="${sanitizeFilter(options.invoiceId)}"`);
     if (filters.length === 0) return 0;
 
-    const usages = await pb.collection('discount_usage').getFullList({
+    const usages = await pb.collection('discount_usage').getFullList<{
+        id: string;
+        discount: string;
+        account_email?: string;
+        order?: string;
+        customer?: string;
+        sale?: string;
+        invoice?: string;
+        discount_amount?: number;
+        amount_saved?: number;
+        order_value?: number;
+    }>({
         filter: `(${filters.join(' || ')})${tenantClause()}`,
     });
 
+    const tenant = accountScopeEmail();
+    const failures: string[] = [];
     let reversed = 0;
+
     for (const usage of usages) {
-        await pb.collection('discount_usage').delete(usage.id);
-        await pb.collection('discounts').update(usage.discount, { 'used_count+': -1 }).catch(() => {});
-        reversed += 1;
+        const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+        try {
+            await pb.collection('discount_usage').delete(usage.id);
+        } catch (error) {
+            failures.push(`usage ${usage.id} could not be removed: ${message(error)}`);
+            continue;
+        }
+        try {
+            await pb.collection('discounts').update(usage.discount, { 'used_count+': -1 });
+            reversed += 1;
+        } catch (error) {
+            failures.push(
+                `usage ${usage.id} removed but discount ${usage.discount} used_count was not decremented: ${message(error)}`
+            );
+            // Put the usage row back so the trail still explains the burned
+            // use and a later retry can finish the reversal.
+            try {
+                const restored: Record<string, unknown> = {
+                    discount: usage.discount,
+                    account_email: usage.account_email || tenant,
+                };
+                if (usage.order) restored.order = usage.order;
+                if (usage.customer) restored.customer = usage.customer;
+                if (usage.sale) restored.sale = usage.sale;
+                if (usage.invoice) restored.invoice = usage.invoice;
+                if (typeof usage.discount_amount === 'number') restored.discount_amount = usage.discount_amount;
+                if (typeof usage.amount_saved === 'number') restored.amount_saved = usage.amount_saved;
+                if (typeof usage.order_value === 'number') restored.order_value = usage.order_value;
+                await pb.collection('discount_usage').create(restored);
+            } catch (restoreError) {
+                failures.push(
+                    `usage ${usage.id} could not be re-created after the failed decrement: ${message(restoreError)}`
+                );
+            }
+        }
     }
+
+    if (failures.length > 0) {
+        console.error('[discounts] discount usage reversal incomplete:', failures);
+        throw new Error(`Discount usage reversal incomplete: ${failures.join('; ')}`);
+    }
+
     return reversed;
 }
 

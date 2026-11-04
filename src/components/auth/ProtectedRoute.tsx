@@ -48,6 +48,16 @@ export function ProtectedRoute({
         );
     }
 
+    // CMP-14: a redirect is already pending in the effect above — show a neutral
+    // placeholder instead of flashing the forbidden-content UI first.
+    if (!authorized && redirectTo) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <div className="text-muted-foreground">Redirecting...</div>
+            </div>
+        );
+    }
+
     if (!authorized) {
         if (fallback) {
             return <>{fallback}</>;

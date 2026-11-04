@@ -135,17 +135,25 @@ function CreditNoteDetailContent() {
     const loadCreditNote = async () => {
         if (!id) return;
         setLoading(true);
-        const data = await getCreditNote(id);
-        setCreditNote(data);
-        if (data) {
-            setRouteToQuarantine(data.return_reason === "defective" || data.return_reason === "quality_issue");
-            setQcGrade(
-                data.return_reason === "defective" || data.return_reason === "quality_issue"
-                    ? "karigar_repair"
-                    : "restock_grade_a"
-            );
+        // PG-11: an unhandled rejection left loading=true forever and the page
+        // showed stale/no data with no way to recover.
+        try {
+            const data = await getCreditNote(id);
+            setCreditNote(data);
+            if (data) {
+                setRouteToQuarantine(data.return_reason === "defective" || data.return_reason === "quality_issue");
+                setQcGrade(
+                    data.return_reason === "defective" || data.return_reason === "quality_issue"
+                        ? "karigar_repair"
+                        : "restock_grade_a"
+                );
+            }
+        } catch (err) {
+            console.error("Error loading credit note:", err);
+            toast.error(err instanceof Error && err.message ? err.message : "Failed to load credit note");
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
     };
 
     const loadVariants = async () => {
@@ -206,16 +214,21 @@ function CreditNoteDetailContent() {
         const v = availableVariants.find((x) => x.id === selectedVariantId);
         if (!v) return;
 
-        if (selectedVariantQty > v.stock) {
-            toast.error(`Only ${v.stock} units available in stock`);
+        const existingIdx = exchangeItems.findIndex((it) => it.variant_id === v.id);
+        // PG-12: the stock check must include units already added to the
+        // replacement list — incrementing an existing line re-checked nothing.
+        const existingQty = existingIdx >= 0 ? exchangeItems[existingIdx].quantity : 0;
+        if (existingQty + selectedVariantQty > v.stock) {
+            toast.error(
+                `Only ${v.stock} units available in stock${existingQty > 0 ? ` (${existingQty} already added)` : ""}`
+            );
             return;
         }
 
-        const existingIdx = exchangeItems.findIndex((it) => it.variant_id === v.id);
         if (existingIdx >= 0) {
-            const updated = [...exchangeItems];
-            updated[existingIdx].quantity += selectedVariantQty;
-            setExchangeItems(updated);
+            setExchangeItems((prev) =>
+                prev.map((it, i) => (i === existingIdx ? { ...it, quantity: it.quantity + selectedVariantQty } : it))
+            );
         } else {
             setExchangeItems((prev) => [
                 ...prev,

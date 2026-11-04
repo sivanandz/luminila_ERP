@@ -334,6 +334,10 @@ export default function CreatePurchaseOrderPage() {
     // Calculate totals
     const totals = calculatePOTotals(items as PurchaseOrderItem[], shippingCost, discountAmount);
 
+    // PG-9: a discount above the taxable value made the PO total negative.
+    const maxDiscount = Math.max(0, poType === 'blanket' ? budgetAmount : totals.subtotal);
+    const clampDiscount = (raw: number) => Math.min(Math.max(0, Number.isFinite(raw) ? raw : 0), maxDiscount);
+
     // Submit PO
     const handleSubmit = async (status: POStatus = 'draft') => {
         if (!vendorId) {
@@ -357,10 +361,14 @@ export default function CreatePurchaseOrderPage() {
 
         try {
             const finalPoNumber = poReference.trim() || undefined;
+            // PG-9: clamp again at submit — a restored draft can bypass the
+            // input handler and would otherwise persist a negative total.
+            const safeDiscount = clampDiscount(discountAmount);
+            const safeTotals = calculatePOTotals(items as PurchaseOrderItem[], shippingCost, safeDiscount);
 
             let poPayload: any;
             if (poType === 'blanket') {
-                const total = budgetAmount + gstPaidOverhead + shippingOverhead - discountAmount;
+                const total = budgetAmount + gstPaidOverhead + shippingOverhead - safeDiscount;
                 poPayload = {
                     po_number: finalPoNumber,
                     po_type: 'blanket',
@@ -374,7 +382,7 @@ export default function CreatePurchaseOrderPage() {
                     gst_paid_overhead: gstPaidOverhead,
                     shipping_cost: shippingOverhead,
                     shipping_overhead: shippingOverhead,
-                    discount_amount: discountAmount,
+                    discount_amount: safeDiscount,
                     total,
                     absorb_overhead: absorbOverhead,
                     is_unregistered_seller: isUnregisteredSeller,
@@ -390,11 +398,11 @@ export default function CreatePurchaseOrderPage() {
                     status,
                     order_date: orderDate,
                     expected_date: expectedDate || undefined,
-                    subtotal: totals.subtotal,
-                    gst_amount: totals.gstAmount,
+                    subtotal: safeTotals.subtotal,
+                    gst_amount: safeTotals.gstAmount,
                     shipping_cost: shippingCost,
-                    discount_amount: discountAmount,
-                    total: totals.total,
+                    discount_amount: safeDiscount,
+                    total: safeTotals.total,
                     shipping_address: shippingAddress || undefined,
                     notes: notes || undefined,
                     items: items as PurchaseOrderItem[],
@@ -935,7 +943,7 @@ export default function CreatePurchaseOrderPage() {
                                                             type="number"
                                                             min="1"
                                                             value={item.quantity_ordered}
-                                                            onChange={(e) => updateItem(index, "quantity_ordered", parseInt(e.target.value) || 1)}
+                                                            onChange={(e) => updateItem(index, "quantity_ordered", Math.max(1, parseInt(e.target.value) || 1))}
                                                             className="h-8 font-mono text-center"
                                                         />
                                                     </TableCell>
@@ -1007,7 +1015,7 @@ export default function CreatePurchaseOrderPage() {
                                                 type="number"
                                                 min="0"
                                                 value={discountAmount}
-                                                onChange={(e) => setDiscountAmount(parseFloat(e.target.value) || 0)}
+                                                onChange={(e) => setDiscountAmount(clampDiscount(parseFloat(e.target.value) || 0))}
                                                 className="w-24 h-7 text-right"
                                             />
                                         </div>

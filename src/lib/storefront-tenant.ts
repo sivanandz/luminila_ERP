@@ -1,6 +1,5 @@
 import type PocketBase from "pocketbase";
 import { createTenantClient } from "@/lib/pocketbase";
-import { readTenantRegistry } from "@/lib/tenant-db-manager";
 import { SINGLE_ACCOUNT_EMAIL, isSingleAccountMode } from "@/lib/deployment-mode";
 import { DEFAULT_STOREFRONT_TENANT_EMAIL } from "@/lib/storefront";
 
@@ -19,8 +18,10 @@ export interface StorefrontTenant {
  * is returned before any lookup: a stale registry entry or a binding that names
  * another email must not switch the deployment to another database.
  *
- * In multi mode the content record's adminBinding is authoritative; the
- * registry/primary fallbacks only apply before the CMS has ever bound a tenant.
+ * In multi mode the content record's adminBinding is authoritative; without a
+ * hint the shared default storefront tenant is used. The registry's
+ * `activeTenantEmail` is a process-global "last admin who signed in" value and
+ * must never select the tenant for an unauthenticated public route (SYN-5).
  */
 export async function resolveStorefrontTenant(
     hintEmail?: string
@@ -32,16 +33,7 @@ export async function resolveStorefrontTenant(
         };
     }
 
-    let email = (hintEmail || "").trim().toLowerCase();
-
-    if (!email) {
-        try {
-            email = (readTenantRegistry().activeTenantEmail || "").trim().toLowerCase();
-        } catch {
-            email = "";
-        }
-    }
-    if (!email) email = DEFAULT_STOREFRONT_TENANT_EMAIL;
+    let email = (hintEmail || "").trim().toLowerCase() || DEFAULT_STOREFRONT_TENANT_EMAIL;
 
     let client = await createTenantClient(email);
 
@@ -71,7 +63,7 @@ export async function resolveStorefrontTenant(
             client = await createTenantClient(email);
         }
     } catch {
-        /* keep the registry/primary tenant */
+        /* keep the hint/default tenant */
     }
 
     return { email, client };

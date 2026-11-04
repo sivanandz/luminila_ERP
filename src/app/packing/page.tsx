@@ -164,10 +164,17 @@ function PackingStation() {
 
     const refreshQueue = useCallback(async () => {
         setQueueLoading(true);
-        const next = await loadPackingQueue();
-        setQueue(next);
-        setQueueLoading(false);
-        return next;
+        try {
+            const next = await loadPackingQueue();
+            setQueue(next);
+            return next;
+        } catch (error) {
+            console.error("Failed to load packing queue:", error);
+            toast.error("Could not load the pack queue.");
+            return null;
+        } finally {
+            setQueueLoading(false);
+        }
     }, []);
 
     useEffect(() => {
@@ -238,14 +245,22 @@ function PackingStation() {
             return;
         }
         void (async () => {
-            const details = await getOrderDetails(orderId);
-            if (!details) return;
-            await openOrder({
-                id: details.id,
-                order_number: details.order_number || details.id,
-                customer_name: details.customer_name || "Customer",
-                customer_phone: details.customer_phone || undefined,
-            });
+            try {
+                const details = await getOrderDetails(orderId);
+                if (!details) {
+                    toast.error("Could not load that order for packing.");
+                    return;
+                }
+                await openOrder({
+                    id: details.id,
+                    order_number: details.order_number || details.id,
+                    customer_name: details.customer_name || "Customer",
+                    customer_phone: details.customer_phone || undefined,
+                });
+            } catch (error) {
+                console.error("Failed to open deep-linked order:", error);
+                toast.error("Could not load that order for packing.");
+            }
         })();
     }, [searchParams, queueLoading, queue, activeOrder, openingOrder, openOrder]);
 

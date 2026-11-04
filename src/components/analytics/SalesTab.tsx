@@ -38,7 +38,7 @@ function inrShort(v: number): string {
 export function SalesTab() {
     const range = useAnalyticsRange((s) => s.range);
     const [data, setData] = useState<SalesAnalytics | null>(null);
-    const [margin, setMargin] = useState<{ current: number; previous: number; deltaPct: number } | null>(null);
+    const [margin, setMargin] = useState<{ current: number; previous: number; deltaPct: number | null } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 

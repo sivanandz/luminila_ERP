@@ -17,7 +17,7 @@
  * - Rapid 2-scan manifest dispatch support.
  */
 
-import { pb, getCurrentTenantEmail } from './pocketbase';
+import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
 import { logActivity } from './activity';
 import { resolvePOSBarcodeVariant, type ProductVariant, getProductDisplayImage } from './products';
 import { parseSKUFromBarcode } from './barcode-generator';
@@ -479,9 +479,15 @@ export function buildWavePickList(
 // IO LAYER
 // ===========================================
 
+/**
+ * Tenant clause for every packing read. Fail closed: an unresolved tenant used
+ * to yield '' and the query then scanned every store's sessions, including
+ * customer name and phone (SET-2).
+ */
 function tenantFilter(): string {
     const email = getCurrentTenantEmail();
-    return email && email !== 'default' ? `account_email = "${email.replace(/"/g, '\\"')}"` : '';
+    if (!email || email === 'default') return 'id = ""';
+    return `account_email = "${sanitizeFilter(email)}"`;
 }
 
 function toSession(record: Record<string, unknown>): PackingSession {
@@ -511,7 +517,7 @@ export async function fetchPackingSessions(): Promise<PackingSession[]> {
     try {
         const filter = tenantFilter();
         const records = await pb.collection('order_packing').getFullList({
-            filter: filter || undefined,
+            filter,
             sort: '-updated',
         });
         return records.map((record) => toSession(record as unknown as Record<string, unknown>));
@@ -559,12 +565,17 @@ export async function getOrCreateSession(
     packedBy?: string
 ): Promise<PackingSession> {
     const accountEmail = getCurrentTenantEmail() || '';
+    // The lookup below matches nothing without a tenant, so creating here would
+    // mint an orphan session that no store owns.
+    if (!accountEmail || accountEmail === 'default') {
+        throw new Error('No tenant account resolved; packing sessions are unavailable.');
+    }
     const filterParts = [
-        `order_id = "${order.id.replace(/"/g, '\\"')}"`,
+        `order_id = "${sanitizeFilter(order.id)}"`,
         `status = "in_progress"`,
+        // Always present; the unresolved-tenant case matches nothing.
+        tenantFilter(),
     ];
-    const tenant = tenantFilter();
-    if (tenant) filterParts.push(tenant);
 
     try {
         const existing = await pb.collection('order_packing').getList(1, 1, {
@@ -617,9 +628,7 @@ export async function saveSessionProgress(session: PackingSession): Promise<void
  * Most recent session for an order regardless of status.
  */
 export async function getLatestSessionForOrder(orderId: string): Promise<PackingSession | null> {
-    const filterParts = [`order_id = "${orderId.replace(/"/g, '\\"')}"`];
-    const tenant = tenantFilter();
-    if (tenant) filterParts.push(tenant);
+    const filterParts = [`order_id = "${sanitizeFilter(orderId)}"`, tenantFilter()];
     try {
         const list = await pb.collection('order_packing').getList(1, 1, {
             filter: filterParts.join(' && '),
@@ -679,7 +688,8 @@ export async function loadPackingQueue(): Promise<PackingQueue> {
         pb
             .collection('sales_order_items')
             .getFullList({
-                filter: tenant || undefined,
+                // Tenant-scoped: an unscoped read counted every store's lines (SET-12).
+                filter: tenant,
                 fields: 'order,quantity',
             })
             .catch(() => [] as Array<Record<string, unknown>>),
@@ -755,6 +765,15 @@ export async function handleMidPackDamage(
     const hasSpare = availableStock >= 1;
     const now = new Date().toISOString();
 
+    // If the packer had already scanned this unit before discovering the defect,
+    // decrement the scanned count so the replacement unit can be scanned cleanly
+    // or the shortage is accurately excluded from packed counts.
+    let updatedPackedItems = session.packed_items;
+    const existingEntry = session.packed_items.find((entry) => entry.item_id === line.item_id);
+    if (existingEntry && existingEntry.packed_qty > 0) {
+        updatedPackedItems = decrementPackedItem(session.packed_items, line);
+    }
+
     if (hasSpare && line.variant_id) {
         // Quarantine 1 shelf spare
         await markStockDiscrepancy({
@@ -781,7 +800,7 @@ export async function handleMidPackDamage(
         };
 
         const updatedShortages = [...(session.shortage_items || []), newShortage];
-        const updatedSession = { ...session, shortage_items: updatedShortages };
+        const updatedSession = { ...session, packed_items: updatedPackedItems, shortage_items: updatedShortages };
         await saveSessionProgress(updatedSession);
 
         return {
@@ -819,7 +838,7 @@ export async function handleMidPackDamage(
     };
 
     const updatedShortages = [...(session.shortage_items || []), newShortage];
-    const updatedSession = { ...session, shortage_items: updatedShortages };
+    const updatedSession = { ...session, packed_items: updatedPackedItems, shortage_items: updatedShortages };
     await saveSessionProgress(updatedSession);
 
     return {
@@ -838,9 +857,9 @@ export async function findOpenOrdersForVariant(
 ): Promise<QueueOrder[]> {
     if (!variantId) return [];
     try {
-        const filterParts = [`variant="${variantId.replace(/"/g, '\\"')}"`];
-        const tenant = tenantFilter();
-        if (tenant) filterParts.push(tenant);
+        const filterParts = [`variant="${sanitizeFilter(variantId)}"`];
+        // Always tenant-scoped; matches nothing when no tenant is resolved (SET-12).
+        filterParts.push(tenantFilter());
         const rows = await pb.collection('sales_order_items').getFullList({
             filter: filterParts.join(' && '),
             fields: 'order',

@@ -158,6 +158,18 @@ export async function logActivity(
     ensureAuth();
     const model = pb.authStore.model as { id?: string; name?: string } | null;
     const tenant = accountScopeEmail();
+    if (!tenant) {
+        // Fail closed: an activity row stamped with an empty account_email is an
+        // orphan no tenant can see or trust (SET-14). Keep a local diagnostic
+        // instead of writing it.
+        console.warn(
+            '[activity] audit entry skipped (no tenant account resolved):',
+            action,
+            entityType,
+            description
+        );
+        return;
+    }
     const payload = {
         action,
         entity_type: entityType,
@@ -178,8 +190,10 @@ export async function logActivity(
         console.warn('Activity log queued for replay:', error);
         try {
             OfflineQueue.enqueue('activity_logs', 'create', payload);
-        } catch {
-            /* storage unavailable: the entry is lost, never silently swallowed */
+        } catch (queueError) {
+            // Storage unavailable: the entry is lost, and saying so is the only
+            // honest option left.
+            console.warn('[activity] offline replay queue unavailable; audit entry lost:', queueError);
         }
     }
 }

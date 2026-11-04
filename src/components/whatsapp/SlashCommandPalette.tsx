@@ -12,6 +12,8 @@ import {
     Package,
     Command,
 } from "lucide-react";
+import { getStoreSettings } from "@/lib/settings";
+import { useAuth } from "@/contexts/AuthContext";
 
 export interface SlashCommand {
     id: string;
@@ -40,6 +42,49 @@ export function SlashCommandPalette({
     onTriggerAction,
 }: SlashCommandPaletteProps) {
     const [selectedIndex, setSelectedIndex] = useState(0);
+    const { user } = useAuth();
+    // CMP-8: bank/UPI details come from store settings, never from the bundle.
+    const [bank, setBank] = useState<{
+        storeName: string;
+        bankName: string;
+        accountNumber: string;
+        ifsc: string;
+    } | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        getStoreSettings(user?.id, user?.name, user?.email)
+            .then((settings) => {
+                if (cancelled) return;
+                setBank({
+                    storeName: settings.storeName,
+                    bankName: settings.bankName,
+                    accountNumber: settings.accountNumber,
+                    ifsc: settings.ifsc,
+                });
+            })
+            .catch((error) => {
+                console.error("Failed to load bank details for /bank:", error);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [user?.id, user?.name, user?.email]);
+
+    const bankSnippet = React.useMemo(() => {
+        const rows = [
+            bank?.bankName ? `• *Bank:* ${bank.bankName}` : null,
+            bank?.storeName ? `• *Account Name:* ${bank.storeName}` : null,
+            bank?.accountNumber ? `• *Account No:* ${bank.accountNumber}` : null,
+            bank?.ifsc ? `• *IFSC Code:* ${bank.ifsc}` : null,
+        ].filter(Boolean);
+
+        if (rows.length === 0) {
+            return `🏦 *Bank Details*\n\n_Bank name, account number and IFSC are not configured yet. Add them in Settings → Store before sharing payment details._`;
+        }
+
+        return `🏦 *${bank?.storeName || 'Official'} — Bank Details*\n\n${rows.join('\n')}\n\n_Kindly share a screenshot or UTR number once payment is processed for instant reconciliation._ ✨`;
+    }, [bank]);
 
     const commands: SlashCommand[] = [
         {
@@ -55,18 +100,10 @@ export function SlashCommandPalette({
             id: "bank",
             command: "/bank",
             label: "Showroom Bank & UPI Details",
-            description: "Inserts Current Account, IFSC, and UPI VPA",
+            description: "Inserts the bank details configured in Settings",
             category: "template",
             icon: <Building2 size={15} className="text-emerald-500" />,
-            snippet: `🏦 *Luminila Jewels — Official Bank Details*
-
-• *Bank:* HDFC Bank
-• *Account Name:* Luminila Jewels Private Limited
-• *Account No:* 50200088991122
-• *IFSC Code:* HDFC0001234
-• *UPI ID:* luminila@hdfcbank
-
-_Kindly share a screenshot or UTR number once payment is processed for instant reconciliation._ ✨`,
+            snippet: bankSnippet,
         },
         {
             id: "care",

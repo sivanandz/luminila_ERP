@@ -234,7 +234,7 @@ export default function CreateInvoicePage() {
         const effectiveGstRate = isGstRegistered
             ? (productFields.gst_rate ?? GST_RATES.JEWELRY)
             : 0;
-        const unitPrice = (variant.product.base_price || 0) + (variant.price_adjustment || 0);
+        const unitPrice = Math.max(0, (variant.product.base_price || 0) + (variant.price_adjustment || 0));
         const newItem: Omit<InvoiceItem, "id" | "invoice_id"> = {
             sr_no: items.length + 1,
             variant_id: variant.id,
@@ -366,8 +366,11 @@ export default function CreateInvoicePage() {
 
     // Update item
     const updateItem = (index: number, field: string, value: string | number) => {
-        const newItems = [...items];
-        const item = newItems[index];
+        const current = items[index];
+        if (!current) return;
+        // PG-15: build a new line object — mutating a shallow copy also mutated
+        // the previous state object and broke memo/stale-render assumptions.
+        const item = { ...current };
 
         if (field === "quantity") {
             const requestedQty = parseInt(String(value)) || 1;
@@ -379,8 +382,14 @@ export default function CreateInvoicePage() {
             }
         } else if (field === "description" || field === "hsn_code") {
             item[field] = String(value);
-        } else if (field === "unit_price" || field === "discount_percent") {
-            item[field] = Number(value);
+        } else if (field === "unit_price") {
+            // PG-6: a negative rate flips the taxable value and GST signs.
+            const price = Number(value);
+            item.unit_price = Number.isFinite(price) ? Math.max(0, price) : 0;
+        } else if (field === "discount_percent") {
+            // PG-6: >100% drove the taxable amount below zero.
+            const pct = Number(value);
+            item.discount_percent = Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) : 0;
         }
 
         // Recalculate line totals
@@ -389,6 +398,8 @@ export default function CreateInvoicePage() {
         item.taxable_amount = lineTotal - item.discount_amount;
         item.total_amount = item.taxable_amount;
 
+        const newItems = [...items];
+        newItems[index] = item;
         setItems(newItems);
         recalculateTotals(newItems);
     };
@@ -418,6 +429,21 @@ export default function CreateInvoicePage() {
         const oversoldItem = items.find(item => item.stock_level !== undefined && item.quantity > item.stock_level);
         if (oversoldItem) {
             alert(`Cannot create invoice: "${oversoldItem.description}" exceeds available stock (${oversoldItem.quantity} requested, ${oversoldItem.stock_level} available).`);
+            return;
+        }
+
+        // PG-6: refuse a line whose rate/discount would flip the taxable value
+        // or GST (state is clamped on edit, but drafts/restores bypass that).
+        const invalidLine = items.find(
+            (item) =>
+                !Number.isFinite(item.unit_price) ||
+                item.unit_price < 0 ||
+                !Number.isFinite(item.discount_percent) ||
+                item.discount_percent < 0 ||
+                item.discount_percent > 100
+        );
+        if (invalidLine) {
+            alert(`"${invalidLine.description}" has an invalid rate or discount. Rates must be 0 or more and discounts between 0% and 100%.`);
             return;
         }
 

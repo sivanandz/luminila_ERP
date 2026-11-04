@@ -42,6 +42,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { ProtectedRoute, Can } from "@/components/auth/ProtectedRoute";
 import { usePermissions } from "@/hooks/usePermissions";
+import { toast } from "sonner";
 
 import {
     getUsers,
@@ -92,15 +93,21 @@ function UsersContent() {
 
     const loadData = async () => {
         setLoading(true);
-        const [usersData, rolesData, statsData] = await Promise.all([
-            getUsers(),
-            getRoles(),
-            getRBACStats(),
-        ]);
-        setUsers(usersData);
-        setRoles(rolesData);
-        setStats(statsData);
-        setLoading(false);
+        try {
+            const [usersData, rolesData, statsData] = await Promise.all([
+                getUsers(),
+                getRoles(),
+                getRBACStats(),
+            ]);
+            setUsers(usersData);
+            setRoles(rolesData);
+            setStats(statsData);
+        } catch (error) {
+            console.error("Failed to load users:", error);
+            toast.error("Could not load users and roles.");
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => {
@@ -174,31 +181,38 @@ function UsersContent() {
         }
 
         setCreating(true);
+        let user: Awaited<ReturnType<typeof createAppUser>>;
         try {
-            // 1. Create User
-            const user = await createAppUser({
+            user = await createAppUser({
                 email: newUser.email,
                 password: newUser.password,
                 name: newUser.name,
             });
+        } catch (error) {
+            console.error("Error creating user:", error);
+            alert("Failed to create user: " + (error instanceof Error ? error.message : String(error)));
+            setCreating(false);
+            return;
+        }
 
-            // 2. Assign Role (default Viewer is assigned by AuthContext on signup, but here we are admin creating)
-            // We need to explicitly set the selected role.
-            // First find role ID
+        // PG-27: the account exists now — a role-assignment failure must be
+        // reported as such, not as a failed user creation.
+        try {
             const roleObj = roles.find(r => r.name === newUser.role);
             if (roleObj) {
                 await setUserRoles(user.id, [roleObj.id]);
             }
-
-            setShowAddUser(false);
-            setNewUser({ name: "", email: "", password: "", role: "Viewer" });
-            loadData();
         } catch (error) {
-            console.error("Error creating user:", error);
-            alert("Failed to create user: " + (error instanceof Error ? error.message : String(error)));
-        } finally {
-            setCreating(false);
+            console.error("Error assigning role to created user:", error);
+            toast.error(
+                "User created, but role assignment failed. Set the role from the user list."
+            );
         }
+
+        setShowAddUser(false);
+        setNewUser({ name: "", email: "", password: "", role: "Viewer" });
+        loadData();
+        setCreating(false);
     };
 
     return (

@@ -29,7 +29,8 @@ export interface RangedWindows {
     lengthDays: number;
 }
 
-const DAY_MS = 86_400_000;
+/** Hard cap on a window's day keys; longer spans throw instead of truncating. */
+const MAX_WINDOW_DAYS = 400;
 
 export function dayKey(d: Date): string {
     const y = d.getFullYear();
@@ -61,14 +62,19 @@ export function pbBound(iso: string): string {
 function buildWindow(start: Date, endExclusive: Date): DateWindow {
     const days: string[] = [];
     const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-    // Guard: cap day arrays at 400 entries (12m preset = 365) so a caller bug
-    // can't build an unbounded array. End is EXCLUSIVE: a preset of N days
-    // yields exactly N day keys (…through today), never tomorrow's.
-    let guard = 0;
-    while (cursor.getTime() < endExclusive.getTime() && guard < 400) {
+    // Calendar-day stepping (setDate), not fixed 86_400_000 ms: across a DST
+    // change the millisecond step lands at 23:00/01:00 and duplicates or skips
+    // a dayKey (AN2-6). End is EXCLUSIVE: a preset of N days yields exactly N
+    // day keys (…through today), never tomorrow's. Over-cap spans throw rather
+    // than silently truncating days[] while the ISO bounds stay full (AN2-16).
+    while (cursor.getTime() < endExclusive.getTime()) {
+        if (days.length >= MAX_WINDOW_DAYS) {
+            throw new Error(
+                `Analytics window exceeds ${MAX_WINDOW_DAYS} days (${dayKey(start)} → ${dayKey(endExclusive)}); narrow the range.`
+            );
+        }
         days.push(dayKey(cursor));
-        cursor.setTime(cursor.getTime() + DAY_MS);
-        guard += 1;
+        cursor.setDate(cursor.getDate() + 1);
     }
     return { startISO: start.toISOString(), endISO: endExclusive.toISOString(), days };
 }
@@ -98,11 +104,11 @@ export function resolveRange(range: AnalyticsRange, now: Date = new Date()): Ran
     switch (range.preset) {
         case '7d':
             end = endOfToday(now);
-            start = new Date(end.getTime() - 7 * DAY_MS);
+            start = addCalendarDays(end, -7);
             break;
         case '90d':
             end = endOfToday(now);
-            start = new Date(end.getTime() - 90 * DAY_MS);
+            start = addCalendarDays(end, -90);
             break;
         case '12m':
             end = endOfToday(now);
@@ -112,8 +118,9 @@ export function resolveRange(range: AnalyticsRange, now: Date = new Date()): Ran
             // Normalise the order on the raw strings (ISO sorts lexicographically),
             // THEN resolve to local day bounds — swapping resolved instants would
             // lose the end-date extension.
-            let startISO = range.start || new Date(endOfToday(now).getTime() - 30 * DAY_MS).toISOString();
-            let endISO = range.end || endOfToday(now).toISOString();
+            const defaultEnd = endOfToday(now);
+            let startISO = range.start || addCalendarDays(defaultEnd, -30).toISOString();
+            let endISO = range.end || defaultEnd.toISOString();
             if (startISO > endISO) {
                 const tmp = startISO;
                 startISO = endISO;
@@ -126,24 +133,32 @@ export function resolveRange(range: AnalyticsRange, now: Date = new Date()): Ran
         case '30d':
         default:
             end = endOfToday(now);
-            start = new Date(end.getTime() - 30 * DAY_MS);
+            start = addCalendarDays(end, -30);
             break;
     }
 
-    const lengthDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / DAY_MS));
-    const prevEnd = new Date(start.getTime());
-    const prevStart = new Date(start.getTime() - lengthDays * DAY_MS);
+    const current = buildWindow(start, end);
+    // Length comes from the day-key axis, not a millisecond division: a DST
+    // week is 6.96 days of milliseconds but still 7 calendar days.
+    const lengthDays = Math.max(1, current.days.length);
+    const prevEnd = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const prevStart = new Date(start.getFullYear(), start.getMonth(), start.getDate() - lengthDays);
 
     return {
-        current: buildWindow(start, end),
+        current,
         previous: buildWindow(prevStart, prevEnd),
         lengthDays,
     };
 }
 
+/** Local-midnight date `days` calendar days from `date` (DST-safe). */
+function addCalendarDays(date: Date, days: number): Date {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+/** Local midnight of tomorrow — the exclusive end of a "through today" window. */
 function endOfToday(now: Date): Date {
-    const e = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-    return e;
+    return addCalendarDays(now, 1);
 }
 
 /** True when an ISO instant falls inside [startISO, endISO). */
@@ -153,10 +168,16 @@ export function inWindow(iso: string | undefined | null, w: DateWindow): boolean
     return t >= new Date(w.startISO).getTime() && t < new Date(w.endISO).getTime();
 }
 
-/** % change with a safe zero-previous guard (0 rather than Infinity). */
-export function deltaPct(current: number, previous: number): number {
-    if (!Number.isFinite(current) || !Number.isFinite(previous)) return 0;
-    if (previous === 0) return current === 0 ? 0 : 100;
+/**
+ * % change with a safe zero-previous guard.
+ *
+ * A zero previous has no meaningful percentage change (a 0 → ₹5,000 jump is not
+ * "100%"), so it returns the `null` sentinel instead of inventing a number
+ * (AN2-14). Callers must render null as "no comparison".
+ */
+export function deltaPct(current: number, previous: number): number | null {
+    if (!Number.isFinite(current) || !Number.isFinite(previous)) return null;
+    if (previous === 0) return current === 0 ? 0 : null;
     return Math.round(((current - previous) / Math.abs(previous)) * 1000) / 10;
 }
 
@@ -164,7 +185,8 @@ export function deltaPct(current: number, previous: number): number {
 export interface ComparedMetric {
     current: number;
     previous: number;
-    deltaPct: number;
+    /** null = not comparable (zero previous window or non-finite input) */
+    deltaPct: number | null;
 }
 
 export function compare(current: number, previous: number): ComparedMetric {

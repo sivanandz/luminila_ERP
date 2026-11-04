@@ -95,7 +95,7 @@ export async function getCustomers(filters?: {
         if (scope) filterParts.push(scope);
 
         if (filters?.type) {
-            filterParts.push(`customer_type="${filters.type}"`);
+            filterParts.push(`customer_type="${sanitizeFilter(filters.type)}"`);
         }
 
         if (filters?.hasPhone) {
@@ -132,13 +132,33 @@ export async function getCustomer(id: string): Promise<Customer | null> {
     }
 }
 
-export async function createCustomer(customer: Omit<Customer, 'id' | 'loyalty_points' | 'total_spent' | 'total_orders' | 'created' | 'updated'>): Promise<Customer> {
+/** Existing tenant customer whose phone matches, if any (CUS-8 dedupe). */
+async function findCustomerByPhoneDigits(phone: string): Promise<Customer | null> {
+    const digits = String(phone || '').replace(/\D/g, '').slice(-10);
+    if (digits.length < 10) return null;
     try {
-        // Store one canonical phone shape so lookups by 10-digit suffix and
-        // exact matches agree (CRM-06).
-        const rawPhone = String((customer as { phone?: string }).phone || '');
-        const digits = rawPhone.replace(/\D/g, '');
-        const phone = digits.length >= 10 ? `+91${digits.slice(-10)}` : rawPhone;
+        return await pb.collection('customers').getFirstListItem<Customer>(
+            `phone~"${sanitizeFilter(digits)}"${tenantClause()}`,
+            { sort: '-created' }
+        );
+    } catch {
+        return null;
+    }
+}
+
+export async function createCustomer(customer: Omit<Customer, 'id' | 'loyalty_points' | 'total_spent' | 'total_orders' | 'created' | 'updated'>): Promise<Customer> {
+    // Store one canonical phone shape so lookups by 10-digit suffix and
+    // exact matches agree (CRM-06).
+    const rawPhone = String((customer as { phone?: string }).phone || '');
+    const digits = rawPhone.replace(/\D/g, '');
+    const phone = digits.length >= 10 ? `+91${digits.slice(-10)}` : rawPhone;
+
+    // Re-check immediately before create: there is no unique index, so the
+    // read-then-create window allowed duplicate customers per phone (CUS-8).
+    const existing = await findCustomerByPhoneDigits(phone);
+    if (existing) return existing;
+
+    try {
         const record = await pb.collection('customers').create({
             ...customer,
             phone,
@@ -146,8 +166,26 @@ export async function createCustomer(customer: Omit<Customer, 'id' | 'loyalty_po
         });
         return record as unknown as Customer;
     } catch (error) {
+        // A concurrent create may have won the race — return that row instead
+        // of surfacing a failure (CUS-8).
+        const raced = await findCustomerByPhoneDigits(phone);
+        if (raced) return raced;
         console.error('Error creating customer:', error);
         throw error;
+    }
+}
+
+/**
+ * Tenancy guard for id-addressed customer writes (CUS-6). Mirrors getCustomer:
+ * a record owned by another account is treated as not found.
+ */
+async function assertCustomerOwnership(id: string): Promise<void> {
+    const record = await pb.collection('customers').getOne<Customer>(id, {
+        fields: 'id,account_email',
+    });
+    const tenant = accountScopeEmail();
+    if (tenant && record.account_email && record.account_email !== tenant) {
+        throw new Error('Customer not found');
     }
 }
 
@@ -166,6 +204,7 @@ export async function updateCustomer(id: string, updates: Partial<Customer>): Pr
     } = updates;
 
     try {
+        await assertCustomerOwnership(id);
         const record = await pb.collection('customers').update(id, updateData);
         return record as unknown as Customer;
     } catch (error) {
@@ -175,6 +214,7 @@ export async function updateCustomer(id: string, updates: Partial<Customer>): Pr
 }
 
 export async function deleteCustomer(id: string): Promise<void> {
+    await assertCustomerOwnership(id);
     const safeId = sanitizeFilter(id);
     const [sales, orders, invoices] = await Promise.all([
         pb.collection('sales').getList(1, 1, { filter: `customer="${safeId}"` }).catch(() => null),
@@ -291,6 +331,9 @@ export async function addLoyaltyPoints(customerId: string, points: number): Prom
         await adjustPoints(customerId, points, 'Manual points addition');
     } catch (error) {
         console.error('Error adding loyalty points:', error);
+        // Swallowing this reported success while the points were never
+        // written (CUS-2): the caller must see the failure.
+        throw error;
     }
 }
 
@@ -491,6 +534,7 @@ export async function updateCustomerJewelryProfile(
         anniversary_date?: string;
     }
 ): Promise<void> {
+    await assertCustomerOwnership(customerId);
     await pb.collection('customers').update(customerId, {
         ring_size: profile.ring_size || null,
         bangle_size: profile.bangle_size || null,
@@ -505,6 +549,8 @@ export async function getCustomerSummary(customerId: string): Promise<{ name: st
     if (!customerId) return null;
     try {
         const customer = await pb.collection('customers').getOne(customerId);
+        const tenant = accountScopeEmail();
+        if (tenant && customer.account_email && customer.account_email !== tenant) return null;
         return { name: customer.name || 'Customer', phone: (customer as { phone?: string }).phone || '' };
     } catch {
         return null;

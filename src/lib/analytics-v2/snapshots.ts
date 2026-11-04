@@ -11,7 +11,7 @@
 
 import { pb, sanitizeFilter } from '../pocketbase';
 import { tenantEmail, loadUnifiedLines } from './load';
-import { resolveRange } from './range';
+import { resolveRange, dayKey } from './range';
 
 export interface DailySnapshot {
     id?: string;
@@ -33,38 +33,50 @@ export interface SnapshotSeriesPoint {
     byCategory: Record<string, number>;
 }
 
-/** Read snapshot rows for a day span (tenant-scoped). Empty = no snapshots yet. */
+/**
+ * Read snapshot rows for a day span (tenant-scoped).
+ *
+ * An empty result means "no snapshots written yet"; a read FAILURE is raised so
+ * callers cannot mistake an outage for an empty span and silently fall back to
+ * live computation (AN2-10). A missing collection (404, migration unapplied) is
+ * the one documented exception.
+ */
 export async function getSnapshotSeries(fromDay: string, toDay: string): Promise<SnapshotSeriesPoint[]> {
     const tenant = tenantEmail();
     if (!tenant) return [];
+
+    let rows: Array<Record<string, unknown>>;
     try {
-        const rows = await pb.collection('analytics_daily_snapshots').getFullList({
+        rows = (await pb.collection('analytics_daily_snapshots').getFullList({
             filter: `account_email="${sanitizeFilter(tenant)}" && day>="${fromDay}" && day<="${toDay}"`,
             sort: 'day',
-        });
-        if (rows.length === 0) return [];
-
-        const byDay = new Map<string, SnapshotSeriesPoint>();
-        for (const row of rows as Array<Record<string, unknown>>) {
-            const day = String(row.day);
-            const p = byDay.get(day) || { day, revenue: 0, orders: 0, cogs: 0, byCategory: {} };
-            p.revenue += Number(row.revenue || 0);
-            // Legacy snapshot rows carried the day's order count on every
-            // category row (sum over-counted orders × categories); new rows
-            // carry it once on a single per-day row. max() is correct for
-            // both shapes (audit AN-15).
-            p.orders = Math.max(p.orders, Number(row.orders || 0));
-            p.cogs += Number(row.cogs || 0);
-            const catName = String(row.category_name || 'Unclassified');
-            p.byCategory[catName] = (p.byCategory[catName] || 0) + Number(row.revenue || 0);
-            byDay.set(day, p);
-        }
-        return [...byDay.values()];
+        })) as Array<Record<string, unknown>>;
     } catch (e) {
-        // Collection may not exist yet (migration unapplied) — treat as empty.
-        console.warn('[snapshots] read failed, callers should fall back to live computation:', e);
-        return [];
+        if ((e as { status?: number })?.status === 404) {
+            console.warn('[snapshots] collection not found; treating as no snapshots yet');
+            return [];
+        }
+        console.error('[snapshots] read failed:', e);
+        throw e;
     }
+    if (rows.length === 0) return [];
+
+    const byDay = new Map<string, SnapshotSeriesPoint>();
+    for (const row of rows) {
+        const day = String(row.day);
+        const p = byDay.get(day) || { day, revenue: 0, orders: 0, cogs: 0, byCategory: {} };
+        p.revenue += Number(row.revenue || 0);
+        // Legacy snapshot rows carried the day's order count on every
+        // category row (sum over-counted orders × categories); new rows
+        // carry it once on a single per-day row. max() is correct for
+        // both shapes (audit AN-15).
+        p.orders = Math.max(p.orders, Number(row.orders || 0));
+        p.cogs += Number(row.cogs || 0);
+        const catName = String(row.category_name || 'Unclassified');
+        p.byCategory[catName] = (p.byCategory[catName] || 0) + Number(row.revenue || 0);
+        byDay.set(day, p);
+    }
+    return [...byDay.values()];
 }
 
 /** Are snapshots populated for the given span? (drives the UI fallback) */
@@ -78,7 +90,17 @@ export async function rebuildSnapshots(days: number = 400): Promise<{ written: n
     const tenant = tenantEmail();
     if (!tenant) return { written: 0, days: 0 };
 
-    const win = resolveRange({ preset: 'custom', start: new Date(Date.now() - days * 86_400_000).toISOString() });
+    // `days` counts day keys, so the start is today-(days-1). Computed with
+    // local calendar arithmetic (a fixed ms subtraction drifts across DST) and
+    // passed as a date-only string so resolveBound snaps it to local midnight.
+    const span = Math.max(1, Math.floor(days));
+    const today = new Date();
+    const startDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() - span + 1);
+    const win = resolveRange({ preset: 'custom', start: dayKey(startDay) });
+    const firstDay = win.current.days[0];
+    const lastDay = win.current.days[win.current.days.length - 1];
+    if (!firstDay || !lastDay) return { written: 0, days: 0 };
+
     const lines = await loadUnifiedLines(tenant, win.current);
 
     // group by day × category
@@ -105,6 +127,19 @@ export async function rebuildSnapshots(days: number = 400): Promise<{ written: n
         set.add(t.id);
         ordersByDay.set(t.day, set);
     }
+    // A day with transactions but no line rows (every item unlinked) would emit
+    // no snapshot at all and the order count would vanish (AN2-11). Give those
+    // days an orders-only row on the '' category.
+    const daysWithRows = new Set([...agg.values()].map((row) => row.day));
+    for (const [day, ids] of ordersByDay) {
+        if (daysWithRows.has(day)) continue;
+        agg.set(`${day}::`, {
+            day,
+            category_id: '',
+            category_name: 'Unclassified',
+            revenue: 0, cogs: 0, units: 0, orders: ids.size, discounts: 0,
+        });
+    }
     // Orders are tx-level (per day, not per category): write the count on ONE
     // canonical row per day so summing readers don't multiply it by the
     // category count (audit AN-15).
@@ -121,9 +156,14 @@ export async function rebuildSnapshots(days: number = 400): Promise<{ written: n
     // Replace the span with upserts first, then delete stale rows. A failure
     // mid-write leaves the previous snapshot intact instead of an empty span
     // (audit AN-16); only successful writes are counted.
-    const oldRows = await pb.collection('analytics_daily_snapshots').getFullList({
-        filter: `account_email="${tenant}" && day>="${win.current.startISO.slice(0, 10)}" && day<="${win.current.endISO.slice(0, 10)}"`,
-    }).catch(() => [] as Array<Record<string, unknown>>);
+    //
+    // The existing-row read has NO fallback: swallowing it made every row look
+    // new, so the unique index rejected the writes and the span was left half
+    // rewritten with no error (AN2-1). Binding by local day keys (not the UTC
+    // date slice) keeps the cleanup aligned with the dayKey axis (AN2-5).
+    const oldRows = (await pb.collection('analytics_daily_snapshots').getFullList({
+        filter: `account_email="${sanitizeFilter(tenant)}" && day>="${firstDay}" && day<="${lastDay}"`,
+    })) as Array<Record<string, unknown>>;
     const existingByKey = new Map<string, string>();
     for (const r of oldRows) {
         existingByKey.set(`${String(r.day)}::${String(r.category_id)}`, String(r.id));
@@ -153,9 +193,24 @@ export async function rebuildSnapshots(days: number = 400): Promise<{ written: n
         );
         written += results.filter(Boolean).length;
     }
-    // Delete rows no longer covered by the recomputation.
+    // Delete rows no longer covered by the recomputation. A swallowed failure
+    // here leaves stale day×category rows in place, and summing readers then
+    // double-count the day — so failures are counted and the rebuild fails
+    // loudly instead of reporting success (AN2-3).
+    const failedDeletes: string[] = [];
     for (const id of existingByKey.values()) {
-        await pb.collection('analytics_daily_snapshots').delete(id).catch(() => {});
+        try {
+            await pb.collection('analytics_daily_snapshots').delete(id);
+        } catch (e) {
+            failedDeletes.push(id);
+            console.error('[snapshots] stale snapshot row delete failed:', id, e);
+        }
+    }
+    if (failedDeletes.length > 0) {
+        throw new Error(
+            `[snapshots] ${failedDeletes.length} stale snapshot row(s) could not be deleted; ` +
+            `the rebuilt span may double-count until they are removed.`
+        );
     }
 
     return { written, days: new Set(rows.map((r) => r.day)).size };

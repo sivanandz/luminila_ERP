@@ -194,10 +194,24 @@ function restorePersistedQueue(): void {
         if (!raw) return;
         const saved: QueuedCatalogTask[] = JSON.parse(raw);
         if (Array.isArray(saved)) {
+            let dropped = 0;
             for (const item of saved) {
-                if (item?.productId && !taskQueue.some((q) => q.productId === item.productId)) {
-                    taskQueue.push({ ...item, attempts: 0 });
+                if (!item?.productId) continue;
+                // WA-12: keep the persisted attempt count. Resetting it to 0 on
+                // every reload defeated the 4-attempt drop and retried
+                // permanently failing products forever.
+                const attempts = Math.max(0, Math.floor(Number(item.attempts) || 0));
+                if (attempts >= 4) {
+                    dropped += 1;
+                    continue;
                 }
+                if (!taskQueue.some((q) => q.productId === item.productId)) {
+                    taskQueue.push({ ...item, attempts });
+                }
+            }
+            if (dropped > 0) {
+                console.warn(`[whatsapp-sync] dropped ${dropped} persisted catalog task(s) that exhausted 4 attempts`);
+                currentTelemetry.lastError = `${dropped} persisted catalog task(s) dropped after 4 failed attempts`;
             }
         }
     } catch {

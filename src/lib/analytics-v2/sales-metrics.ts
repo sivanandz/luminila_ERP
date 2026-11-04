@@ -9,7 +9,7 @@
 
 import { pb, sanitizeFilter } from '../pocketbase';
 import { resolveRange, compare, dayKey, pbBound, type AnalyticsRange, type ComparedMetric, type DateWindow } from './range';
-import { loadTxWindow, type UnifiedTx, tenantEmail } from './load';
+import { loadTxWindow, loadUnifiedLines, type UnifiedTx, tenantEmail } from './load';
 
 // Recharts v3 types chart rows as Record<string, unknown>; every chart-row
 // interface here needs the same index signature (see analytics.ts:50).
@@ -368,13 +368,27 @@ export async function getSalesAnalytics(range: AnalyticsRange): Promise<SalesAna
     }
 
     const win = resolveRange(range);
-    const [currentTxs, previousTxs] = await Promise.all([
+    const [currentTxs, previousTxs, currentLines, previousLines] = await Promise.all([
         loadTxWindow(tenant, win.current),
         loadTxWindow(tenant, win.previous),
+        loadUnifiedLines(tenant, win.current),
+        loadUnifiedLines(tenant, win.previous),
     ]);
 
+    // Units and margin must be measured, not defaulted: buildKpis() filled
+    // both with zeros when called without them, so the analytics view always
+    // showed 0 units / "—" margin (RPT-6).
+    const sumUnits = (lines: typeof currentLines) => lines.reduce((s, l) => s + l.quantity, 0);
+    const cogsOf = (lines: typeof currentLines) => lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
+    const sumRevenue = (txs: UnifiedTx[]) => txs.reduce((s, t) => s + t.revenue, 0);
+    const units = compare(sumUnits(currentLines), sumUnits(previousLines));
+    const margin = compare(
+        Math.round(sumRevenue(currentTxs) - cogsOf(currentLines)),
+        Math.round(sumRevenue(previousTxs) - cogsOf(previousLines))
+    );
+
     return {
-        kpis: buildKpis(currentTxs, previousTxs),
+        kpis: buildKpis(currentTxs, previousTxs, margin, units),
         trend: buildTrend(currentTxs, previousTxs, win),
         channels: buildChannelTable(currentTxs, previousTxs),
         paymentMix: buildPaymentMix(currentTxs),

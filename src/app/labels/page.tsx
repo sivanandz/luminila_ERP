@@ -470,10 +470,16 @@ function LabelsContent() {
         const addQty = Number.isFinite(requestedQty) && requestedQty > 0 ? requestedQty : 1;
 
         if (sku && name && price) {
+            // PG-30: a tampered ?price= must not print NaN onto a barcode label.
+            const parsedPrice = Number(price);
+            if (!Number.isFinite(parsedPrice)) {
+                toast.error("That product's price is invalid; open it from inventory again.");
+                return;
+            }
             const productPart = {
                 sku,
                 name,
-                price: Number(price),
+                price: parsedPrice,
             };
 
             setSelectedProducts(prev => {

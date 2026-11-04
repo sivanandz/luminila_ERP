@@ -86,12 +86,13 @@ function sortCheques(cheques: ChequeRecord[]): ChequeRecord[] {
     return [...cheques].sort((a, b) => (a.chequeDate < b.chequeDate ? 1 : -1));
 }
 
-/** Tenant-scoped key filter for the shared `store_settings` table (FIN-02). */
+/**
+ * Tenant-scoped key filter for the shared `store_settings` table (FIN-02).
+ * The predicate is always present: dropping it when the scope was empty matched
+ * the first other-tenant register row (BNK-7).
+ */
 function settingsFilter(): string {
-    const tenant = accountScopeEmail();
-    return tenant
-        ? `key="${SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
-        : `key="${SETTINGS_KEY}"`;
+    return `key="${SETTINGS_KEY}" && account_email="${sanitizeFilter(accountScopeEmail())}"`;
 }
 
 async function readCheques(): Promise<ChequeRecord[]> {
@@ -104,6 +105,12 @@ async function readCheques(): Promise<ChequeRecord[]> {
 }
 
 async function writeCheques(cheques: ChequeRecord[]): Promise<void> {
+    // Writing with an empty scope would either create an ownerless row or
+    // overwrite whichever tenant's row the unfiltered lookup found (BNK-7).
+    const tenant = accountScopeEmail();
+    if (!tenant) {
+        throw new Error('No tenant is selected; refusing to write the cheque register.');
+    }
     const value = JSON.stringify(cheques);
     const row = await pb
         .collection('store_settings')
@@ -113,11 +120,11 @@ async function writeCheques(cheques: ChequeRecord[]): Promise<void> {
     if (row) {
         await pb.collection('store_settings').update(row.id, {
             value,
-            account_email: accountScopeEmail(),
+            account_email: tenant,
         });
     } else {
         await pb.collection('store_settings').create({
-            account_email: accountScopeEmail(),
+            account_email: tenant,
             key: SETTINGS_KEY,
             value,
             category: 'banking',

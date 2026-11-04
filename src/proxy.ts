@@ -15,6 +15,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
     classifyHost,
     isPathAllowed,
+    normalizePathForPolicy,
     parseHostGuardConfig,
 } from "@/lib/host-guard";
 
@@ -32,9 +33,19 @@ export default function proxy(request: NextRequest) {
     const effectiveHost = forwardedHost || request.headers.get("host");
     const viaProxy = Boolean(forwardedHost || forwardedFor);
     const role = classifyHost(effectiveHost, config, { trustLoopback: !viaProxy });
-    const pathname = request.nextUrl.pathname;
 
-    if (!isPathAllowed(role, pathname)) {
+    // INF-9: policy runs on the canonical path. Raw/encoded traversal or an
+    // ambiguous separator is refused outright rather than resolved into a path
+    // that happens to match a storefront prefix.
+    const normalizedPath = normalizePathForPolicy(request.nextUrl.pathname);
+    if (normalizedPath.traversal) {
+        return new NextResponse("Not Found", {
+            status: 404,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+    }
+
+    if (!isPathAllowed(role, normalizedPath.path)) {
         // 404 rather than a redirect: a public visitor should not learn that an
         // operations surface exists on this server.
         return new NextResponse("Not Found", {

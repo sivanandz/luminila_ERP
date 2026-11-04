@@ -404,14 +404,18 @@ async function provisionTenantDatabaseLocked(params: {
     const registry = readTenantRegistry();
     const now = new Date().toISOString();
 
-    // Never persist the tenant superuser password in clear text when a registry
-    // key is configured; legacy plaintext keeps working via readRegistrySecret
-    // (A-07).
+    // Never persist the tenant superuser password in clear text. Without a
+    // registry key there is no encryption path, so provisioning refuses rather
+    // than silently downgrading to a plaintext password in registry.json
+    // (SYN-13). Legacy plaintext entries still read via readRegistrySecret.
     const registryKey = parseRegistryKey(process.env.TENANT_REGISTRY_KEY);
-    const storedPassword = registryKey ? encryptSecret(params.password, registryKey) : params.password;
     if (!registryKey) {
-        console.warn('[TenantDB] TENANT_REGISTRY_KEY is not set; storing the tenant admin password in plaintext (legacy).');
+        throw new Error(
+            'TENANT_REGISTRY_KEY is not set: refusing to persist the tenant admin password in plaintext. ' +
+                'Set TENANT_REGISTRY_KEY (32+ character secret) before provisioning tenant databases.'
+        );
     }
+    const storedPassword = encryptSecret(params.password, registryKey);
 
     // Legacy primary admin uses primary pb_data on 8090/8091
     if (tenantSlug === 'primary') {

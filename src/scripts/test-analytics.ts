@@ -100,12 +100,12 @@ test('inWindow: every day key is inside; the day after the last key is not', () 
     assert.equal(inWindow(undefined, win), false);
 });
 
-test('deltaPct: zero-previous guard returns 100 not Infinity', () => {
+test('deltaPct: zero-previous returns the null sentinel, not a fake 100', () => {
     assert.equal(deltaPct(0, 0), 0);
-    assert.equal(deltaPct(500, 0), 100);
+    assert.equal(deltaPct(500, 0), null, 'a jump from zero has no comparable percentage');
     assert.equal(deltaPct(150, 100), 50);
     assert.equal(deltaPct(50, 100), -50);
-    assert.equal(deltaPct(NaN, 10), 0);
+    assert.equal(deltaPct(NaN, 10), null);
     assert.deepEqual(compare(150, 100), { current: 150, previous: 100, deltaPct: 50 });
 });
 
@@ -180,7 +180,7 @@ test('buildKpis: AOV math with zero-order previous window', () => {
     assert.equal(kpis.revenue.current, 1500);
     assert.equal(kpis.aov.current, 750);
     assert.equal(kpis.aov.previous, 0);
-    assert.equal(kpis.aov.deltaPct, 100);
+    assert.equal(kpis.aov.deltaPct, null, 'no previous orders → no percentage comparison');
 });
 
 // ---- insights rule engine ----
@@ -218,7 +218,7 @@ function fixtureAnalytics(overrides: {
         overallMargin: zeroMetric, marginPct: null, previousMarginPct: null,
         trend: [], byCategory: [], byChannel: [], topByProfit: [], topByRevenue: [],
         discountErosion: { grossRevenue: 0, totalDiscounts: 0, erosionPct: 0, previousErosionPct: 0, deltaPct: 0 },
-        expenses: { total: 0, byCategory: [], operatingResult: 0 },
+        expenses: { total: 0, byCategory: [], operatingResult: 0, available: false },
         marginUnknownCostUnits: 0,
         ...overrides.profitability,
     };

@@ -167,6 +167,7 @@ export default function SettingsPage() {
     const [categories, setCategories] = useState<Category[]>([]);
     const [showCategoryDialog, setShowCategoryDialog] = useState(false);
     const [newCategory, setNewCategory] = useState({ name: "", parent_id: "" });
+    const [isAddingCategory, setIsAddingCategory] = useState(false);
 
     // Attributes state
     const [attributes, setAttributes] = useState<ProductAttribute[]>([]);
@@ -177,6 +178,7 @@ export default function SettingsPage() {
         options: "",
         is_required: false,
     });
+    const [isAddingAttribute, setIsAddingAttribute] = useState(false);
 
     const [waStatus, setWaStatus] = useState<DetailedSessionStatus | null>(null);
     const [waBusinessProfile, setWaBusinessProfile] = useState<BusinessProfile | null>(null);
@@ -216,6 +218,10 @@ export default function SettingsPage() {
         let cancelled = false;
         getStoreSettings(user?.id, user?.name, user?.email).then(loaded => {
             if (!cancelled) setSettings(loaded);
+        }).catch((error) => {
+            if (cancelled) return;
+            console.error("Failed to load store settings:", error);
+            toast.error("Could not load store settings.");
         });
         return () => {
             cancelled = true;
@@ -225,15 +231,25 @@ export default function SettingsPage() {
     // Load per-section data when the active section changes
     useEffect(() => {
         if (activeSection === "categories") {
-            getCategories().then(setCategories);
+            getCategories().then(setCategories).catch((error) => {
+                console.error("Failed to load categories:", error);
+                toast.error("Could not load categories.");
+            });
         } else if (activeSection === "attributes") {
-            getAttributes().then(setAttributes);
+            getAttributes().then(setAttributes).catch((error) => {
+                console.error("Failed to load attributes:", error);
+                toast.error("Could not load attributes.");
+            });
         } else if (activeSection === "whatsapp") {
             setCheckingWa(true);
             getDetailedSessionStatus()
                 .then(st => {
                     setWaStatus(st);
                     if (st.connected) return getBusinessProfile().then(p => p && setWaBusinessProfile(p));
+                })
+                .catch((error) => {
+                    console.error("Failed to refresh WhatsApp status:", error);
+                    toast.error("Could not refresh WhatsApp status.");
                 })
                 .finally(() => setCheckingWa(false));
         }
@@ -362,16 +378,26 @@ export default function SettingsPage() {
     };
 
     const handleAddCategory = async () => {
+        const name = newCategory.name.trim();
+        if (!name) {
+            toast.error("Category name is required.");
+            return;
+        }
+        if (isAddingCategory) return;
+        setIsAddingCategory(true);
         try {
             await createCategory({
-                name: newCategory.name,
+                name,
                 parent: newCategory.parent_id || undefined,
             });
             setNewCategory({ name: "", parent_id: "" });
             setShowCategoryDialog(false);
-            getCategories().then(setCategories);
+            getCategories().then(setCategories).catch(() => {});
         } catch (err) {
             console.error("Error adding category:", err);
+            toast.error(err instanceof Error ? err.message : "Could not add the category.");
+        } finally {
+            setIsAddingCategory(false);
         }
     };
 
@@ -379,16 +405,24 @@ export default function SettingsPage() {
         if (!confirm("Delete this category?")) return;
         try {
             await deleteCategory(id);
-            getCategories().then(setCategories);
+            getCategories().then(setCategories).catch(() => {});
         } catch (err) {
             console.error("Error deleting category:", err);
+            toast.error(err instanceof Error ? err.message : "Could not delete the category.");
         }
     };
 
     const handleAddAttribute = async () => {
+        const name = newAttribute.name.trim();
+        if (!name) {
+            toast.error("Attribute name is required.");
+            return;
+        }
+        if (isAddingAttribute) return;
+        setIsAddingAttribute(true);
         try {
             await createAttribute({
-                name: newAttribute.name,
+                name,
                 attribute_type: newAttribute.attribute_type,
                 options: newAttribute.attribute_type === "select"
                     ? newAttribute.options.split(",").map(o => o.trim()).filter(Boolean)
@@ -397,9 +431,12 @@ export default function SettingsPage() {
             });
             setNewAttribute({ name: "", attribute_type: "text", options: "", is_required: false });
             setShowAttributeDialog(false);
-            getAttributes().then(setAttributes);
+            getAttributes().then(setAttributes).catch(() => {});
         } catch (err) {
             console.error("Error adding attribute:", err);
+            toast.error(err instanceof Error ? err.message : "Could not add the attribute.");
+        } finally {
+            setIsAddingAttribute(false);
         }
     };
 
@@ -407,9 +444,10 @@ export default function SettingsPage() {
         if (!confirm("Delete this attribute?")) return;
         try {
             await deleteAttribute(id);
-            getAttributes().then(setAttributes);
+            getAttributes().then(setAttributes).catch(() => {});
         } catch (err) {
             console.error("Error deleting attribute:", err);
+            toast.error(err instanceof Error ? err.message : "Could not delete the attribute.");
         }
     };
 
@@ -1596,7 +1634,7 @@ export default function SettingsPage() {
                             <Button variant="outline" onClick={() => setShowCategoryDialog(false)}>
                                 Cancel
                             </Button>
-                            <Button onClick={handleAddCategory} disabled={!newCategory.name}>
+                            <Button onClick={handleAddCategory} disabled={!newCategory.name.trim() || isAddingCategory}>
                                 Add Category
                             </Button>
                         </div>
@@ -1659,7 +1697,7 @@ export default function SettingsPage() {
                             <Button variant="outline" onClick={() => setShowAttributeDialog(false)}>
                                 Cancel
                             </Button>
-                            <Button onClick={handleAddAttribute} disabled={!newAttribute.name}>
+                            <Button onClick={handleAddAttribute} disabled={!newAttribute.name.trim() || isAddingAttribute}>
                                 Add Attribute
                             </Button>
                         </div>

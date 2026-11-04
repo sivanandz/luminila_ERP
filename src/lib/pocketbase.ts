@@ -1,7 +1,12 @@
 import PocketBase from 'pocketbase';
 import { readRegistrySecret } from './tenant-secrets';
-import { resolvePocketBaseBaseUrl } from './pocketbase-url';
-import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from './deployment-mode';
+import { isAllowedPocketBaseUrl, resolvePocketBaseBaseUrl } from './pocketbase-url';
+import {
+    assertDeploymentModeConsistent,
+    isMultiAccountEnabled,
+    isSingleAccountMode,
+    SINGLE_ACCOUNT_EMAIL,
+} from './deployment-mode';
 
 // Determine default URL
 const DEFAULT_URL = process.env.PB_URL || process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090';
@@ -61,6 +66,16 @@ export interface TenantRegistryLike {
 /**
  * Pure resolution of where a tenant lives and which credentials to use.
  * Separated from I/O so the ordering rules are testable.
+ *
+ * INF-2: in multi mode an explicit tenant email is mandatory. The registry's
+ * `activeTenantEmail` is process-global (whichever admin logged in last), so
+ * using it as a fallback silently handed a request another tenant's database.
+ * Environment superuser credentials belong to the primary database and are
+ * never given to an unknown tenant in multi mode.
+ *
+ * The legacy single-mode branch keeps old callers/tests working; production
+ * single mode never reaches this resolver because `createTenantClient` returns
+ * the one primary client first.
  */
 export function resolveTenantRuntime(
     email: string | undefined,
@@ -68,13 +83,22 @@ export function resolveTenantRuntime(
     env: { email?: string; password?: string },
     fallbackUrl: string
 ): { url: string; adminEmail: string; adminPassword: string } {
-    const target = (email || registry?.activeTenantEmail || '').trim().toLowerCase();
+    const requested = (email || '').trim().toLowerCase();
+    const multi = isMultiAccountEnabled();
+
+    if (multi && !requested) {
+        throw new Error('A tenant email is required to resolve a tenant database.');
+    }
+
+    const target = requested
+        || (multi ? '' : String(registry?.activeTenantEmail || '').trim().toLowerCase());
     const record = target && registry?.tenants ? registry.tenants[target] : undefined;
+    const useEnvCredentials = !multi || Boolean(record);
 
     return {
         url: record?.port ? `http://127.0.0.1:${record.port}` : fallbackUrl,
-        adminEmail: record?.email || env.email || '',
-        adminPassword: record?.adminPassword || env.password || '',
+        adminEmail: record?.email || (useEnvCredentials ? env.email || '' : ''),
+        adminPassword: record?.adminPassword || (useEnvCredentials ? env.password || '' : ''),
     };
 }
 
@@ -102,6 +126,9 @@ async function authenticateTenantClient(client: PocketBase, email: string, passw
  * shared client, so a route that uses it is isolated by construction.
  */
 export async function createTenantClient(preferredTenantEmail?: string): Promise<PocketBase> {
+    // A split single/multi deployment scopes the server and the shipped client
+    // differently; refuse instead of serving it (INF-12).
+    assertDeploymentModeConsistent();
     // Single mode has exactly one database: no registry read, no per-email lookup.
     if (isSingleAccountMode()) {
         const singleClient = new PocketBase(getPocketBaseUrl());
@@ -174,6 +201,40 @@ function isSuperuserSession(): boolean {
         || model?.collectionName === '_superusers';
 }
 
+/** Exported for call sites that carry an explicit tenant scope. */
+export function isSuperuserAuth(client: PocketBase = pb): boolean {
+    return isSuperuserClient(client);
+}
+
+function isSuperuserClient(client: PocketBase): boolean {
+    const model = client.authStore.model as { collectionName?: string } | null;
+    return Boolean((client.authStore as unknown as { isSuperuser?: boolean }).isSuperuser)
+        || model?.collectionName === '_superusers';
+}
+
+function scopeFromClient(client: PocketBase): string {
+    if (isSingleAccountMode()) return SINGLE_ACCOUNT_EMAIL;
+    const model = client.authStore.model as { email?: string; account_email?: string } | null;
+    return String(model?.account_email || model?.email || '').trim().toLowerCase();
+}
+
+/**
+ * True when the current session may act on a record owned by `ownerEmail`.
+ *
+ * Superuser/admin sessions may act on any tenant — they bypass PocketBase rules
+ * anyway, and server-side maintenance/tests run as superuser. A tenant session
+ * may only act on its own rows. Legacy rows with no owner belong to the single
+ * account; in multi mode they are refused (fail closed).
+ */
+export function canActOnTenant(ownerEmail?: string | null, client: PocketBase = pb): boolean {
+    if (isSuperuserClient(client)) return true;
+    const scope = scopeFromClient(client);
+    if (!scope) return false;
+    const owner = String(ownerEmail || '').trim().toLowerCase();
+    if (!owner) return isSingleAccountMode();
+    return owner === scope;
+}
+
 // Account Data Isolation: Auto-inject account_email on record creation.
 // For a real tenant session the verified scope wins over any caller-supplied
 // value (the old "only when absent" rule let a client POST/PATCH another
@@ -233,6 +294,8 @@ if (typeof window !== "undefined") {
  * Tenant-scoped server work must use `createTenantClient(email)`.
  */
 export async function ensureServerAuth(preferredTenantEmail?: string): Promise<boolean> {
+    // Fail closed on a split deployment before any credential is applied (INF-12).
+    assertDeploymentModeConsistent();
     if (typeof window === 'undefined' && !isSingleAccountMode() && preferredTenantEmail) {
         throw new Error(
             'ensureServerAuth cannot switch the shared PocketBase client between tenants. ' +
@@ -275,6 +338,13 @@ export async function ensureServerAuth(preferredTenantEmail?: string): Promise<b
  */
 export function setPocketBaseUrl(url: string): string {
     const sanitized = url.trim().replace(/\/+$/, "");
+    // INF-5: a server-provided pbUrl must not repoint the client at an arbitrary
+    // http origin. https is allowed anywhere; http only for the loopback/LAN/
+    // tunnel hosts the app already uses.
+    if (sanitized && !isAllowedPocketBaseUrl(sanitized)) {
+        console.error(`[pocketbase] Refusing untrusted PocketBase URL: ${sanitized}`);
+        return pb.baseUrl;
+    }
     if (typeof window !== "undefined") {
         // The legacy key stays in sync, but the scoped key is what a returning
         // account prefers (A-21).
@@ -354,8 +424,15 @@ export async function provisionTenantPocketBase(
         const data = await res.json();
         if (data.success && data.pbUrl) {
             const clientUrl = adaptPocketBaseHostForClient(data.pbUrl);
-            setPocketBaseUrl(clientUrl);
-            return { ...data, pbUrl: clientUrl };
+            const acceptedUrl = setPocketBaseUrl(clientUrl);
+            if (acceptedUrl !== clientUrl) {
+                return {
+                    success: false,
+                    pbUrl: acceptedUrl,
+                    error: data.error || "Server returned an untrusted PocketBase URL",
+                };
+            }
+            return { ...data, pbUrl: acceptedUrl };
         }
         return {
             success: false,
@@ -425,8 +502,7 @@ export async function resolveTenantPocketBase(email?: string): Promise<string> {
             const data = await res.json();
             if (data.success && data.pbUrl) {
                 const clientUrl = adaptPocketBaseHostForClient(data.pbUrl);
-                setPocketBaseUrl(clientUrl);
-                return clientUrl;
+                return setPocketBaseUrl(clientUrl);
             }
         }
     } catch {

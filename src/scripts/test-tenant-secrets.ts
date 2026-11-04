@@ -64,9 +64,23 @@ test('tampering is detected by the auth tag', () => {
     assert.throws(() => decryptSecret(parts.join(':'), key));
 });
 
-test('plaintext passes through, encrypted without a key does not', () => {
+test('plaintext passes through in development (legacy readability)', () => {
     assert.equal(decryptSecret('legacy-plaintext', null), 'legacy-plaintext');
     assert.throws(() => decryptSecret(encryptSecret('x', key), null), /TENANT_REGISTRY_KEY/);
+    // Development keeps the incremental-migration allowance.
+    assert.equal(readRegistrySecret('legacy-plaintext', {} as NodeJS.ProcessEnv), 'legacy-plaintext');
+});
+
+test('production refuses a plaintext registry value (fail closed)', () => {
+    const prodEnv = { NODE_ENV: 'production', TENANT_REGISTRY_KEY: key.toString('hex') } as NodeJS.ProcessEnv;
+    assert.throws(
+        () => readRegistrySecret('legacy-plaintext', prodEnv),
+        /plaintext/,
+        'a plaintext secret must never be accepted when NODE_ENV=production'
+    );
+    // The encrypted form still reads in production.
+    const encrypted = encryptSecret('from-env', key);
+    assert.equal(readRegistrySecret(encrypted, prodEnv), 'from-env');
 });
 
 test('the key parser accepts only 64 hex characters', () => {
@@ -79,7 +93,6 @@ test('the key parser accepts only 64 hex characters', () => {
 test('readRegistrySecret reads the key from the environment', () => {
     const encrypted = encryptSecret('from-env', key);
     assert.equal(readRegistrySecret(encrypted, { TENANT_REGISTRY_KEY: key.toString('hex') } as NodeJS.ProcessEnv), 'from-env');
-    assert.equal(readRegistrySecret('plain', {} as NodeJS.ProcessEnv), 'plain');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

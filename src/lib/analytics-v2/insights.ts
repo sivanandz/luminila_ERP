@@ -24,6 +24,12 @@ import type { SalesAnalytics } from './sales-metrics';
 
 export type Severity = 'high' | 'medium' | 'low';
 
+/**
+ * A margin move below this ₹ floor is not worth a 'high' severity card, however
+ * large the percentage looks against a near-zero previous window (AN2-8).
+ */
+const MIN_MARGIN_DROP_INR = 5000;
+
 export interface InsightCard {
     id: string;
     severity: Severity;
@@ -53,7 +59,8 @@ export async function buildInsights(turnover: TurnoverAnalytics, profitability: 
 
     // D2 overstock — cover beyond 12 weeks
     const overstockValue = turnover.overstock.reduce((s, r) => s + r.stockValue, 0);
-    if (turnover.overstock.length > 0) {
+    // A card that says "₹0 parked" is a fake insight: require real value (AN2-12).
+    if (turnover.overstock.length > 0 && overstockValue > 0) {
         cards.push({
             id: 'overstock',
             severity: overstockValue > 200000 ? 'high' : 'medium',
@@ -83,39 +90,59 @@ export async function buildInsights(turnover: TurnoverAnalytics, profitability: 
         }
     }
 
-    // D4 reorder soon — under 2 weeks of cover on active movers
+    // D4 reorder soon — under 2 weeks of cover on active movers.
+    // Impact = value of the demand expected before the shelf empties
+    // (unit price × weekly units × weeks of cover left), not the product's whole
+    // period revenue, which grossly overstated the at-risk amount (AN2-15).
     const reorderSoon = turnover.byProduct.filter(
         (p) => p.currentStock > 0 && p.weeksCover !== null && (p.weeksCover as number) < 2 && p.unitsSold > 0
     );
     if (reorderSoon.length > 0) {
+        const windowWeeks = Math.max(1, turnover.suite.lengthDays / 7);
+        const reorderImpact = reorderSoon.reduce((sum, p) => {
+            const price = p.unitsSold > 0 ? p.revenue / p.unitsSold : 0;
+            const weeklyUnits = p.unitsSold / windowWeeks;
+            const weeksLeft = Math.max(0, 2 - (p.weeksCover as number));
+            return sum + price * weeklyUnits * weeksLeft;
+        }, 0);
         cards.push({
             id: 'reorder-soon',
             severity: 'medium',
             title: `${reorderSoon.length} product(s) run out within ~2 weeks`,
             detail: `Fast-depleting stock: ${reorderSoon.slice(0, 3).map((p) => p.productName).join(', ')}${reorderSoon.length > 3 ? ` +${reorderSoon.length - 3} more` : ''}.`,
-            impactINR: reorderSoon.reduce((s, p) => s + p.revenue, 0),
+            impactINR: Math.round(reorderImpact),
             actionHint: 'Raise purchase orders this week to avoid stockouts.',
             targetTab: 'inventory',
         });
     }
 
     // P1 category margin drops vs previous window
+    const trendRevenue = profitability.trend.reduce((s, t) => s + t.revenue, 0);
     for (const row of profitability.byCategory.slice(0, 20)) {
         // trend is overall-level; per-category deltas need previous-window lines,
         // which profitability already reduced — approximate with overall margin
         // trend only when the category is a major revenue share (>15%).
-        const revenueShare = profitability.trend.length > 0
-            ? (row.revenue as number) / profitability.trend.reduce((s, t) => s + t.revenue, 0)
-            : 0;
-        if (revenueShare < 0.15) continue;
+        // A zero denominator produced Infinity/NaN, and `NaN < 0.15` is false,
+        // so the card passed the gate (AN2-13).
+        const revenueShare = trendRevenue > 0 ? (row.revenue as number) / trendRevenue : 0;
+        if (!Number.isFinite(revenueShare) || revenueShare < 0.15) continue;
         const overallDelta = profitability.overallMargin.deltaPct;
-        if (overallDelta < -10 && profitability.overallMargin.previous > 0) {
+        const marginDeltaINR = Math.abs(profitability.overallMargin.current - profitability.overallMargin.previous);
+        // A percentage alone lets a near-zero previous window produce a
+        // -1400% "high severity" card over a few rupees; require a real ₹ move
+        // and a positive previous window (AN2-8).
+        if (
+            overallDelta !== null &&
+            overallDelta < -10 &&
+            profitability.overallMargin.previous > 0 &&
+            marginDeltaINR >= MIN_MARGIN_DROP_INR
+        ) {
             cards.push({
                 id: `margin-drop-${row.key}`,
                 severity: 'high',
-                title: `Profit falling: ${row.label} margin is ₹${Math.abs(profitability.overallMargin.current - profitability.overallMargin.previous).toLocaleString('en-IN')} below last period`,
+                title: `Profit falling: ${row.label} margin is ₹${Math.abs(marginDeltaINR).toLocaleString('en-IN')} below last period`,
                 detail: `Overall gross margin moved ${overallDelta}% vs the previous window; ${row.label} is a major contributor (>15% of revenue).`,
-                impactINR: Math.abs(profitability.overallMargin.current - profitability.overallMargin.previous),
+                impactINR: marginDeltaINR,
                 actionHint: 'Review recent cost price changes and discount patterns in this category.',
                 targetTab: 'profitability',
             });

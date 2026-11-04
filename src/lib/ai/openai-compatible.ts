@@ -25,12 +25,13 @@ import {
     type OpenAiUsageRaw,
 } from './sse';
 import { redactSecrets } from './guardrails';
-import { isBlockedAiHost } from './net-guard';
+import { isBlockedAiHost, isBlockedAiHostByResolution, isLoopbackAiHost } from './net-guard';
 
 const MAX_ERROR_BODY_CHARS = 2_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_STREAM_BYTES = 4 * 1024 * 1024;
 const STREAM_IDLE_TIMEOUT_MS = 45_000;
+const MAX_REDIRECTS = 3;
 
 export interface ChatCompletionInput {
     messages: AiModelMessage[];
@@ -155,6 +156,13 @@ function assertHttpUrl(url: string): string {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         throw new AiProviderError('The provider base URL must use http or https.', { code: 'invalid_provider_url' });
     }
+    // The bearer key travels on every request: cleartext is only tolerable to a
+    // loopback endpoint (AI-20).
+    if (parsed.protocol === 'http:' && !isLoopbackAiHost(parsed.hostname)) {
+        throw new AiProviderError('The provider base URL must use https (http is only allowed for loopback addresses).', {
+            code: 'invalid_provider_url',
+        });
+    }
     if (parsed.username || parsed.password) {
         throw new AiProviderError('The provider base URL must not embed credentials; use the API key field.', {
             code: 'invalid_provider_url',
@@ -169,6 +177,52 @@ function assertHttpUrl(url: string): string {
         });
     }
     return url;
+}
+
+/** Literal checks plus DNS resolution of the actual host that will be dialled. */
+async function assertResolvableHttpUrl(url: string): Promise<string> {
+    const parsed = new URL(assertHttpUrl(url));
+    if (await isBlockedAiHostByResolution(parsed.hostname, parsed.port)) {
+        throw new AiProviderError('The provider host resolves to a private or internal address.', {
+            code: 'invalid_provider_url',
+        });
+    }
+    return parsed.toString();
+}
+
+/**
+ * Fetch with redirects disabled and re-followed manually so every hop passes
+ * the SSRF guard before the Authorization header is re-sent (AI-17).
+ *
+ * Only 307/308 are followed (they preserve method and body); 301/302/303 would
+ * turn the POST into a GET, so they are treated as a provider error instead of
+ * silently leaking a key to a new origin.
+ */
+async function fetchWithGuardedRedirects(
+    url: string,
+    init: RequestInit
+): Promise<Response> {
+    let current = url;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+        await assertResolvableHttpUrl(current);
+        const response = await fetch(current, { ...init, redirect: 'manual' });
+        if (response.status < 300 || response.status >= 400) return response;
+
+        const location = response.headers.get('location');
+        const followable = response.status === 307 || response.status === 308;
+        if (!followable || !location) {
+            await response.body?.cancel().catch(() => undefined);
+            throw new AiProviderError('The provider redirected the request in a way that cannot be followed safely.', {
+                code: 'provider_redirect_blocked',
+                status: response.status,
+            });
+        }
+        current = new URL(location, current).toString();
+        await response.body?.cancel().catch(() => undefined);
+    }
+    throw new AiProviderError('The provider redirected the request too many times.', {
+        code: 'provider_redirect_blocked',
+    });
 }
 
 /** Build the exact HTTP request for one chat completion. */
@@ -384,7 +438,7 @@ async function streamOnce(
     const tracker = new OpenAiStreamTracker();
     let response: Response;
     try {
-        response = await fetch(request.url, {
+        response = await fetchWithGuardedRedirects(request.url, {
             method: 'POST',
             headers: request.headers,
             body: JSON.stringify(request.body),
@@ -392,6 +446,7 @@ async function streamOnce(
         });
     } catch (error) {
         scope.cleanup();
+        if (error instanceof AiProviderError) throw error;
         if (scope.didTimeOut()) {
             throw new AiProviderError('The provider did not answer in time. Check the base URL or increase the timeout.', {
                 code: 'provider_timeout',
@@ -418,8 +473,39 @@ async function streamOnce(
 
         const contentType = (response.headers.get('content-type') || '').toLowerCase();
         if (contentType.includes('application/json')) {
-            const payload = await response.json();
-            const parsed = parseOpenAiCompletion(payload);
+            const bodyText = await response.text().catch(() => '');
+            if (!bodyText.trim()) {
+                throw new AiProviderError('The provider returned an empty response body.', { code: 'empty_response' });
+            }
+            let payload: unknown;
+            try {
+                payload = JSON.parse(bodyText) as unknown;
+            } catch {
+                throw new AiProviderError('The provider returned a malformed JSON response.', {
+                    code: 'provider_bad_response',
+                    bodySnippet: readBodySnippet(bodyText, provider),
+                });
+            }
+            // A non-streaming error body (quota, model, moderation) used to be
+            // discarded and rethrown as a generic read failure (AI-26).
+            if (payload && typeof payload === 'object' && (payload as Record<string, unknown>).error !== undefined) {
+                const detail = readBodySnippet(bodyText, provider);
+                throw new AiProviderError(detail || 'The provider returned an error.', {
+                    code: 'provider_error',
+                    bodySnippet: detail,
+                });
+            }
+            let parsed;
+            try {
+                parsed = parseOpenAiCompletion(payload);
+            } catch (error) {
+                const detail = readBodySnippet(bodyText, provider)
+                    || (error instanceof Error ? error.message : '');
+                throw new AiProviderError(detail || 'The provider response could not be read.', {
+                    code: 'provider_bad_response',
+                    bodySnippet: detail,
+                });
+            }
             return {
                 text: parsed.text,
                 reasoning: parsed.reasoning,
@@ -543,7 +629,7 @@ export async function listProviderModels(
             headers[OPENCODE_SESSION_HEADER] =
                 options.sessionId || `luminila-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         }
-        const response = await fetch(url, { headers, signal: scope.signal });
+        const response = await fetchWithGuardedRedirects(url, { headers, signal: scope.signal });
         if (!response.ok) {
             const bodyText = await response.text().catch(() => '');
             throw new AiProviderError(errorMessageForStatus(response.status, readBodySnippet(bodyText, provider)), {

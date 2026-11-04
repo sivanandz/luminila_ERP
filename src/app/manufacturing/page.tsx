@@ -26,6 +26,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { formatINR } from "@/lib/gst";
+import { usePermissions } from "@/hooks/usePermissions";
 import {
     computeKarigarJobCost,
     deleteKarigarJob,
@@ -44,6 +45,9 @@ function toNumber(value: string): number {
 }
 
 export default function ManufacturingPage() {
+    // PG-19: the delete button is UI only; the handler is the boundary.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canDeleteJobs = () => isAdmin || hasPermission("inventory", "delete");
     const [jobs, setJobs] = useState<KarigarJobRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -147,6 +151,10 @@ export default function ManufacturingPage() {
     };
 
     const handleDelete = async (job: KarigarJobRecord) => {
+        if (!canDeleteJobs()) {
+            toast.error("You do not have permission to delete karigar jobs.");
+            return;
+        }
         if (!confirm(`Delete job ${job.jobNumber}?`)) return;
         try {
             setJobs(await deleteKarigarJob(job.id));

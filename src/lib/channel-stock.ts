@@ -79,6 +79,7 @@ interface VariantRecord {
     id: string;
     product: string;
     stock_level?: number;
+    account_email?: string;
 }
 
 interface ProductRecord {
@@ -206,8 +207,16 @@ export async function resolveStockTargets(
         // Virtual Combo / Bridal Set Bundle support: explode into component variant targets
         if ((product as any).is_bundle && Array.isArray((product as any).bundle_items) && (product as any).bundle_items.length > 0) {
             for (const comp of (product as any).bundle_items) {
-                if (!comp.variant_id) continue;
-                const compVariant = await db.collection('product_variants').getOne<VariantRecord>(comp.variant_id).catch(() => null);
+                let targetVariantId = comp.variant_id;
+                if (!targetVariantId && comp.product_id) {
+                    const vList = await db.collection('product_variants').getFullList<VariantRecord>({
+                        filter: `product="${escapeFilter(comp.product_id)}"`,
+                        fields: 'id,stock_level',
+                    }).catch(() => [] as VariantRecord[]);
+                    if (vList?.[0]) targetVariantId = vList[0].id;
+                }
+                if (!targetVariantId) continue;
+                const compVariant = await db.collection('product_variants').getOne<VariantRecord>(targetVariantId).catch(() => null);
                 if (compVariant) {
                     targets.push({
                         kind: 'variant',
@@ -310,18 +319,60 @@ export async function applyChannelStock(
     const movementIds: string[] = [];
     const shortages: StockShortage[] = [];
     const oversell = options.oversell ?? 'reject';
+    // Legacy rows with no variant row are tracked on `products`, but
+    // stock_movements.variant is a required relation to product_variants, so no
+    // ledger row can represent them. Say so instead of pretending the decrement
+    // is reversible (SYN-10).
+    const unledgered: string[] = [];
 
-    const rollback = async (): Promise<void> => {
+    /**
+     * Undo every line applied so far. Failures are collected instead of
+     * swallowed: a half-compensated order must reach the caller, not vanish in
+     * a bare `catch` (SYN-8).
+     */
+    const rollback = async (): Promise<string[]> => {
+        const failures: string[] = [];
+        const fail = (context: string, error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            failures.push(`${context}: ${message}`);
+        };
+
         for (const movementId of movementIds) {
-            if (movementId) await db.collection('stock_movements').delete(movementId).catch(() => {});
+            if (!movementId) continue;
+            try {
+                await db.collection('stock_movements').delete(movementId);
+            } catch (error) {
+                fail(`delete movement ${movementId}`, error);
+            }
         }
         for (const entry of [...applied].reverse()) {
             const collection = entry.target.kind === 'variant' ? 'product_variants' : 'products';
-            await db
-                .collection(collection)
-                .update(entry.target.id, { 'stock_level+': entry.quantity })
-                .catch(() => {});
+            try {
+                await db
+                    .collection(collection)
+                    .update(entry.target.id, { 'stock_level+': entry.quantity });
+            } catch (error) {
+                fail(`restock ${collection}/${entry.target.id} by ${entry.quantity}`, error);
+                // Record what still has to be corrected by hand. Only variants
+                // can carry a movement row.
+                if (entry.target.kind === 'variant') {
+                    try {
+                        await db.collection('stock_movements').create({
+                            variant: entry.target.id,
+                            movement_type: 'adjustment',
+                            quantity: entry.quantity,
+                            reference_id: options.referenceId,
+                            source: options.channel,
+                            account_email: options.accountEmail || '',
+                            notes: `[compensation-failed] ${options.channel} order ${options.referenceId}: ${entry.quantity} unit(s) could not be restored automatically — reconcile manually.`,
+                        });
+                    } catch (reconcileError) {
+                        fail(`reconciliation movement for ${entry.target.id}`, reconcileError);
+                    }
+                }
+            }
         }
+        return failures;
     };
 
     try {
@@ -350,21 +401,36 @@ export async function applyChannelStock(
                 }
                 // Settle at the stock that actually exists and keep the ledger
                 // truthful, exactly like the POS oversell reconciliation.
-                const latest = await db
-                    .collection(collection)
-                    .getOne<{ stock_level?: number }>(target.id)
-                    .catch(() => null);
-                const available = Math.max(0, Math.floor(Number(latest?.stock_level ?? 0)));
+                // The write stays an atomic `stock_level-`: an absolute
+                // `stock_level: 0` after a re-read erases whatever another
+                // terminal sold or restocked in between (SYN-11).
+                let settled = 0;
+                for (let attempt = 0; attempt < 3; attempt += 1) {
+                    const latest = await db
+                        .collection(collection)
+                        .getOne<{ stock_level?: number }>(target.id)
+                        .catch(() => null);
+                    const available = Math.max(0, Math.floor(Number(latest?.stock_level ?? 0)));
+                    if (available === 0) break;
+                    try {
+                        await db.collection(collection).update(target.id, { 'stock_level-': available });
+                        settled = available;
+                        break;
+                    } catch (retryError) {
+                        // The stock moved again between the read and the write;
+                        // re-read and settle at the new value.
+                        if (!isMinStockConstraint(retryError)) throw retryError;
+                    }
+                }
                 shortages.push({
                     productId: target.productId,
                     variantId: target.id,
                     name: target.name,
                     requested: target.quantity,
-                    available,
+                    available: settled,
                 });
-                if (available === 0) continue;
-                await db.collection(collection).update(target.id, { stock_level: 0 });
-                quantity = available;
+                if (settled === 0) continue;
+                quantity = settled;
             }
 
             applied.push({ target, quantity });
@@ -388,17 +454,37 @@ export async function applyChannelStock(
                     });
                     movementIds.push(String((movement as { id?: string }).id || ''));
                 } catch (error) {
-                    // The ledger is required for reconciliation: restore this line
-                    // and let the outer handler compensate the others.
-                    await db.collection(collection).update(target.id, { 'stock_level+': quantity }).catch(() => {});
-                    applied.pop();
+                    // The ledger is required for reconciliation: keep this line
+                    // in `applied` so the outer rollback restores its stock, and
+                    // let the failure surface instead of swallowing it.
                     throw error;
                 }
+            } else {
+                unledgered.push(target.productId);
             }
         }
     } catch (error) {
-        await rollback();
+        const failures = await rollback();
+        if (failures.length > 0) {
+            console.error('[channel-stock] compensation incomplete:', failures);
+            const message = error instanceof Error ? error.message : String(error);
+            const detail = `compensation incomplete: ${failures.join('; ')}`;
+            if (error instanceof Error) {
+                (error as Error & { compensationFailures?: string[] }).compensationFailures = failures;
+                error.message = `${message} (${detail})`;
+            } else {
+                throw new Error(`${message} (${detail})`, { cause: error });
+            }
+        }
         throw error;
+    }
+
+    if (unledgered.length > 0) {
+        console.warn(
+            `[channel-stock] ${options.channel} order ${options.referenceId}: ${unledgered.length} product-level line(s) ` +
+                `(${unledgered.join(', ')}) carry no stock_movements ledger row (the variant relation is required), ` +
+                `so a cancellation cannot restore them automatically.`
+        );
     }
 
     return { targets, movementIds, shortages };
@@ -409,6 +495,12 @@ export async function applyChannelStock(
  * a retry after a partial failure completes only the lines that were not yet
  * reversed (CO-18). Each reversal row names the original movement in its notes,
  * so the ledger itself is the source of truth for what remains.
+ *
+ * The tenant is required and every query is scoped by it: an unscoped
+ * `reference_id` lookup let one store's cancellation restock another store's
+ * variants (SYN-2). The reversal row is written BEFORE the stock moves, so a
+ * crash mid-restore leaves a marker and a retry skips the line instead of
+ * restocking it twice (SYN-9).
  */
 const REVERSAL_MARKER = /\[reversal-of:([a-z0-9]+)\]/;
 
@@ -416,22 +508,27 @@ export async function restoreChannelStockForReference(
     db: StockDb,
     options: {
         referenceId: string;
+        /** Tenant that owns the order and its movements. Required. */
+        accountEmail: string;
         channel?: ChannelStockChannel;
         notes?: string;
-        /** Tenant stamp for the reversal rows; falls back to the sale row's stamp. */
-        accountEmail?: string;
     }
 ): Promise<StockRestoreResult> {
+    const tenant = String(options.accountEmail || '').trim().toLowerCase();
+    if (!tenant) {
+        throw new Error('restoreChannelStockForReference requires the tenant account email');
+    }
     const reference = escapeFilter(options.referenceId);
+    const tenantFilter = ` && account_email="${escapeFilter(tenant)}"`;
     const sourceFilter = options.channel ? ` && source="${escapeFilter(options.channel)}"` : '';
 
     const movements = await db.collection('stock_movements').getFullList<MovementRecord>({
-        filter: `reference_id="${reference}"${sourceFilter} && movement_type="sale"`,
+        filter: `reference_id="${reference}"${sourceFilter} && movement_type="sale"${tenantFilter}`,
     });
     if (movements.length === 0) return { restored: 0, alreadyRestored: false };
 
     const reversals = await db.collection('stock_movements').getFullList<MovementRecord>({
-        filter: `reference_id="${reference}"${sourceFilter} && movement_type="return"`,
+        filter: `reference_id="${reference}"${sourceFilter} && movement_type="return"${tenantFilter}`,
     });
     const reversedMovementIds = new Set<string>();
     for (const reversal of reversals) {
@@ -444,19 +541,64 @@ export async function restoreChannelStockForReference(
         if (reversedMovementIds.has(movement.id)) continue;
         const quantity = Math.abs(Number(movement.quantity) || 0);
         if (quantity === 0) continue;
-        await db
+        if (!movement.variant) {
+            // Product-level (legacy) lines never produced a movement row, and
+            // the variant relation is required, so there is nothing to restore
+            // from here (SYN-10).
+            console.warn(
+                `[channel-stock] cannot restore movement ${movement.id} for ${options.referenceId}: it has no variant.`
+            );
+            continue;
+        }
+
+        // The ledger row is tenant-scoped, but the variant is not: verify its
+        // owner before moving any stock (SYN-2).
+        const variant = await db
             .collection('product_variants')
-            .update(movement.variant, { 'stock_level+': quantity });
-        await db.collection('stock_movements').create({
+            .getOne<VariantRecord>(movement.variant)
+            .catch(() => null);
+        if (!variant) {
+            console.warn(
+                `[channel-stock] cannot restore ${movement.variant} for ${options.referenceId}: the variant no longer exists.`
+            );
+            continue;
+        }
+        if (variant.account_email && variant.account_email.toLowerCase() !== tenant) {
+            throw new StockTenantMismatchError(variant.product || movement.variant);
+        }
+
+        // Marker first (SYN-9): if the process dies before the restock, the
+        // reversal row is already there and a retry will not double-restock.
+        const marker = await db.collection('stock_movements').create({
             variant: movement.variant,
             movement_type: 'return',
             quantity,
             reference_id: options.referenceId,
             source: options.channel || movement.source || 'storefront',
             // Carry the tenant stamp across the reversal (CO-07).
-            account_email: options.accountEmail || movement.account_email || '',
+            account_email: tenant,
             notes: `${options.notes || `Stock restored for cancelled ${options.channel || movement.source || 'channel'} order ${options.referenceId}`} [reversal-of:${movement.id}]`,
         });
+        const markerId = String((marker as { id?: string }).id || '');
+
+        try {
+            await db
+                .collection('product_variants')
+                .update(movement.variant, { 'stock_level+': quantity });
+        } catch (restockError) {
+            // Nothing was restored, so release the marker: the line must stay
+            // un-reversed for a retry. A failed cleanup is loud, not silent.
+            if (markerId) {
+                await db.collection('stock_movements').delete(markerId).catch((cleanupError) => {
+                    console.error(
+                        `[channel-stock] reversal marker ${markerId} for movement ${movement.id} could not be released; ` +
+                            `the line will be treated as restored although the stock update failed.`,
+                        cleanupError
+                    );
+                });
+            }
+            throw restockError;
+        }
         restored += 1;
     }
 

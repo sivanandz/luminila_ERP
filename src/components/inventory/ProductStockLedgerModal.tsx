@@ -58,12 +58,11 @@ export function ProductStockLedgerModal({
         };
     }, [open, product]);
 
-    if (!product) return null;
-
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col bg-surface-navy border-surface-hover text-white">
-                <DialogHeader className="border-b border-surface-hover pb-3">
+        <Dialog open={open && Boolean(product)} onOpenChange={onOpenChange}>
+            {product && (
+                <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col bg-surface-navy border-surface-hover text-white">
+                    <DialogHeader className="border-b border-surface-hover pb-3">
                     <div className="flex items-start justify-between">
                         <div>
                             <DialogTitle className="text-base font-bold flex items-center gap-2 text-white">
@@ -171,6 +170,7 @@ export function ProductStockLedgerModal({
                     </Button>
                 </div>
             </DialogContent>
+            )}
         </Dialog>
     );
 }

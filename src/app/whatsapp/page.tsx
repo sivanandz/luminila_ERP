@@ -970,6 +970,8 @@ export default function WhatsAppPage() {
     const [selectedChatMessages, setSelectedChatMessages] = useState<Message[]>([]);
     const [, setLoadingMessages] = useState(false);
     const [replyText, setReplyText] = useState("");
+    const [isReplying, setIsReplying] = useState(false);
+    const replyInFlightRef = React.useRef(false);
     const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
 
     // Attachment State
@@ -2460,21 +2462,40 @@ _Your order will be confirmed and processed immediately upon successful payment.
 
     const sendReply = async () => {
         if (!selectedChat || !replyText.trim()) return;
+        // PG-17: re-entry guard so a double-click / double-Enter cannot send the
+        // same customer-facing message twice.
+        if (replyInFlightRef.current) return;
+        replyInFlightRef.current = true;
+        setIsReplying(true);
         // A quoted reply goes through the reply endpoint so WhatsApp threads it
         // on the phone; plain text stays on the normal send path.
         let sentId: string | null = null;
         let ok = false;
-        if (replyingTo) {
-            ok = await replyToMessage(
-                whatsappManager.getSessionIdSafe(),
-                selectedChat,
-                replyText,
-                replyingTo.id
-            );
-        } else {
-            const sent = await whatsappManager.sendMessageDetailed(selectedChat, replyText);
-            ok = sent.ok;
-            sentId = sent.id;
+        try {
+            if (replyingTo) {
+                ok = await replyToMessage(
+                    whatsappManager.getSessionIdSafe(),
+                    selectedChat,
+                    replyText,
+                    replyingTo.id
+                );
+            } else {
+                const sent = await whatsappManager.sendMessageDetailed(selectedChat, replyText);
+                ok = sent.ok;
+                sentId = sent.id;
+            }
+        } catch (error) {
+            console.error("Failed to send WhatsApp reply:", error);
+            toast.error("Failed to send message. Your draft was kept.");
+            return;
+        } finally {
+            replyInFlightRef.current = false;
+            setIsReplying(false);
+        }
+        if (!ok) {
+            // Keep the draft so the user can retry rather than losing the text.
+            toast.error("WhatsApp did not confirm the message was sent. Your draft was kept.");
+            return;
         }
         if (ok) {
             setReplyText("");
@@ -4140,10 +4161,10 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                     ) : (
                                         <button
                                             onClick={attachmentFile ? handleSendAttachment : sendReply}
-                                            disabled={sendingAttachment || (!replyText.trim() && !attachmentFile)}
+                                            disabled={sendingAttachment || isReplying || (!replyText.trim() && !attachmentFile)}
                                             className="p-2 bg-primary text-primary-foreground rounded-lg disabled:opacity-50 transition-opacity"
                                         >
-                                            {sendingAttachment ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                                            {sendingAttachment || isReplying ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
                                         </button>
                                     )}
                                 </div>

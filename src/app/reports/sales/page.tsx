@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 
 import { getSalesReport, exportToCSV, printReport, type SalesReportRow, type ReportSummary } from "@/lib/reports";
 import { formatINR } from "@/lib/gst";
+import { toast } from "sonner";
 
 export default function SalesReportPage() {
     const router = useRouter();
@@ -38,6 +39,7 @@ export default function SalesReportPage() {
         totalOrders: 0,
         totalItems: 0,
     });
+    const [loadError, setLoadError] = useState<string | null>(null);
 
     // Default to current month
     const [startDate, setStartDate] = useState(
@@ -48,11 +50,28 @@ export default function SalesReportPage() {
     );
 
     const loadReport = useCallback(async () => {
+        // ISO yyyy-MM-dd strings compare correctly lexicographically.
+        if (startDate && endDate && startDate > endDate) {
+            const message = "Start date must be on or before the end date.";
+            setLoadError(message);
+            setLoading(false);
+            toast.error(message);
+            return;
+        }
         setLoading(true);
-        const { rows, summary } = await getSalesReport(startDate, endDate);
-        setRows(rows);
-        setSummary(summary);
-        setLoading(false);
+        try {
+            const { rows, summary } = await getSalesReport(startDate, endDate);
+            setRows(rows);
+            setSummary(summary);
+            setLoadError(null);
+        } catch (err) {
+            console.error("Failed to load sales report:", err);
+            const message = err instanceof Error ? err.message : "Failed to load the sales report.";
+            setLoadError(message);
+            toast.error("Could not load the sales report.");
+        } finally {
+            setLoading(false);
+        }
     }, [startDate, endDate]);
 
     useEffect(() => {
@@ -163,6 +182,11 @@ export default function SalesReportPage() {
                 {/* Report Table */}
                 <Card className="bg-card border-border">
                     <CardContent className="pt-6">
+                        {loadError && !loading && (
+                            <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+                                {loadError}
+                            </div>
+                        )}
                         <div id="sales-report-table">
                             {loading ? (
                                 <div className="text-center py-12 text-muted-foreground">Loading...</div>

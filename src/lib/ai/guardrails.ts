@@ -42,7 +42,7 @@ export interface ToolPolicyDecision {
  * approval UI) so approval cannot be used to escalate privileges.
  */
 export function decideToolPolicy(input: ToolPolicyInput): ToolPolicyDecision {
-    if (!profileAllowsTool(input.profile, input.toolName)) {
+    if (!profileAllowsTool(input.profile, input.toolName, input.kind)) {
         return { allowed: false, requiresApproval: false, reason: 'This tool is not enabled in the selected harness profile.' };
     }
     if (!input.capabilityGranted) {

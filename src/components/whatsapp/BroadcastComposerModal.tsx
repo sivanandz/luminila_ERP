@@ -34,6 +34,7 @@ import {
 } from "@/lib/whatsapp-broadcast";
 import { getAllChats, whatsappManager, type WPPChat } from "@/lib/whatsapp";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePermissions } from "@/hooks/usePermissions";
 import { cn } from "@/lib/utils";
 
 const COHORT_SEGMENTS: { id: AudienceSegment; label: string; hint: string }[] = [
@@ -89,6 +90,10 @@ export interface BroadcastComposerModalProps {
  */
 export function BroadcastComposerModal({ isOpen, onClose }: BroadcastComposerModalProps) {
     const { user } = useAuth();
+    // CMP-2: a mass broadcast is a destructive, customer-facing action — gate the
+    // handlers on a permission, not just on the button being visible.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canBroadcast = isAdmin || hasPermission("customers", "update");
     const [destinationType, setDestinationType] = useState<'community' | 'cohort'>('community');
     const [campaign, setCampaign] = useState('');
     const [segment, setSegment] = useState<AudienceSegment>('vip_tiers');
@@ -143,9 +148,11 @@ export function BroadcastComposerModal({ isOpen, onClose }: BroadcastComposerMod
                 setAvailableCommunities(communities);
                 setAvailableGroups(groups);
 
-                // Auto-select communities and channels by default
-                if (communities.length > 0) setSelectedCommunities(communities.map((c) => c.id));
-                if (channels.length > 0) setSelectedChannels(channels.map((c) => c.id));
+                // CMP-2: do not pre-select destinations — one click must not
+                // message every community and channel.
+                setSelectedCommunities([]);
+                setSelectedChannels([]);
+                setSelectedGroups([]);
             })
             .catch((err) => {
                 console.error('[composer] failed to discover chats:', err);
@@ -218,6 +225,10 @@ export function BroadcastComposerModal({ isOpen, onClose }: BroadcastComposerMod
 
     // Dispatch directly to Community Announcements, Channels & Groups
     const handleSendCommunityBroadcast = async () => {
+        if (!canBroadcast) {
+            toast.error('You do not have permission to send broadcasts.');
+            return;
+        }
         const targets = Array.from(new Set([...selectedCommunities, ...selectedChannels, ...selectedGroups]));
         if (targets.length === 0) {
             toast.error('Please select at least 1 Community Announcement, Channel, or Group');
@@ -227,6 +238,13 @@ export function BroadcastComposerModal({ isOpen, onClose }: BroadcastComposerMod
             toast.error('Please enter an announcement message');
             return;
         }
+        // Mandatory confirmation: a broadcast cannot be recalled.
+        const confirmed = window.confirm(
+            `Send this announcement to ${targets.length} destination${targets.length === 1 ? '' : 's'}?\n\n` +
+            `${selectedCommunities.length} community announcement(s), ` +
+            `${selectedChannels.length} channel(s), ${selectedGroups.length} group(s).`
+        );
+        if (!confirmed) return;
 
         setSendingBroadcast(true);
         let sentCount = 0;
@@ -259,11 +277,21 @@ export function BroadcastComposerModal({ isOpen, onClose }: BroadcastComposerMod
 
     // Queue for Cohort Customers (Anti-Ban Staggered)
     const handleQueueCohort = async () => {
+        if (!canBroadcast) {
+            toast.error('You do not have permission to queue broadcasts.');
+            return;
+        }
         const name = campaign.trim() || `Campaign ${new Date().toLocaleDateString('en-IN')}`;
         if (audience.length === 0) {
             toast.error('No reachable recipients in this segment');
             return;
         }
+        const segmentLabel = COHORT_SEGMENTS.find((s) => s.id === segment)?.label || segment;
+        const confirmed = window.confirm(
+            `Queue this campaign for ${audience.length} recipient${audience.length === 1 ? '' : 's'} in "${segmentLabel}"?\n\n` +
+            'Messages are dispatched with humanized pacing and cannot be recalled once sent.'
+        );
+        if (!confirmed) return;
         setQueueing(true);
         try {
             const result = await queueCampaign({
@@ -637,7 +665,7 @@ export function BroadcastComposerModal({ isOpen, onClose }: BroadcastComposerMod
                         <Button
                             size="sm"
                             onClick={handleSendCommunityBroadcast}
-                            disabled={sendingBroadcast || totalCommunityTargets === 0 || !template.trim()}
+                            disabled={!canBroadcast || sendingBroadcast || totalCommunityTargets === 0 || !template.trim()}
                             className="bg-amber-600 hover:bg-amber-500 text-white font-semibold"
                         >
                             {sendingBroadcast ? (
@@ -656,7 +684,7 @@ export function BroadcastComposerModal({ isOpen, onClose }: BroadcastComposerMod
                         <Button
                             size="sm"
                             onClick={handleQueueCohort}
-                            disabled={queueing || audience.length === 0 || !template.trim()}
+                            disabled={!canBroadcast || queueing || audience.length === 0 || !template.trim()}
                             className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
                         >
                             {queueing ? (

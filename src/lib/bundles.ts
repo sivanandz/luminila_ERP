@@ -50,7 +50,10 @@ export function computeBundleAvailability(
 
     for (const comp of bundleItems) {
         const required = Math.max(1, Number(comp.quantity) || 1);
-        const available = Math.max(0, componentStockMap.get(comp.variant_id) ?? 0);
+        const available = Math.max(
+            0,
+            componentStockMap.get(comp.variant_id) ?? componentStockMap.get(comp.product_id) ?? 0
+        );
         const possible = Math.floor(available / required);
         if (possible < maxBundles) {
             maxBundles = possible;

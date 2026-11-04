@@ -14,6 +14,19 @@ function tenantClause(): string {
     return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
 }
 
+/**
+ * Refuse a PO mutation when the fetched record belongs to another store.
+ * PocketBase update/delete cannot carry a tenant predicate, so ownership has
+ * to be checked on the record itself (PUR-5, PUR-9).
+ */
+function assertPurchaseOrderOwner(poRecord: { account_email?: string; id?: string; po_number?: string }): void {
+    const tenant = accountScopeEmail().trim().toLowerCase();
+    const owner = String(poRecord.account_email || '').trim().toLowerCase();
+    if (tenant && owner && owner !== tenant) {
+        throw new Error(`Purchase order ${poRecord.po_number || poRecord.id || ''} does not belong to this store.`);
+    }
+}
+
 // ===========================================
 // TYPES
 // ===========================================
@@ -123,6 +136,8 @@ export interface GoodsReceivedNote {
     received_by?: string;
     notes?: string;
     items: GRNItem[];
+    /** Quantities the over-receipt guard capped, surfaced to the caller (PUR-12). */
+    warnings?: string[];
     created_at?: string;
 }
 
@@ -550,7 +565,7 @@ export async function getPurchaseOrders(filters?: {
         if (scope) filterParts.push(scope);
 
         if (filters?.status) {
-            filterParts.push(`status="${filters.status}"`);
+            filterParts.push(`status="${sanitizeFilter(filters.status)}"`);
         }
         if (filters?.vendorId) {
             filterParts.push(`vendor="${sanitizeFilter(filters.vendorId)}"`);
@@ -654,6 +669,12 @@ export async function getPurchaseOrders(filters?: {
 }
 
 export async function updatePOStatus(id: string, status: POStatus): Promise<void> {
+    // The update addresses the row by bare id, so ownership must be verified
+    // after the fetch to stop cross-tenant status flips (PUR-9).
+    const po = await pb.collection('purchase_orders').getOne<{ account_email?: string; po_number?: string }>(id, {
+        fields: 'account_email,po_number',
+    });
+    assertPurchaseOrderOwner({ ...po, id });
     await pb.collection('purchase_orders').update(id, { status });
 }
 
@@ -714,159 +735,184 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
 
     // Insert GRN items and update stock
     const createdItems: GRNItem[] = [];
-    const validItems = grn.items.filter(i => i.quantity_received > 0);
+    // Rejection-only lines (nothing received, something rejected) must stay on
+    // the GRN instead of being silently dropped (PUR-11).
+    const validItems = grn.items.filter(
+        i => i.quantity_received > 0 || Number(i.quantity_rejected) > 0
+    );
     const reservedPoItems = new Set<string>();
     // Rollback bookkeeping: a failure part-way through the receipt must undo
-    // the reservations, the rows already written and the stock already added
-    // (INV-06).
+    // the reservations, the rows already written, the stock already added and
+    // the GRN header created before validation (INV-06, PUR-3).
     const reservedQuantities = new Map<string, number>();
     const appliedStock: { variantId: string; quantity: number; movementId?: string }[] = [];
     const createdGrnItemIds: string[] = [];
+    const warnings: string[] = [];
 
-    // Validate and reserve against over-receipt on linked PO items.
-    //
-    // The old guard read `quantity_received`, compared it, and wrote later, so two
-    // concurrent GRNs could both pass. The reservation increments first and rolls
-    // back only if the server-side total exceeds the ordered quantity; PocketBase
-    // serializes the update, so the second receipt sees the first one's value.
-    for (const item of validItems) {
-        if (!item.po_item_id) continue;
-
-        let poItem: Record<string, any>;
-        try {
-            poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
-        } catch (err) {
-            // Swallowing this used to let the receipt through unverified.
-            throw new Error(
-                `Could not verify purchase order item ${item.po_item_id} before receiving: ${err instanceof Error ? err.message : String(err)}`
-            );
-        }
-
-        const ordered = Number(poItem.quantity_ordered ?? poItem.quantity ?? 0);
-        const requested = Number(item.quantity_received);
-
-        if (!(ordered > 0)) {
-            reservedPoItems.add(item.po_item_id);
-            continue;
-        }
-
-        const reserved = await pb.collection('purchase_order_items').update(item.po_item_id, {
-            'quantity_received+': requested,
-        });
-        const receivedAfter = Number(reserved.quantity_received || 0);
-        const receivedBefore = receivedAfter - requested;
-
-        if (receivedAfter > ordered) {
-            // Put the reservation back before deciding what is allowed.
-            await pb.collection('purchase_order_items').update(item.po_item_id, {
-                'quantity_received+': -requested,
+    const rollbackReceipt = async () => {
+        for (const applied of appliedStock) {
+            await pb.collection('product_variants').update(applied.variantId, {
+                'stock_level+': -applied.quantity,
             }).catch(() => {});
-
-            const remaining = Math.max(0, ordered - receivedBefore);
-            if (remaining <= 0) {
-                throw new Error(`Purchase order item ${item.po_item_id} is already fully received`);
+            if (applied.movementId) {
+                await pb.collection('stock_movements').delete(applied.movementId).catch(() => {});
             }
-
-            console.warn(
-                `[GRN Guard] PO item ${item.po_item_id} ordered ${ordered}, already received ${receivedBefore}; capping ${requested} to ${remaining}.`
-            );
-            await pb.collection('purchase_order_items').update(item.po_item_id, {
-                'quantity_received+': remaining,
-            });
-            item.quantity_received = remaining;
         }
+        for (const grnItemId of createdGrnItemIds) {
+            await pb.collection('grn_items').delete(grnItemId).catch(() => {});
+        }
+        for (const [poItemId, quantity] of reservedQuantities) {
+            await pb.collection('purchase_order_items').update(poItemId, {
+                'quantity_received+': -quantity,
+            }).catch(() => {});
+        }
+        await pb.collection('goods_received_notes').delete(grnData.id).catch(() => {});
+    };
 
-        reservedPoItems.add(item.po_item_id);
-        reservedQuantities.set(
-            item.po_item_id,
-            (reservedQuantities.get(item.po_item_id) || 0) + Number(item.quantity_received || 0)
-        );
-    }
+    const applyReceipt = async () => {
+        // Validate and reserve against over-receipt on linked PO items.
+        //
+        // The old guard read `quantity_received`, compared it, and wrote later, so two
+        // concurrent GRNs could both pass. The reservation increments first and rolls
+        // back only if the server-side total exceeds the ordered quantity; PocketBase
+        // serializes the update, so the second receipt sees the first one's value.
+        for (const item of validItems) {
+            if (!item.po_item_id) continue;
 
-    for (const item of validItems.filter(i => i.quantity_received > 0)) {
-        const itemRecord = await pb.collection('grn_items').create({
-            account_email: accountEmail,
-            grn: grnData.id,
-            po_item: item.po_item_id || '',
-            variant: item.variant_id || '',
-            quantity_received: item.quantity_received,
-            quantity_rejected: item.quantity_rejected || 0,
-            rejection_reason: item.rejection_reason || '',
-        });
-        createdGrnItemIds.push(itemRecord.id);
+            const requested = Number(item.quantity_received);
+            // A rejection-only line has nothing to receive or reserve.
+            if (!(requested > 0)) continue;
 
-        // Update stock level for the variant
-        if (item.variant_id) {
+            let poItem: Record<string, any>;
             try {
-                await pb.collection('product_variants').update(item.variant_id, {
-                    'stock_level+': item.quantity_received,
-                });
-
-                // Log stock movement with account_email & PO metadata for full bidirectional traceability
-                const movement = await pb.collection('stock_movements').create({
-                    variant: item.variant_id,
-                    movement_type: 'purchase',
-                    quantity: item.quantity_received,
-                    reference_id: grnData.id,
-                    source: 'grn',
-                    notes: `PO #${poNumber || 'PO'} | GRN #${allocatedGrnNumber} | Received ${item.quantity_received} units from ${vendorName || 'Vendor'}`,
-                    account_email: accountEmail,
-                });
-                appliedStock.push({
-                    variantId: item.variant_id,
-                    quantity: Number(item.quantity_received),
-                    movementId: movement.id,
-                });
+                poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
             } catch (err) {
-                console.error('Error updating stock for variant:', item.variant_id, err);
-
-                // Undo everything the receipt has written so far. Leaving the
-                // reservation and the GRN behind would mark the PO received
-                // while the stock ledger never moved.
-                for (const applied of appliedStock) {
-                    await pb.collection('product_variants').update(applied.variantId, {
-                        'stock_level+': -applied.quantity,
-                    }).catch(() => {});
-                    if (applied.movementId) {
-                        await pb.collection('stock_movements').delete(applied.movementId).catch(() => {});
-                    }
-                }
-                for (const grnItemId of createdGrnItemIds) {
-                    await pb.collection('grn_items').delete(grnItemId).catch(() => {});
-                }
-                for (const [poItemId, quantity] of reservedQuantities) {
-                    await pb.collection('purchase_order_items').update(poItemId, {
-                        'quantity_received+': -quantity,
-                    }).catch(() => {});
-                }
-                await pb.collection('goods_received_notes').delete(grnData.id).catch(() => {});
-
+                // Swallowing this used to let the receipt through unverified.
                 throw new Error(
-                    `Received stock could not be applied for variant ${item.variant_id}: ${err instanceof Error ? err.message : String(err)}`
+                    `Could not verify purchase order item ${item.po_item_id} before receiving: ${err instanceof Error ? err.message : String(err)}`
                 );
             }
-        }
 
-        // The received quantity was already reserved atomically above; only the
-        // variant link still needs backfilling when the delivery names one.
-        if (item.po_item_id && reservedPoItems.has(item.po_item_id)) {
-            try {
-                const poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
-                if (item.variant_id && !poItem.variant) {
-                    await pb.collection('purchase_order_items').update(item.po_item_id, {
-                        variant: item.variant_id,
-                    });
-                }
-            } catch (err) {
-                console.error('Error updating PO item:', item.po_item_id, err);
+            const ordered = Number(poItem.quantity_ordered ?? poItem.quantity ?? 0);
+
+            if (!(ordered > 0)) {
+                reservedPoItems.add(item.po_item_id);
+                continue;
             }
+
+            const reserved = await pb.collection('purchase_order_items').update(item.po_item_id, {
+                'quantity_received+': requested,
+            });
+            const receivedAfter = Number(reserved.quantity_received || 0);
+            const receivedBefore = receivedAfter - requested;
+
+            if (receivedAfter > ordered) {
+                // Put the reservation back before deciding what is allowed.
+                await pb.collection('purchase_order_items').update(item.po_item_id, {
+                    'quantity_received+': -requested,
+                }).catch(() => {});
+
+                const remaining = Math.max(0, ordered - receivedBefore);
+                if (remaining <= 0) {
+                    throw new Error(`Purchase order item ${item.po_item_id} is already fully received`);
+                }
+
+                const capWarning =
+                    `PO item ${item.po_item_id} ordered ${ordered}, already received ${receivedBefore}; ` +
+                    `${requested} was capped to ${remaining} (shortfall ${requested - remaining}).`;
+                console.warn(`[GRN Guard] ${capWarning}`);
+                warnings.push(capWarning);
+                await pb.collection('purchase_order_items').update(item.po_item_id, {
+                    'quantity_received+': remaining,
+                });
+                item.quantity_received = remaining;
+            }
+
+            reservedPoItems.add(item.po_item_id);
+            reservedQuantities.set(
+                item.po_item_id,
+                (reservedQuantities.get(item.po_item_id) || 0) + Number(item.quantity_received || 0)
+            );
         }
 
-        createdItems.push({
-            ...item,
-            id: itemRecord.id,
-            grn_id: grnData.id,
-        });
+        for (const item of validItems) {
+            const itemRecord = await pb.collection('grn_items').create({
+                account_email: accountEmail,
+                grn: grnData.id,
+                po_item: item.po_item_id || '',
+                variant: item.variant_id || '',
+                quantity_received: item.quantity_received,
+                quantity_rejected: item.quantity_rejected || 0,
+                rejection_reason: item.rejection_reason || '',
+            });
+            createdGrnItemIds.push(itemRecord.id);
+
+            // Update stock level for the variant
+            if (item.variant_id && item.quantity_received > 0) {
+                try {
+                    await pb.collection('product_variants').update(item.variant_id, {
+                        'stock_level+': item.quantity_received,
+                    });
+
+                    // Track the applied stock BEFORE the movement row is written:
+                    // a failed movement create then still gets reversed by the
+                    // rollback (PUR-2).
+                    appliedStock.push({
+                        variantId: item.variant_id,
+                        quantity: Number(item.quantity_received),
+                    });
+
+                    // Log stock movement with account_email & PO metadata for full bidirectional traceability
+                    const movement = await pb.collection('stock_movements').create({
+                        variant: item.variant_id,
+                        movement_type: 'purchase',
+                        quantity: item.quantity_received,
+                        reference_id: grnData.id,
+                        source: 'grn',
+                        notes: `PO #${poNumber || 'PO'} | GRN #${allocatedGrnNumber} | Received ${item.quantity_received} units from ${vendorName || 'Vendor'}`,
+                        account_email: accountEmail,
+                    });
+                    appliedStock[appliedStock.length - 1].movementId = movement.id;
+                } catch (err) {
+                    console.error('Error updating stock for variant:', item.variant_id, err);
+                    throw new Error(
+                        `Received stock could not be applied for variant ${item.variant_id}: ${err instanceof Error ? err.message : String(err)}`
+                    );
+                }
+            }
+
+            // The received quantity was already reserved atomically above; only the
+            // variant link still needs backfilling when the delivery names one.
+            if (item.po_item_id && reservedPoItems.has(item.po_item_id)) {
+                try {
+                    const poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
+                    if (item.variant_id && !poItem.variant) {
+                        await pb.collection('purchase_order_items').update(item.po_item_id, {
+                            variant: item.variant_id,
+                        });
+                    }
+                } catch (err) {
+                    console.error('Error updating PO item:', item.po_item_id, err);
+                }
+            }
+
+            createdItems.push({
+                ...item,
+                id: itemRecord.id,
+                grn_id: grnData.id,
+            });
+        }
+    };
+
+    // The GRN header was created before these validations, so every failure
+    // (including an unverified PO item) has to take it and the partial writes
+    // with it — otherwise a retry finds an orphan GRN and leaked reservations
+    // (PUR-3).
+    try {
+        await applyReceipt();
+    } catch (err) {
+        await rollbackReceipt();
+        throw err;
     }
 
     // Update PO status based on received quantities
@@ -903,6 +949,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
         received_by: grn.received_by,
         notes: grn.notes,
         items: createdItems,
+        warnings,
         created_at: grnData.created,
     };
 }
@@ -1135,7 +1182,7 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
     try {
         // 1. Get all variants for this product
         const variants = await pb.collection('product_variants').getFullList({
-            filter: `product="${productId}"`,
+            filter: `product="${sanitizeFilter(productId)}"${tenantClause()}`,
             expand: 'product',
         });
         const variantIds = variants.map(v => v.id);
@@ -1153,7 +1200,7 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
 
         // 2. Fetch all GRN items for these variants
         const grnItems = await pb.collection('grn_items').getFullList({
-            filter: variantFilter,
+            filter: `${variantFilter}${tenantClause()}`,
             expand: 'grn,grn.vendor,po_item,variant,variant.product',
             sort: '-created',
         });
@@ -1209,7 +1256,7 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
 
         // 4. Fetch incoming PO items for these variants
         const poItems = await pb.collection('purchase_order_items').getFullList({
-            filter: variantFilter,
+            filter: `${variantFilter}${tenantClause()}`,
             expand: 'po,purchase_order,variant',
             sort: '-created',
         });
@@ -1373,7 +1420,7 @@ export async function reconcilePOWithInwardBatch(
         poRecord = await pb.collection('purchase_orders').getOne(poRefOrId, { expand: 'vendor' });
     } catch {
         poRecord = await pb.collection('purchase_orders').getFirstListItem(
-            `po_number="${sanitizeFilter(poRefOrId.trim())}"`,
+            `po_number="${sanitizeFilter(poRefOrId.trim())}"${tenantClause()}`,
             { expand: 'vendor' }
         ).catch(() => null);
     }
@@ -1381,6 +1428,10 @@ export async function reconcilePOWithInwardBatch(
     if (!poRecord) {
         throw new Error(`Purchase order "${poRefOrId}" not found for reconciliation.`);
     }
+
+    // An id lookup bypasses the tenant filter, so verify the owner before the
+    // inward cost is mutated on that PO (PUR-5).
+    assertPurchaseOrderOwner(poRecord);
 
     const { cleanNotes, meta } = decodePOMetadata(poRecord.notes);
 
@@ -1468,6 +1519,9 @@ export async function approvePODiscrepancy(
     }
 
     const poRecord = await pb.collection('purchase_orders').getOne(poId);
+    // Approval rewrites the PO metadata by bare id, so it must be this
+    // store's order before the approval status flips (PUR-5).
+    assertPurchaseOrderOwner({ ...poRecord, id: poId, po_number: poRecord.po_number });
     const { cleanNotes, meta } = decodePOMetadata(poRecord.notes);
 
     const currentUser = pb.authStore.model as any;

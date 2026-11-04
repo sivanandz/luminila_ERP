@@ -12,6 +12,7 @@
  */
 
 import { pb, sanitizeFilter } from './pocketbase';
+import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from './deployment-mode';
 
 export type ConsentChannel = 'storefront' | 'website' | 'whatsapp' | 'pos' | 'import' | 'system';
 export type ConsentPurpose = 'marketing' | 'transactional' | 'whatsapp_service';
@@ -36,13 +37,33 @@ export interface ConsentState {
     lastEventAt: string | null;
 }
 
+/**
+ * Tenant owner for the given client.
+ *
+ * Mirrors accountScopeEmail(): single-account mode always stamps the one
+ * account, and a staff session's `account_email` wins over the personal
+ * `email` — stamping consent with a staff login's personal address made the
+ * event invisible to the tenant gate (CUS-3).
+ */
 function tenantEmail(db: typeof pb): string {
-    return db.authStore.record?.email?.trim().toLowerCase() || '';
+    if (isSingleAccountMode()) return SINGLE_ACCOUNT_EMAIL;
+    const store = db.authStore as unknown as {
+        record?: { email?: string; account_email?: string } | null;
+        model?: { email?: string; account_email?: string } | null;
+    };
+    const model = store.record || store.model;
+    return String(model?.account_email || model?.email || '').trim().toLowerCase();
 }
 
-/** Append one consent decision. Best-effort: a ledger failure must not block an order. */
-export async function recordConsentEvent(db: typeof pb, input: ConsentEventInput): Promise<void> {
-    if (!input.phone && !input.customerId) return;
+/**
+ * Append one consent decision.
+ *
+ * Best-effort for the order flow, but the outcome is reported: `true` means the
+ * ledger row was written, `false` means it was not (CUS-14). Callers that must
+ * prove consent can react instead of assuming success.
+ */
+export async function recordConsentEvent(db: typeof pb, input: ConsentEventInput): Promise<boolean> {
+    if (!input.phone && !input.customerId) return false;
     try {
         await db.collection('consent_events').create({
             account_email: tenantEmail(db),
@@ -57,19 +78,21 @@ export async function recordConsentEvent(db: typeof pb, input: ConsentEventInput
             occurred_at: input.occurredAt || new Date().toISOString(),
             notes: input.notes || '',
         });
-        // Keep the customer profile in step with the newest decision. Without
-        // this call the ledger and `opt_in_marketing` drifted apart (CRM-10).
-        if (input.customerId) {
-            await syncCustomerConsentFlags(db, input.customerId, {
-                marketing: input.purpose === 'marketing' ? input.granted : undefined,
-                whatsappOptOut: input.purpose === 'whatsapp_service' && input.granted === false
-                    ? true
-                    : undefined,
-            });
-        }
     } catch (err) {
-        console.warn('[consent-ledger] Could not record consent event:', err);
+        console.error('[consent-ledger] Could not record consent event:', err);
+        return false;
     }
+    // Keep the customer profile in step with the newest decision. Without
+    // this call the ledger and `opt_in_marketing` drifted apart (CRM-10).
+    if (input.customerId) {
+        await syncCustomerConsentFlags(db, input.customerId, {
+            marketing: input.purpose === 'marketing' ? input.granted : undefined,
+            whatsappOptOut: input.purpose === 'whatsapp_service' && input.granted === false
+                ? true
+                : undefined,
+        });
+    }
+    return true;
 }
 
 /** Append several decisions for the same order/customer. */
@@ -124,7 +147,10 @@ export async function getConsentState(
             if (!state.lastEventAt && event.occurred_at) state.lastEventAt = event.occurred_at;
         }
     } catch (err) {
-        console.warn('[consent-ledger] Could not read consent state:', err);
+        console.error('[consent-ledger] Could not read consent state:', err);
+        // Fail closed: an all-null state reads as "no decision" downstream and
+        // silently authorizes marketing. An outage must block sends (CUS-4).
+        return { marketing: false, transactional: null, whatsapp_service: null, lastEventAt: null };
     }
     return state;
 }

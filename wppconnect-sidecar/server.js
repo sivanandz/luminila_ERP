@@ -30,6 +30,35 @@ function safeEqual(a, b) {
     return diff === 0;
 }
 
+// --- In-process rate limiting (SIDE-5) --------------------------------------
+// The sidecar listens on loopback, so any local process can reach it. Cap both
+// HTTP requests and socket handshakes per source address; a Map of timestamps
+// per bucket is enough and needs no dependency.
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX_REQUESTS = Number(process.env.WPP_RATE_LIMIT_MAX || 300);
+const RATE_MAX_HANDSHAKES = Number(process.env.WPP_RATE_LIMIT_HANDSHAKE_MAX || 60);
+const rateBuckets = new Map();
+
+function rateLimitExceeded(bucketKey, max) {
+    const now = Date.now();
+    const recent = (rateBuckets.get(bucketKey) || []).filter((t) => now - t < RATE_WINDOW_MS);
+    if (recent.length >= max) {
+        rateBuckets.set(bucketKey, recent);
+        return true;
+    }
+    recent.push(now);
+    rateBuckets.set(bucketKey, recent);
+    return false;
+}
+
+// Drop idle buckets so a long-running sidecar cannot grow the map without bound.
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, stamps] of rateBuckets) {
+        if (!stamps.some((t) => now - t < RATE_WINDOW_MS)) rateBuckets.delete(key);
+    }
+}, RATE_WINDOW_MS).unref();
+
 // Tokens directory: securely stored in user home to prevent git contamination and exFAT volume locks
 const TOKENS_BASE_DIR = process.env.WPP_TOKENS_DIR || path.join(os.homedir(), '.luminila', 'wpp_tokens');
 try {
@@ -50,8 +79,29 @@ function killOrphanedSessionBrowsers(sessionName) {
         const out = execSync('powershell "Get-WmiObject Win32_Process -Filter \\"Name=\'chrome.exe\'\\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"', { encoding: 'utf-8', timeout: 5000 });
         const list = JSON.parse(out || '[]');
         const items = Array.isArray(list) ? list : [list];
-        const sessionPath = getSessionTokenPath(sessionName);
-        const orphaned = items.filter(i => i.CommandLine && (i.CommandLine.includes(sessionName) || i.CommandLine.includes(sessionPath)));
+        const sessionPath = path.resolve(getSessionTokenPath(sessionName));
+        // Match the FULL --user-data-dir value with a boundary. Substring
+        // matching on the session name killed unrelated Chrome windows whose
+        // command line merely contained it (SIDE-13).
+        const needles = [
+            `--user-data-dir=${sessionPath}`,
+            `--user-data-dir=${sessionPath.split(path.sep).join('/')}`,
+        ].map((needle) => needle.toLowerCase());
+        const ownsProfile = (commandLine) => {
+            if (!commandLine) return false;
+            const lower = String(commandLine).toLowerCase();
+            return needles.some((needle) => {
+                let index = lower.indexOf(needle);
+                while (index !== -1) {
+                    const next = lower[index + needle.length];
+                    // End of the command line, a closing quote, or the next argument.
+                    if (next === undefined || next === '"' || next === "'" || /\s/.test(next)) return true;
+                    index = lower.indexOf(needle, index + 1);
+                }
+                return false;
+            });
+        };
+        const orphaned = items.filter(i => ownsProfile(i.CommandLine));
         for (const item of orphaned) {
             try {
                 process.kill(item.ProcessId, 'SIGKILL');
@@ -122,8 +172,29 @@ const io = new Server(server, {
     cors: { origin: corsOrigin, methods: ['GET', 'POST'] }
 });
 
+// Session-scoped event rooms (SIDE-14). A socket that names the sessions it
+// cares about only receives those sessions' events; a socket that names none
+// keeps the legacy all-sessions stream.
+const ALL_SESSIONS_ROOM = 'wpp:all';
+const SESSION_ROOM_PREFIX = 'wpp:session:';
+const sessionRoom = (name) => `${SESSION_ROOM_PREFIX}${name}`;
+
+function emitSessionEvent(names, event, data = {}) {
+    for (const name of names) {
+        const payload = { session: name, ...data };
+        io.to(sessionRoom(name)).emit(event, payload);
+        io.to(ALL_SESSIONS_ROOM).emit(event, payload);
+    }
+}
+
 io.use((socket, next) => {
-    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    const address = socket.handshake.address || 'unknown';
+    if (rateLimitExceeded(`socket:${address}`, RATE_MAX_HANDSHAKES)) {
+        return next(new Error('Too many connection attempts'));
+    }
+    // Header/token payload only: a query-string token (?token=) leaks into
+    // logs and URLs (SIDE-4).
+    const token = socket.handshake.auth?.token;
     if (!token || !safeEqual(String(token), SECRET_KEY)) {
         return next(new Error('Unauthorized: Invalid sidecar socket token'));
     }
@@ -145,23 +216,35 @@ app.use(cors({
     origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Api-Key'],
-    credentials: true
+    // Auth is the Authorization/x-api-key header, never a cookie, so credentialed
+    // CORS is not needed and only widens what a local page can do (SIDE-8).
+    credentials: false
 }));
 
 // Require Bearer token authentication for all /api endpoints
 function requireSidecarAuth(req, res, next) {
     if (req.method === 'OPTIONS') return next();
-    
+
     const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') 
-        ? authHeader.slice(7).trim() 
-        : (req.query.token || req.headers['x-api-key']);
-        
+    // Authorization / x-api-key only. Query-string tokens leak into URLs, logs
+    // and browser history (SIDE-4).
+    const token = authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7).trim()
+        : req.headers['x-api-key'];
+
     if (!token || !safeEqual(String(token), SECRET_KEY)) {
         return res.status(401).json({ success: false, error: 'Unauthorized: Invalid or missing sidecar API token' });
     }
     next();
 }
+
+app.use('/api', (req, res, next) => {
+    const address = req.socket.remoteAddress || 'unknown';
+    if (rateLimitExceeded(`api:${address}`, RATE_MAX_REQUESTS)) {
+        return res.status(429).json({ success: false, error: 'Too many requests' });
+    }
+    next();
+});
 
 app.use('/api', requireSidecarAuth);
 
@@ -174,7 +257,13 @@ app.param('session', (req, res, next, value) => {
     next();
 });
 
-app.use(express.json({ limit: '50mb' })); // Increase limit for media uploads
+// Body limits: 5 MB globally. The media routes below carry base64-in-JSON
+// payloads that legitimately exceed it, so only those get the larger cap — a
+// global 50 MB parse limit was a loopback DoS lever (SIDE-12).
+const MEDIA_ROUTE = /^\/api\/[A-Za-z0-9_-]+\/(send-image|send-video|send-file|send-audio|set-profile-pic|catalog\/products\/[^/]+\/image)$/;
+const jsonDefault = express.json({ limit: '5mb' });
+const jsonMedia = express.json({ limit: '25mb' });
+app.use((req, res, next) => (MEDIA_ROUTE.test(req.path) ? jsonMedia : jsonDefault)(req, res, next));
 
 // Session storage
 const sessions = new Map();
@@ -274,7 +363,7 @@ async function closeSessionData(data) {
 }
 
 function attachClientListeners(names, client) {
-    const emit = (event, data) => names.forEach(session => io.emit(event, { session, ...data }));
+    const emit = (event, data) => emitSessionEvent(names, event, data);
 
     const handleMsg = (message) => {
         const payload = {
@@ -329,7 +418,7 @@ function attachClientListeners(names, client) {
  */
 async function bootSession({ session, sessionData, phoneNumber, onLinkCode, aliasOf }) {
     const names = aliasOf ? [session, aliasOf] : [session];
-    const emit = (event, extra = {}) => names.forEach(s => io.emit(event, { session: s, ...extra }));
+    const emit = (event, extra = {}) => emitSessionEvent(names, event, extra);
 
     const markConnected = (client) => {
         if (!isCurrent(session, sessionData)) return;
@@ -658,8 +747,8 @@ app.post('/api/:session/logout', async (req, res) => {
     await cleanSessionTokens(session);
     await cleanSessionTokens(phoneSession);
 
-    io.emit('disconnected', { session });
-    io.emit('disconnected', { session: phoneSession });
+    emitSessionEvent([session], 'disconnected');
+    emitSessionEvent([phoneSession], 'disconnected');
 
     console.log(`[${session}] Logged out and cleaned up successfully`);
     res.json({ success: true, message: 'Logged out successfully' });
@@ -682,8 +771,8 @@ app.post('/api/:session/reset', async (req, res) => {
     await cleanSessionTokens(session);
     await cleanSessionTokens(phoneSession);
 
-    io.emit('disconnected', { session });
-    io.emit('disconnected', { session: phoneSession });
+    emitSessionEvent([session], 'disconnected');
+    emitSessionEvent([phoneSession], 'disconnected');
 
     res.json({ success: true, message: 'Session reset and all stored tokens cleared' });
 });
@@ -2644,7 +2733,18 @@ app.get('/api/:session/all-broadcast-list', async (req, res) => {
 
 // Socket.IO connection
 io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id);
+    // Scope event delivery to the sessions the client asked for (SIDE-14).
+    // `auth.sessions` (array) or `auth.session` (string) opt in; without either
+    // the socket keeps the legacy all-sessions stream.
+    const declared = socket.handshake.auth?.sessions ?? socket.handshake.auth?.session;
+    const requested = (Array.isArray(declared) ? declared : [declared])
+        .filter((name) => typeof name === 'string' && SESSION_NAME.test(name));
+    if (requested.length > 0) {
+        for (const name of requested) socket.join(sessionRoom(name));
+    } else {
+        socket.join(ALL_SESSIONS_ROOM);
+    }
+    console.log('Client connected:', socket.id, requested.length ? `sessions=${requested.join(',')}` : 'all sessions');
 
     socket.on('disconnect', () => {
         console.log('Client disconnected:', socket.id);
@@ -3195,7 +3295,7 @@ async function autoRestoreSavedSessions() {
                 }
                 const tokenPath = path.join(TOKENS_BASE_DIR, sessionName);
                 const idbPath = path.join(tokenPath, 'Default', 'IndexedDB', 'https_web.whatsapp.com_0.indexeddb.leveldb');
-                const isVerifiedSession = fs.existsSync(path.join(tokenPath, '.authenticated')) || sessionName === 'luminila';
+                const isVerifiedSession = fs.existsSync(path.join(tokenPath, '.authenticated'));
                 if (fs.existsSync(idbPath) && isVerifiedSession) {
                     console.log(`[${sessionName}] Found existing session profile on disk, auto-restoring...`);
                     const sessionData = newSessionData();

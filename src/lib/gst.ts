@@ -114,7 +114,19 @@ export function calculateGST(
     gstRate: number = GST_RATES.JEWELRY,
     cessRate: number = 0
 ): GSTCalculation {
-    const isInterState = sellerStateCode !== buyerStateCode && buyerStateCode !== '';
+    // Both state codes are required before a supply can be called inter-state.
+    // A blank seller code used to make every known buyer look out-of-state and
+    // charge IGST on a mis-configured store; fall back to the intra-state split
+    // (the same rule invoice-math.ts applies) instead of guessing a tax head
+    // (INV-15).
+    const sellerCode = String(sellerStateCode ?? '').trim();
+    const buyerCode = String(buyerStateCode ?? '').trim();
+    if (!sellerCode && buyerCode) {
+        console.warn(
+            '[gst] Seller state code is not configured; treating the supply as intra-state (CGST/SGST). Set store_state_code or store_gstin.'
+        );
+    }
+    const isInterState = Boolean(sellerCode) && Boolean(buyerCode) && sellerCode !== buyerCode;
 
     let cgstRate = 0;
     let sgstRate = 0;

@@ -18,6 +18,7 @@
  */
 
 import { allocateLandedCosts, weightedAverageCost } from './valuation';
+import { sanitizeFilter } from './pocketbase';
 
 export type CostBasis = 'landed' | 'purchase' | 'unknown';
 
@@ -60,16 +61,23 @@ export async function resolveUnitCosts(
 
     const variantIds = [...new Set(refs.map((r) => r.variantId).filter((v): v is string => Boolean(v)))];
     const productIds = [...new Set(refs.map((r) => r.productId).filter((p): p is string => Boolean(p)))];
+    const tenant = sanitizeFilter(tenantEmail);
 
     // ---- products: current purchase cost fallback (explicit tenant scope) ----
     const productCost = new Map<string, number>();
     try {
-        const products = await db.collection('products').getFullList({
-            filter: `account_email="${tenantEmail}"`,
-        });
-        for (const p of products) {
-            const cost = Number(p.cost_price || 0);
-            if (cost > 0) productCost.set(String(p.id), cost);
+        // Only the products this transaction touches: the previous unfiltered
+        // fetch read the tenant's whole catalog per cost lookup (BIZ-10).
+        for (const ids of chunk(productIds, CHUNK)) {
+            const idClauses = ids.map((id) => `id="${sanitizeFilter(id)}"`).join(' || ');
+            if (!idClauses) continue;
+            const products = await db.collection('products').getFullList({
+                filter: `account_email="${tenant}" && (${idClauses})`,
+            });
+            for (const p of products) {
+                const cost = Number(p.cost_price || 0);
+                if (cost > 0) productCost.set(String(p.id), cost);
+            }
         }
     } catch (e) {
         console.warn('[item-cost] product cost lookup failed:', e);
@@ -82,7 +90,7 @@ export async function resolveUnitCosts(
         const poItemRows: Array<Record<string, any>> = [];
         for (const ids of chunk(variantIds, CHUNK)) {
             if (ids.length === 0) continue;
-            const filter = `account_email="${tenantEmail}" && (${ids.map((id) => `variant="${id}"`).join(' || ')})`;
+            const filter = `account_email="${tenant}" && (${ids.map((id) => `variant="${sanitizeFilter(id)}"`).join(' || ')})`;
             const rows = await db.collection('purchase_order_items').getFullList({ filter }).catch(() => []);
             poItemRows.push(...rows);
         }
@@ -91,8 +99,8 @@ export async function resolveUnitCosts(
         const receivedPos: Array<Record<string, any>> = [];
         for (const ids of chunk(poIds, CHUNK)) {
             if (ids.length === 0) continue;
-            const filter = `account_email="${tenantEmail}" && (status="received" || status="partial") && (${ids
-                .map((id) => `id="${id}"`)
+            const filter = `account_email="${tenant}" && (status="received" || status="partial") && (${ids
+                .map((id) => `id="${sanitizeFilter(id)}"`)
                 .join(' || ')})`;
             const rows = await db.collection('purchase_orders').getFullList({ filter }).catch(() => []);
             receivedPos.push(...rows);
@@ -103,7 +111,7 @@ export async function resolveUnitCosts(
             // whole PO, not just our variants, or it over-charges them.
             const allLinesByPo = new Map<string, Array<Record<string, any>>>();
             for (const ids of chunk([...receivedById.keys()], CHUNK)) {
-                const filter = `account_email="${tenantEmail}" && (${ids.map((id) => `purchase_order="${id}"`).join(' || ')})`;
+                const filter = `account_email="${tenant}" && (${ids.map((id) => `purchase_order="${sanitizeFilter(id)}"`).join(' || ')})`;
                 const rows = await db.collection('purchase_order_items').getFullList({ filter }).catch(() => []);
                 for (const row of rows) {
                     const poId = String(row.purchase_order || '');

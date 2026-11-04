@@ -84,27 +84,35 @@ export async function syncCatalog() {
 
         // 3. Fetch WhatsApp Catalog
         let waProducts: WhatsAppProduct[] = [];
+        // An empty list is indistinguishable from "the sidecar is down", so the
+        // diff must not run against a catalog that was never fetched: that
+        // recreated every active SKU in WhatsApp (SYN-4).
+        let catalogFetched = false;
         try {
             const res = await fetch(`${SIDECAR_URL}/catalog/products`);
             if (!res.ok) throw new Error('Sidecar unreachable');
             const json = await res.json();
-            if (json.success) {
-                const rawWaProducts = json.products || [];
-                waProducts = rawWaProducts.map((p: SidecarCatalogProduct) => ({
-                    id: p.id,
-                    name: p.name,
-                    description: p.description,
-                    price: p.price,
-                    currency: p.currency,
-                    isHidden: p.isHidden,
-                    image: p.image,
-                    retailerId: p.retailerId || p.sku
-                }));
-            }
+            if (!json.success) throw new Error('Sidecar returned an unsuccessful catalog response');
+            const rawWaProducts = json.products || [];
+            waProducts = rawWaProducts.map((p: SidecarCatalogProduct) => ({
+                id: p.id,
+                name: p.name,
+                description: p.description,
+                price: p.price,
+                currency: p.currency,
+                isHidden: p.isHidden,
+                image: p.image,
+                retailerId: p.retailerId || p.sku
+            }));
+            catalogFetched = true;
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
             console.warn('Could not fetch WA catalog:', message);
             errors.push({ type: 'fetch_wa_catalog', error: message });
+        }
+
+        if (!catalogFetched) {
+            throw new Error('WhatsApp catalog could not be fetched; sync aborted before diffing so no product is recreated');
         }
 
         // 4. Index WA Products by retailerId (SKU)
@@ -146,9 +154,15 @@ export async function syncCatalog() {
             }
         }
 
-        // 6. Finish
+        // 6. Finish — a run that recorded errors never reached WhatsApp in full,
+        // so it must not be logged as a clean success (SYN-14).
+        const status = errors.length === 0
+            ? 'success'
+            : (added + updated + deleted) > 0
+                ? 'partial'
+                : 'failed';
         await pb.collection('catalog_sync_logs').update(logId, {
-            status: 'success',
+            status,
             completed_at: new Date().toISOString(),
             products_added: added,
             products_updated: updated,

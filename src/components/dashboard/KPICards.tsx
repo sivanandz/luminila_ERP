@@ -52,7 +52,7 @@ interface KPICardsProps {
         revenueChange: number;
         grossMargin: number;
         aov: number;
-        marginChange: { current: number; previous: number; deltaPct: number };
+        marginChange: { current: number; previous: number; deltaPct: number | null };
     };
 }
 
@@ -85,7 +85,7 @@ export function KPICards({ stats }: KPICardsProps) {
                 title="Gross Margin"
                 value={formatINR(stats.grossMargin)}
                 subtitle={stats.totalRevenue > 0 ? `${Math.round((stats.grossMargin / Math.max(stats.totalRevenue, 1)) * 1000) / 10}% of revenue` : undefined}
-                change={stats.marginChange.deltaPct}
+                change={stats.marginChange.deltaPct ?? undefined}
                 icon={<PiggyBank className="w-5 h-5" />}
                 iconColor="text-purple-400"
             />

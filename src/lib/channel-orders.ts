@@ -13,8 +13,14 @@
  */
 
 import type PocketBase from 'pocketbase';
+import { ClientResponseError } from 'pocketbase';
 import { allocateDiscountPaise, splitInclusiveLine, toPaise } from './invoice-math';
 import { GST_RATES } from './gst';
+
+/** True only when the lookup found nothing (a 404), not on transient errors. */
+function isNotFoundError(err: unknown): boolean {
+    return err instanceof ClientResponseError ? err.status === 404 : (err as { status?: number })?.status === 404;
+}
 
 export interface ChannelCustomerInput {
     tenantEmail: string;
@@ -82,12 +88,19 @@ export async function upsertChannelCustomer(
     } | null = null;
 
     if (suffix.length === 10) {
-        existing = await client.collection('customers').getFirstListItem(
-            client.filter('phone ~ {:phone} && account_email = {:tenant}', {
-                phone: suffix,
-                tenant: input.tenantEmail,
-            })
-        ).catch(() => null);
+        // Only "no such customer" may proceed to a create; a failed lookup was
+        // read as "new customer" and created duplicates (ORD-14).
+        try {
+            existing = await client.collection('customers').getFirstListItem(
+                client.filter('phone ~ {:phone} && account_email = {:tenant}', {
+                    phone: suffix,
+                    tenant: input.tenantEmail,
+                })
+            );
+        } catch (err) {
+            if (!isNotFoundError(err)) throw err;
+            existing = null;
+        }
     }
 
     if (existing) {
@@ -189,16 +202,30 @@ export async function applyPurchaseReversal(
 ): Promise<void> {
     if (!customerId) return;
     const decrementOrders = options.decrementOrders !== false;
+    const amount = Math.max(0, Number(amountRupees) || 0);
     try {
-        const customer = await client
+        const body: Record<string, number> = {};
+        // Atomic modifiers: the previous read-then-write overwrote concurrent
+        // purchases (ORD-13).
+        if (amount > 0) body['total_spent-'] = amount;
+        if (decrementOrders) body['total_orders-'] = 1;
+        if (Object.keys(body).length === 0) return;
+
+        const updated = await client
             .collection('customers')
-            .getOne<{ total_spent?: number; total_orders?: number }>(customerId);
-        const spent = Math.max(0, Number(customer.total_spent) || 0);
-        const orders = Math.max(0, Number(customer.total_orders) || 0);
-        await client.collection('customers').update(customerId, {
-            total_spent: Math.max(0, spent - Math.max(0, amountRupees)),
-            ...(decrementOrders ? { total_orders: Math.max(0, orders - 1) } : {}),
-        });
+            .update<{ total_spent?: number; total_orders?: number }>(customerId, body);
+
+        // A modifier cannot express "not below zero". Clamp only the row the
+        // modifier itself returned, so a legacy order cannot leave the
+        // counters negative without re-introducing a racing pre-read.
+        const clamp: Record<string, number> = {};
+        if (Number(updated.total_spent) < 0) clamp.total_spent = 0;
+        if (decrementOrders && Number(updated.total_orders) < 0) clamp.total_orders = 0;
+        if (Object.keys(clamp).length > 0) {
+            await client.collection('customers').update(customerId, clamp).catch((err) =>
+                console.warn('[channel-orders] aggregate floor clamp failed:', err)
+            );
+        }
     } catch (err) {
         console.warn('[channel-orders] aggregate reversal failed:', err);
     }
@@ -353,7 +380,7 @@ export function computeChannelTax(
 export async function findExistingChannelOrder(
     client: PocketBase,
     orderNumber: string,
-    tenantEmail?: string,
+    tenantEmail: string,
     customerPhone?: string
 ): Promise<{
     id: string;
@@ -366,16 +393,36 @@ export async function findExistingChannelOrder(
     tax_total?: number;
 } | null> {
     if (!orderNumber) return null;
+    // A lookup without a tenant used to fall back to a global order_number
+    // match, re-opening cross-tenant replay (ORD-14). Refuse it instead.
+    const tenant = String(tenantEmail || '').trim().toLowerCase();
+    if (!tenant) {
+        throw new Error('A tenant is required to look up an existing channel order.');
+    }
 
-    const filter = tenantEmail
-        ? client.filter('order_number = {:num} && account_email = {:tenant}', {
-            num: orderNumber,
-            tenant: tenantEmail.trim().toLowerCase(),
-        })
-        : client.filter('order_number = {:num}', { num: orderNumber });
+    const filter = client.filter('order_number = {:num} && account_email = {:tenant}', {
+        num: orderNumber,
+        tenant,
+    });
 
-    const record = await client.collection('sales_orders').getFirstListItem(filter).catch(() => null);
-    if (!record) return null;
+    // Only a genuine "not found" means the order does not exist; a transient
+    // lookup failure must not be read as a new order (duplicate submission).
+    let record: {
+        id: string;
+        order_number?: string;
+        internal_notes?: string;
+        status?: string;
+        customer?: string;
+        customer_phone?: string;
+        total?: number;
+        tax_total?: number;
+    };
+    try {
+        record = await client.collection('sales_orders').getFirstListItem(filter);
+    } catch (err) {
+        if (isNotFoundError(err)) return null;
+        throw err;
+    }
 
     const wanted = String(customerPhone || '').replace(/\D/g, '').slice(-10);
     if (wanted) {

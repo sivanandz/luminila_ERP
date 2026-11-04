@@ -133,9 +133,11 @@ export async function loadTxWindow(tenant: string, win: DateWindow, db: Analytic
         ` && (order_date<"${pbBound(win.endISO)}" || (order_date="" && created<"${pbBound(win.endISO)}"))` +
         ` && (${REVENUE_ORDER_STATUSES.map((s) => `status="${s}"`).join(' || ')})`;
 
+    // A failure here must NOT be turned into an empty transaction set: that
+    // silently reported ₹0 revenue for every KPI on the dashboard (RPT-3).
     const [salesRows, orderRows] = await Promise.all([
-        db.collection('sales').getFullList({ filter: salesFilter }).catch(() => []),
-        db.collection('sales_orders').getFullList({ filter: ordersFilter }).catch(() => []),
+        db.collection('sales').getFullList({ filter: salesFilter }),
+        db.collection('sales_orders').getFullList({ filter: ordersFilter }),
     ]);
     // AnalyticsDb deliberately exposes a minimal, untyped client shape so server
     // routes can pass their own session client; the row types are asserted here.
@@ -248,15 +250,29 @@ async function fetchByChunks(
     const chunks: string[][] = [];
     for (let i = 0; i < ids.length; i += 25) chunks.push(ids.slice(i, i + 25));
 
+    let droppedIds = 0;
     const results = await Promise.all(
-        chunks.map((chunk) => {
+        chunks.map(async (chunk) => {
             const filter = `${extraFilter} && (${chunk.map((id) => `${field}="${id}"`).join(' || ')})`;
-            return db
-                .collection(collection)
-                .getFullList({ filter, expand })
-                .catch(() => [] as ItemRowWithExpand[]);
+            try {
+                return await db.collection(collection).getFullList({ filter, expand });
+            } catch (error) {
+                // Count and name what was lost: a silently dropped chunk
+                // understates COGS/margin/units with no trace (RPT-4).
+                droppedIds += chunk.length;
+                console.error(
+                    `[analytics-v2] ${collection} chunk fetch failed; ${chunk.length} line ids dropped:`,
+                    error
+                );
+                return [] as ItemRowWithExpand[];
+            }
         })
     );
+    if (droppedIds > 0) {
+        console.error(
+            `[analytics-v2] ${collection}: ${droppedIds} of ${ids.length} line ids were dropped — margins/units are understated for this window.`
+        );
+    }
     return results.flat();
 }
 

@@ -155,6 +155,11 @@ export const DEFAULT_WHOLESALE_TIERS: WholesaleTierDiscount[] = [
 
 /**
  * Calculates volume-based wholesale & reseller pricing for fashion jewelry
+ *
+ * Tiers are caller-supplied, so they are validated before use: a discount above
+ * 100% produced a negative unit price, NaN slipped through Math.max, and the
+ * old loop let the LAST matching array entry win instead of the best tier
+ * (ENG-9).
  */
 export function calculateWholesalePrice(
     basePrice: number,
@@ -166,15 +171,32 @@ export function calculateWholesalePrice(
     discountPercentApplied: number;
     totalSavings: number;
 } {
-    const qty = Math.max(1, Math.floor(quantity));
-    const base = Math.max(0, Number(basePrice) || 0);
+    const rawQuantity = Number(quantity);
+    const qty = Math.max(1, Number.isFinite(rawQuantity) ? Math.floor(rawQuantity) : 1);
+    const rawBase = Number(basePrice);
+    const base = Math.max(0, Number.isFinite(rawBase) ? rawBase : 0);
 
+    const tiers = (Array.isArray(customTiers) ? customTiers : DEFAULT_WHOLESALE_TIERS)
+        .map((tier) => ({
+            minQuantity: Number(tier?.minQuantity),
+            maxQuantity: tier?.maxQuantity === undefined || tier?.maxQuantity === null
+                ? undefined
+                : Number(tier.maxQuantity),
+            discountPercent: Number(tier?.discountPercent),
+        }))
+        .filter((tier) => Number.isFinite(tier.minQuantity) && tier.minQuantity >= 0)
+        .filter((tier) => tier.maxQuantity === undefined
+            || (Number.isFinite(tier.maxQuantity) && tier.maxQuantity >= tier.minQuantity))
+        .filter((tier) => Number.isFinite(tier.discountPercent)
+            && tier.discountPercent >= 0
+            && tier.discountPercent <= 100)
+        .sort((a, b) => a.minQuantity - b.minQuantity);
+
+    // Best applicable tier wins, independent of array order.
     let discountPercent = 0;
-    for (const tier of customTiers) {
-        if (qty >= tier.minQuantity) {
-            if (!tier.maxQuantity || qty <= tier.maxQuantity) {
-                discountPercent = tier.discountPercent;
-            }
+    for (const tier of tiers) {
+        if (qty >= tier.minQuantity && (tier.maxQuantity === undefined || qty <= tier.maxQuantity)) {
+            discountPercent = Math.max(discountPercent, tier.discountPercent);
         }
     }
 

@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { getStoreSettings } from './invoice';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
+import { calculateGST, getStateCode, GST_RATES } from './gst';
 
 // ============================================
 // TYPES
@@ -140,6 +141,7 @@ interface SalesOrderItemRecord {
     quantity: number;
     unit_price: number;
     tax_rate?: number;
+    discount_amount?: number;
     total?: number;
 }
 
@@ -164,6 +166,27 @@ export const CHALLAN_STATUS_LABELS: Record<ChallanStatus, string> = {
     'returned': 'Returned',
     'cancelled': 'Cancelled'
 };
+
+/**
+ * Allowed challan status transitions. `updateChallanStatus` used to write any
+ * status by bare id, so a caller could flip a cancelled challan straight to
+ * delivered (ORD-6).
+ */
+const CHALLAN_TRANSITIONS: Record<ChallanStatus, ChallanStatus[]> = {
+    draft: ['issued', 'cancelled'],
+    // `issued -> delivered` is kept because the detail page exposes "Mark
+    // Delivered" before transit; everything else must follow the chain.
+    issued: ['in_transit', 'delivered', 'cancelled'],
+    in_transit: ['delivered', 'returned', 'cancelled'],
+    delivered: ['returned'],
+    returned: [],
+    cancelled: [],
+};
+
+/** Round rupee amounts to paise so accumulated tax lines do not drift. */
+function round2(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
+}
 
 // ============================================
 // NUMBER GENERATION
@@ -238,30 +261,42 @@ export async function createChallan(
             }
         );
 
-        // Insert items
-        for (const item of items) {
-            await pb.collection('delivery_challan_items').create({
-                account_email: getCurrentTenantEmail(),
-                challan: data.id,
-                product: item.product_id || '',
-                variant: item.variant_id || '',
-                sr_no: item.sr_no,
-                description: item.description,
-                hsn_code: item.hsn_code,
-                quantity: item.quantity,
-                unit: item.unit,
-                unit_price: item.unit_price,
-                taxable_value: item.taxable_value,
-                gst_rate: item.gst_rate,
-                cgst_rate: item.cgst_rate,
-                cgst_amount: item.cgst_amount,
-                sgst_rate: item.sgst_rate,
-                sgst_amount: item.sgst_amount,
-                igst_rate: item.igst_rate,
-                igst_amount: item.igst_amount,
-                total: item.total,
-                remarks: item.remarks || '',
-            });
+        // Insert items. A mid-loop failure left an orphan challan with partial
+        // lines, so the header and every created line are removed on error
+        // before the failure is rethrown (ORD-7).
+        const createdItemIds: string[] = [];
+        try {
+            for (const item of items) {
+                const created = await pb.collection('delivery_challan_items').create({
+                    account_email: getCurrentTenantEmail(),
+                    challan: data.id,
+                    product: item.product_id || '',
+                    variant: item.variant_id || '',
+                    sr_no: item.sr_no,
+                    description: item.description,
+                    hsn_code: item.hsn_code,
+                    quantity: item.quantity,
+                    unit: item.unit,
+                    unit_price: item.unit_price,
+                    taxable_value: item.taxable_value,
+                    gst_rate: item.gst_rate,
+                    cgst_rate: item.cgst_rate,
+                    cgst_amount: item.cgst_amount,
+                    sgst_rate: item.sgst_rate,
+                    sgst_amount: item.sgst_amount,
+                    igst_rate: item.igst_rate,
+                    igst_amount: item.igst_amount,
+                    total: item.total,
+                    remarks: item.remarks || '',
+                });
+                createdItemIds.push(created.id);
+            }
+        } catch (itemErr) {
+            for (const itemId of createdItemIds) {
+                await pb.collection('delivery_challan_items').delete(itemId).catch(() => {});
+            }
+            await pb.collection('delivery_challans').delete(data.id).catch(() => {});
+            throw itemErr;
         }
 
         toast.success('Delivery Challan created successfully');
@@ -434,6 +469,25 @@ export async function updateChallanStatus(
     additionalData?: { delivered_at?: string; notes?: string }
 ): Promise<boolean> {
     try {
+        // Ownership first: the update below is addressed by bare id (ORD-6).
+        const existing = await pb.collection('delivery_challans').getOne<{
+            status?: ChallanStatus;
+            account_email?: string;
+        }>(id);
+        const owner = String(existing.account_email || '').trim().toLowerCase();
+        if (owner && owner !== getCurrentTenantEmail()) {
+            toast.error('Challan does not belong to this store');
+            return false;
+        }
+
+        const current = (existing.status || 'draft') as ChallanStatus;
+        if (current === status) return true;
+        const allowed = CHALLAN_TRANSITIONS[current];
+        if (!allowed || !allowed.includes(status)) {
+            toast.error(`Cannot move a challan from "${CHALLAN_STATUS_LABELS[current] || current}" to "${CHALLAN_STATUS_LABELS[status] || status}"`);
+            return false;
+        }
+
         const updateData: { status: ChallanStatus; delivered_at?: string; notes?: string } = { status };
 
         if (status === 'delivered' && !additionalData?.delivered_at) {
@@ -465,38 +519,91 @@ export async function generateChallanFromOrder(
     challanType: ChallanType = 'other'
 ): Promise<{ success: boolean; challanId?: string }> {
     try {
-        const order = await pb.collection('sales_orders').getOne(orderId);
+        const order = await pb.collection('sales_orders').getOne<{
+            account_email?: string;
+            customer?: string;
+            customer_name?: string;
+            shipping_address?: string;
+            order_number?: string;
+            buyer_state_code?: string;
+            place_of_supply?: string;
+        }>(orderId);
+        // The order was read by bare id and its items were not tenant-filtered
+        // (ORD-11).
+        const tenant = getCurrentTenantEmail();
+        const owner = String(order.account_email || '').trim().toLowerCase();
+        if (owner && owner !== tenant) {
+            toast.error('Order does not belong to this store');
+            return { success: false };
+        }
+
         const orderItems = await pb.collection('sales_order_items').getFullList<SalesOrderItemRecord>({
             // sales_order_items has no `sales_order` column; the relation is `order`.
-            filter: `order="${sanitizeFilter(orderId)}"`,
+            filter: `order="${sanitizeFilter(orderId)}" && account_email="${sanitizeFilter(tenant)}"`,
         });
 
         const settings = await getStoreSettings();
 
-        const items: Omit<ChallanItem, 'id' | 'challan_id'>[] = orderItems.map((item, index) => ({
-            sr_no: index + 1,
-            product_id: item.product,
-            variant_id: item.variant,
-            description: item.description || 'Item',
-            hsn_code: '7113',
-            quantity: item.quantity,
-            unit: 'PCS',
-            unit_price: item.unit_price,
-            taxable_value: item.quantity * item.unit_price,
-            gst_rate: item.tax_rate || 3,
-            cgst_rate: (item.tax_rate || 3) / 2,
-            cgst_amount: (item.quantity * item.unit_price * ((item.tax_rate || 3) / 2)) / 100,
-            sgst_rate: (item.tax_rate || 3) / 2,
-            sgst_amount: (item.quantity * item.unit_price * ((item.tax_rate || 3) / 2)) / 100,
-            igst_rate: 0,
-            igst_amount: 0,
-            total: item.total || item.quantity * item.unit_price,
-        }));
+        // Place of supply comes from the order, then the customer profile. Both
+        // codes are required before the CGST/SGST vs IGST split can be chosen.
+        const gstinState = String(settings.store_gstin || '').trim().substring(0, 2);
+        const sellerStateCode =
+            settings.store_state_code || (/^\d{2}$/.test(gstinState) ? gstinState : '') || '27';
+        let buyerStateCode = String(order.buyer_state_code || order.place_of_supply || '').trim();
+        if (!buyerStateCode && order.customer) {
+            try {
+                const customer = await pb.collection('customers').getOne<{
+                    state?: string;
+                    state_code?: string;
+                    gstin?: string;
+                }>(order.customer);
+                const customerGstinState = String(customer.gstin || '').trim().substring(0, 2);
+                buyerStateCode =
+                    customer.state_code ||
+                    getStateCode(customer.state || '') ||
+                    (/^\d{2}$/.test(customerGstinState) ? customerGstinState : '');
+            } catch {
+                // Keep the order's own code, else fall back to the seller state.
+            }
+        }
+        if (!buyerStateCode) buyerStateCode = sellerStateCode;
 
-        const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
-        const taxableValue = items.reduce((sum, item) => sum + item.taxable_value, 0);
-        const cgstAmount = items.reduce((sum, item) => sum + item.cgst_amount, 0);
-        const sgstAmount = items.reduce((sum, item) => sum + item.sgst_amount, 0);
+        const items: Omit<ChallanItem, 'id' | 'challan_id'>[] = orderItems.map((item, index) => {
+            const quantity = Number(item.quantity) || 0;
+            const unitPrice = Number(item.unit_price) || 0;
+            const gross = round2(quantity * unitPrice);
+            // GST applies to the post-discount taxable value, not the gross line
+            // (ORD-11). Nullish rate keeps an explicit 0% exempt line exempt.
+            const discount = Math.min(Math.max(0, Number(item.discount_amount) || 0), gross);
+            const taxable = round2(gross - discount);
+            const gstRate = Math.max(0, Number(item.tax_rate ?? GST_RATES.JEWELRY));
+            const gst = calculateGST(taxable, sellerStateCode, buyerStateCode, gstRate);
+            return {
+                sr_no: index + 1,
+                product_id: item.product,
+                variant_id: item.variant,
+                description: item.description || 'Item',
+                hsn_code: '7113',
+                quantity,
+                unit: 'PCS',
+                unit_price: unitPrice,
+                taxable_value: gst.taxableAmount,
+                gst_rate: gstRate,
+                cgst_rate: gst.cgstRate,
+                cgst_amount: gst.cgstAmount,
+                sgst_rate: gst.sgstRate,
+                sgst_amount: gst.sgstAmount,
+                igst_rate: gst.igstRate,
+                igst_amount: gst.igstAmount,
+                total: gst.grandTotal,
+            };
+        });
+
+        const totalQuantity = round2(items.reduce((sum, item) => sum + item.quantity, 0));
+        const taxableValue = round2(items.reduce((sum, item) => sum + item.taxable_value, 0));
+        const cgstAmount = round2(items.reduce((sum, item) => sum + item.cgst_amount, 0));
+        const sgstAmount = round2(items.reduce((sum, item) => sum + item.sgst_amount, 0));
+        const igstAmount = round2(items.reduce((sum, item) => sum + item.igst_amount, 0));
 
         const challan: Omit<DeliveryChallan, 'id' | 'challan_number' | 'created_at' | 'updated_at'> = {
             challan_date: new Date().toISOString().split('T')[0],
@@ -510,15 +617,17 @@ export async function generateChallanFromOrder(
                 [settings.store_state, settings.store_pincode].filter(Boolean).join(" - ")
             ].filter(Boolean).join(", "),
             consignor_state_code: settings.store_state_code,
-            consignee_name: order.customer_name,
+            consignee_name: order.customer_name || '',
             consignee_address: order.shipping_address,
+            consignee_state_code: buyerStateCode,
+            place_of_supply: buyerStateCode,
             sales_order_id: orderId,
             total_quantity: totalQuantity,
             taxable_value: taxableValue,
             cgst_amount: cgstAmount,
             sgst_amount: sgstAmount,
-            igst_amount: 0,
-            total_value: order.total,
+            igst_amount: igstAmount,
+            total_value: round2(taxableValue + cgstAmount + sgstAmount + igstAmount),
             reason: `Delivery against Order ${order.order_number}`,
         };
 

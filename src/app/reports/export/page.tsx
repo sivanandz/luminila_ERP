@@ -76,8 +76,8 @@ export default function ExportInvoicePage() {
         currency,
         exchangeRateToInr: effectiveRate,
         isLutExport: isLut,
-        lutArnNumber: lutArn,
-        portCode,
+        lutArnNumber: lutArn.trim() || (isLut ? "PENDING" : ""),
+        portCode: portCode.trim() || "INBLR4",
         shippingBillNumber: shippingBill,
         items: items.map((item) => ({
             sku: item.sku || "SKU",
@@ -103,7 +103,10 @@ export default function ExportInvoicePage() {
             toast.error("Add at least one line with quantity and price");
             return;
         }
-        // Download only complete lines: the preview keeps blank rows for
+        if (isLut && (!lutArn.trim() || lutArn.trim() === "PENDING")) {
+            toast.error("LUT ARN number is required before downloading a LUT export invoice");
+            return;
+        }
         // editing, but the statutory file must not carry zero-value lines
         // (FIN-19).
         const downloadInvoice = compileLutExportInvoice({

@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { getPocketBaseUrl, setPocketBaseUrl, checkServerStatus, ServerHealthResult } from "@/lib/pocketbase";
 import { getWhatsAppUrl, setWhatsAppUrl, checkWhatsAppStatus } from "@/lib/whatsapp";
+import { usePermissions } from "@/hooks/usePermissions";
 import { Wifi, CheckCircle2, XCircle, Loader2, Globe, Laptop, ShieldCheck, MessageSquare } from "lucide-react";
 
 interface ServerConfigModalProps {
@@ -21,11 +22,24 @@ interface ServerConfigModalProps {
     onClose: () => void;
 }
 
+/** CMP-13: only http(s) endpoints may be persisted app-wide. */
+function isHttpUrl(value: string): boolean {
+    try {
+        const parsed = new URL(value.trim());
+        return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+        return false;
+    }
+}
+
 export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
+    // CMP-13: rewriting the PB/sidecar URL affects every device — admins only.
+    const { isAdmin, loading: permissionsLoading } = usePermissions();
     const [serverUrl, setServerUrl] = useState("");
     const [status, setStatus] = useState<ServerHealthResult | null>(null);
     const [isTesting, setIsTesting] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
+    const [formError, setFormError] = useState<string | null>(null);
 
     // WhatsApp sidecar configuration state
     const [waUrl, setWaUrl] = useState("");
@@ -47,6 +61,10 @@ export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
 
     const testConnection = async (urlToTest: string) => {
         if (!urlToTest.trim()) return;
+        if (!isHttpUrl(urlToTest)) {
+            setStatus({ ok: false, url: urlToTest, isTunnel: false, error: "URL must start with http:// or https://" });
+            return;
+        }
         setIsTesting(true);
         setStatus(null);
         try {
@@ -59,6 +77,10 @@ export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
 
     const testWaConnection = async (urlToTest: string) => {
         if (!urlToTest.trim()) return;
+        if (!isHttpUrl(urlToTest)) {
+            setWaStatus({ ok: false, url: urlToTest, isTunnel: false, error: "URL must start with http:// or https://" });
+            return;
+        }
         setIsTestingWa(true);
         setWaStatus(null);
         try {
@@ -70,7 +92,20 @@ export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
     };
 
     const handleSave = () => {
+        if (!isAdmin) {
+            setFormError("Only administrators can change server connection settings.");
+            return;
+        }
         if (!serverUrl.trim()) return;
+        if (!isHttpUrl(serverUrl)) {
+            setFormError("PocketBase URL must start with http:// or https://");
+            return;
+        }
+        if (waUrl.trim() && !isHttpUrl(waUrl)) {
+            setFormError("WhatsApp Sidecar URL must start with http:// or https://");
+            return;
+        }
+        setFormError(null);
         setPocketBaseUrl(serverUrl.trim());
         if (waUrl.trim()) {
             setWhatsAppUrl(waUrl.trim());
@@ -83,12 +118,36 @@ export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
 
     const setPreset = (presetPbUrl: string, presetWaUrl?: string) => {
         setServerUrl(presetPbUrl);
+        setFormError(null);
         testConnection(presetPbUrl);
         if (presetWaUrl) {
             setWaUrl(presetWaUrl);
             testWaConnection(presetWaUrl);
         }
     };
+
+    // Deny non-admins before rendering any editable connection form.
+    if (!permissionsLoading && !isAdmin) {
+        return (
+            <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+                <DialogContent className="sm:max-w-md bg-card border-border">
+                    <DialogHeader>
+                        <DialogTitle className="text-base font-bold text-foreground">
+                            Server Connection Settings
+                        </DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">
+                            Only administrators can view or change server connection settings.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button variant="outline" size="sm" onClick={onClose} className="text-xs">
+                            Close
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        );
+    }
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -171,6 +230,7 @@ export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
                                     setServerUrl(e.target.value);
                                     setStatus(null);
                                     setIsSaved(false);
+                                    setFormError(null);
                                 }}
                                 placeholder="https://xyz.trycloudflare.com or http://192.168.1.x:8090"
                                 className="text-xs font-mono"
@@ -238,6 +298,7 @@ export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
                                     setWaUrl(e.target.value);
                                     setWaStatus(null);
                                     setIsSaved(false);
+                                    setFormError(null);
                                 }}
                                 placeholder="https://wa-xyz.trycloudflare.com or http://192.168.1.x:21465"
                                 className="text-xs font-mono"
@@ -294,6 +355,10 @@ export function ServerConfigModal({ isOpen, onClose }: ServerConfigModalProps) {
                         </div>
                     </div>
                 </div>
+
+                {formError && (
+                    <p className="px-1 text-[11px] font-medium text-destructive">{formError}</p>
+                )}
 
                 <DialogFooter className="flex sm:justify-between items-center gap-2">
                     <Button variant="ghost" size="sm" onClick={onClose} className="text-xs">

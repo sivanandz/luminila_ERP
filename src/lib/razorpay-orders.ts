@@ -18,7 +18,7 @@
  */
 
 import crypto from 'crypto';
-import { getRazorpayConfig } from './razorpay';
+import { getRazorpayConfig, toPaise } from './razorpay';
 
 const API_BASE = 'https://api.razorpay.com/v1';
 
@@ -60,7 +60,9 @@ export async function createGatewayOrder(params: {
         return { configured: false, error: 'Razorpay API keys are not configured' };
     }
 
-    const amountPaise = Math.round(Number(params.amountRupees) * 100);
+    // PAY-13: decimal-shift conversion; `Math.round(rupees * 100)` rounded
+    // boundary amounts (1.005 → 100 paise) the wrong way.
+    const amountPaise = toPaise(params.amountRupees);
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
         return { configured: true, error: 'Invalid gateway amount' };
     }

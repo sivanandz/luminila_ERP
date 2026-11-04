@@ -43,7 +43,10 @@ function phoneDedupeKey(phone: string): string {
 
 /**
  * AI mutations are ERP writes: they must leave the same audit trail as a manual
- * edit (AI-SYS-11). A failed audit insert never fails the tool call.
+ * edit (AI-SYS-11). The write itself is authoritative; a failed audit insert is
+ * reported back in the tool result instead of only being warned about (AI-14).
+ *
+ * @returns `null` when the audit row was written, otherwise the failure reason.
  */
 async function logAiMutation(
     context: AiToolContext,
@@ -52,7 +55,7 @@ async function logAiMutation(
     entityId: string,
     description: string,
     newValues: Record<string, unknown>
-): Promise<void> {
+): Promise<string | null> {
     try {
         await context.client.collection('activity_logs').create({
             action,
@@ -67,8 +70,10 @@ async function logAiMutation(
             user_name: context.sessionEmail || '',
             account_email: context.accountEmail,
         });
+        return null;
     } catch (error) {
         console.warn('AI activity log could not be written:', error);
+        return error instanceof Error ? error.message : 'The audit log entry could not be written.';
     }
 }
 
@@ -90,38 +95,71 @@ export const writeTools: AiTool[] = [
 
             // Match on the last 10 digits so a number saved with or without the
             // country code is recognised as the same customer (AI-SYS-11).
-            const candidates = await listRecords(context.client, 'customers', {
-                filter: `${accountFilter(context.accountEmail)} && ${containsClause('phone', dedupeKey)}`,
-                perPage: 10,
-                fields: 'id,name,phone',
-            }).catch(() => []);
-            const existing = candidates.find(
-                (candidate) => phoneDedupeKey(asText((candidate as Record<string, unknown>).phone)) === dedupeKey
-            );
+            const findExisting = async (): Promise<Record<string, unknown> | undefined> => {
+                // A PB outage must not look like "no such customer", or a
+                // duplicate gets created during the outage (AI-7).
+                const candidates = await listRecords(context.client, 'customers', {
+                    filter: `${accountFilter(context.accountEmail)} && ${containsClause('phone', dedupeKey)}`,
+                    perPage: 10,
+                    fields: 'id,name,phone',
+                });
+                return candidates.find(
+                    (candidate) => phoneDedupeKey(asText((candidate as Record<string, unknown>).phone)) === dedupeKey
+                ) as unknown as Record<string, unknown> | undefined;
+            };
+
+            const existing = await findExisting();
             if (existing) {
-                const record = existing as unknown as Record<string, unknown>;
                 return {
-                    summary: `Customer already exists: ${asText(record.name) || phone} (id ${asText(record.id)}). No new record was created.`,
-                    data: { created: false, customerId: asText(record.id) },
+                    summary: `Customer already exists: ${asText(existing.name) || phone} (id ${asText(existing.id)}). No new record was created.`,
+                    data: { created: false, customerId: asText(existing.id), auditLogged: true },
                 };
             }
 
-            const created = await context.client.collection('customers').create({
-                name: args.name,
-                phone,
-                email: args.email ?? '',
-                city: args.city ?? '',
-                customer_type: args.customerType ?? 'retail',
-                loyalty_points: 0,
-                total_spent: 0,
-                total_orders: 0,
-                preferred_contact: 'whatsapp',
-                opt_in_marketing: false,
-                source: 'ai_assistant',
-                account_email: context.accountEmail,
-            } as Record<string, unknown>);
+            // Re-check immediately before the insert: the first read is not a
+            // reservation, and two approved turns can interleave (AI-6).
+            const raced = await findExisting();
+            if (raced) {
+                return {
+                    summary: `Customer already exists: ${asText(raced.name) || phone} (id ${asText(raced.id)}). No new record was created.`,
+                    data: { created: false, customerId: asText(raced.id), auditLogged: true },
+                };
+            }
+
+            let created;
+            try {
+                created = await context.client.collection('customers').create({
+                    name: args.name,
+                    phone,
+                    email: args.email ?? '',
+                    city: args.city ?? '',
+                    customer_type: args.customerType ?? 'retail',
+                    loyalty_points: 0,
+                    total_spent: 0,
+                    total_orders: 0,
+                    preferred_contact: 'whatsapp',
+                    opt_in_marketing: false,
+                    source: 'ai_assistant',
+                    account_email: context.accountEmail,
+                } as Record<string, unknown>);
+            } catch (error) {
+                // A unique index / server hook may reject the race after the
+                // re-check; resolve it to the row that won instead of failing.
+                const status = (error as { status?: number } | null)?.status;
+                const detail = error instanceof Error ? error.message : String(error);
+                if ((status === 400 || status === 409) && /unique|already exists/i.test(detail)) {
+                    const conflictRow = await findExisting();
+                    if (conflictRow) {
+                        return {
+                            summary: `Customer already exists: ${asText(conflictRow.name) || phone} (id ${asText(conflictRow.id)}). No new record was created.`,
+                            data: { created: false, customerId: asText(conflictRow.id), auditLogged: true },
+                        };
+                    }
+                }
+                throw error;
+            }
             const record = created as unknown as Record<string, unknown>;
-            await logAiMutation(
+            const auditError = await logAiMutation(
                 context,
                 'create',
                 'customer',
@@ -130,8 +168,17 @@ export const writeTools: AiTool[] = [
                 { name: args.name, phone, source: 'ai_assistant' }
             );
             return {
-                summary: `Created customer ${args.name} (id ${asText(record.id)}) with phone ${phone}.`,
-                data: { created: true, customerId: asText(record.id), name: args.name, phone },
+                summary:
+                    `Created customer ${args.name} (id ${asText(record.id)}) with phone ${phone}.` +
+                    (auditError ? ' WARNING: the audit log entry could not be written; re-check the activity log.' : ''),
+                data: {
+                    created: true,
+                    customerId: asText(record.id),
+                    name: args.name,
+                    phone,
+                    auditLogged: !auditError,
+                    ...(auditError ? { auditError } : {}),
+                },
             };
         },
     },
@@ -146,36 +193,71 @@ export const writeTools: AiTool[] = [
         input: addNoteInput,
         execute: async (context, rawArgs) => {
             const args = addNoteInput.parse(rawArgs);
-            const order = await findFirstRecord(
-                context.client,
-                'sales_orders',
-                `order_number = "${escapeFilterValue(args.orderNumber)}"`,
-                context.accountEmail
-            );
-            if (!order) throw new Error(`No sales order found with number ${args.orderNumber}.`);
-
-            const record = order as Record<string, unknown>;
-            const current = asText(record.internal_notes);
             const stamp = `[${context.now.toISOString().slice(0, 16).replace('T', ' ')} UTC · ${context.sessionEmail || 'operator'} via AI assistant]`;
-            // Never truncate from the front: existing notes are audit data. The
-            // per-note length is already bounded by the zod schema; the total field
-            // is only guarded against runaway growth.
-            const next = `${current ? `${current}\n` : ''}${stamp} ${args.note}`;
-            if (next.length > 100_000) {
-                throw new Error('This order already carries an excessive amount of internal notes; edit the order notes manually.');
+            // Existing notes are audit data: never truncate from the front. The
+            // per-note length is already bounded by the zod schema; the total
+            // field is only guarded against runaway growth.
+            const marker = `${stamp} ${args.note}`;
+            let orderId = '';
+
+            // `internal_notes` is a text column, so appending is a read-modify-
+            // write. Re-read immediately before each attempt and verify the
+            // marker landed; retry (bounded) when another turn replaced the
+            // value in between (AI-3).
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                const order = await findFirstRecord(
+                    context.client,
+                    'sales_orders',
+                    `order_number = "${escapeFilterValue(args.orderNumber)}"`,
+                    context.accountEmail
+                );
+                if (!order) throw new Error(`No sales order found with number ${args.orderNumber}.`);
+
+                const record = order as Record<string, unknown>;
+                const current = asText(record.internal_notes);
+                if (current.includes(marker)) {
+                    // A previous attempt already landed (possibly followed by a
+                    // concurrent append); do not add the note twice.
+                    orderId = asText(record.id);
+                    break;
+                }
+                const next = `${current ? `${current}\n` : ''}${marker}`;
+                if (next.length > 100_000) {
+                    throw new Error('This order already carries an excessive amount of internal notes; edit the order notes manually.');
+                }
+                await context.client.collection('sales_orders').update(asText(record.id), { internal_notes: next });
+                const verified = (await context.client
+                    .collection('sales_orders')
+                    .getOne(asText(record.id))) as Record<string, unknown>;
+                if (asText(verified.internal_notes).includes(marker)) {
+                    orderId = asText(record.id);
+                    break;
+                }
             }
-            await context.client.collection('sales_orders').update(asText(record.id), { internal_notes: next });
-            await logAiMutation(
+            if (!orderId) {
+                throw new Error('The order notes changed while this note was being appended; please retry.');
+            }
+
+            const auditError = await logAiMutation(
                 context,
                 'update',
                 'order',
-                asText(record.id),
+                orderId,
                 `Internal note appended by AI assistant to ${args.orderNumber}`,
                 { order_number: args.orderNumber, note: args.note }
             );
             return {
-                summary: `Appended a note to order ${args.orderNumber}.`,
-                data: { updated: true, orderId: asText(record.id), orderNumber: args.orderNumber, note: args.note },
+                summary:
+                    `Appended a note to order ${args.orderNumber}.` +
+                    (auditError ? ' WARNING: the audit log entry could not be written; re-check the activity log.' : ''),
+                data: {
+                    updated: true,
+                    orderId,
+                    orderNumber: args.orderNumber,
+                    note: args.note,
+                    auditLogged: !auditError,
+                    ...(auditError ? { auditError } : {}),
+                },
             };
         },
     },

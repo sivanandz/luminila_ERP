@@ -142,9 +142,20 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
         ? req.exchangeRateToInr
         : cfg.defaultExchangeRateToInr;
 
+    // A LUT export invoice is a statutory document: placeholder ARN/port values
+    // made it non-compliant without any error (ENG-5).
+    const lutArnNumber = (req.lutArnNumber || '').trim();
+    const portCode = (req.portCode || '').trim();
+    if (req.isLutExport && !lutArnNumber) {
+        throw new Error('A LUT export invoice requires the LUT ARN number; refusing to emit a placeholder declaration.');
+    }
+    if (req.isLutExport && !portCode) {
+        throw new Error('A LUT export invoice requires the port code; refusing to default it.');
+    }
+
     const exportType = req.isLutExport ? 'LUT_ZERO_RATED' : 'IGST_PAID_EXPORT';
     const declaration = req.isLutExport
-        ? `SUPPLY MEANT FOR EXPORT UNDER LETTER OF UNDERTAKING (LUT NO: ${req.lutArnNumber || 'APPLIED'}) WITHOUT PAYMENT OF INTEGRATED TAX (IGST).`
+        ? `SUPPLY MEANT FOR EXPORT UNDER LETTER OF UNDERTAKING (LUT NO: ${lutArnNumber}) WITHOUT PAYMENT OF INTEGRATED TAX (IGST).`
         : `SUPPLY MEANT FOR EXPORT ON PAYMENT OF INTEGRATED TAX (IGST).`;
 
     let foreignSubtotal = 0;
@@ -154,8 +165,11 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
 
     const lineItems = req.items.map(item => {
         const lineTotalInr = Math.round((item.quantity * item.unitPriceInr) * 100) / 100;
+        // Convert the UNIT only for display; derive the line from the unrounded
+        // conversion so the foreign column reconciles with INR ÷ rate instead of
+        // compounding a rounded unit price with the quantity (ENG-8).
         const unitForeign = Math.round((item.unitPriceInr / rate) * 100) / 100;
-        const lineForeign = Math.round((item.quantity * unitForeign) * 100) / 100;
+        const lineForeign = Math.round((item.quantity * (item.unitPriceInr / rate)) * 100) / 100;
 
         const gstRate = req.isLutExport ? 0 : 3.0;
         const gstAmtInr = req.isLutExport ? 0 : Math.round((lineTotalInr * (gstRate / 100)) * 100) / 100;
@@ -185,6 +199,18 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
     inrSubtotal = Math.round(inrSubtotal * 100) / 100;
     inrGstTotal = Math.round(inrGstTotal * 100) / 100;
 
+    // A statutory invoice must be internally consistent: the foreign column is
+    // the INR column at the stated rate, up to one paisa of per-line rounding
+    // (ENG-8). A larger gap means the conversion was mis-derived.
+    const expectedForeign = inrSubtotal / rate;
+    const tolerance = 0.01 * lineItems.length + 0.01;
+    if (Math.abs(foreignSubtotal - expectedForeign) > tolerance) {
+        throw new Error(
+            `Export invoice currency mismatch: foreign subtotal ${foreignSubtotal} does not reconcile with ` +
+            `${inrSubtotal} INR at ${rate} (expected ${Math.round(expectedForeign * 100) / 100}).`
+        );
+    }
+
     return {
         invoiceNumber: req.invoiceNumber,
         invoiceDate: req.invoiceDate,
@@ -198,8 +224,8 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
             address: req.buyerAddress,
         },
         lutDetails: req.isLutExport ? {
-            arnNumber: req.lutArnNumber || 'LUT-UNASSIGNED',
-            portCode: req.portCode || 'INBLR4',
+            arnNumber: lutArnNumber,
+            portCode,
             shippingBillNumber: req.shippingBillNumber,
             shippingBillDate: req.shippingBillDate,
         } : undefined,

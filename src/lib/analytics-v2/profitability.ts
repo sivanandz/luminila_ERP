@@ -18,7 +18,7 @@
  */
 
 import { tenantEmail, loadUnifiedLines, loadTxWindow, type UnifiedLine } from './load';
-import { resolveRange, compare, type AnalyticsRange, type ComparedMetric } from './range';
+import { resolveRange, compare, dayKey, type AnalyticsRange, type ComparedMetric, type DateWindow } from './range';
 import { adjustedLineRevenues } from './discount-allocation';
 import { getExpenseStats } from '../expenses';
 
@@ -54,8 +54,14 @@ export interface DiscountErosion {
 export interface ExpensesOverlay {
     total: number;
     byCategory: Array<{ category: string; amount: number }>;
-    /** gross margin − expenses (a negative number is a real warning) */
+    /**
+     * gross margin − expenses (a negative number is a real warning).
+     * When `available` is false the expense read failed and this is 0 — callers
+     * must render "unavailable", never "₹0 of expenses" (AN2-2).
+     */
     operatingResult: number;
+    /** false when the expense overlay could not be read for this window */
+    available: boolean;
 }
 
 export interface ProfitabilityAnalytics {
@@ -75,6 +81,22 @@ export interface ProfitabilityAnalytics {
 }
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Absolute month number (`YYYY` × 12 + zero-based month) for a `YYYY-MM` key. */
+function monthIndex(key: string): number {
+    return Number(key.slice(0, 4)) * 12 + Number(key.slice(5, 7)) - 1;
+}
+
+/** `YYYY-MM` key for an absolute month number. */
+function monthKeyFromIndex(index: number): string {
+    return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, '0')}`;
+}
+
+/** First calendar month covered by a window. */
+function firstMonthIndex(w: DateWindow): number {
+    const firstDay = w.days[0] || dayKey(new Date(w.startISO));
+    return monthIndex(firstDay.slice(0, 7));
+}
 
 function aggregate(
     lines: UnifiedLine[],
@@ -114,7 +136,7 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
         overallMargin: zero, marginPct: null, previousMarginPct: null,
         trend: [], byCategory: [], byChannel: [], topByProfit: [], topByRevenue: [],
         discountErosion: { grossRevenue: 0, totalDiscounts: 0, erosionPct: 0, previousErosionPct: 0, deltaPct: 0 },
-        expenses: { total: 0, byCategory: [], operatingResult: 0 },
+        expenses: { total: 0, byCategory: [], operatingResult: 0, available: false },
         marginUnknownCostUnits: 0,
         costEstimatedUnits: 0,
     };
@@ -145,7 +167,7 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
     const marginUnknownCostUnits = lines.filter((l) => l.unitCost === 0).reduce((s, l) => s + l.quantity, 0);
     const costEstimatedUnits = lines.filter((l) => l.costFallback).reduce((s, l) => s + l.quantity, 0);
 
-    // ---- monthly margin trend with previous overlay (aligned by index) ----
+    // ---- monthly margin trend with previous overlay (aligned by month offset) ----
     const monthly = new Map<string, { revenue: number; margin: number }>();
     for (const l of lines) {
         const m = l.day.slice(0, 7);
@@ -159,13 +181,20 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
         const m = l.day.slice(0, 7);
         prevMonthly.set(m, (prevMonthly.get(m) || 0) + ((adjustedPrev.get(l) ?? l.netRevenue) - l.quantity * l.unitCost));
     }
-    // Align previous months onto the current axis by order.
+    // Align the previous overlay by MONTH OFFSET from each window's first month,
+    // not by array index: equal-length windows can cover different month counts
+    // (custom ranges), and index alignment then attributes the wrong month's
+    // margin. Months with no counterpart are dropped (previousMargin = null)
+    // instead of borrowing a neighbour's value (AN2-7).
     const currentMonths = [...monthly.keys()].sort();
-    const prevMonths = [...prevMonthly.keys()].sort();
+    const currentStartMonth = firstMonthIndex(win.current);
+    const previousStartMonth = firstMonthIndex(win.previous);
     const prevAligned = new Map<string, number>();
-    prevMonths.forEach((m, i) => {
-        if (i < currentMonths.length) prevAligned.set(currentMonths[i], prevMonthly.get(m)!);
-    });
+    for (const m of currentMonths) {
+        const prevKey = monthKeyFromIndex(previousStartMonth + (monthIndex(m) - currentStartMonth));
+        const value = prevMonthly.get(prevKey);
+        if (value !== undefined) prevAligned.set(m, value);
+    }
 
     const trend: MarginPoint[] = currentMonths.map((m) => {
         const a = monthly.get(m)!;
@@ -198,16 +227,19 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
     const prevErosionPct = grossPrev > 0 ? Math.round((discountsPrev / grossPrev) * 1000) / 10 : 0;
 
     // ---- expenses overlay (same window) ----
-    let expenses: ExpensesOverlay = { total: 0, byCategory: [], operatingResult: margin };
+    // On failure the overlay is marked unavailable instead of defaulting to
+    // operatingResult = margin, which silently claimed expenses were zero and
+    // overstated the operating result (AN2-2).
+    let expenses: ExpensesOverlay = { total: 0, byCategory: [], operatingResult: 0, available: false };
     try {
         const stats = await getExpenseStats(win.current.startISO, win.current.endISO);
         const total = Number(stats?.totalAmount || 0);
         const byCategory = (Array.isArray(stats?.byCategory) ? stats.byCategory : [])
             .map((c: { name?: string; amount?: number }) => ({ category: String(c.name || 'Uncategorized'), amount: Number(c.amount || 0) }))
             .sort((a: { amount: number }, b: { amount: number }) => b.amount - a.amount);
-        expenses = { total, byCategory, operatingResult: Math.round(margin - total) };
+        expenses = { total, byCategory, operatingResult: Math.round(margin - total), available: true };
     } catch (e) {
-        console.warn('[profitability] expense overlay unavailable:', e);
+        console.error('[profitability] expense overlay unavailable; operating result is reported as unavailable:', e);
     }
 
     return {

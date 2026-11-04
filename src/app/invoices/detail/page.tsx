@@ -183,6 +183,15 @@ function InvoiceDetailContent() {
             return;
         }
 
+        // PG-7: a payment above the outstanding balance would overpay the bill.
+        const outstanding = invoice.balance_due !== undefined
+            ? invoice.balance_due
+            : Math.max(0, (invoice.grand_total || invoice.total || 0) - (invoice.paid_amount || 0));
+        if (amount > outstanding + 0.005) {
+            toast.error(`Amount exceeds the outstanding balance of ₹${formatINR(outstanding)}`);
+            return;
+        }
+
         setProcessing(true);
         try {
             await recordPayment({

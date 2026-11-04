@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
 import { pbBound } from './analytics-v2/range';
+import { createBankTransaction } from './banking';
 
 // ==========================================
 // TENANT SCOPING (FIN-01)
@@ -61,6 +62,20 @@ export interface Expense {
     created_by?: string;
     created_at?: string;
     updated_at?: string;
+    /**
+     * Bank account to debit for bank_transfer/cheque expenses. Not a
+     * `expenses` column (no schema change): it only routes the matching bank
+     * ledger entry and is never persisted on the expense row.
+     */
+    bank_account_id?: string;
+}
+
+/** Bank-affecting payment modes need a matching bank ledger entry (BNK-6). */
+const BANK_PAYMENT_MODES: ExpensePaymentMode[] = ['bank_transfer', 'cheque'];
+
+/** Money is stored with at most two decimals (BNK-3). */
+function round2(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 export interface ExpenseStats {
@@ -219,6 +234,12 @@ export async function getExpense(id: string): Promise<Expense | null> {
 
 export async function createExpense(expense: Omit<Expense, 'id' | 'expense_number' | 'created_at' | 'updated_at'>): Promise<Expense | null> {
     try {
+        // `parseFloat("abc")` used to store NaN and negatives were stored as-is,
+        // corrupting stats and category percentages (BNK-3).
+        const amount = round2(Number(expense.amount));
+        if (!Number.isFinite(amount) || amount <= 0) {
+            throw new Error('Expense amount must be a positive number');
+        }
         let allocatedExpenseNumber = '';
         const e = await createWithUniqueRetry(
             generateExpenseNumber,
@@ -228,7 +249,7 @@ export async function createExpense(expense: Omit<Expense, 'id' | 'expense_numbe
                     expense_number: allocatedNumber,
                     expense_date: expense.date,
                     category: expense.category_id,
-                    amount: expense.amount,
+                    amount,
                     payment_mode: expense.payment_mode,
                     payee: expense.payee || '',
                     description: expense.description || '',
@@ -239,12 +260,44 @@ export async function createExpense(expense: Omit<Expense, 'id' | 'expense_numbe
             }
         );
 
+        // A bank_transfer/cheque expense left no bank ledger row, so the books
+        // diverged from the bank (BNK-6). Post the matching withdrawal when the
+        // caller names the account; otherwise say so instead of pretending.
+        if (BANK_PAYMENT_MODES.includes(expense.payment_mode)) {
+            const bankAccountId = String(expense.bank_account_id || '').trim();
+            if (!bankAccountId) {
+                toast.warning(
+                    'No bank account selected: the expense was recorded without a bank ledger entry.'
+                );
+            } else {
+                try {
+                    await createBankTransaction({
+                        account: bankAccountId,
+                        transaction_date: expense.date,
+                        type: 'withdrawal',
+                        amount,
+                        description: `Expense ${allocatedExpenseNumber}${
+                            expense.payee ? ` — ${expense.payee}` : ''
+                        }`,
+                        reference_number: expense.reference_number || allocatedExpenseNumber,
+                        related_entity_type: 'expense',
+                        related_entity_id: e.id,
+                    });
+                } catch (bankErr) {
+                    // Keep the expense and the ledger atomic: a retry must not
+                    // post the withdrawal twice.
+                    await pb.collection('expenses').delete(e.id).catch(() => {});
+                    throw bankErr;
+                }
+            }
+        }
+
         return {
             id: e.id,
             expense_number: allocatedExpenseNumber,
             date: expense.date,
             category_id: expense.category_id,
-            amount: expense.amount,
+            amount,
             payment_mode: expense.payment_mode,
             payee: expense.payee,
             description: expense.description,
@@ -255,7 +308,7 @@ export async function createExpense(expense: Omit<Expense, 'id' | 'expense_numbe
         };
     } catch (error) {
         console.error('Error creating expense:', error);
-        toast.error('Failed to create expense');
+        toast.error(error instanceof Error ? error.message : 'Failed to create expense');
         return null;
     }
 }
@@ -269,6 +322,8 @@ export async function updateExpense(id: string, updates: Partial<Expense>): Prom
         }
         const cleanUpdates: Record<string, unknown> = { ...updates };
         delete cleanUpdates.account_email;
+        // Routing metadata for the bank ledger, not an `expenses` column.
+        delete cleanUpdates.bank_account_id;
 
         // Map category_id to category (PocketBase relation field name)
         if (cleanUpdates.category_id) {
@@ -283,7 +338,13 @@ export async function updateExpense(id: string, updates: Partial<Expense>): Prom
         }
 
         if (cleanUpdates.amount !== undefined) {
-            cleanUpdates.amount = Number(cleanUpdates.amount);
+            // Reject non-finite/non-positive amounts instead of storing NaN or a
+            // negative expense (BNK-3).
+            const amount = round2(Number(cleanUpdates.amount));
+            if (!Number.isFinite(amount) || amount <= 0) {
+                throw new Error('Expense amount must be a positive number');
+            }
+            cleanUpdates.amount = amount;
         }
 
         const e = await pb.collection('expenses').update(id, cleanUpdates);

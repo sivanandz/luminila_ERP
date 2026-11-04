@@ -82,10 +82,19 @@ export function verifyCustomerToken(tokenString: string): CustomerTokenPayload |
         if (!payload || typeof payload !== "object" || !payload.id || !payload.tenant) {
             return null;
         }
-        if (payload.exp && Date.now() > payload.exp) {
+        // A token must carry a real expiry: `exp` used to be optional, so a
+        // token without one never expired (CUS-15). Seconds-sized values are
+        // accepted but normalised to milliseconds before the comparison.
+        if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp) || payload.exp <= 0) {
             return null;
         }
-        return payload;
+        const expMs = payload.exp < 1e12 ? payload.exp * 1000 : payload.exp;
+        // Cap the lifetime so a seconds value misread as a far-future
+        // millisecond instant cannot become an effectively permanent token.
+        if (Date.now() >= expMs || expMs > Date.now() + 10 * 365 * 86_400_000) {
+            return null;
+        }
+        return { ...payload, exp: expMs };
     } catch {
         return null;
     }

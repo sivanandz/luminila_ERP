@@ -243,12 +243,12 @@ async function main() {
             [{ productId: 'prod00000000001', variantId: 'var000000000001', quantity: 2 }],
             { accountEmail: TENANT, channel: 'whatsapp', referenceId: 'ord123456789015' }
         );
-        const first = await restoreChannelStockForReference(db, { referenceId: 'ord123456789015', channel: 'whatsapp' });
+        const first = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789015', channel: 'whatsapp' });
         assert.deepEqual(first, { restored: 1, alreadyRestored: false });
         assert.equal(db.variants.get('var000000000001')?.stock_level, 5);
         assert.equal(db.movements.filter((m) => m.movement_type === 'return').length, 1);
 
-        const second = await restoreChannelStockForReference(db, { referenceId: 'ord123456789015', channel: 'whatsapp' });
+        const second = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789015', channel: 'whatsapp' });
         assert.deepEqual(second, { restored: 0, alreadyRestored: true });
         assert.equal(db.variants.get('var000000000001')?.stock_level, 5);
     });
@@ -312,11 +312,11 @@ async function main() {
         await applyChannelStock(db, [{ productId: 'prod00000000002', variantId: 'var000000000002', quantity: 1 }], {
             accountEmail: TENANT, channel: 'whatsapp', referenceId: 'ord123456789019',
         });
-        const result = await restoreChannelStockForReference(db, { referenceId: 'ord123456789019' });
+        const result = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789019' });
         assert.deepEqual(result, { restored: 2, alreadyRestored: false });
         assert.equal(db.variants.get('var000000000001')?.stock_level, 5);
         assert.equal(db.variants.get('var000000000002')?.stock_level, 5);
-        const second = await restoreChannelStockForReference(db, { referenceId: 'ord123456789019' });
+        const second = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789019' });
         assert.equal(second.alreadyRestored, true);
     });
 
@@ -344,11 +344,11 @@ async function main() {
             source: 'storefront',
             notes: `[reversal-of:${firstSale!.id}]`,
         });
-        const retry = await restoreChannelStockForReference(db, { referenceId: 'ord123456789020' });
+        const retry = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789020' });
         assert.deepEqual(retry, { restored: 1, alreadyRestored: false });
         assert.equal(db.variants.get('var000000000001')?.stock_level, 5, 'already-reversed line must not be credited twice');
         assert.equal(db.variants.get('var000000000002')?.stock_level, 5, 'remaining line must be restored');
-        const again = await restoreChannelStockForReference(db, { referenceId: 'ord123456789020' });
+        const again = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789020' });
         assert.equal(again.alreadyRestored, true);
     });
 

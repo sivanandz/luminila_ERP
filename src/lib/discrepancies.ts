@@ -115,6 +115,20 @@ export async function markStockDiscrepancy(input: MarkDiscrepancyInput): Promise
         await pb.collection('product_variants').update(input.variant_id, {
             'stock_level-': input.quantity,
         });
+        // PB's `-` operator is atomic but unconditional. Re-read to detect a
+        // concurrent sale that consumed the units between the check above and
+        // this write; undo our decrement instead of leaving negative stock
+        // (BIZ-5). Adding the same quantity back preserves the other sale.
+        const after = await pb.collection('product_variants').getOne<ProductVariantRecord>(input.variant_id);
+        if ((after.stock_level || 0) < 0) {
+            await pb
+                .collection('product_variants')
+                .update(input.variant_id, { 'stock_level+': input.quantity })
+                .catch((restoreErr) => console.warn('Failed to restore stock after a rejected discrepancy:', restoreErr));
+            throw new Error(
+                `Cannot flag ${input.quantity} units: another sale used the remaining stock. Nothing was quarantined.`
+            );
+        }
     } catch (deductErr) {
         await pb.collection('stock_discrepancies').delete(record.id).catch(() => {});
         throw deductErr;
@@ -160,8 +174,6 @@ export async function resolveStockDiscrepancy(
     const action = resolution.action || resolution.resolution_action || 'replacement_received';
     const rawQty = resolution.received_quantity ?? resolution.quantity_received ?? discrepancy.quantity;
     const requestedQty = Math.max(0, Math.min(Number(rawQty) || 0, discrepancy.quantity));
-    const remainingQty = Math.max(0, discrepancy.quantity - requestedQty);
-    const isFullyResolved = remainingQty === 0;
 
     // Verify relation integrity before update to avoid PocketBase 400 validation error on orphaned relations
     let validVariantId: string | null = discrepancy.variant || null;
@@ -188,13 +200,26 @@ export async function resolveStockDiscrepancy(
         }
     }
 
-    // Claim the flag before touching stock: the collection update rule only allows
-    // updates while status is still "active", so of two concurrent resolves exactly
-    // one wins and the loser fails here (404) instead of crediting stock twice.
-    // A partial resolve keeps the record active, so that guard cannot serialise it;
-    // the quantity decrement below is the best available claim in that case.
-    let updated: StockDiscrepancy;
-    try {
+    // Claim the flag before touching stock. A full resolve is serialized by the
+    // collection update rule (status must still be "active", so the loser gets a
+    // 404). A partial resolve keeps the record active, so it needs an explicit
+    // claim: re-read the remaining quantity, write it, then verify the write
+    // survived. A concurrent resolver that overwrote it forces a retry from the
+    // value it left behind, so the same units are never credited twice (BIZ-14).
+    let updated: StockDiscrepancy | null = null;
+    let claimedQty = 0;
+    let remainingAfter = 0;
+    let fullyResolved = false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        const fresh = await pb.collection('stock_discrepancies').getOne<StockDiscrepancy>(discrepancyId);
+        if (fresh.status === 'resolved') {
+            throw new Error('This discrepancy has already been resolved.');
+        }
+        const claimQty = Math.max(0, Math.min(requestedQty, fresh.quantity));
+        const remainingQty = Math.max(0, fresh.quantity - claimQty);
+        const isFullyResolved = remainingQty === 0;
+
         const updatePayload: Record<string, any> = {
             resolved_by: resolution.resolved_by || 'Staff',
             resolution_note: resolution.resolution_note || '',
@@ -217,22 +242,38 @@ export async function resolveStockDiscrepancy(
             updatePayload.product = validProductId;
         }
 
-        updated = (await pb.collection('stock_discrepancies').update(discrepancyId, updatePayload)) as unknown as StockDiscrepancy;
-    } catch (err) {
-        if ((err as { status?: number })?.status === 404) {
-            throw new Error('This discrepancy has already been resolved.');
+        try {
+            updated = (await pb.collection('stock_discrepancies').update(discrepancyId, updatePayload)) as unknown as StockDiscrepancy;
+        } catch (err) {
+            if ((err as { status?: number })?.status === 404) {
+                throw new Error('This discrepancy has already been resolved.');
+            }
+            throw err;
         }
-        throw err;
+
+        // Verify the claim landed; otherwise retry from the fresh quantity.
+        const verified = await pb.collection('stock_discrepancies').getOne<StockDiscrepancy>(discrepancyId);
+        if (isFullyResolved ? verified.status === 'resolved' : verified.quantity === remainingQty) {
+            claimedQty = claimQty;
+            remainingAfter = remainingQty;
+            fullyResolved = isFullyResolved;
+            break;
+        }
+        updated = null;
+    }
+
+    if (!updated) {
+        throw new Error('The discrepancy was modified by another request; please retry the resolution.');
     }
 
     const accountEmail = accountScopeEmail();
 
     // If replacement arrived or item repaired, restore to available inventory stock
     if (action === 'replacement_received' || action === 'repaired') {
-        if (requestedQty > 0 && validVariantId) {
+        if (claimedQty > 0 && validVariantId) {
             try {
                 await pb.collection('product_variants').update(validVariantId, {
-                    'stock_level+': requestedQty,
+                    'stock_level+': claimedQty,
                 });
             } catch (err) {
                 // The claimed flag can no longer be reverted via the API (the update
@@ -245,12 +286,12 @@ export async function resolveStockDiscrepancy(
                 account_email: accountEmail,
                 variant: validVariantId,
                 movement_type: 'restock',
-                quantity: requestedQty,
+                quantity: claimedQty,
                 reference_id: discrepancyId,
                 source: 'replacement_arrival',
-                notes: `Replacement received (${requestedQty} units) for SKU ${discrepancy.sku}. ${isFullyResolved ? 'Flag resolved' : `Flag still active for ${remainingQty} quarantined units`} by ${resolution.resolved_by || 'Staff'}. Note: ${resolution.resolution_note || 'Returned to sellable stock'}`,
+                notes: `Replacement received (${claimedQty} units) for SKU ${discrepancy.sku}. ${fullyResolved ? 'Flag resolved' : `Flag still active for ${remainingAfter} quarantined units`} by ${resolution.resolved_by || 'Staff'}. Note: ${resolution.resolution_note || 'Returned to sellable stock'}`,
             }).catch(err => console.warn('Failed to log stock movement for replacement:', err));
-        } else if (requestedQty > 0 && !validVariantId) {
+        } else if (claimedQty > 0 && !validVariantId) {
             console.warn(`Discrepancy ${discrepancyId} resolved, but associated SKU ${discrepancy.sku} has no matching inventory variant to restore stock to.`);
         }
     } else if (action === 'written_off') {
@@ -262,7 +303,7 @@ export async function resolveStockDiscrepancy(
                 quantity: 0,
                 reference_id: discrepancyId,
                 source: 'discrepancy_write_off',
-                notes: `Discrepancy written off permanently (${requestedQty} units of ${discrepancy.sku}${isFullyResolved ? '' : `, ${remainingQty} units still quarantined`}). Reason: ${resolution.resolution_note || 'Damaged beyond repair'}`,
+                notes: `Discrepancy written off permanently (${claimedQty} units of ${discrepancy.sku}${fullyResolved ? '' : `, ${remainingAfter} units still quarantined`}). Reason: ${resolution.resolution_note || 'Damaged beyond repair'}`,
             }).catch(err => console.warn('Failed to log stock movement for write off:', err));
         }
     }

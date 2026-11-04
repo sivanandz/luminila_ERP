@@ -12,7 +12,7 @@
  * - Guard enabled: known admin hosts may use the whole app; known storefront
  *   hosts may use only storefront paths and static assets; any unknown host is
  *   treated as storefront (public-safe default); loopback is treated as admin
- *   because it is reachable only from the machine itself.
+ *   only when the caller explicitly opts in.
  */
 
 import { isStorefrontPath } from "./public-surfaces";
@@ -87,26 +87,81 @@ export function classifyHost(
     if (!host) return "storefront";
     // Loopback is only "the operator's own machine" when nothing forwarded the
     // request. Behind a tunnel the Host header can be rewritten to
-    // localhost/127.0.0.1 while the caller is a public visitor (A-15).
-    const trustLoopback = options.trustLoopback !== false;
+    // localhost/127.0.0.1 while the caller is a public visitor (A-15), so
+    // callers must opt in explicitly (AI-12).
+    const trustLoopback = options.trustLoopback === true;
     if (config.adminHosts.includes(host)) return "admin";
     if (trustLoopback && isLoopbackHost(host)) return "admin";
     if (config.storefrontHosts.includes(host)) return "storefront";
     return "storefront";
 }
 
+export interface NormalizedPath {
+    /** Canonical absolute path used for policy checks. */
+    path: string;
+    /** True when the input contained traversal/ambiguous separators (INF-9). */
+    traversal: boolean;
+}
+
+/**
+ * Decode and canonicalize a request path before any policy decision.
+ *
+ * Prefix checks (`/checkout/...`) are only meaningful on a canonical path: a
+ * raw `..`, a backslash, repeated slashes or an encoded traversal can make the
+ * string look like a storefront path while the router resolves elsewhere.
+ * Encoded input is decoded (bounded, to catch double encoding); anything that
+ * still resolves through `..`/backslashes is reported as traversal and refused.
+ */
+export function normalizePathForPolicy(pathname: string): NormalizedPath {
+    const raw = String(pathname || "").split(/[?#]/, 1)[0];
+    if (!raw) return { path: "/", traversal: false };
+
+    let decoded = raw;
+    for (let pass = 0; pass < 3; pass++) {
+        let next: string;
+        try {
+            next = decodeURIComponent(decoded);
+        } catch {
+            // Malformed percent-encoding is not a path this app serves.
+            return { path: "/", traversal: true };
+        }
+        if (next === decoded) break;
+        decoded = next;
+    }
+
+    let traversal = decoded.includes("\\");
+    const unified = decoded.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+
+    const segments: string[] = [];
+    for (const segment of unified.split("/")) {
+        if (!segment || segment === ".") continue;
+        if (segment === "..") {
+            traversal = true;
+            segments.pop();
+            continue;
+        }
+        segments.push(segment);
+    }
+
+    return { path: `/${segments.join("/")}`, traversal };
+}
+
 /** True when the path is a public storefront surface or an asset it needs. */
 export function isStorefrontServeablePath(pathname: string): boolean {
-    if (isStorefrontPath(pathname)) return true;
-    if (STATIC_FILES.has(pathname)) return true;
-    if (STATIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return true;
+    const { path, traversal } = normalizePathForPolicy(pathname);
+    if (traversal) return false;
+    if (isStorefrontPath(path)) return true;
+    if (STATIC_FILES.has(path)) return true;
+    if (STATIC_PREFIXES.some((prefix) => path.startsWith(prefix))) return true;
     // A file extension must not make an API route serveable on the storefront
     // host (`/api/export.json`, `/api/x.js`) (A-15).
-    if (!pathname.startsWith("/api/") && STATIC_EXTENSION.test(pathname)) return true;
+    if (!path.startsWith("/api/") && STATIC_EXTENSION.test(path)) return true;
     return false;
 }
 
 export function isPathAllowed(role: HostRole, pathname: string): boolean {
+    const { path, traversal } = normalizePathForPolicy(pathname);
+    if (traversal) return false;
     if (role === "admin") return true;
-    return isStorefrontServeablePath(pathname);
+    return isStorefrontServeablePath(path);
 }
