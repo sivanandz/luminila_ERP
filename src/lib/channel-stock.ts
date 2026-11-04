@@ -315,10 +315,17 @@ export async function applyChannelStock(
             } catch (error) {
                 if (!isMinStockConstraint(error)) throw error;
                 if (oversell !== 'clamp' || target.kind !== 'variant') {
+                    // Re-read so the rejection reports what is actually on hand,
+                    // not the pre-check snapshot another terminal may have spent.
+                    const latest = await db
+                        .collection(collection)
+                        .getOne<{ stock_level?: number }>(target.id)
+                        .catch(() => null);
+                    const available = Math.max(0, Math.floor(Number(latest?.stock_level ?? target.stockLevel)));
                     throw new InsufficientStockError(
                         target.productId,
                         target.quantity,
-                        target.stockLevel,
+                        available,
                         target.name
                     );
                 }

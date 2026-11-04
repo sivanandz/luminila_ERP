@@ -4,7 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { validateSaleQuantities } from '../lib/pos-sales';
+import { validateSaleQuantities, validateSaleTotals } from '../lib/pos-sales';
 
 let passed = 0;
 let failed = 0;
@@ -40,6 +40,71 @@ test('zero and non-finite quantities are refused', () => {
 
 test('an empty cart has nothing to refuse', () => {
     assert.equal(validateSaleQuantities([]), null);
+});
+
+// P1: the header must reconcile with the lines; a tampered total is refused.
+const lines = [{ name: 'Ring', price: 1250.5, quantity: 2 }];
+
+test('a reconciled bill passes', () => {
+    assert.equal(
+        validateSaleTotals({
+            items: lines,
+            subtotal: 2501,
+            discountPercent: 10,
+            discountAmount: 250.1,
+            loyaltyDiscount: 0,
+            total: 2250.9,
+        }),
+        null
+    );
+});
+
+test('a tampered total is refused', () => {
+    const error = validateSaleTotals({
+        items: lines,
+        subtotal: 2501,
+        discountPercent: 0,
+        discountAmount: 0,
+        loyaltyDiscount: 0,
+        total: 1,
+    });
+    assert.match(error || '', /total/i);
+});
+
+test('a discount above 100% is refused', () => {
+    assert.ok(validateSaleTotals({
+        items: lines,
+        subtotal: 2501,
+        discountPercent: 150,
+        discountAmount: 2501,
+        loyaltyDiscount: 0,
+        total: 0,
+    }));
+});
+
+test('a loyalty discount larger than the discounted subtotal is refused', () => {
+    assert.ok(validateSaleTotals({
+        items: lines,
+        subtotal: 2501,
+        discountPercent: 0,
+        discountAmount: 0,
+        loyaltyDiscount: 3000,
+        total: 0,
+    }));
+});
+
+test('a fully discounted bill still balances', () => {
+    assert.equal(
+        validateSaleTotals({
+            items: lines,
+            subtotal: 2501,
+            discountPercent: 100,
+            discountAmount: 2501,
+            loyaltyDiscount: 0,
+            total: 0,
+        }),
+        null
+    );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

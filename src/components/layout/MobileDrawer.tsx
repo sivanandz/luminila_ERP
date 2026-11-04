@@ -65,6 +65,7 @@ const navSections = [
         title: "Inventory & Catalog",
         items: [
             { href: "/inventory", label: "Products & Stock", icon: Package },
+            { href: "/packing", label: "Packing Station", icon: Package },
             { href: "/manufacturing", label: "Karigar Jobs", icon: Hammer },
             { href: "/labels", label: "Barcode Labels", icon: Printer },
             { href: "/purchase", label: "Purchase Orders", icon: Package },
@@ -78,6 +79,7 @@ const navSections = [
             { href: "/cheques", label: "Cheque Register", icon: CalendarClock },
             { href: "/expenses", label: "Expense Vouchers", icon: Wallet },
             { href: "/expenses/categories", label: "Expense Categories", icon: Tag },
+            { href: "/analytics", label: "Analytics", icon: BarChart3 },
             { href: "/reports", label: "Reports & GST", icon: BarChart3 },
             { href: "/reports/export", label: "Export Invoice", icon: Globe },
         ],

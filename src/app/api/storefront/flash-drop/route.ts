@@ -1009,46 +1009,15 @@ async function handleOrderConfirmation(
         );
     }
 
-    try {
-        await applyChannelStock(toStockDb(client), lines, {
-            accountEmail,
-            channel: "storefront",
-            referenceId: order.id,
-            notes: `Flash drop paid order ${order.order_number || order.id}`,
-        });
-    } catch (stockErr) {
-        const message =
-            stockErr instanceof InsufficientStockError
-                ? stockErr.message
-                : (stockErr as Error)?.message || "stock could not be reserved";
-        // The money is real even when the hold is gone; record the payment and
-        // leave the order for manual reconciliation rather than confirming an
-        // order that cannot be fulfilled.
-        await client
-            .collection("sales_orders")
-            .update(order.id, {
-                payment_status: "PAID",
-                gateway_payment_id: paymentId,
-                internal_notes: [
-                    String(order.internal_notes || ""),
-                    `[flash-drop] Payment captured but stock deduction failed (${message}); manual reconciliation required.`,
-                ]
-                    .filter(Boolean)
-                    .join("\n"),
-            })
-            .catch(() => {});
-        return NextResponse.json(
-            {
-                success: false,
-                error: "Your payment was received but the item just went out of stock. Our team will contact you to fulfil or refund it.",
-            },
-            { status: 409, headers: CORS_HEADERS }
-        );
-    }
+    // Stock is deducted by settlement, NOT here: this route used to call
+    // applyChannelStock itself and then settleCapturedOrder could deduct again
+    // when the payment.captured webhook interleaved between the two — one paid
+    // sale, two deductions (audit FD-01). settleCapturedOrder is the single
+    // owner of the ledger (it checks existing movements for chat orders and
+    // clamps on shortage, like every other online order).
 
     // Settlement marks PAID/confirmed, raises the invoice, and credits CRM
-    // aggregates + loyalty exactly once. It sees the stock movements above and
-    // will not deduct a second time.
+    // aggregates + loyalty exactly once.
     const settled = await settleCapturedOrder(order.id, {
         paymentId,
         tenantEmail: accountEmail,

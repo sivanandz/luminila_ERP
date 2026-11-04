@@ -11,7 +11,7 @@
 
 import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { CalendarDays, RefreshCw, LayoutDashboard } from "lucide-react";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { Header } from "@/components/layout/Header";
@@ -58,6 +58,7 @@ export default function AnalyticsPage() {
 
 function AnalyticsPageInner() {
     const searchParams = useSearchParams();
+    const router = useRouter();
     const range = useAnalyticsRange((s) => s.range);
     const setPreset = useAnalyticsRange((s) => s.setPreset);
     const setCustom = useAnalyticsRange((s) => s.setCustom);
@@ -66,6 +67,16 @@ function AnalyticsPageInner() {
         ? (searchParams.get("tab") as TabId)
         : "sales";
     const [tab, setTab] = useState<TabId>(tabFromUrl);
+    // Keep ?tab= in sync so Back from an Insights deep-link returns to the tab
+    // that was actually showing (audit AN-29).
+    const selectTab = (v: string | null) => {
+        if (!v) return;
+        const next = v as TabId;
+        setTab(next);
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("tab", next);
+        router.replace(`/analytics?${params.toString()}`, { scroll: false });
+    };
     const [customStart, setCustomStart] = useState("");
     const [customEnd, setCustomEnd] = useState("");
     const [customOpen, setCustomOpen] = useState(range.preset === "custom");
@@ -149,7 +160,7 @@ function AnalyticsPageInner() {
                         {/* Tab bar: segmented control on wide screens, themed
                             dropdown on narrow viewports (project convention). */}
                         <div className="hidden md:block">
-                            <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)}>
+                            <Tabs value={tab} onValueChange={selectTab}>
                                 <TabsList>
                                     {TAB_IDS.map((id) => (
                                         <TabsTrigger key={id} value={id}>
@@ -161,7 +172,7 @@ function AnalyticsPageInner() {
                             </Tabs>
                         </div>
                         <div className="md:hidden">
-                            <Select value={tab} onValueChange={(v) => setTab(v as TabId)}>
+                            <Select value={tab} onValueChange={selectTab}>
                                 <SelectTrigger className="w-full">
                                     <SelectValue placeholder="Choose a section" />
                                 </SelectTrigger>

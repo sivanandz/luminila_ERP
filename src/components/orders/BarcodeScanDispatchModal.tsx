@@ -122,9 +122,7 @@ export function BarcodeScanDispatchModal({
 
     // Keep preselected order in sync if passed
     useEffect(() => {
-        if (preselectedOrder) {
-            setSelectedOrder(preselectedOrder);
-        }
+        setSelectedOrder(preselectedOrder || null);
     }, [preselectedOrder]);
 
     const fetchPendingOrders = async () => {

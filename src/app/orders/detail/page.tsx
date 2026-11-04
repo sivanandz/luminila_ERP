@@ -21,6 +21,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
     getOrderDetails,
     convertEstimateToOrder,
+    confirmSalesOrder,
     generateInvoiceFromOrder,
     cancelSalesOrder,
     canCancelSalesOrder,
@@ -90,6 +91,16 @@ function OrderDetailContent() {
         const success = await convertEstimateToOrder(order.id);
         if (success) {
             fetchOrder(); // Refresh to show new status
+        }
+        setActionLoading(false);
+    };
+
+    const handleConfirm = async () => {
+        if (!order) return;
+        setActionLoading(true);
+        const success = await confirmSalesOrder(order.id);
+        if (success) {
+            fetchOrder();
         }
         setActionLoading(false);
     };
@@ -267,6 +278,17 @@ function OrderDetailContent() {
                             >
                                 <CheckCircle size={18} className="mr-2" />
                                 Convert to Order
+                            </Button>
+                        )}
+
+                        {!isEstimate && order.status === 'draft' && (
+                            <Button
+                                onClick={handleConfirm}
+                                disabled={actionLoading}
+                                className="bg-green-600 hover:bg-green-700"
+                            >
+                                <CheckCircle size={18} className="mr-2" />
+                                Confirm Order
                             </Button>
                         )}
 

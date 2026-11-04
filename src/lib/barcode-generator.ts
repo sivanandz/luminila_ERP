@@ -231,14 +231,18 @@ export function printLabels(products: Array<{
 }
 
 /**
- * Parse scanned barcode text to extract SKU
+ * Parse scanned barcode text to extract SKU.
+ *
+ * I10: SKUs may legitimately contain `_`, `.` and `/`, and forcing uppercase
+ * made a case-sensitive lookup miss. Accept the full SKU charset and preserve
+ * the scanned case.
  */
 export function parseSKUFromBarcode(barcodeText: string): string | null {
     const trimmed = barcodeText.trim();
 
-    // Validate SKU format (alphanumeric with dashes)
-    if (/^[A-Z0-9-]+$/i.test(trimmed)) {
-        return trimmed.toUpperCase();
+    if (!trimmed || trimmed.length > 128) return null;
+    if (/^[A-Za-z0-9._/-]+$/.test(trimmed)) {
+        return trimmed;
     }
 
     return null;

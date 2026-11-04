@@ -253,7 +253,7 @@ async function deleteAllByFilter(collection: string, filter: string): Promise<nu
 export async function getProductVariants(productId: string): Promise<ProductVariant[]> {
     try {
         const records = await pb.collection('product_variants').getFullList<ProductVariant>({
-            filter: `product="${productId}"`,
+            filter: `product="${productId}"${tenantClause()}`,
             sort: 'variant_name'
         });
         return records;
@@ -297,15 +297,27 @@ export async function deleteVariant(id: string): Promise<void> {
 
 export async function updateStock(variantId: string, quantityChange: number): Promise<void> {
     try {
-        if (quantityChange >= 0) {
+        if (!Number.isFinite(quantityChange) || quantityChange === 0) return;
+
+        // I1: the atomic decrement alone lets PocketBase's min constraint reject
+        // the write, but callers swallowed that error and stock silently stayed
+        // put. Check availability first and throw a message the UI can show.
+        if (quantityChange < 0) {
+            const variant = await pb.collection('product_variants').getOne<{ stock_level?: number }>(variantId);
+            const current = Number(variant.stock_level ?? 0);
+            const requested = Math.abs(quantityChange);
+            if (current < requested) {
+                throw new Error(`Insufficient stock: ${current} available, ${requested} requested.`);
+            }
             await pb.collection('product_variants').update(variantId, {
-                'stock_level+': quantityChange
+                'stock_level-': requested
             });
-        } else {
-            await pb.collection('product_variants').update(variantId, {
-                'stock_level-': Math.abs(quantityChange)
-            });
+            return;
         }
+
+        await pb.collection('product_variants').update(variantId, {
+            'stock_level+': quantityChange
+        });
     } catch (error) {
         console.error('Error updating stock:', error);
         throw error;
@@ -371,21 +383,41 @@ export async function searchProductsForDocuments(query: string): Promise<Catalog
     }));
 }
 
-/** Resolve a scanned or typed barcode (product sku or barcode) to its product and first variant. */
+/** Resolve a scanned or typed barcode to its product and the matching variant. */
 export async function resolveBarcodeProduct(
     code: string
 ): Promise<{ product: Product; variant: ProductVariant | null } | null> {
-    const term = sanitizeFilter((code || '').trim());
+    const raw = (code || '').trim();
+    const term = sanitizeFilter(raw);
     if (!term) return null;
 
     try {
         const product = await pb
             .collection('products')
             .getFirstListItem<Product>(`(sku="${term}" || barcode="${term}") && is_active = true${tenantClause()}`);
-        const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+
+        // I6: a label can carry the variant suffix or the full PARENT-SUFFIX SKU.
+        // Return the exact variant; only fall back to the sole variant when the
+        // product really has one.
+        const separator = raw.lastIndexOf('-');
+        const suffix = separator > 0 ? raw.slice(separator + 1) : '';
+        if (suffix) {
+            const exact = await pb
+                .collection('product_variants')
+                .getList<ProductVariant>(1, 1, {
+                    filter: `product="${product.id}" && sku_suffix="${sanitizeFilter(suffix)}"${tenantClause()}`,
+                })
+                .catch(() => null);
+            if (exact?.items[0]) return { product, variant: exact.items[0] };
+        }
+
+        const variants = await pb.collection('product_variants').getFullList<ProductVariant>({
             filter: `product="${product.id}"${tenantClause()}`,
         });
-        return { product, variant: variants.items[0] || null };
+        const direct =
+            variants.find((v) => v.sku_suffix === raw || v.variant_name === raw) || null;
+        if (direct) return { product, variant: direct };
+        return { product, variant: variants.length === 1 ? variants[0] : null };
     } catch {
         return null;
     }
@@ -513,23 +545,25 @@ export async function getSellableVariants(): Promise<SellableVariant[]> {
         expand: 'product',
     });
 
-    return variants.map((variant) => ({
-        id: variant.id,
-        variant_name: variant.variant_name,
-        sku_suffix: variant.sku_suffix,
-        material: variant.material,
-        stock_level: variant.stock_level,
-        price_adjustment: variant.price_adjustment || 0,
-        product: variant.expand?.product
-            ? {
-                id: variant.expand.product.id,
-                name: variant.expand.product.name,
-                sku: variant.expand.product.sku,
-                base_price: variant.expand.product.base_price,
-                category: variant.expand.product.category,
-            }
-            : { id: '', name: '', sku: '', base_price: 0 },
-    }));
+    return variants
+        // I12: a variant whose product expansion failed is not sellable; the old
+        // code emitted a blank {id:'', name:'', price:0} line for it.
+        .filter((variant) => Boolean(variant.expand?.product))
+        .map((variant) => ({
+            id: variant.id,
+            variant_name: variant.variant_name,
+            sku_suffix: variant.sku_suffix,
+            material: variant.material,
+            stock_level: variant.stock_level,
+            price_adjustment: variant.price_adjustment || 0,
+            product: {
+                id: variant.expand!.product!.id,
+                name: variant.expand!.product!.name,
+                sku: variant.expand!.product!.sku,
+                base_price: variant.expand!.product!.base_price,
+                category: variant.expand!.product!.category,
+            },
+        }));
 }
 
 /** Single variant by id, for discrepancy and stock flows. */
@@ -641,7 +675,9 @@ export async function findVariantBySuffixOrBarcode(code: string): Promise<{ item
     if (!clean) return { items: [] };
     try {
         const list = await pb.collection('product_variants').getList(1, 1, {
-            filter: `(sku_suffix = "${sanitizeFilter(clean)}" || barcode = "${sanitizeFilter(clean)}") && product.is_active = true${tenantClause()}`,
+            // I5: `barcode` lives on the product, not on product_variants — the
+            // old filter always errored and scan lookup returned nothing.
+            filter: `(sku_suffix = "${sanitizeFilter(clean)}" || product.barcode = "${sanitizeFilter(clean)}") && product.is_active = true${tenantClause()}`,
             expand: 'product',
         });
         return { items: list.items.map((item) => ({ ...(item as Record<string, unknown>), material: item["material"] ? String(item["material"]) : undefined })) as unknown as ScannedVariantRecord[] };

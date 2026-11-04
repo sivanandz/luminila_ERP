@@ -7,8 +7,8 @@
  * Razorpay orders stay out via the revenue status filter).
  */
 
-import { pb } from '../pocketbase';
-import { resolveRange, compare, dayKey, type AnalyticsRange, type ComparedMetric, type DateWindow } from './range';
+import { pb, sanitizeFilter } from '../pocketbase';
+import { resolveRange, compare, dayKey, pbBound, type AnalyticsRange, type ComparedMetric, type DateWindow } from './range';
 import { loadTxWindow, type UnifiedTx, tenantEmail } from './load';
 
 // Recharts v3 types chart rows as Record<string, unknown>; every chart-row
@@ -80,6 +80,28 @@ function labelForMonth(key: string): string {
     return `${MONTH_LABELS[Number(m) - 1]} ${y.slice(2)}`;
 }
 
+/** Running sum for one trend bucket (a day or a month). */
+export interface TrendBucket {
+    revenue: number;
+    orders: number;
+}
+
+/**
+ * Align previous-window monthly aggregates onto the current axis BY POSITION
+ * (audit AN-06). Previous months are keyed under their own YYYY-MM, so a
+ * direct label lookup against the current window's months can never match and
+ * the dashed previous series would never render. Mirrors the index alignment
+ * profitability.ts applies to its monthly margin trend.
+ */
+export function alignPreviousMonths(previousAgg: Map<string, TrendBucket>, currentKeys: string[]): Map<string, TrendBucket> {
+    const prevMonths = [...previousAgg.keys()].sort();
+    const aligned = new Map<string, TrendBucket>();
+    prevMonths.forEach((m, i) => {
+        if (i < currentKeys.length) aligned.set(currentKeys[i], previousAgg.get(m)!);
+    });
+    return aligned;
+}
+
 /**
  * Trend series with automatic granularity:
  *   ≤ 60 days → daily points; longer → monthly.
@@ -108,11 +130,19 @@ export function buildTrend(currentTxs: UnifiedTx[], previousTxs: UnifiedTx[], wi
         previousAgg.set(key, agg);
     }
 
+    // Zero-fill the current axis first so both granularities align against it
+    // (charts show continuous days/months even where no sales occurred —
+    // silent gaps read as missing data otherwise).
+    const keys = monthly
+        ? [...new Set(win.current.days.map((d) => d.slice(0, 7)))].sort()
+        : win.current.days;
+
     // Previous mapped onto the current axis: daily → index alignment
-    // (previous day i aligns with current day i); monthly → same month label.
-    const prevByAlignedKey = new Map<string, { revenue: number; orders: number }>();
+    // (previous day i aligns with current day i); monthly → index alignment
+    // across months (see alignPreviousMonths — a label lookup never matches).
+    let prevByAlignedKey = new Map<string, { revenue: number; orders: number }>();
     if (monthly) {
-        previousAgg.forEach((v, k) => prevByAlignedKey.set(k, v));
+        prevByAlignedKey = alignPreviousMonths(previousAgg, keys);
     } else {
         const currentDays = win.current.days;
         const previousDays = win.previous.days;
@@ -121,12 +151,6 @@ export function buildTrend(currentTxs: UnifiedTx[], previousTxs: UnifiedTx[], wi
             if (v && i < currentDays.length) prevByAlignedKey.set(currentDays[i], v);
         });
     }
-
-    // Zero-fill the current axis so charts show continuous days/months even
-    // where no sales occurred — silent gaps read as missing data otherwise.
-    const keys = monthly
-        ? [...new Set(win.current.days.map((d) => d.slice(0, 7)))].sort()
-        : win.current.days;
 
     return keys.map((key) => {
         const cur = currentAgg.get(key) || { revenue: 0, orders: 0 };
@@ -197,7 +221,15 @@ export function buildPaymentMix(currentTxs: UnifiedTx[]): PaymentMixRow[] {
         .sort((a, b) => b.amount - a.amount);
 }
 
-/** Weekday × hour revenue heatmap from POS + order timestamps. */
+/**
+ * Weekday × hour revenue heatmap from POS + order timestamps.
+ *
+ * KNOWN QUIRK (audit AN-27): orders whose `order_date` was saved as a bare
+ * date ("YYYY-MM-DD", no time) parse to UTC midnight and heap into the
+ * midnight (hour 0) cell, alongside genuinely-timed local sales. Left as-is —
+ * writers emit full ISO today, so this only affects legacy rows; forcing a
+ * fake time would misattribute revenue worse than an honest 00:00 spike.
+ */
 export function buildHeatmap(currentTxs: UnifiedTx[]): HeatCell[] {
     const cells = new Map<string, HeatCell>();
     for (const tx of currentTxs) {
@@ -214,19 +246,63 @@ export function buildHeatmap(currentTxs: UnifiedTx[]): HeatCell[] {
 }
 
 /**
+ * Pure core of buildCustomerSplit (unit-testable): classify each DISTINCT
+ * customerKey exactly once per window (audit AN-05 — the per-transaction
+ * counters inflated a repeat buyer with 5 orders 5×). A customer is counted
+ * once, on their first-seen transaction, whose revenue is the revenue
+ * attributed to them; repeat-rate's denominator is distinct customers.
+ */
+export function aggregateCustomerSplit(currentTxs: UnifiedTx[], known: Set<string>): CustomerSplit {
+    let newCustomers = 0;
+    let returningCustomers = 0;
+    let newRevenue = 0;
+    let returningRevenue = 0;
+    const seen = new Set<string>();
+    for (const tx of currentTxs) {
+        const key = tx.customerKey;
+        if (!key) continue;
+        if (seen.has(key)) continue; // repeat transaction of an already-counted customer
+        seen.add(key);
+        if (known.has(key)) {
+            returningCustomers += 1;
+            returningRevenue += tx.revenue;
+        } else {
+            newCustomers += 1;
+            newRevenue += tx.revenue;
+        }
+    }
+
+    const totalCustomers = newCustomers + returningCustomers;
+    return {
+        newCustomers,
+        returningCustomers,
+        newRevenue: Math.round(newRevenue),
+        returningRevenue: Math.round(returningRevenue),
+        repeatRatePct: totalCustomers > 0 ? Math.round((returningCustomers / totalCustomers) * 1000) / 10 : 0,
+    };
+}
+
+/**
  * New vs returning customers within the window. A customer is "returning"
  * when they had a canonical transaction BEFORE the window start. History is
- * probed with one cheap query per side (sales + orders, distinct-ish by
- * customer key in JS).
+ * probed with one cheap query per side (sales + orders); dedupe/counting is
+ * aggregateCustomerSplit.
  */
 export async function buildCustomerSplit(tenant: string, win: { current: DateWindow; previous: DateWindow }, currentTxs: UnifiedTx[]): Promise<CustomerSplit> {
     if (!tenant) {
         return { newCustomers: 0, returningCustomers: 0, newRevenue: 0, returningRevenue: 0, repeatRatePct: 0 };
     }
 
-    // History: any canonical tx before the window start.
-    const historyFilterSales = `account_email="${tenant}" && channel!="storefront" && created<"${win.current.startISO}"`;
-    const historyFilterOrders = `account_email="${tenant}" && created<"${win.current.startISO}" && (${['confirmed', 'shipped', 'delivered', 'invoiced'].map((s) => `status="${s}"`).join(' || ')})`;
+    // History: any canonical tx before the window start. Same canonical
+    // conventions as load.ts: mirror excluded, cancelled mirrors excluded,
+    // PB space-datetime bound (AN-02).
+    const historyFilterSales =
+        `account_email="${sanitizeFilter(tenant)}" && channel!="storefront"` +
+        ` && !(channel="whatsapp" && channel_order_id != "") && status!="cancelled"` +
+        ` && created<"${pbBound(win.current.startISO)}"`;
+    const historyFilterOrders =
+        `account_email="${sanitizeFilter(tenant)}" && created<"${pbBound(win.current.startISO)}"` +
+        ` && (${['confirmed', 'shipped', 'delivered', 'invoiced'].map((s) => `status="${s}"`).join(' || ')})`;
 
     const [histSales, histOrders] = await Promise.all([
         pb.collection('sales').getFullList({ filter: historyFilterSales, fields: 'id,customer_phone,customer_name' }).catch(() => [] as Array<Record<string, any>>),
@@ -243,29 +319,7 @@ export async function buildCustomerSplit(tenant: string, win: { current: DateWin
         if (key) known.add(key);
     }
 
-    let newCustomers = 0;
-    let returningCustomers = 0;
-    let newRevenue = 0;
-    let returningRevenue = 0;
-    for (const tx of currentTxs) {
-        if (!tx.customerKey) continue;
-        if (known.has(tx.customerKey)) {
-            returningCustomers += 1;
-            returningRevenue += tx.revenue;
-        } else {
-            newCustomers += 1;
-            newRevenue += tx.revenue;
-        }
-    }
-
-    const totalTxs = newCustomers + returningCustomers;
-    return {
-        newCustomers,
-        returningCustomers,
-        newRevenue: Math.round(newRevenue),
-        returningRevenue: Math.round(returningRevenue),
-        repeatRatePct: totalTxs > 0 ? Math.round((returningCustomers / totalTxs) * 1000) / 10 : 0,
-    };
+    return aggregateCustomerSplit(currentTxs, known);
 }
 
 /** AOV = revenue / orders, compared across windows. */

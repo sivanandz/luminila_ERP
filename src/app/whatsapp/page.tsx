@@ -136,6 +136,7 @@ import {
     detectIntent,
     sendProductCard,
     setWhatsAppOptOut,
+    tenantScopeEmail,
     type ContactType,
 } from "@/lib/whatsapp-crm";
 import { startPaymentReconciler } from "@/lib/payment-reconciliation";
@@ -2479,6 +2480,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
             setReplyText("");
             const quoted = replyingTo;
             setReplyingTo(null);
+            const nowIso = new Date().toISOString();
             setSelectedChatMessages(prev => [...prev, {
                 id: sentId || `sent-${Date.now()}`,
                 from: "me",
@@ -2498,6 +2500,25 @@ _Your order will be confirmed and processed immediately upon successful payment.
                 } : {}),
             }]);
             void stopTypingIndicator();
+
+            if (chatRecordRef.current) {
+                const recId = chatRecordRef.current;
+                pb.collection('whatsapp_messages').create({
+                    chat: recId,
+                    message_id: sentId || `staff-${Date.now()}`,
+                    from_me: true,
+                    sender_name: 'You',
+                    body: replyText,
+                    message_type: 'text',
+                    status: 'sent',
+                    timestamp: nowIso,
+                    account_email: tenantScopeEmail(),
+                }).catch(() => {});
+                pb.collection('whatsapp_chats').update(recId, {
+                    last_message_body: replyText,
+                    last_message_time: nowIso,
+                }).catch(() => {});
+            }
         }
     };
 

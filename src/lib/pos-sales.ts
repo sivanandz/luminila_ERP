@@ -66,6 +66,8 @@ export interface POSSaleData {
     notes?: string;
     pointsRedeemed?: number;
     pointsEarned?: number;
+    /** Stable client id for retries; reused so a replay cannot duplicate (P7). */
+    transactionId?: string;
 }
 
 export interface POSSaleResult {
@@ -96,11 +98,138 @@ export function validateSaleQuantities(
     return null;
 }
 
+function toPaise(value: number): number {
+    return Math.round(Number(value) * 100);
+}
+
+function round2(value: number): number {
+    return toPaise(value) / 100;
+}
+
+/**
+ * P1: the client used to persist its own subtotal/discount/total verbatim, so a
+ * tampered request could bill a full cart for ₹1. Recompute every figure from
+ * the line prices and reject a bill whose numbers do not add up.
+ *
+ * Line prices themselves stay negotiable (manager override is a POS feature);
+ * what is enforced is that the header is consistent with the lines.
+ */
+export function validateSaleTotals(input: {
+    items: Array<{ price: number; quantity: number; name?: string }>;
+    subtotal: number;
+    discountPercent: number;
+    discountAmount: number;
+    loyaltyDiscount: number;
+    total: number;
+}): string | null {
+    let lineSubtotal = 0;
+    for (const item of input.items) {
+        const price = Number(item.price);
+        const quantity = Number(item.quantity);
+        if (!Number.isFinite(price) || price < 0) {
+            return `Invalid price for ${item.name || 'an item'}: ${item.price}`;
+        }
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+            return `Invalid quantity for ${item.name || 'an item'}: ${item.quantity}`;
+        }
+        lineSubtotal += price * quantity;
+    }
+    // Round once at the end, exactly like the POS page, so a line-level paise
+    // rounding cannot make an honest cart fail the check.
+    const lineSubtotalPaise = toPaise(lineSubtotal);
+
+    const discountPercent = Number(input.discountPercent);
+    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+        return `Invalid discount percentage: ${input.discountPercent}`;
+    }
+
+    const subtotalPaise = toPaise(input.subtotal);
+    if (!Number.isFinite(input.subtotal)) {
+        return 'Sale subtotal is not a valid number.';
+    }
+    if (Math.abs(subtotalPaise - lineSubtotalPaise) > 1) {
+        return 'Sale subtotal does not match the cart lines.';
+    }
+
+    const discountPaise = toPaise(input.discountAmount);
+    if (!Number.isFinite(input.discountAmount) || discountPaise < 0 || discountPaise > lineSubtotalPaise + 1) {
+        return 'Discount amount is outside the bill subtotal.';
+    }
+
+    const loyaltyPaise = toPaise(input.loyaltyDiscount);
+    const maxLoyaltyPaise = lineSubtotalPaise - discountPaise;
+    if (!Number.isFinite(input.loyaltyDiscount) || loyaltyPaise < 0 || loyaltyPaise > maxLoyaltyPaise + 1) {
+        return 'Loyalty discount exceeds the discounted subtotal.';
+    }
+
+    const expectedTotalPaise = lineSubtotalPaise - discountPaise - loyaltyPaise;
+    if (expectedTotalPaise < 0) {
+        return 'Sale total cannot be negative.';
+    }
+    if (!Number.isFinite(input.total)) {
+        return 'Sale total is not a valid number.';
+    }
+    if (Math.abs(toPaise(input.total) - expectedTotalPaise) > 1) {
+        return 'Sale total does not match subtotal less discounts.';
+    }
+
+    return null;
+}
+
+function newTransactionId(): string {
+    const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+    if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+        return cryptoApi.randomUUID();
+    }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     const quantityError = validateSaleQuantities(data.items);
     if (quantityError) throw new Error(quantityError);
 
-    const transactionId = `TXN-${Date.now().toString(36).toUpperCase()}`;
+    // P4: a line without a product reference used to skip stock silently.
+    const missingProduct = data.items.find((item) => !item.productId);
+    if (missingProduct) {
+        throw new Error(`Cannot sell "${missingProduct.name || missingProduct.sku}": it has no product reference, so stock cannot be deducted.`);
+    }
+
+    // P1: recompute the header from the lines and reject a tampered bill.
+    const totalsError = validateSaleTotals(data);
+    if (totalsError) throw new Error(totalsError);
+    const subtotal = round2(data.items.reduce((sum, item) => sum + item.price * item.quantity, 0));
+    const discountAmount = round2(data.discountAmount);
+    const loyaltyDiscount = round2(data.loyaltyDiscount);
+    const total = round2(subtotal - discountAmount - loyaltyDiscount);
+
+    // P7: a stable id makes retries idempotent instead of inserting a second sale.
+    const transactionId = data.transactionId?.trim() || `TXN-${newTransactionId()}`;
+    const existing = await pb
+        .collection('sales')
+        .getFirstListItem<{ id: string }>(
+            `channel_order_id="${sanitizeFilter(transactionId)}" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`
+        )
+        .catch((error: unknown) => {
+            // Only "not found" means this is a fresh sale; a failed lookup must
+            // not fall through to creating a duplicate.
+            if ((error as { status?: number })?.status === 404) return null;
+            throw error;
+        });
+    if (existing) {
+        const invoice = await pb
+            .collection('invoices')
+            .getFirstListItem<{ id: string; invoice_number?: string }>(
+                `sale="${sanitizeFilter(existing.id)}" && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`
+            )
+            .catch(() => null);
+        return {
+            saleId: existing.id,
+            invoiceId: invoice?.id || '',
+            invoiceNumber: invoice?.invoice_number || '',
+            transactionId,
+            warnings: ['This transaction was already recorded; the retry was deduplicated.'],
+        };
+    }
 
     let createdSaleId: string | null = null;
     let createdInvoiceId: string | null = null;
@@ -108,6 +237,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     const createdSaleItemIds: string[] = [];
     const createdMovementIds: string[] = [];
     const stockDeductions: { kind: 'variant' | 'product'; id: string; quantity: number }[] = [];
+    const locationAdjustments: { variantId: string; quantity: number }[] = [];
     const warnings: string[] = [];
 
     try {
@@ -120,9 +250,9 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
             customer_name: data.customerName || 'Walk-in Customer',
             customer_phone: data.customerPhone || '',
             customer_address: '',
-            subtotal: data.subtotal,
-            discount: data.discountAmount + data.loyaltyDiscount,
-            total: data.total,
+            subtotal,
+            discount: round2(discountAmount + loyaltyDiscount),
+            total,
             payment_method: data.paymentMethod,
             status: 'delivered', // POS sales are immediate
             notes: data.notes || '',
@@ -192,7 +322,11 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                 channel: 'pos',
                 referenceId: sale.id,
                 notes: `POS Sale: ${transactionId}`,
-                oversell: 'clamp',
+                // P2: abort on shortage instead of clamping. A clamped sale
+                // charged for units that never left stock. applyChannelStock
+                // rolls its own partial writes back, then the outer rollback
+                // removes the sale/invoice rows.
+                oversell: 'reject',
             });
             for (const movementId of stockResult.movementIds) {
                 if (movementId) createdMovementIds.push(movementId);
@@ -207,12 +341,16 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
                 if (appliedQuantity > 0) {
                     stockDeductions.push({ kind: target.kind, id: target.id, quantity: appliedQuantity });
                     if (data.locationId) {
+                        // P6: surface the failure and remember the adjustment so
+                        // the rollback below can reverse it. Swallowing it left
+                        // location stock permanently short.
                         await adjustLocationStock(
                             target.id,
                             data.locationId,
                             -appliedQuantity,
                             `POS Sale [${transactionId}]`
-                        ).catch(() => {});
+                        );
+                        locationAdjustments.push({ variantId: target.id, quantity: appliedQuantity });
                     }
                 }
                 if (shortage) {
@@ -240,7 +378,9 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
         console.log('Sale items created');
 
         // 4. Update shift totals
-        shiftTotalsApplied = await updateShiftTotals(data.shiftId, data.total, data.paymentMethod);
+        // P5: a failed shift update must fail the sale. Otherwise the drawer's
+        // expected balance silently drifts away from the transactions.
+        shiftTotalsApplied = await updateShiftTotals(data.shiftId, total, data.paymentMethod);
         console.log('Shift totals updated');
 
         // 5. Create invoice from sale
@@ -259,7 +399,19 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
     } catch (error) {
         console.error('Error creating POS sale, initiating compensating rollback:', error);
 
-        // Rollback stock deductions atomically
+        // Rollback stock deductions atomically, including the per-location copy.
+        for (const adjustment of locationAdjustments) {
+            try {
+                await adjustLocationStock(
+                    adjustment.variantId,
+                    data.locationId as string,
+                    adjustment.quantity,
+                    `POS Sale Rollback [${transactionId}]`
+                );
+            } catch (err) {
+                console.error(`Rollback error: unable to restore location stock for ${adjustment.variantId}:`, err);
+            }
+        }
         for (const deduction of stockDeductions) {
             try {
                 const collection = deduction.kind === 'variant' ? 'product_variants' : 'products';
@@ -309,7 +461,9 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
             );
         }
         if (shiftTotalsApplied) {
-            await updateShiftTotals(data.shiftId, -Math.abs(data.total), data.paymentMethod);
+            await updateShiftTotals(data.shiftId, -Math.abs(total), data.paymentMethod).catch((err) =>
+                console.error(`Rollback error: unable to reverse shift totals for ${data.shiftId}:`, err)
+            );
         }
 
         throw error;
@@ -326,30 +480,26 @@ async function updateShiftTotals(
     paymentMethod: string
 ): Promise<boolean> {
     return enqueueTask(`shift_${shiftId}`, async () => {
-        try {
-            const updates: Record<string, number> = {};
+        const updates: Record<string, number> = {};
 
-            switch (paymentMethod) {
-                case 'cash':
-                    updates['total_cash_sales+'] = amount;
-                    updates['expected_balance+'] = amount;
-                    break;
-                case 'card':
-                    updates['total_card_sales+'] = amount;
-                    break;
-                case 'upi':
-                case 'phonepe':
-                    updates['total_upi_sales+'] = amount;
-                    break;
-            }
-
-            await pb.collection('cash_register_shifts').update(shiftId, updates);
-            return true;
-        } catch (error) {
-            console.error('Error updating shift totals:', error);
-            // Don't throw - shift update failure shouldn't fail the sale
-            return false;
+        switch (paymentMethod) {
+            case 'cash':
+                updates['total_cash_sales+'] = amount;
+                updates['expected_balance+'] = amount;
+                break;
+            case 'card':
+                updates['total_card_sales+'] = amount;
+                break;
+            case 'upi':
+            case 'phonepe':
+                updates['total_upi_sales+'] = amount;
+                break;
         }
+
+        // P5: let the error propagate so createPOSSale rolls the sale back
+        // instead of leaving the drawer totals short.
+        await pb.collection('cash_register_shifts').update(shiftId, updates);
+        return true;
     });
 }
 

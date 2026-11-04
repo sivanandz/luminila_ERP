@@ -17,8 +17,9 @@
  * window so operating expenses can be shown next to gross margin.
  */
 
-import { tenantEmail, loadUnifiedLines, loadTxWindow, type UnifiedLine, type UnifiedTx } from './load';
+import { tenantEmail, loadUnifiedLines, loadTxWindow, type UnifiedLine } from './load';
 import { resolveRange, compare, type AnalyticsRange, type ComparedMetric } from './range';
+import { adjustedLineRevenues } from './discount-allocation';
 import { getExpenseStats } from '../expenses';
 
 export interface MarginRow {
@@ -69,41 +70,11 @@ export interface ProfitabilityAnalytics {
     discountErosion: DiscountErosion;
     expenses: ExpensesOverlay;
     marginUnknownCostUnits: number;
+    /** units whose cost was estimated from the product's CURRENT cost (no sale-time snapshot) — audit AN-12 */
+    costEstimatedUnits: number;
 }
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/**
- * Allocate each transaction's order-level discount pro-rata across its lines
- * by net revenue; returns adjusted net revenue per line.
- */
-function adjustedLineRevenues(lines: UnifiedLine[], txs: UnifiedTx[]): Map<UnifiedLine, number> {
-    const grossByTx = new Map<string, number>();
-    const lineNetByTx = new Map<string, number>();
-    for (const l of lines) {
-        lineNetByTx.set(l.txId, (lineNetByTx.get(l.txId) || 0) + l.netRevenue);
-    }
-    for (const t of txs) {
-        grossByTx.set(t.id, t.revenue);
-    }
-
-    const adjusted = new Map<UnifiedLine, number>();
-    for (const l of lines) {
-        const tx = txs.find((t) => t.id === l.txId);
-        const lineNetSum = lineNetByTx.get(l.txId) || 0;
-        const txRevenue = grossByTx.get(l.txId) ?? 0;
-        // POS sale rows carry the bill discount inside `sales.discount`, which
-        // load.ts records on the tx; sales_orders carry discount_total.
-        const orderDiscount = tx ? Math.max(0, tx.revenue - lineNetSum - (tx.discount || 0)) : 0;
-        // tx.revenue (header total) vs Σ line net: the gap is tax+shipping+rounding,
-        // so scale lines by the header's line-share only when a discount exists.
-        const scale = lineNetSum > 0 && tx && tx.discount > 0
-            ? Math.max(0, (lineNetSum - tx.discount) / lineNetSum)
-            : 1;
-        adjusted.set(l, orderDiscount > 0 ? l.netRevenue * scale : l.netRevenue);
-    }
-    return adjusted;
-}
 
 function aggregate(
     lines: UnifiedLine[],
@@ -145,27 +116,34 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
         discountErosion: { grossRevenue: 0, totalDiscounts: 0, erosionPct: 0, previousErosionPct: 0, deltaPct: 0 },
         expenses: { total: 0, byCategory: [], operatingResult: 0 },
         marginUnknownCostUnits: 0,
+        costEstimatedUnits: 0,
     };
     if (!tenant) return empty;
 
     const win = resolveRange(range);
-    const [lines, txs, prevLines] = await Promise.all([
+    // Previous-window transactions are loaded too so the same discount
+    // allocation applies there — otherwise previousMarginPct / trend overlay /
+    // erosion deltas stay on raw revenue while current is adjusted (AN-04).
+    const [lines, txs, prevLines, prevTxs] = await Promise.all([
         loadUnifiedLines(tenant, win.current),
         loadTxWindow(tenant, win.current),
         loadUnifiedLines(tenant, win.previous),
+        loadTxWindow(tenant, win.previous),
     ]);
 
     const adjusted = adjustedLineRevenues(lines, txs);
+    const adjustedPrev = adjustedLineRevenues(prevLines, prevTxs);
 
     const revenue = lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0);
     const cogs = lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
     const margin = revenue - cogs;
 
-    const prevRevenue = prevLines.reduce((s, l) => s + l.netRevenue, 0);
+    const prevRevenue = prevLines.reduce((s, l) => s + (adjustedPrev.get(l) ?? l.netRevenue), 0);
     const prevCogs = prevLines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
     const prevMargin = prevRevenue - prevCogs;
 
     const marginUnknownCostUnits = lines.filter((l) => l.unitCost === 0).reduce((s, l) => s + l.quantity, 0);
+    const costEstimatedUnits = lines.filter((l) => l.costFallback).reduce((s, l) => s + l.quantity, 0);
 
     // ---- monthly margin trend with previous overlay (aligned by index) ----
     const monthly = new Map<string, { revenue: number; margin: number }>();
@@ -179,7 +157,7 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
     const prevMonthly = new Map<string, number>();
     for (const l of prevLines) {
         const m = l.day.slice(0, 7);
-        prevMonthly.set(m, (prevMonthly.get(m) || 0) + (l.netRevenue - l.quantity * l.unitCost));
+        prevMonthly.set(m, (prevMonthly.get(m) || 0) + ((adjustedPrev.get(l) ?? l.netRevenue) - l.quantity * l.unitCost));
     }
     // Align previous months onto the current axis by order.
     const currentMonths = [...monthly.keys()].sort();
@@ -203,12 +181,9 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
     });
 
     const byCategory = aggregate(lines, adjusted, (l) => l.categoryId || 'uncategorized', (l) => l.categoryName);
-    const byChannel = aggregate(lines, adjusted, (l) => l.txId, (l) => l.txId);
-    // Channel label needs the tx — rebuild keyed by tx channel.
+    // Channel label needs the tx — aggregate by the tx's channel label.
     const channelByTx = new Map(txs.map((t) => [t.id, t.channel]));
-    const byChannelRows = aggregate(lines, adjusted, (l) => channelByTx.get(l.txId) || 'Other', (l) => channelByTx.get(l.txId) || 'Other');
-    byChannel.length = 0;
-    byChannel.push(...byChannelRows);
+    const byChannel = aggregate(lines, adjusted, (l) => channelByTx.get(l.txId) || 'Other', (l) => channelByTx.get(l.txId) || 'Other');
 
     const byProductAll = aggregate(lines, adjusted, (l) => l.productId || 'unknown', (l) => l.productName);
     const topByProfit = [...byProductAll].sort((a, b) => b.margin - a.margin).slice(0, 10);
@@ -218,7 +193,7 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
     const grossCurrent = lines.reduce((s, l) => s + l.gross, 0);
     const discountsCurrent = grossCurrent - lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0);
     const grossPrev = prevLines.reduce((s, l) => s + l.gross, 0);
-    const discountsPrev = grossPrev - prevLines.reduce((s, l) => s + l.netRevenue, 0);
+    const discountsPrev = grossPrev - prevLines.reduce((s, l) => s + (adjustedPrev.get(l) ?? l.netRevenue), 0);
     const erosionPct = grossCurrent > 0 ? Math.round((discountsCurrent / grossCurrent) * 1000) / 10 : 0;
     const prevErosionPct = grossPrev > 0 ? Math.round((discountsPrev / grossPrev) * 1000) / 10 : 0;
 
@@ -253,5 +228,6 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
         },
         expenses,
         marginUnknownCostUnits,
+        costEstimatedUnits,
     };
 }

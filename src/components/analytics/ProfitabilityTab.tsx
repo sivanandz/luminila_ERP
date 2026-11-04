@@ -64,7 +64,7 @@ export function ProfitabilityTab() {
     const kpis: KpiItem[] = [
         { label: "Gross Margin", value: formatINR(data.overallMargin.current), deltaPct: data.overallMargin.deltaPct, sub: data.marginPct !== null ? `${data.marginPct}% of revenue` : undefined },
         { label: "Margin %", value: fmtMetric(data.marginPct, (v) => `${v}%`), sub: `prev ${fmtMetric(data.previousMarginPct, (v) => `${v}%`)}` },
-        { label: "Discount Erosion", value: `${data.discountErosion.erosionPct}%`, sub: `${formatINR(data.discountErosion.totalDiscounts)} given away`, invertDelta: true, deltaPct: data.discountErosion.deltaPct },
+        { label: "Discount Erosion", value: `${data.discountErosion.erosionPct}%`, sub: `${formatINR(data.discountErosion.totalDiscounts)} given away · ${data.discountErosion.deltaPct >= 0 ? '+' : ''}${data.discountErosion.deltaPct} pts vs prev` },
         { label: "Operating Expenses", value: formatINR(data.expenses.total), sub: data.expenses.total > 0 ? "same window" : "no expenses recorded" },
         { label: "Margin − Expenses", value: formatINR(data.expenses.operatingResult), sub: data.expenses.operatingResult < 0 ? "operating loss" : "operating surplus" },
     ];
@@ -73,10 +73,13 @@ export function ProfitabilityTab() {
         <div className="space-y-4 md:space-y-6">
             <KpiStrip items={kpis} />
 
-            {data.marginUnknownCostUnits > 0 && (
+            {(data.marginUnknownCostUnits > 0 || (data.costEstimatedUnits ?? 0) > 0) && (
                 <Card className="border-yellow-500/40 bg-yellow-500/5">
                     <CardContent className="py-3 text-xs text-muted-foreground">
-                        ⚠ {data.marginUnknownCostUnits} sold unit(s) carry an estimated cost (no snapshot at sale time). Their margins shift if product cost changes — run the backfill script to snapshot historical costs.
+                        ⚠ {data.marginUnknownCostUnits} sold unit(s) have no cost basis at all
+                        {(data.costEstimatedUnits ?? 0) > 0
+                            ? `; ${data.costEstimatedUnits} unit(s) use an estimated (current-cost) basis because no sale-time snapshot exists`
+                            : ''}. Their margins shift if product cost changes — run the backfill script to snapshot historical costs.
                     </CardContent>
                 </Card>
             )}

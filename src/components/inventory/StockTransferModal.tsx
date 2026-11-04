@@ -33,7 +33,7 @@ import {
     Trash2,
     ExternalLink,
 } from "lucide-react";
-import { resolvePOSBarcodeVariant } from "@/lib/products";
+import { getProductVariants, resolvePOSBarcodeVariant } from "@/lib/products";
 
 interface StockTransferModalProps {
     open: boolean;
@@ -79,15 +79,28 @@ export function StockTransferModal({
         if (open) {
             loadData();
             if (preselectedProduct) {
-                setTransferItems([
-                    {
-                        productId: preselectedProduct.id,
-                        variantId: preselectedProduct.id,
-                        sku: preselectedProduct.sku,
-                        name: preselectedProduct.name,
-                        quantity: 1,
-                    },
-                ]);
+                getProductVariants(preselectedProduct.id).then((vars) => {
+                    const primaryVariantId = vars[0]?.id || preselectedProduct.id;
+                    setTransferItems([
+                        {
+                            productId: preselectedProduct.id,
+                            variantId: primaryVariantId,
+                            sku: preselectedProduct.sku,
+                            name: preselectedProduct.name,
+                            quantity: 1,
+                        },
+                    ]);
+                }).catch(() => {
+                    setTransferItems([
+                        {
+                            productId: preselectedProduct.id,
+                            variantId: preselectedProduct.id,
+                            sku: preselectedProduct.sku,
+                            name: preselectedProduct.name,
+                            quantity: 1,
+                        },
+                    ]);
+                });
             }
         }
     }, [open, preselectedProduct]);

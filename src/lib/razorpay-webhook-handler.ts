@@ -155,6 +155,25 @@ async function settleCapturedOrderInner(
         console.warn(`[settlement] Stock deduction warning for ${orderId}:`, stockErr);
     }
 
+    // Flash-drop holds: complete the reservation for whichever caller settles
+    // (buyer confirm or payment.captured webhook). Completion used to live only
+    // in the confirm route, so webhook-settled orders left the hold active →
+    // expired → the sold unit reappeared in the drop's available count and the
+    // allocation cap could be oversold (audit FD-02). Best effort: the paid
+    // stock movement remains the authority.
+    try {
+        const orderNumber = String(existingOrder.order_number || '');
+        if (orderNumber.startsWith('ORD-FD-')) {
+            const reservationId = orderNumber.slice('ORD-FD-'.length);
+            await pb
+                .collection('flash_drop_reservations')
+                .update(reservationId, { status: 'completed', order: orderId })
+                .catch(() => {});
+        }
+    } catch {
+        /* best effort */
+    }
+
     // Raise the GST invoice before notifying the customer (CO-16).
     try {
         const invoiceResult = await generateInvoiceFromOrder(orderId, db);

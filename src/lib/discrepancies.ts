@@ -133,6 +133,11 @@ export async function resolveStockDiscrepancy(
 ): Promise<StockDiscrepancy> {
     const discrepancy = await pb.collection('stock_discrepancies').getOne<StockDiscrepancy>(discrepancyId);
 
+    const currentTenant = accountScopeEmail();
+    if (currentTenant && (discrepancy as unknown as { account_email?: string }).account_email && (discrepancy as unknown as { account_email?: string }).account_email !== currentTenant) {
+        throw new Error('Access denied: Unauthorized discrepancy record.');
+    }
+
     if (discrepancy.status === 'resolved') {
         throw new Error('This discrepancy has already been resolved.');
     }
@@ -275,10 +280,15 @@ async function findVariantIdByProductSku(sku: string): Promise<string | null> {
  */
 export async function getStockDiscrepancies(filterStatus?: DiscrepancyStatus | 'all'): Promise<StockDiscrepancy[]> {
     try {
-        let filterStr = '';
-        if (filterStatus && filterStatus !== 'all') {
-            filterStr = `status="${filterStatus}"`;
+        const tenant = accountScopeEmail();
+        const clauses: string[] = [];
+        if (tenant) {
+            clauses.push(`account_email = "${sanitizeFilter(tenant)}"`);
         }
+        if (filterStatus && filterStatus !== 'all') {
+            clauses.push(`status = "${filterStatus}"`);
+        }
+        const filterStr = clauses.join(' && ');
 
         const records = await pb.collection('stock_discrepancies').getFullList({
             filter: filterStr,
@@ -304,8 +314,12 @@ export async function getDiscrepancyStats(): Promise<{
     totalUnitsQuarantined: number;
 }> {
     try {
+        const tenant = accountScopeEmail();
+        const filterStr = tenant
+            ? `status = "active" && account_email = "${sanitizeFilter(tenant)}"`
+            : 'status = "active"';
         const active = await pb.collection('stock_discrepancies').getFullList<StockDiscrepancy>({
-            filter: 'status="active"',
+            filter: filterStr,
             requestKey: null,
         });
 

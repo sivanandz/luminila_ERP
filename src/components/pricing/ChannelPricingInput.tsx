@@ -295,7 +295,7 @@ export function ChannelPricingInput({
                             )}
                         </div>
                         <div className="text-[10px] text-moonstone">
-                            Prices are derived from cost by each channel's rule. Type a value only to override.
+                            Prices are derived from cost by each channel&apos;s rule. Type a value only to override.
                         </div>
                     </div>
                 </div>

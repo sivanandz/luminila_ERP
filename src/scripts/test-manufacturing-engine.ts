@@ -275,7 +275,7 @@ console.log('\nSuite 6: End-to-End Assembly Execution');
             {
                 variantId: 'prod-ruby-ring-22k',
                 productName: 'Royal 22K Ruby Ring',
-                quantityProduced: 2,
+                quantityProduced: 1,
                 grossWeightGrams: 16.000,
                 netWeightGrams: 15.700,
                 stoneWeightGrams: 0.300,

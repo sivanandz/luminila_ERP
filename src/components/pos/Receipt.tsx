@@ -9,10 +9,14 @@ interface ReceiptItem {
     quantity: number;
     unitPrice: number;
     remarks?: string;
+    gross_weight?: number;
+    purity_karat?: string;
+    huid_code?: string;
 }
 
 interface ReceiptProps {
     transactionId: string;
+    invoiceNumber?: string;
     items: ReceiptItem[];
     subtotal: number;
     discount: number;
@@ -22,12 +26,15 @@ interface ReceiptProps {
     storeName?: string;
     storeAddress?: string;
     storePhone?: string;
+    storeGstin?: string;
+    gstIncluded?: number;
 }
 
 export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
     function Receipt(
         {
             transactionId,
+            invoiceNumber,
             items,
             subtotal,
             discount,
@@ -37,6 +44,8 @@ export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
             storeName = "Store Receipt",
             storeAddress = "",
             storePhone = "",
+            storeGstin = "",
+            gstIncluded = 0,
         },
         ref
     ) {
@@ -57,9 +66,14 @@ export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
                 <div className="border-t border-dashed border-black my-2" />
 
                 {/* Transaction Info */}
-                <div className="flex justify-between text-[10px] mb-2">
-                    <span>Receipt #: {transactionId}</span>
+                <div className="flex justify-between text-[10px] mb-2 font-bold">
+                    <span>{invoiceNumber ? `Invoice #: ${invoiceNumber}` : `Receipt #: ${transactionId}`}</span>
                 </div>
+                {storeGstin && (
+                    <div className="text-[10px] text-gray-700 mb-2">
+                        <span>GSTIN: {storeGstin}</span>
+                    </div>
+                )}
                 <div className="flex justify-between text-[10px] mb-2">
                     <span>{formatDate(new Date())}</span>
                     <span>Cashier: {cashierName}</span>
@@ -84,6 +98,15 @@ export const Receipt = forwardRef<HTMLDivElement, ReceiptProps>(
                             {item.remarks && (
                                 <div className="text-[10px] text-gray-500 pl-2 italic">
                                     Note: {item.remarks}
+                                </div>
+                            )}
+                            {(item.gross_weight || item.purity_karat || item.huid_code) && (
+                                <div className="text-[9px] text-gray-600 pl-2 font-mono">
+                                    {[
+                                        item.purity_karat,
+                                        item.gross_weight ? `${item.gross_weight}g` : null,
+                                        item.huid_code ? `HUID: ${item.huid_code}` : null
+                                    ].filter(Boolean).join(' • ')}
                                 </div>
                             )}
                         </div>

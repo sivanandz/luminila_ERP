@@ -468,12 +468,16 @@ export async function cancelPackingSession(sessionId: string): Promise<void> {
  * their packing sessions, item totals collapsed per order.
  */
 export async function loadPackingQueue(): Promise<PackingQueue> {
+    const tenant = tenantFilter();
     const [orderRows, sessions, itemRows] = await Promise.all([
         getOrders('sales_order'),
         fetchPackingSessions(),
         pb
             .collection('sales_order_items')
-            .getFullList({ fields: 'order,quantity' })
+            .getFullList({
+                filter: tenant || undefined,
+                fields: 'order,quantity',
+            })
             .catch(() => [] as Array<Record<string, unknown>>),
     ]);
 
@@ -518,8 +522,11 @@ export async function findOpenOrdersForVariant(
 ): Promise<QueueOrder[]> {
     if (!variantId) return [];
     try {
+        const filterParts = [`variant="${variantId.replace(/"/g, '\\"')}"`];
+        const tenant = tenantFilter();
+        if (tenant) filterParts.push(tenant);
         const rows = await pb.collection('sales_order_items').getFullList({
-            filter: `variant="${variantId.replace(/"/g, '\\"')}"`,
+            filter: filterParts.join(' && '),
             fields: 'order',
         });
         const orderIds = new Set(rows.map((row) => String(row.order || '')));

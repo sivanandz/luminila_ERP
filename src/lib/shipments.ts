@@ -10,7 +10,7 @@
  * Callers pass the per-tenant client (CO-08).
  */
 
-import { pb } from './pocketbase';
+import { pb, getCurrentTenantEmail } from './pocketbase';
 import { sendShippingTracking } from './whatsapp-notifications';
 import { AGGREGATES_MARKER, aggregatesWereCounted, applyPurchaseAggregates } from './channel-orders';
 import { calculatePointsToEarn, earnPoints } from './loyalty';
@@ -39,6 +39,7 @@ export interface CreateShipmentInput extends ShipmentInput {
 
 export async function createShipment(input: ShipmentInput): Promise<{ id: string }> {
     const record = await pb.collection('shipments').create({
+        account_email: getCurrentTenantEmail(),
         order_id: input.orderId,
         carrier: input.carrier,
         awb_number: input.awbNumber,

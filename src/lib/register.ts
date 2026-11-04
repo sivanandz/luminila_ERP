@@ -174,35 +174,42 @@ export async function getShift(shiftId: string): Promise<CashRegisterShift | nul
 }
 
 /**
- * Close a shift with reconciliation
+ * Close a shift with reconciliation.
+ *
+ * P13: serialized per shift and validated, so two closes cannot interleave and
+ * a NaN/negative closing balance cannot be persisted.
  */
 export async function closeShift(
     shiftId: string,
     closingBalance: number,
     varianceNotes?: string
 ): Promise<CashRegisterShift | null> {
-    // Get current shift data
-    const shift = await getShift(shiftId);
-    if (!shift) {
-        throw new Error('Shift not found');
+    if (!Number.isFinite(closingBalance) || closingBalance < 0) {
+        throw new Error('Closing balance must be a non-negative number.');
     }
 
-    if (shift.status !== 'open') {
-        throw new Error('Shift is not open');
-    }
+    return enqueueTask(`shift_${shiftId}`, async () => {
+        // Re-read inside the lock: the caller's snapshot may be stale.
+        const shift = await getShift(shiftId);
+        if (!shift) {
+            throw new Error('Shift not found');
+        }
 
-    // Calculate expected balance
-    const expectedBalance =
-        shift.opening_balance +
-        shift.total_cash_sales -
-        shift.total_cash_refunds +
-        shift.cash_added -
-        shift.cash_removed;
+        if (shift.status !== 'open') {
+            throw new Error('Shift is not open');
+        }
 
-    // Calculate variance
-    const variance = closingBalance - expectedBalance;
+        // Calculate expected balance (legacy rows may carry nulls)
+        const expectedBalance =
+            Number(shift.opening_balance || 0) +
+            Number(shift.total_cash_sales || 0) -
+            Number(shift.total_cash_refunds || 0) +
+            Number(shift.cash_added || 0) -
+            Number(shift.cash_removed || 0);
 
-    try {
+        // Calculate variance
+        const variance = closingBalance - expectedBalance;
+
         const record = await pb.collection('cash_register_shifts').update<CashRegisterShift>(shiftId, {
             closed_at: new Date().toISOString(),
             closing_balance: closingBalance,
@@ -212,10 +219,7 @@ export async function closeShift(
             status: 'closed'
         });
         return record;
-    } catch (error) {
-        console.error('Error closing shift:', error);
-        throw error;
-    }
+    });
 }
 
 /**
@@ -262,30 +266,33 @@ export async function addCashToDrawer(
     reason: string,
     performedBy: string
 ): Promise<boolean> {
+    // P12: reject non-positive/non-finite amounts before they move the drawer.
+    if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error('Amount must be a positive number.');
+    }
     return enqueueTask(`shift_${shiftId}`, async () => {
-        try {
-            // Record operation
-            await pb.collection('cash_drawer_operations').create({
-                account_email: accountScopeEmail(),
-                shift: shiftId,
-                operation_type: 'add',
-                amount,
-                reason,
-                performed_by: performedBy,
-                performed_at: new Date().toISOString()
-            });
+        const shift = await getShift(shiftId);
+        if (!shift) throw new Error('Shift not found');
+        if (shift.status !== 'open') throw new Error('Shift is not open');
 
-            // Update shift total atomically
-            await pb.collection('cash_register_shifts').update(shiftId, {
-                'cash_added+': amount,
-                'expected_balance+': amount
-            });
+        // Record operation
+        await pb.collection('cash_drawer_operations').create({
+            account_email: accountScopeEmail(),
+            shift: shiftId,
+            operation_type: 'add',
+            amount,
+            reason,
+            performed_by: performedBy,
+            performed_at: new Date().toISOString()
+        });
 
-            return true;
-        } catch (error) {
-            console.error('Error adding cash to drawer:', error);
-            return false;
-        }
+        // Update shift total atomically
+        await pb.collection('cash_register_shifts').update(shiftId, {
+            'cash_added+': amount,
+            'expected_balance+': amount
+        });
+
+        return true;
     });
 }
 
@@ -298,29 +305,43 @@ export async function removeCashFromDrawer(
     reason: string,
     performedBy: string
 ): Promise<boolean> {
+    // P12: a negative remove used to ADD cash; an over-remove drove the
+    // expected balance negative.
+    if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error('Amount must be a positive number.');
+    }
     return enqueueTask(`shift_${shiftId}`, async () => {
-        try {
-            // Record operation
-            await pb.collection('cash_drawer_operations').create({
-                account_email: accountScopeEmail(),
-                shift: shiftId,
-                operation_type: 'remove',
-                amount,
-                reason,
-                performed_by: performedBy,
-                performed_at: new Date().toISOString()
-            });
+        const shift = await getShift(shiftId);
+        if (!shift) throw new Error('Shift not found');
+        if (shift.status !== 'open') throw new Error('Shift is not open');
 
-            // Update shift total atomically
-            await pb.collection('cash_register_shifts').update(shiftId, {
-                'cash_removed+': amount,
-                'expected_balance-': amount
-            });
-            return true;
-        } catch (error) {
-            console.error('Error removing cash from drawer:', error);
-            return false;
+        const expectedBalance =
+            Number(shift.opening_balance || 0) +
+            Number(shift.total_cash_sales || 0) -
+            Number(shift.total_cash_refunds || 0) +
+            Number(shift.cash_added || 0) -
+            Number(shift.cash_removed || 0);
+        if (amount > expectedBalance) {
+            throw new Error(`Cannot remove ${amount}; the drawer's expected balance is ${expectedBalance}.`);
         }
+
+        // Record operation
+        await pb.collection('cash_drawer_operations').create({
+            account_email: accountScopeEmail(),
+            shift: shiftId,
+            operation_type: 'remove',
+            amount,
+            reason,
+            performed_by: performedBy,
+            performed_at: new Date().toISOString()
+        });
+
+        // Update shift total atomically
+        await pb.collection('cash_register_shifts').update(shiftId, {
+            'cash_removed+': amount,
+            'expected_balance-': amount
+        });
+        return true;
     });
 }
 

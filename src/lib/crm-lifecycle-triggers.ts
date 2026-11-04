@@ -341,6 +341,8 @@ export async function dispatchCustomRecipientsMessages(
 
     const flow = cachedFlowConfigs.find((f) => f.id === flowId);
     const campaignTag = flow ? `Lifecycle: ${flow.name}` : `Lifecycle: Custom Trigger`;
+    const tenant = getCurrentTenantEmail();
+    const dedupeSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
     for (const r of recipients) {
         if (!r.phone || !r.message.trim()) {
@@ -353,9 +355,27 @@ export async function dispatchCustomRecipientsMessages(
             continue;
         }
 
+        // 30-day per-campaign dedupe (same guard as the automatic flow path)
+        // and the tenant stamp without which the row is invisible to scoped
+        // queue reads and bypasses the daily quota (audit N-D2/CRM-09).
+        try {
+            const recent = await pb.collection("broadcast_messages").getFirstListItem(
+                `campaign="${campaignTag}" && recipient_phone~"${r.phone.slice(-10)}"` +
+                (tenant ? ` && account_email="${tenant}"` : '') +
+                ` && created>="${dedupeSince}"`
+            );
+            if (recent) {
+                skippedCount++;
+                continue;
+            }
+        } catch {
+            // Not sent recently
+        }
+
         slotOffset += getHumanizedJitterDelayMs();
         try {
             await pb.collection("broadcast_messages").create({
+                account_email: tenant,
                 campaign: campaignTag,
                 customer: r.customerId,
                 recipient_phone: r.phone,

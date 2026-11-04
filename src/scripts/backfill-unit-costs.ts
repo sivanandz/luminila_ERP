@@ -57,8 +57,10 @@ async function main() {
     await client.collection('_superusers').authWithPassword(adminEmail, adminPassword);
     console.log(`Connected to ${baseUrl} as superuser. Mode: ${apply ? 'APPLY' : 'DRY RUN'}`);
 
-    const items = await client.collection('sale_items').getFullList<ItemRow>({ filter: 'unit_cost=""' });
-    const orderItems = await client.collection('sales_order_items').getFullList<ItemRow>({ filter: 'unit_cost=""' });
+    // Sale-time snapshotting writes literal 0 for an unknown cost basis, so
+    // selecting only unit_cost="" missed those rows forever (audit AN-17).
+    const items = await client.collection('sale_items').getFullList<ItemRow>({ filter: 'unit_cost="" || unit_cost=0' });
+    const orderItems = await client.collection('sales_order_items').getFullList<ItemRow>({ filter: 'unit_cost="" || unit_cost=0' });
     const tenants = [...new Set([...items, ...orderItems].map((r) => String(r.account_email || '')).filter(Boolean))];
 
     if (tenants.length === 0) {

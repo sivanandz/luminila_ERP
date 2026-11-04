@@ -381,31 +381,39 @@ export async function createPurchaseOrder(
         );
     }
 
-    // Insert PO items if any
+    // Insert PO items if any with atomic rollback guard
     const createdItems: PurchaseOrderItem[] = [];
     if (po.items && po.items.length > 0) {
-        for (const item of po.items) {
-            const itemRecord = await pb.collection('purchase_order_items').create({
-                account_email: accountEmail,
-                po: poRecord.id,
-                purchase_order: poRecord.id,
-                ...(item.variant_id ? { variant: item.variant_id } : {}),
-                description: item.description,
-                hsn_code: item.hsn_code || '7113',
-                quantity_ordered: item.quantity_ordered,
-                quantity_received: 0,
-                unit: item.unit || 'PCS',
-                unit_price: item.unit_price,
-                gst_rate: item.gst_rate,
-                gst_amount: item.gst_amount,
-                total_price: item.total_price,
-            });
-            createdItems.push({
-                ...item,
-                id: itemRecord.id,
-                po_id: poRecord.id,
-                quantity_received: 0,
-            });
+        try {
+            for (const item of po.items) {
+                const itemRecord = await pb.collection('purchase_order_items').create({
+                    account_email: accountEmail,
+                    po: poRecord.id,
+                    purchase_order: poRecord.id,
+                    ...(item.variant_id ? { variant: item.variant_id } : {}),
+                    description: item.description,
+                    hsn_code: item.hsn_code || '7113',
+                    quantity_ordered: item.quantity_ordered,
+                    quantity_received: 0,
+                    unit: item.unit || 'PCS',
+                    unit_price: item.unit_price,
+                    gst_rate: item.gst_rate,
+                    gst_amount: item.gst_amount,
+                    total_price: item.total_price,
+                });
+                createdItems.push({
+                    ...item,
+                    id: itemRecord.id,
+                    po_id: poRecord.id,
+                    quantity_received: 0,
+                });
+            }
+        } catch (itemErr) {
+            for (const created of createdItems) {
+                if (created.id) await pb.collection('purchase_order_items').delete(created.id).catch(() => {});
+            }
+            await pb.collection('purchase_orders').delete(poRecord.id).catch(() => {});
+            throw itemErr;
         }
     }
 
@@ -552,14 +560,19 @@ export async function getPurchaseOrders(filters?: {
             expand: 'vendor',
         });
 
-        // Fetch items for all POs
+        // Fetch items for all POs in chunks of 30 to avoid HTTP 414 URI Too Long
         const poIds = pos.map(p => p.id);
         let allItems: POItemRecord[] = [];
         if (poIds.length > 0) {
-            const itemFilter = poIds.map(id => `(po="${id}" || purchase_order="${id}")`).join(' || ');
-            allItems = await pb.collection('purchase_order_items').getFullList<POItemRecord>({
-                filter: itemFilter,
-            });
+            const chunkSize = 30;
+            for (let i = 0; i < poIds.length; i += chunkSize) {
+                const chunk = poIds.slice(i, i + chunkSize);
+                const itemFilter = chunk.map(id => `(po="${id}" || purchase_order="${id}")`).join(' || ');
+                const chunkItems = await pb.collection('purchase_order_items').getFullList<POItemRecord>({
+                    filter: `(${itemFilter})${tenantClause()}`,
+                });
+                allItems.push(...chunkItems);
+            }
         }
 
         // Group items by PO
@@ -636,6 +649,19 @@ export async function updatePOStatus(id: string, status: POStatus): Promise<void
 }
 
 export async function cancelPurchaseOrder(id: string): Promise<void> {
+    const existingGrns = await pb.collection('goods_received_notes').getList(1, 1, {
+        filter: `(po="${sanitizeFilter(id)}" || purchase_order="${sanitizeFilter(id)}")${tenantClause()}`,
+    });
+    if (existingGrns.totalItems > 0) {
+        throw new Error('Cannot cancel purchase order with received goods notes. Reverse GRNs or return items first.');
+    }
+    const po = await getPurchaseOrder(id);
+    if (po && (po.status === 'received' || po.status === 'partial')) {
+        const hasReceivedItems = po.items.some(it => (it.quantity_received || 0) > 0);
+        if (hasReceivedItems) {
+            throw new Error('Cannot cancel purchase order with partially or fully received items.');
+        }
+    }
     await updatePOStatus(id, 'cancelled');
 }
 
@@ -838,7 +864,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
     if (grn.po_id) {
         try {
             const poItems = await pb.collection('purchase_order_items').getFullList<POItemRecord>({
-                filter: `po="${grn.po_id}" || purchase_order="${grn.po_id}"`,
+                filter: `(po="${sanitizeFilter(grn.po_id)}" || purchase_order="${sanitizeFilter(grn.po_id)}")${tenantClause()}`,
             });
 
             const totalOrdered = poItems.reduce((sum: number, i) => sum + i.quantity_ordered, 0);
@@ -879,15 +905,20 @@ export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
             sort: '-received_date',
         });
 
-        // Fetch items for all GRNs
+        // Fetch items for all GRNs in chunks of 30
         const grnIds = grns.map(g => g.id);
         let allItems: any[] = [];
         if (grnIds.length > 0) {
-            const itemFilter = grnIds.map(id => `grn="${id}"`).join(' || ');
-            allItems = await pb.collection('grn_items').getFullList({
-                filter: itemFilter,
-                expand: 'variant,variant.product,po_item',
-            });
+            const chunkSize = 30;
+            for (let i = 0; i < grnIds.length; i += chunkSize) {
+                const chunk = grnIds.slice(i, i + chunkSize);
+                const itemFilter = chunk.map(id => `grn="${id}"`).join(' || ');
+                const chunkItems = await pb.collection('grn_items').getFullList({
+                    filter: `(${itemFilter})${tenantClause()}`,
+                    expand: 'variant,variant.product,po_item',
+                });
+                allItems.push(...chunkItems);
+            }
         }
 
         // Group items by GRN

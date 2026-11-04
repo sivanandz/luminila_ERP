@@ -4,7 +4,7 @@ import { isValidGstin as isValidGstinChecksum } from './gstin';
  * Sales, GST (GSTR-1), Stock, and other report queries using PocketBase
  */
 
-import { pb, accountScopeEmail } from './pocketbase';
+import { pb, accountScopeEmail, sanitizeFilter } from './pocketbase';
 import { allocateLandedCosts, weightedAverageCost } from './valuation';
 import { format } from 'date-fns';
 import { normalizeDateRange, escapeHtml } from './utils';
@@ -210,7 +210,7 @@ export async function getSalesReport(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
+            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
             sort: '-invoice_date',
             expand: 'customer',
         });
@@ -253,7 +253,7 @@ export async function getGSTR1Report(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
+            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
             sort: 'invoice_date',
         });
 
@@ -347,7 +347,7 @@ export async function buildLandedCostMap(db: typeof pb = pb, tenant: string = ac
 
     try {
         const orders = await db.collection('purchase_orders').getFullList<LandedPurchaseOrder>({
-            filter: `account_email="${tenant}" && (status="received" || status="partial")`,
+            filter: `account_email="${sanitizeFilter(tenant)}" && (status="received" || status="partial")`,
             sort: 'order_date',
         });
         if (orders.length === 0) return landed;
@@ -355,7 +355,7 @@ export async function buildLandedCostMap(db: typeof pb = pb, tenant: string = ac
         const itemsByOrder = new Map<string, LandedPurchaseItem[]>();
         for (let i = 0; i < orders.length; i += 30) {
             const ids = orders.slice(i, i + 30).map((order) => order.id);
-            const filter = `account_email="${tenant}" && (${ids.map((id) => `purchase_order="${id}"`).join(' || ')})`;
+            const filter = `account_email="${sanitizeFilter(tenant)}" && (${ids.map((id) => `purchase_order="${sanitizeFilter(id)}"`).join(' || ')})`;
             const items = await db.collection('purchase_order_items').getFullList<LandedPurchaseItem>({
                 filter,
                 batch: 500,
@@ -405,7 +405,7 @@ export async function getStockReport(db: typeof pb = pb, tenant: string = accoun
     try {
         const [data, landedCostByVariant, categories] = await Promise.all([
             db.collection('product_variants').getFullList<ProductVariant>({
-                filter: `account_email="${tenant}" && product.is_active = true`,
+                filter: `account_email="${sanitizeFilter(tenant)}" && product.is_active = true`,
                 sort: 'stock_level',
                 expand: 'product',
             }),
@@ -483,7 +483,7 @@ export async function getHSNSummary(
         const { start, end } = normalizeDateRange(startDate, endDate);
         // Fetch invoice items with date filter through invoice
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
+            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
         });
 
         const invoiceIds = invoices.map(inv => inv.id);
@@ -545,7 +545,7 @@ export function exportToCSV(data: object[], filename: string): void {
             headers.map((h) => {
                 const value = (row as Record<string, unknown>)[h];
                 let strVal = value === null || value === undefined ? '' : String(value);
-                if (/^[=+@-|\t\r]/.test(strVal)) {
+                if (/^[=+@\-|\t\r]/.test(strVal)) {
                     strVal = `'${strVal}`;
                 }
                 if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n') || strVal.includes('\r')) {
@@ -556,7 +556,7 @@ export function exportToCSV(data: object[], filename: string): void {
         ),
     ].join('\n');
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `${filename}_${format(new Date(), 'yyyy-MM-dd')}.csv`;
@@ -575,7 +575,7 @@ export async function generateGSTR1JSON(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `account_email="${accountScopeEmail()}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
+            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
             sort: 'invoice_number',
         });
 
@@ -781,7 +781,7 @@ export function printReport(elementId: string, title: string): void {
             </style>
         </head>
         <body>
-            <h2>${title}</h2>
+            <h2>${escapeHtml(title)}</h2>
             <p>Generated: ${format(new Date(), 'dd/MM/yyyy HH:mm')}</p>
             ${element.innerHTML}
         </body>

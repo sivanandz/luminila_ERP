@@ -109,11 +109,33 @@ export function AnalyticsTable<R extends Record<string, unknown>>({
         if (!sortKey) return rows;
         const col = columns.find((c) => c.key === sortKey);
         if (!col) return rows;
-        const val = (r: R) => {
-            const v = col.value ? col.value(r) : (r[sortKey] as string | number | null | undefined);
-            return typeof v === 'number' ? v : Number(v) || 0;
+        // Raw cell value via the column's own accessor (null = "—" in the UI).
+        const raw = (r: R): string | number | null | undefined =>
+            col.value ? col.value(r) : (r[sortKey] as string | number | null | undefined);
+        // Kind of value: numbers (and numeric strings) compare numerically,
+        // everything else compares as text; null/undefined/"" sort last.
+        const kind = (v: string | number | null | undefined): 'null' | 'num' | 'str' => {
+            if (v === null || v === undefined || v === '') return 'null';
+            if (typeof v === 'number') return Number.isFinite(v) ? 'num' : 'null';
+            if (typeof v !== 'string') return 'str';
+            const n = Number(v);
+            return v.trim() !== '' && Number.isFinite(n) ? 'num' : 'str';
         };
-        return [...rows].sort((a, b) => (sortDesc ? val(b) - val(a) : val(a) - val(b)));
+        return [...rows].sort((a, b) => {
+            const va = raw(a);
+            const vb = raw(b);
+            const ka = kind(va);
+            const kb = kind(vb);
+            // Missing values always land at the bottom, whichever direction.
+            if (ka === 'null' || kb === 'null') {
+                if (ka === 'null' && kb === 'null') return 0;
+                return ka === 'null' ? 1 : -1;
+            }
+            const cmp = ka === 'num' && kb === 'num'
+                ? (va as number) - (vb as number)
+                : String(va).localeCompare(String(vb));
+            return sortDesc ? -cmp : cmp;
+        });
     }, [rows, sortKey, sortDesc, columns]);
 
     const csvRows = useMemo(
@@ -121,7 +143,9 @@ export function AnalyticsTable<R extends Record<string, unknown>>({
             sorted.map((row) => {
                 const obj: Record<string, unknown> = {};
                 for (const col of columns) {
-                    obj[col.header] = col.value ? col.value(row) : row[col.key];
+                    // Export "" for missing values — the UI shows "—", never -1.
+                    const v = col.value ? col.value(row) : row[col.key];
+                    obj[col.header] = v === null || v === undefined ? '' : v;
                 }
                 return obj;
             }),

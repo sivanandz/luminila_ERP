@@ -79,6 +79,7 @@ export interface CachedTier {
 
 let cachedLoyaltyTiers: CachedTier[] | null = null;
 let cachedLoyaltyTiersTenant = '';
+let isProcessingQueue = false;
 
 export async function loadLoyaltyTiers(): Promise<CachedTier[]> {
     // WA-03: the tier ladder is tenant data; a module-level cache keyed by
@@ -374,67 +375,86 @@ export async function processBroadcastQueue(): Promise<{
     quotaRemaining: number;
 }> {
     const stats = { sent: 0, skipped: 0, failed: 0, quotaRemaining: 0 };
+    if (isProcessingQueue) return stats;
+    isProcessingQueue = true;
 
-    const quotaUsed = await sentTodayCount();
-    const quotaRemaining = Math.max(0, DAILY_MARKETING_QUOTA - quotaUsed);
-    stats.quotaRemaining = quotaRemaining;
-    if (quotaRemaining <= 0) return stats;
-
-    let due;
     try {
-        due = await pb.collection('broadcast_messages').getList(1, Math.min(quotaRemaining, 20), {
-            filter: withTenantFilter('status="queued" && scheduled_at<="' + new Date().toISOString() + '"'),
-            sort: 'scheduled_at',
-        });
-    } catch (err) {
-        console.warn('[broadcast] queue fetch failed:', (err as Error)?.message);
-        return stats;
-    }
+        const quotaUsed = await sentTodayCount();
+        const quotaRemaining = Math.max(0, DAILY_MARKETING_QUOTA - quotaUsed);
+        stats.quotaRemaining = quotaRemaining;
+        if (quotaRemaining <= 0) return stats;
 
-    for (const entry of due.items as unknown as {
-        id: string;
-        recipient_phone: string;
-        body?: string;
-        customer?: string;
-    }[]) {
-        if (stats.sent >= quotaRemaining) break;
-
-        // Opt-outs are re-checked at dispatch time (new STOPs are honored mid-campaign)
-        if (await isWhatsAppOptedOut(entry.recipient_phone)) {
-            await pb.collection('broadcast_messages').update(entry.id, {
-                status: 'skipped',
-                error: 'opted out before dispatch',
-            }).catch(() => {});
-            stats.skipped++;
-            continue;
+        let due;
+        try {
+            due = await pb.collection('broadcast_messages').getList(1, Math.min(quotaRemaining, 20), {
+                filter: withTenantFilter('status="queued" && scheduled_at<="' + new Date().toISOString() + '"'),
+                sort: 'scheduled_at',
+            });
+        } catch (err) {
+            console.warn('[broadcast] queue fetch failed:', (err as Error)?.message);
+            return stats;
         }
 
-        try {
-            const ok = await whatsappManager.sendMessage(entry.recipient_phone, entry.body || '');
-            if (ok) {
+        let itemIndex = 0;
+        for (const entry of due.items as unknown as {
+            id: string;
+            recipient_phone: string;
+            body?: string;
+            customer?: string;
+        }[]) {
+            if (stats.sent >= quotaRemaining) break;
+
+            // Enforce humanized 3-6s anti-ban pacing between batch sends
+            if (itemIndex > 0) {
+                const batchJitter = 3000 + Math.floor(Math.random() * 3000);
+                await new Promise((r) => setTimeout(r, batchJitter));
+            }
+            itemIndex++;
+
+            // Opt-outs are re-checked at dispatch time (new STOPs are honored mid-campaign)
+            if (await isWhatsAppOptedOut(entry.recipient_phone)) {
                 await pb.collection('broadcast_messages').update(entry.id, {
-                    status: 'sent',
-                    sent_at: new Date().toISOString(),
-                    error: '',
-                });
-                stats.sent++;
-            } else {
+                    status: 'skipped',
+                    error: 'opted out before dispatch',
+                }).catch(() => {});
+                stats.skipped++;
+                continue;
+            }
+
+            // Mark as sending to guard against duplicate pickup
+            await pb.collection('broadcast_messages').update(entry.id, {
+                status: 'sending',
+            }).catch(() => {});
+
+            try {
+                const ok = await whatsappManager.sendMessage(entry.recipient_phone, entry.body || '');
+                if (ok) {
+                    await pb.collection('broadcast_messages').update(entry.id, {
+                        status: 'sent',
+                        sent_at: new Date().toISOString(),
+                        error: '',
+                    });
+                    stats.sent++;
+                } else {
+                    await pb.collection('broadcast_messages').update(entry.id, {
+                        status: 'failed',
+                        error: 'WPPConnect sidecar returned false',
+                    });
+                    stats.failed++;
+                }
+            } catch (err) {
                 await pb.collection('broadcast_messages').update(entry.id, {
                     status: 'failed',
-                    error: 'WPPConnect sidecar returned false',
-                });
+                    error: (err as Error)?.message || 'send error',
+                }).catch(() => {});
                 stats.failed++;
             }
-        } catch (err) {
-            await pb.collection('broadcast_messages').update(entry.id, {
-                status: 'failed',
-                error: (err as Error)?.message || 'send error',
-            }).catch(() => {});
-            stats.failed++;
         }
-    }
 
-    return stats;
+        return stats;
+    } finally {
+        isProcessingQueue = false;
+    }
 }
 
 /** Register a STOP opt-out for a customer (inbound "STOP" handler). */

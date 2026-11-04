@@ -538,13 +538,18 @@ async function runTests() {
             });
         }
 
-        // D. Execute live createPOSSale with PhonePe & 'delivered' status
+        // D. Execute live createPOSSale with PhonePe & 'delivered' status.
+        // P4 now requires a product reference on every line, so without a
+        // product fixture this leg has nothing to sell.
+        if (!productId) {
+            console.log("  SKIP  no product fixture available for the POS sale leg");
+        } else {
         const posResult = await createPOSSale({
             items: [{
                 name: 'Automated Test Gold Ring',
                 price: 15000,
                 quantity: 1,
-                productId: productId || undefined,
+                productId,
                 variantId: variantId || undefined,
             }],
             subtotal: 15000,
@@ -569,6 +574,7 @@ async function runTests() {
         // Cleanup
         if (posResult.invoiceId) await adminPb.collection('invoices').delete(posResult.invoiceId).catch(() => {});
         if (posResult.saleId) await adminPb.collection('sales').delete(posResult.saleId).catch(() => {});
+        }
 
     } catch (err: any) {
         console.error(err.url || err.response?.url || JSON.stringify(err.response)); assert(false, `Test 11 failed: ${err.message}`);
@@ -1090,8 +1096,8 @@ async function runTests() {
         assert(false, `Test 19 failed: ${err.message}`);
     }
 
-    // 20. T15-N1: POS Oversell Handling, Stock Clamping & Audit Trail
-    console.log("\n[Test 20] T15-N1: POS Oversell Handling, Stock Clamping & Audit Trail");
+    // 20. T15-N1 / P2: POS Oversell Handling — the sale must be refused, not billed
+    console.log("\n[Test 20] T15-N1 / P2: POS oversell is refused before the customer is charged");
     try {
         const { createPOSSale } = await import('../lib/pos-sales');
 
@@ -1113,48 +1119,50 @@ async function runTests() {
         const variants = await adminPb.collection('product_variants').getList(1, 1, { expand: 'product' });
         if (variants.items.length > 0) {
             const v = variants.items[0];
+            const productId = String((v as any).product || '');
             const originalStock = v.stock_level;
 
             // Set stock to 1
             await adminPb.collection('product_variants').update(v.id, { stock_level: 1 });
 
             // Execute sale of 2 units (exceeds available stock of 1)
-            const oversellResult = await createPOSSale({
-                items: [{
-                    name: 'Oversell Test Item',
-                    price: 1000,
-                    quantity: 2,
-                    variantId: v.id,
-                }],
-                subtotal: 2000,
-                discountPercent: 0,
-                discountAmount: 0,
-                loyaltyDiscount: 0,
-                total: 2000,
-                paymentMethod: 'cash',
-                shiftId: shiftId,
-                userId: 'admin',
-                notes: 'T15-N1 Oversell Test',
-            });
+            let oversellRejected = false;
+            let oversellError = '';
+            try {
+                await createPOSSale({
+                    items: [{
+                        name: 'Oversell Test Item',
+                        price: 1000,
+                        quantity: 2,
+                        productId,
+                        variantId: v.id,
+                    }],
+                    subtotal: 2000,
+                    discountPercent: 0,
+                    discountAmount: 0,
+                    loyaltyDiscount: 0,
+                    total: 2000,
+                    paymentMethod: 'cash',
+                    shiftId: shiftId,
+                    userId: 'admin',
+                    notes: 'T15-N1 Oversell Test',
+                });
+            } catch (err) {
+                oversellRejected = true;
+                oversellError = err instanceof Error ? err.message : String(err);
+            }
 
-            assert(Boolean(oversellResult.saleId), "POS sale succeeded despite oversell (cashier not blocked)");
-            assert(Array.isArray(oversellResult.warnings) && oversellResult.warnings.length > 0, "oversellResult returned warnings to inform UI/cashier");
+            assert(oversellRejected, "POS oversell is rejected instead of billing for undelivered units");
+            assert(/stock/i.test(oversellError), `The rejection names the stock shortage (${oversellError})`);
 
-            // Verify stock level was clamped to 0
+            // Verify no stock moved and no sale row was left behind
             const afterOversell = await adminPb.collection('product_variants').getOne(v.id);
-            assert(afterOversell.stock_level === 0, "Variant stock_level was clamped to 0 on oversell");
-
-            // Verify audit entry in activity_logs
-            const logs = await adminPb.collection('activity_logs').getList(1, 5, {
-                filter: `action="INVENTORY_OVERSELL_WARNING" && entity_id="${v.id}"`,
-                sort: '-created',
+            assert(afterOversell.stock_level === 1, "Variant stock_level is unchanged by the rejected sale");
+            const leaked = await adminPb.collection('sales').getList(1, 1, {
+                filter: `channel_order_id~"TXN-" && notes="T15-N1 Oversell Test"`,
             });
-            assert(logs.items.length > 0, "activity_logs successfully logged INVENTORY_OVERSELL_WARNING audit trail");
+            assert(leaked.items.length === 0, "No sale row survives the rejected oversell");
 
-            // Cleanup
-            if (oversellResult.invoiceId) await adminPb.collection('invoices').delete(oversellResult.invoiceId).catch(() => {});
-            if (oversellResult.saleId) await adminPb.collection('sales').delete(oversellResult.saleId).catch(() => {});
-            for (const log of logs.items) await adminPb.collection('activity_logs').delete(log.id).catch(() => {});
             await adminPb.collection('product_variants').update(v.id, { stock_level: originalStock });
         }
     } catch (err: any) {

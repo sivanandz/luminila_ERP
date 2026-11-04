@@ -7,6 +7,7 @@ import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { toast } from 'sonner';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
+import { pbBound } from './analytics-v2/range';
 
 // ==========================================
 // TENANT SCOPING (FIN-01)
@@ -126,11 +127,14 @@ export async function getExpenses(filters?: {
         const filterParts: string[] = [];
 
         const { start, end } = normalizeDateBounds(filters?.startDate, filters?.endDate);
+        // pbBound keeps bounds in PB's space-datetime format so the string
+        // compare matches stored rows even if a caller passes a T-format ISO
+        // (no-op for the date-only inputs this ledger UI sends).
         if (start) {
-            filterParts.push(`expense_date>="${start}"`);
+            filterParts.push(`expense_date>="${pbBound(start)}"`);
         }
         if (end) {
-            filterParts.push(`expense_date<="${end}"`);
+            filterParts.push(`expense_date<="${pbBound(end)}"`);
         }
         if (filters?.categoryId && filters.categoryId !== 'all') {
             filterParts.push(`category="${sanitizeFilter(filters.categoryId)}"`);
@@ -445,8 +449,22 @@ export async function getExpenseStats(startDate?: string, endDate?: string): Pro
     try {
         const filterParts: string[] = [];
         const { start, end } = normalizeDateBounds(startDate, endDate);
-        if (start) filterParts.push(`expense_date>="${start}"`);
-        if (end) filterParts.push(`expense_date<="${end}"`);
+        if (start) filterParts.push(`expense_date>="${pbBound(start)}"`);
+        if (end) {
+            // Two end-bound conventions by caller (audit AN-26):
+            //  - a 10-char date means "the picked day belongs to the window"
+            //    (expense ledger UI, inclusive `<= 23:59:59.999Z`);
+            //  - a full ISO instant comes from the analytics window where end
+            //    is EXCLUSIVE (sales use created<end) — a `<=` bound would
+            //    swallow one extra day and skew "Margin − Expenses". Keep it a
+            //    strict `<`, formatted as PB space-datetime so the string
+            //    compare can't drop boundary rows (AN-02).
+            if (endDate && endDate.length === 10) {
+                filterParts.push(`expense_date<="${pbBound(end)}"`);
+            } else {
+                filterParts.push(`expense_date<"${pbBound(end)}"`);
+            }
+        }
 
         const expenses = await pb.collection('expenses').getFullList<ExpenseRecord>({
             filter: joinFilter(tenantFilter(), filterParts.join(' && ')),

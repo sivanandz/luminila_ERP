@@ -13,7 +13,7 @@
 
 import { NextResponse } from 'next/server';
 import PocketBase from 'pocketbase';
-import { authenticateOperator } from '@/lib/api-auth';
+import { authenticateOperator, hasCapability } from '@/lib/api-auth';
 import { getTurnoverAnalytics } from '@/lib/analytics-v2/turnover';
 import type { AnalyticsRange } from '@/lib/analytics-v2/range';
 
@@ -28,6 +28,11 @@ export async function GET(req: Request) {
     const session = await authenticateOperator(req, hint);
     if (!session.ok || !session.email || !session.client) {
         return NextResponse.json({ success: false, error: session.error || 'Unauthorized' }, { status: session.status });
+    }
+    // Same capability the /analytics page enforces (reports:read): the API must
+    // not hand any authenticated staff user the full turnover suite (audit AN-10).
+    if (!(await hasCapability(session, 'reports', 'read'))) {
+        return NextResponse.json({ success: false, error: 'Forbidden' }, { status: 403 });
     }
 
     const preset = url.searchParams.get('days') || '30d';

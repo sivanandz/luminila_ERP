@@ -7,8 +7,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { resolveRange, inWindow, deltaPct, compare, dayKey, type AnalyticsRange } from '../lib/analytics-v2/range';
-import { buildTrend, buildChannelTable, buildPaymentMix, buildHeatmap, buildKpis, type TrendPoint } from '../lib/analytics-v2/sales-metrics';
+import { resolveRange, inWindow, deltaPct, compare, dayKey, pbBound, type AnalyticsRange } from '../lib/analytics-v2/range';
+import { buildTrend, buildChannelTable, buildPaymentMix, buildHeatmap, buildKpis, alignPreviousMonths, aggregateCustomerSplit, type TrendPoint } from '../lib/analytics-v2/sales-metrics';
 import { buildInsights, type InsightCard } from '../lib/analytics-v2/insights';
 import type { UnifiedTx } from '../lib/analytics-v2/load';
 import type { TurnoverAnalytics } from '../lib/analytics-v2/turnover';
@@ -324,6 +324,101 @@ test('insights: cards rank high severity before medium, then by impact', async (
 test('dayKey pads month/day', () => {
     assert.equal(dayKey(new Date(2026, 2, 5)), '2026-03-05');
     assert.equal(dayKey(new Date(2026, 11, 31)), '2026-12-31');
+});
+
+// ---- pbBound (AN-02): PB space-datetime filter bounds ----
+test('pbBound: converts T-format ISO bounds to PB space format', () => {
+    assert.equal(pbBound('2026-01-03T18:30:00.000Z'), '2026-01-03 18:30:00.000Z');
+    assert.equal(pbBound('2026-01-03T00:00:00Z'), '2026-01-03 00:00:00Z');
+    // idempotent / pass-through forms
+    assert.equal(pbBound('2026-01-03 18:30:00.000Z'), '2026-01-03 18:30:00.000Z', 'already PB-format');
+    assert.equal(pbBound('2026-01-03'), '2026-01-03 00:00:00.000Z', 'date-only expands to UTC midnight');
+    assert.equal(pbBound(''), '');
+});
+
+test('pbBound: space-format bounds keep boundary rows comparable (string-compare semantics)', () => {
+    const startBound = pbBound('2026-01-01T00:00:00.000Z');
+    const endBound = pbBound('2026-01-03T18:30:00.000Z');
+    // a row stored exactly at the start bound must pass `>=`
+    assert.ok('2026-01-01 00:00:00.000Z' >= startBound, 'boundary start row included');
+    // rows inside the window compare before the end bound (`<`)
+    assert.ok('2026-01-03 09:00:00.000Z' < endBound, 'mid-window row included');
+    assert.ok(!('2026-01-03 20:00:00.000Z' < endBound), 'row after the exclusive end excluded');
+});
+
+// ---- alignPreviousMonths (AN-06): monthly previous overlay ----
+test('alignPreviousMonths: previous months align by index onto the current axis', () => {
+    const previousAgg = new Map([
+        ['2025-08', { revenue: 100, orders: 1 }],
+        ['2025-09', { revenue: 200, orders: 2 }],
+        ['2025-10', { revenue: 300, orders: 3 }],
+    ]);
+    const currentKeys = ['2025-12', '2026-01', '2026-02', '2026-03'];
+    const aligned = alignPreviousMonths(previousAgg, currentKeys);
+    assert.deepEqual(aligned.get('2025-12'), { revenue: 100, orders: 1 });
+    assert.deepEqual(aligned.get('2026-01'), { revenue: 200, orders: 2 });
+    assert.deepEqual(aligned.get('2026-02'), { revenue: 300, orders: 3 });
+    assert.equal(aligned.get('2026-03'), undefined, 'no previous month left over');
+    assert.equal(aligned.size, 3);
+});
+
+test('buildTrend: monthly previous overlay renders on the current axis (AN-06)', () => {
+    // 4-month window → lengthDays > 60 → monthly granularity
+    const range: AnalyticsRange = { preset: 'custom', start: '2025-12-01T00:00:00Z', end: '2026-04-01T00:00:00Z' };
+    const win = resolveRange(range, NOW);
+    assert.ok(win.lengthDays > 60, `expected monthly granularity, lengthDays=${win.lengthDays}`);
+    const current = [tx({ id: 'c', day: '2026-02-10', revenue: 700 })];
+    // Previous txs in months 1–3 of the previous window (Aug/Sep/Oct 2025).
+    const previous = [
+        tx({ id: 'p1', day: '2025-08-05', revenue: 100 }),
+        tx({ id: 'p2', day: '2025-09-10', revenue: 200 }),
+        tx({ id: 'p3', day: '2025-10-15', revenue: 300 }),
+    ];
+    const points = buildTrend(current, previous, win);
+    const feb = points.find((p) => p.date === '2026-02');
+    const jan = points.find((p) => p.date === '2026-01');
+    const mar = points.find((p) => p.date === '2026-03');
+    assert.ok(feb && jan && mar, 'all current-window months zero-filled');
+    assert.equal(feb.revenue, 700);
+    assert.equal(feb.previousRevenue, 300, 'previous month with data overlays the current axis');
+    assert.equal(jan.previousRevenue, 200);
+    assert.equal(mar.previousRevenue, null, 'month without previous data stays null');
+});
+
+// ---- aggregateCustomerSplit (AN-05): customers, not transactions ----
+test('aggregateCustomerSplit: repeat buyer counts once, revenue is first-seen (AN-05)', () => {
+    const txs = [
+        tx({ id: 'a', day: '2026-03-01', customerKey: 'c1', revenue: 1000 }),
+        tx({ id: 'b', day: '2026-03-02', customerKey: 'c1', revenue: 500 }),
+        tx({ id: 'c', day: '2026-03-03', customerKey: 'c2', revenue: 800 }),
+    ];
+    const split = aggregateCustomerSplit(txs, new Set(['c1'])); // c1 had history before the window
+    assert.equal(split.newCustomers, 1, 'c2 only — repeat txs of c1 are not new counts');
+    assert.equal(split.returningCustomers, 1, 'c1 counted once, not once per transaction');
+    assert.equal(split.newRevenue, 800);
+    assert.equal(split.returningRevenue, 1000, 'first-seen transaction revenue only');
+    assert.equal(split.repeatRatePct, 50, '1 of 2 distinct customers returning');
+});
+
+test('aggregateCustomerSplit: unknown repeat buyer is new exactly once; empty keys skipped', () => {
+    const txs = [
+        tx({ id: 'a', day: '2026-03-01', customerKey: 'x', revenue: 400 }),
+        tx({ id: 'b', day: '2026-03-02', customerKey: 'x', revenue: 600 }),
+        tx({ id: 'c', day: '2026-03-03', customerKey: 'y', revenue: 200 }),
+        tx({ id: 'd', day: '2026-03-03', customerKey: 'y', revenue: 100 }),
+        tx({ id: 'e', day: '2026-03-04', customerKey: '', revenue: 999 }),
+    ];
+    const split = aggregateCustomerSplit(txs, new Set());
+    assert.equal(split.newCustomers, 2, 'x and y each counted once');
+    assert.equal(split.returningCustomers, 0);
+    assert.equal(split.newRevenue, 600, 'first-seen revenue of x (400) + y (200)');
+    assert.equal(split.returningRevenue, 0);
+    assert.equal(split.repeatRatePct, 0);
+});
+
+test('aggregateCustomerSplit: empty window yields zeroed split', () => {
+    const split = aggregateCustomerSplit([], new Set());
+    assert.deepEqual(split, { newCustomers: 0, returningCustomers: 0, newRevenue: 0, returningRevenue: 0, repeatRatePct: 0 });
 });
 
 // ===========================================

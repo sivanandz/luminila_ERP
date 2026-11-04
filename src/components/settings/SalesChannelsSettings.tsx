@@ -355,7 +355,7 @@ export function SalesChannelsSettings() {
                                 Live Channel Pricing Simulator
                             </h4>
                             <p className="text-[11px] text-muted-foreground">
-                                Preview each channel's cost-based rule against a sample cost.
+                                Preview each channel&apos;s cost-based rule against a sample cost.
                             </p>
                         </div>
                     </div>

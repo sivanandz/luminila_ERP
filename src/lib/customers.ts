@@ -4,6 +4,7 @@
  */
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+import { adjustPoints } from './loyalty';
 
 /** `&& account_email = "…"` for tenant-scoped reads under a superuser client (CRM-01). */
 function tenantClause(): string {
@@ -174,6 +175,15 @@ export async function updateCustomer(id: string, updates: Partial<Customer>): Pr
 }
 
 export async function deleteCustomer(id: string): Promise<void> {
+    const safeId = sanitizeFilter(id);
+    const [sales, orders, invoices] = await Promise.all([
+        pb.collection('sales').getList(1, 1, { filter: `customer="${safeId}"` }).catch(() => null),
+        pb.collection('sales_orders').getList(1, 1, { filter: `customer="${safeId}"` }).catch(() => null),
+        pb.collection('invoices').getList(1, 1, { filter: `customer="${safeId}"` }).catch(() => null),
+    ]);
+    if ((sales && sales.totalItems > 0) || (orders && orders.totalItems > 0) || (invoices && invoices.totalItems > 0)) {
+        throw new Error('This customer has purchase or invoice history and cannot be deleted.');
+    }
     try {
         await pb.collection('customers').delete(id);
     } catch (error) {
@@ -189,8 +199,11 @@ export async function searchCustomers(query: string, limit: number = 10): Promis
     if (!query || query.length < 2) return [];
 
     try {
+        const s = sanitizeFilter(query);
+        const digits = query.replace(/\D/g, '');
+        const phoneFilter = digits.length >= 4 ? (' || phone~"' + sanitizeFilter(digits.slice(-10)) + '"') : '';
         const records = await pb.collection('customers').getList<Customer>(1, limit, {
-            filter: `(name~"${sanitizeFilter(query)}" || phone~"${sanitizeFilter(query)}" || email~"${sanitizeFilter(query)}")${tenantClause()}`,
+            filter: `(name~"${s}" || phone~"${s}" || email~"${s}"${phoneFilter})${tenantClause()}`,
             sort: 'name'
         });
         return records.items;
@@ -274,14 +287,8 @@ export async function addInteraction(interaction: Omit<CustomerInteraction, 'id'
 // ===========================================
 
 export async function addLoyaltyPoints(customerId: string, points: number): Promise<void> {
-    // Was RPC. Now manual update.
     try {
-        const customer = await getCustomer(customerId);
-        if (customer) {
-            await pb.collection('customers').update(customerId, {
-                loyalty_points: (customer.loyalty_points || 0) + points
-            });
-        }
+        await adjustPoints(customerId, points, 'Manual points addition');
     } catch (error) {
         console.error('Error adding loyalty points:', error);
     }

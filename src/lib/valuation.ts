@@ -111,13 +111,25 @@ export interface LandedSummary {
 }
 
 export function summariseLanded(lines: LandedLine[]): LandedSummary {
-    return lines.reduce<LandedSummary>((summary, line) => {
-        summary.totalUnits += line.quantity;
-        summary.goodsValue += line.quantity * line.unitCost;
-        summary.landedValue += line.quantity * line.landedUnitCost;
-        summary.allocatedOverhead += line.allocatedOverhead;
-        return summary;
-    }, { totalUnits: 0, goodsValue: 0, landedValue: 0, allocatedOverhead: 0 });
+    // I15: accumulate in paise and derive landed value from the totals. Summing
+    // `quantity * landedUnitCost` drifted from goodsValue + allocatedOverhead
+    // whenever the per-unit landed cost rounded.
+    let totalUnits = 0;
+    let goodsPaise = 0;
+    let overheadPaise = 0;
+
+    for (const line of lines) {
+        totalUnits += line.quantity;
+        goodsPaise += Math.round(line.quantity * line.unitCost * 100);
+        overheadPaise += Math.round(line.allocatedOverhead * 100);
+    }
+
+    return {
+        totalUnits,
+        goodsValue: goodsPaise / 100,
+        allocatedOverhead: overheadPaise / 100,
+        landedValue: (goodsPaise + overheadPaise) / 100,
+    };
 }
 
 export interface CostReceipt {

@@ -6,7 +6,7 @@
  * It provides REST API for WhatsApp Web automation.
  */
 
-import { getTenantStorageKey } from "./pocketbase";
+import { getTenantStorageKey, accountScopeEmail } from "./pocketbase";
 import { isSingleAccountMode } from "./deployment-mode";
 
 const DEFAULT_WPPCONNECT_URL = process.env.NEXT_PUBLIC_WPPCONNECT_URL || "http://127.0.0.1:21465";
@@ -2327,100 +2327,108 @@ export function getTenantWhatsAppSessionId(adminIdentifier?: string): string {
 }
 
 export class WhatsAppManager {
-    private sessionId: string = "wpp_default";
+    private sessionId: string = "";
     private pollInterval: NodeJS.Timeout | null = null;
     private messageCallback: ((messages: WPPMessage[]) => void) | null = null;
 
-    constructor(sessionId: string = "luminila") {
-        this.sessionId = sessionId || "luminila";
+    constructor(sessionId: string = "") {
+        this.sessionId = sessionId || "";
     }
 
     setSessionId(id: string) {
-        this.sessionId = id || "luminila";
+        this.sessionId = id || "";
     }
 
-    /** Public read access to the active session id. */
+    /** Public read access to the active session id, auto-resolving tenant when unset. */
     getSessionIdSafe(): string {
-        return this.sessionId;
+        if (this.sessionId && this.sessionId !== "luminila" && this.sessionId !== "wpp_default") {
+            return this.sessionId;
+        }
+        try {
+            const tenant = typeof accountScopeEmail === "function" ? accountScopeEmail() : "";
+            return getTenantWhatsAppSessionId(tenant);
+        } catch {
+            return this.sessionId || "luminila";
+        }
     }
 
     async connect(forceNew = false): Promise<boolean> {
-        const session = await startSession(this.sessionId, forceNew);
+        const session = await startSession(this.getSessionIdSafe(), forceNew);
         return !!session;
     }
 
     async disconnect(): Promise<void> {
-        await closeSession(this.sessionId);
+        await closeSession(this.getSessionIdSafe());
         this.stopPolling();
     }
 
     async resetSession(): Promise<boolean> {
-        const ok = await resetSession(this.sessionId);
+        const ok = await resetSession(this.getSessionIdSafe());
         this.stopPolling();
         return ok;
     }
 
     async getStatus(): Promise<WPPSession["status"]> {
-        return getSessionStatus(this.sessionId);
+        return getSessionStatus(this.getSessionIdSafe());
     }
 
     async getDetailedStatus(): Promise<DetailedSessionStatus> {
-        return getDetailedSessionStatus(this.sessionId);
+        return getDetailedSessionStatus(this.getSessionIdSafe());
     }
 
     async getQR(): Promise<string | null> {
-        return getSessionQR(this.sessionId);
+        return getSessionQR(this.getSessionIdSafe());
     }
 
     async requestPairingCode(phone: string): Promise<{ code: string; session: string } | null> {
-        return requestPairingCode(this.sessionId, phone);
+        return requestPairingCode(this.getSessionIdSafe(), phone);
     }
 
     async sendMessage(phone: string, message: string): Promise<boolean> {
-        return sendMessage(this.sessionId, phone, message);
+        return sendMessage(this.getSessionIdSafe(), phone, message);
     }
 
     async sendMessageDetailed(phone: string, message: string): Promise<{ ok: boolean; id: string | null }> {
-        return sendMessageDetailed(this.sessionId, phone, message);
+        return sendMessageDetailed(this.getSessionIdSafe(), phone, message);
     }
 
     async getChats(): Promise<WPPChat[]> {
-        return getAllChats(this.sessionId);
+        return getAllChats(this.getSessionIdSafe());
     }
 
     async getMessages(chatId: string, count = 20, beforeId?: string): Promise<WPPMessage[]> {
-        return getChatMessages(this.sessionId, chatId, count, beforeId);
+        return getChatMessages(this.getSessionIdSafe(), chatId, count, beforeId);
     }
 
     async downloadMedia(messageId: string): Promise<string | null> {
-        return downloadMedia(this.sessionId, messageId);
+        return downloadMedia(this.getSessionIdSafe(), messageId);
     }
 
     async getProfilePic(contactId: string): Promise<string | null> {
-        return getProfilePicture(this.sessionId, contactId);
+        return getProfilePicture(this.getSessionIdSafe(), contactId);
     }
 
     async sendOrderConfirmation(
         phone: string,
         order: Parameters<typeof sendOrderConfirmation>[2]
     ): Promise<boolean> {
-        return sendOrderConfirmation(this.sessionId, phone, order);
+        return sendOrderConfirmation(this.getSessionIdSafe(), phone, order);
     }
 
     async sendImage(chatId: string, base64OrUrl: string, caption?: string, filename?: string): Promise<boolean> {
-        return sendImage(this.sessionId, chatId, base64OrUrl, caption, filename);
+        return sendImage(this.getSessionIdSafe(), chatId, base64OrUrl, caption, filename);
     }
 
     async sendStatusText(text: string, options?: { backgroundColor?: string; font?: number }): Promise<boolean> {
-        return sendStatusText(this.sessionId, text, options);
+        return sendStatusText(this.getSessionIdSafe(), text, options);
     }
 
     async sendStatusImage(base64OrUrl: string, caption?: string): Promise<boolean> {
-        return sendStatusImage(this.sessionId, base64OrUrl, caption);
+        return sendStatusImage(this.getSessionIdSafe(), base64OrUrl, caption);
     }
 
     async sendFile(chatId: string, base64: string, filename: string, caption?: string): Promise<boolean> {
-        return sendFile(this.sessionId, chatId, base64, filename, caption);
+        return sendFile(this.getSessionIdSafe(), chatId, base64, filename, caption);
     }
 
     async sendAudio(
@@ -2428,37 +2436,37 @@ export class WhatsAppManager {
         base64Audio: string,
         options?: { ptt?: boolean; filename?: string; mimetype?: string }
     ): Promise<boolean> {
-        return sendAudio(this.sessionId, chatId, base64Audio, options);
+        return sendAudio(this.getSessionIdSafe(), chatId, base64Audio, options);
     }
 
     async sendVideo(chatId: string, base64Video: string, filename?: string, caption?: string): Promise<boolean> {
-        return sendVideo(this.sessionId, chatId, base64Video, filename, caption);
+        return sendVideo(this.getSessionIdSafe(), chatId, base64Video, filename, caption);
     }
 
     async markAsRead(chatId: string): Promise<boolean> {
-        return markAsRead(this.sessionId, chatId);
+        return markAsRead(this.getSessionIdSafe(), chatId);
     }
 
     async setTyping(chatId: string, isTyping: boolean): Promise<boolean> {
-        return setTyping(this.sessionId, chatId, isTyping);
+        return setTyping(this.getSessionIdSafe(), chatId, isTyping);
     }
 
     async replyToMessage(chatId: string, message: string, replyToMessageId: string): Promise<boolean> {
-        return replyToMessage(this.sessionId, chatId, message, replyToMessageId);
+        return replyToMessage(this.getSessionIdSafe(), chatId, message, replyToMessageId);
     }
 
     async forwardMessage(messageId: string, toChatId: string): Promise<boolean> {
-        return forwardMessage(this.sessionId, messageId, toChatId);
+        return forwardMessage(this.getSessionIdSafe(), messageId, toChatId);
     }
 
     async deleteMessage(messageId: string, forEveryone: boolean = false): Promise<boolean> {
-        return deleteMessage(this.sessionId, messageId, forEveryone);
+        return deleteMessage(this.getSessionIdSafe(), messageId, forEveryone);
     }
 
     startPolling(callback: (messages: WPPMessage[]) => void, intervalMs = 5000): void {
         this.messageCallback = callback;
         this.pollInterval = setInterval(async () => {
-            const messages = await getUnreadMessages(this.sessionId);
+            const messages = await getUnreadMessages(this.getSessionIdSafe());
             if (messages.length > 0 && this.messageCallback) {
                 this.messageCallback(messages);
             }

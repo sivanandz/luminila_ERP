@@ -14,15 +14,15 @@ import { MobileScanner, ScanResult } from "../lib/mobile-scanner";
 
 function assert(condition: boolean, message: string) {
     if (!condition) {
-        console.error(`❌ ASSERTION FAILED: ${message}`);
+        console.error(`âŒ ASSERTION FAILED: ${message}`);
         process.exit(1);
     }
-    console.log(`  ✓ ${message}`);
+    console.log(`  âœ“ ${message}`);
 }
 
 async function runTests() {
     console.log("======================================================");
-    console.log("🚀 TESTING CONTEXT-AWARE BARCODE SCANNER PRIORITY STACK");
+    console.log("ðŸš€ TESTING CONTEXT-AWARE BARCODE SCANNER PRIORITY STACK");
     console.log("======================================================");
 
     // TEST 1: POS Billing receives scan when no higher priority context is active
@@ -34,7 +34,7 @@ async function runTests() {
     }, 40);
 
     assert(MobileScanner.getActiveContext() === "pos_billing", "Active context is pos_billing");
-    MobileScanner.dispatchScan("TMPNECCHK00001", "hardware");
+    await MobileScanner.dispatchScan("TMPNECCHK00001", "hardware");
     assert(posReceived === "TMPNECCHK00001", "POS billing received jewelry SKU TMPNECCHK00001");
 
     // TEST 2: Shipping AWB Modal intercepts scans (Priority 100) and shields POS
@@ -48,7 +48,7 @@ async function runTests() {
     }, 100);
 
     assert(MobileScanner.getActiveContext() === "shipping_awb", "Active context is elevated to shipping_awb");
-    MobileScanner.dispatchScan("64437374632", "hardware");
+    await MobileScanner.dispatchScan("64437374632", "hardware");
 
     assert(awbReceived === "64437374632", "Shipping modal captured real ST Courier AWB 64437374632");
     assert(posReceived === null, "POS billing was shielded and received ZERO unwanted keystrokes");
@@ -76,7 +76,7 @@ async function runTests() {
 
     assert(MobileScanner.getActiveContext() === "inventory_form", "Active context elevated to inventory_form (Priority 70)");
 
-    MobileScanner.dispatchScan("8901234567890", "hardware");
+    await MobileScanner.dispatchScan("8901234567890", "hardware");
     assert(inventoryFormReceived === "8901234567890", "Product Form SKU input captured barcode 8901234567890");
     assert(inventorySearchReceived === null, "Inventory search table was not triggered while in Form mode");
     assert(posReceived === null, "POS was not triggered while in Inventory mode");
@@ -86,7 +86,7 @@ async function runTests() {
     assert(MobileScanner.getActiveContext() === "inventory_search", "Context restored to inventory_search on modal close");
 
     // Scanning on main table now searches
-    MobileScanner.dispatchScan("8901234567890", "hardware");
+    await MobileScanner.dispatchScan("8901234567890", "hardware");
     assert(inventorySearchReceived === "8901234567890", "Main table received scan for catalog lookup");
 
     // TEST 4: Discrepancy Tray Audit (Priority 85)
@@ -99,7 +99,7 @@ async function runTests() {
 
     assert(MobileScanner.getActiveContext() === "discrepancy_audit", "Active context is discrepancy_audit (Priority 85)");
     inventorySearchReceived = null;
-    MobileScanner.dispatchScan("JWL-RING-004", "hardware");
+    await MobileScanner.dispatchScan("JWL-RING-004", "hardware");
 
     assert(discrepancyReceived === "JWL-RING-004", "Discrepancy audit isolated tray item JWL-RING-004");
     assert(inventorySearchReceived === null, "Inventory search was not triggered");
@@ -110,7 +110,7 @@ async function runTests() {
     unregisterPOS();
 
     console.log("\n======================================================");
-    console.log("✅ ALL CONTEXT-AWARE SCANNER PRIORITY TESTS PASSED (100%)");
+    console.log("âœ… ALL CONTEXT-AWARE SCANNER PRIORITY TESTS PASSED (100%)");
     console.log("======================================================");
 }
 

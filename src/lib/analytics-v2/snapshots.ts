@@ -9,7 +9,7 @@
  * Upserts are keyed by the unique index (account_email, day, category_id).
  */
 
-import { pb } from '../pocketbase';
+import { pb, sanitizeFilter } from '../pocketbase';
 import { tenantEmail, loadUnifiedLines } from './load';
 import { resolveRange } from './range';
 
@@ -39,7 +39,7 @@ export async function getSnapshotSeries(fromDay: string, toDay: string): Promise
     if (!tenant) return [];
     try {
         const rows = await pb.collection('analytics_daily_snapshots').getFullList({
-            filter: `account_email="${tenant}" && day>="${fromDay}" && day<="${toDay}"`,
+            filter: `account_email="${sanitizeFilter(tenant)}" && day>="${fromDay}" && day<="${toDay}"`,
             sort: 'day',
         });
         if (rows.length === 0) return [];
@@ -49,7 +49,11 @@ export async function getSnapshotSeries(fromDay: string, toDay: string): Promise
             const day = String(row.day);
             const p = byDay.get(day) || { day, revenue: 0, orders: 0, cogs: 0, byCategory: {} };
             p.revenue += Number(row.revenue || 0);
-            p.orders += Number(row.orders || 0);
+            // Legacy snapshot rows carried the day's order count on every
+            // category row (sum over-counted orders × categories); new rows
+            // carry it once on a single per-day row. max() is correct for
+            // both shapes (audit AN-15).
+            p.orders = Math.max(p.orders, Number(row.orders || 0));
             p.cogs += Number(row.cogs || 0);
             const catName = String(row.category_name || 'Unclassified');
             p.byCategory[catName] = (p.byCategory[catName] || 0) + Number(row.revenue || 0);
@@ -101,32 +105,57 @@ export async function rebuildSnapshots(days: number = 400): Promise<{ written: n
         set.add(t.id);
         ordersByDay.set(t.day, set);
     }
+    // Orders are tx-level (per day, not per category): write the count on ONE
+    // canonical row per day so summing readers don't multiply it by the
+    // category count (audit AN-15).
+    const orderCarrier = new Map<string, string>(); // day -> agg key
     for (const [key, row] of agg) {
-        row.orders = ordersByDay.get(row.day)?.size || 0;
+        const cur = orderCarrier.get(row.day);
+        if (cur === undefined || key < cur) orderCarrier.set(row.day, key);
+    }
+    for (const [key, row] of agg) {
+        row.orders = orderCarrier.get(row.day) === key ? (ordersByDay.get(row.day)?.size || 0) : 0;
         agg.set(key, row);
     }
 
-    // Replace the span (idempotent rebuild): delete then create.
-    const old = await pb.collection('analytics_daily_snapshots').getFullList({
+    // Replace the span with upserts first, then delete stale rows. A failure
+    // mid-write leaves the previous snapshot intact instead of an empty span
+    // (audit AN-16); only successful writes are counted.
+    const oldRows = await pb.collection('analytics_daily_snapshots').getFullList({
         filter: `account_email="${tenant}" && day>="${win.current.startISO.slice(0, 10)}" && day<="${win.current.endISO.slice(0, 10)}"`,
-        fields: 'id',
-    }).catch(() => [] as Array<{ id: string }>);
-    for (const row of old) {
-        await pb.collection('analytics_daily_snapshots').delete(row.id).catch(() => {});
+    }).catch(() => [] as Array<Record<string, unknown>>);
+    const existingByKey = new Map<string, string>();
+    for (const r of oldRows) {
+        existingByKey.set(`${String(r.day)}::${String(r.category_id)}`, String(r.id));
     }
 
     let written = 0;
     const rows = [...agg.values()];
     for (let i = 0; i < rows.length; i += 50) {
         const batch = rows.slice(i, i + 50);
-        await Promise.all(
-            batch.map((row) =>
-                pb.collection('analytics_daily_snapshots').create({ account_email: tenant, ...row }).catch((e) => {
+        const results = await Promise.all(
+            batch.map(async (row) => {
+                const key = `${row.day}::${row.category_id}`;
+                const existingId = existingByKey.get(key);
+                try {
+                    if (existingId) {
+                        await pb.collection('analytics_daily_snapshots').update(existingId, { account_email: tenant, ...row });
+                        existingByKey.delete(key);
+                    } else {
+                        await pb.collection('analytics_daily_snapshots').create({ account_email: tenant, ...row });
+                    }
+                    return true;
+                } catch (e) {
                     console.warn('[snapshots] row write failed:', row.day, row.category_id, e);
-                })
-            )
+                    return false;
+                }
+            })
         );
-        written += batch.length;
+        written += results.filter(Boolean).length;
+    }
+    // Delete rows no longer covered by the recomputation.
+    for (const id of existingByKey.values()) {
+        await pb.collection('analytics_daily_snapshots').delete(id).catch(() => {});
     }
 
     return { written, days: new Set(rows.map((r) => r.day)).size };

@@ -246,10 +246,12 @@ export default function CreateOrderPage() {
         const newItems = [...items];
         const item = { ...newItems[index], [field]: value };
 
-        // Recalculate item total
+        // Recalculate item total: GST applies to net post-discount taxable value
         const baseTotal = item.quantity * item.unit_price;
-        const taxVal = baseTotal * ((item.tax_rate || 0) / 100);
-        item.total = baseTotal + taxVal - (item.discount_amount || 0);
+        const lineDiscount = item.discount_amount || 0;
+        const taxable = Math.max(0, baseTotal - lineDiscount);
+        const taxVal = taxable * ((item.tax_rate || 0) / 100);
+        item.total = taxable + taxVal;
 
         newItems[index] = item;
         setItems(newItems);
@@ -282,7 +284,7 @@ export default function CreateOrderPage() {
             shipping_address: selectedCustomer.address, // Default to same
             order_date: new Date(orderDate).toISOString(),
             valid_until: validUntil ? new Date(validUntil).toISOString() : undefined,
-            status: status,
+            status: orderType === 'sales_order' ? ('confirmed' as OrderStatus) : ('draft' as OrderStatus),
             notes: notes,
             items: items,
             subtotal,

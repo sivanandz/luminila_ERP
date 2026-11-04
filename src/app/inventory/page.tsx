@@ -124,6 +124,7 @@ import {
     createVariant,
     getProductVariants,
     updateVariant,
+    updateStock,
     deleteProductCascade,
     STORAGE_LOCATIONS,
     getProductDisplayImage,
@@ -147,6 +148,7 @@ interface Product {
     pending_po_quantity?: number;
     image: string | null;
     hsn_code?: string;
+    barcode?: string;
     location?: string;
     craft?: string;
     plating?: string;
@@ -345,11 +347,17 @@ function InventoryContent() {
         const normalizedQuery = rawQuery.toUpperCase();
         const extractedSku = parseSKUFromBarcode(normalizedQuery) || normalizedQuery;
 
-        const found = products.find(p =>
-            p.sku.toUpperCase() === extractedSku ||
-            p.sku.toUpperCase() === normalizedQuery ||
-            p.name.toUpperCase().includes(normalizedQuery)
+        // I11: exact SKU/barcode wins over the fuzzy name search; a partial name
+        // hit could otherwise return a different product than the scanned code.
+        const exact = products.find(p =>
+            p.sku?.toUpperCase() === extractedSku ||
+            p.sku?.toUpperCase() === normalizedQuery ||
+            p.barcode?.toUpperCase() === normalizedQuery
         );
+        const found = exact || products.find(p => {
+            const name = (p.name || '').toUpperCase();
+            return name.length > 0 && name.includes(normalizedQuery);
+        });
 
         if (found) {
             setScanResult(found);
@@ -388,36 +396,35 @@ function InventoryContent() {
         if (!scanResult) return;
 
         try {
-            // Find variant to update
+            // I4: resolve the exact variant. Falling back to variants[0] moved
+            // the wrong SKU on a multi-variant product.
             const variants = await getProductVariants(scanResult.id);
-            // Try to match variant by SKU or take first
-            let variant = variants.find(v => v.variant_name === scanResult.sku || v.sku_suffix === scanResult.sku.split('-').pop());
-            if (!variant && variants.length > 0) variant = variants[0];
+            const suffix = scanResult.sku.split('-').pop();
+            let variant = variants.find(
+                (v) => v.variant_name === scanResult.sku || (suffix && v.sku_suffix === suffix)
+            );
+            if (!variant && variants.length === 1) variant = variants[0];
 
-            if (variant) {
-                // scanResult.stock is the product-wide aggregate across all variants,
-                // so the write must target the variant's own stock_level, not the aggregate.
-                const newVariantStock = (variant.stock_level || 0) + change;
-                if (newVariantStock < 0) {
-                    toast.error("Stock cannot be negative");
-                    return;
-                }
-
-                await updateVariant(variant.id, { stock_level: newVariantStock });
-
-                // Update local list: product `stock` is the aggregate, so it shifts by `change`
-                setProducts(prev => prev.map(p =>
-                    p.id === scanResult.id ? { ...p, stock: p.stock + change } : p
-                ));
-                setScanResult(prev => prev ? { ...prev, stock: prev.stock + change } : null);
-
-                toast.success(`Stock updated to ${scanResult.stock + change}`);
-            } else {
-                toast.error("Could not find variant record to update.");
+            if (!variant) {
+                toast.error("This product has multiple variants. Scan or select the exact variant before adjusting stock.");
+                return;
             }
+
+            // updateStock reads the current level, rejects an under-flow and
+            // applies the change atomically (`stock_level+/-`), so two scans
+            // cannot lose each other's update.
+            await updateStock(variant.id, change);
+
+            // Update local list: product `stock` is the aggregate, so it shifts by `change`
+            setProducts(prev => prev.map(p =>
+                p.id === scanResult.id ? { ...p, stock: p.stock + change } : p
+            ));
+            setScanResult(prev => prev ? { ...prev, stock: prev.stock + change } : null);
+
+            toast.success(`Stock updated to ${scanResult.stock + change}`);
         } catch (err) {
             console.error("Stock update failed", err);
-            toast.error("Failed to update stock");
+            toast.error(err instanceof Error ? err.message : "Failed to update stock");
         }
     };
 
@@ -534,6 +541,7 @@ function InventoryContent() {
                     material: variantMaterialMap.get(p.id),
                     image: getProductDisplayImage(p),
                     hsn_code: p.hsn_code,
+                    barcode: p.barcode,
                     location: p.location || "Showcase Tray A",
                     craft: p.craft || "",
                     plating: p.plating || "",
@@ -593,6 +601,14 @@ function InventoryContent() {
                 toast.error("Enter a cost price so channel prices can be calculated.");
                 return;
             }
+            // I2: `parseInt(...) || 0` preserved a negative initial stock and
+            // silently turned junk into 0. An empty field still means 0.
+            const stockRaw = String(newProduct.stock ?? "").trim();
+            const parsedStock = stockRaw === "" ? 0 : Number(stockRaw);
+            if (!Number.isInteger(parsedStock) || parsedStock < 0) {
+                toast.error("Stock must be a whole number of 0 or more.");
+                return;
+            }
 
             // Find category ID from name if needed
             let categoryId = "";
@@ -647,36 +663,57 @@ function InventoryContent() {
             let targetVariantId = "";
             // Quantity actually added to stock by this save. In edit mode this is
             // the delta, not the cumulative total the dialog shows (INV-05).
-            let intakeQuantity = parseInt(newProduct.stock) || 0;
+            let intakeQuantity = parsedStock;
 
             if (isEditMode && editingProductId) {
                 // Update
                 await updateProduct(editingProductId, productPayload);
 
-                // Update stock (find first variant).
-                // `newProduct.stock` holds the product-wide aggregate (the dialog prefills it
-                // that way), so apply only the user's delta to the first variant instead of
-                // overwriting it with the aggregate.
+                // I3: apply the aggregate delta only when there is exactly one
+                // variant. A multi-variant product must be edited per variant —
+                // dumping the delta on variants[0] corrupted the stock matrix,
+                // and renaming that variant to the parent SKU destroyed it.
                 const variants = await getProductVariants(editingProductId);
-                const desiredTotal = parseInt(newProduct.stock) || 0;
-                const currentTotal = products.find(p => p.id === editingProductId)?.stock ?? desiredTotal;
-                const stockDelta = desiredTotal - currentTotal;
-                // Only the positive delta was added; a reduction is not an inward receipt.
-                intakeQuantity = Math.max(0, stockDelta);
-                if (variants.length > 0) {
+                if (variants.length > 1) {
+                    toast.warning(
+                        `"${newProduct.name}" has ${variants.length} variants; edit each variant's stock individually. The product-level stock field was not applied.`
+                    );
+                } else if (variants.length === 1) {
                     targetVariantId = variants[0].id;
-                    await updateVariant(variants[0].id, {
-                        stock_level: Math.max(0, (variants[0].stock_level || 0) + stockDelta),
-                        variant_name: newProduct.sku
-                    });
+                    const liveVariantStock = Number(variants[0].stock_level || 0);
+                    const stockDelta = parsedStock - liveVariantStock;
+                    intakeQuantity = Math.max(0, stockDelta);
+                    if (stockDelta !== 0) {
+                        await updateVariant(variants[0].id, {
+                            stock_level: Math.max(0, liveVariantStock + stockDelta),
+                        });
+                        if (!poRef) {
+                            await recordManualIntakeMovement({
+                                variantId: variants[0].id,
+                                quantity: stockDelta,
+                                referenceId: editingProductId,
+                                notes: stockDelta > 0
+                                    ? `Manual stock increase: +${stockDelta} units`
+                                    : `Manual stock adjustment: ${stockDelta} units`,
+                            }).catch(err => console.warn('Could not log manual stock movement:', err));
+                        }
+                    }
                 } else {
                     // Create if missing
                     const v = await createVariant({
                         product: editingProductId,
                         variant_name: newProduct.sku,
-                        stock_level: parseInt(newProduct.stock) || 0
+                        stock_level: parsedStock
                     });
                     targetVariantId = v.id;
+                    if (parsedStock > 0 && !poRef) {
+                        await recordManualIntakeMovement({
+                            variantId: v.id,
+                            quantity: parsedStock,
+                            referenceId: editingProductId,
+                            notes: `Initial stock for newly created variant: ${parsedStock} units`,
+                        }).catch(err => console.warn('Could not log stock movement:', err));
+                    }
                 }
                 toast.success("Product updated");
             } else {
@@ -687,9 +724,17 @@ function InventoryContent() {
                 const v = await createVariant({
                     product: product.id,
                     variant_name: newProduct.sku,
-                    stock_level: parseInt(newProduct.stock) || 0
+                    stock_level: parsedStock
                 });
                 targetVariantId = v.id;
+                if (parsedStock > 0 && !poRef) {
+                    await recordManualIntakeMovement({
+                        variantId: v.id,
+                        quantity: parsedStock,
+                        referenceId: product.id,
+                        notes: `Initial stock for product: ${parsedStock} units`,
+                    }).catch(err => console.warn('Could not log stock movement:', err));
+                }
                 toast.success("Product created");
             }
 
@@ -795,15 +840,33 @@ function InventoryContent() {
     const handleDeleteProduct = async (id: string) => {
         if (!confirm("Delete this product permanently? This cannot be undone.")) return;
         try {
-            // A product with sales history must stay readable for invoices and
+            // A product with sales or order history must stay readable for invoices and
             // order details, so it is refused rather than orphaned.
-            const history = await pb
-                .collection("sales_order_items")
-                .getList(1, 1, { filter: `product="${id}"` })
-                .catch(() => null);
-            if (history && history.totalItems > 0) {
+            const [orderHistory, posHistory] = await Promise.all([
+                pb.collection("sales_order_items").getList(1, 1, { filter: `product="${id}"` }).catch(() => null),
+                pb.collection("sale_items").getList(1, 1, { filter: `product="${id}"` }).catch(() => null),
+            ]);
+            if ((orderHistory && orderHistory.totalItems > 0) || (posHistory && posHistory.totalItems > 0)) {
                 toast.error("This product has sales history and cannot be deleted. Unpublish it instead.");
                 return;
+            }
+
+            const variants = await getProductVariants(id);
+            if (variants.length > 0) {
+                const variantFilter = variants.map(v => `variant="${v.id}"`).join(" || ");
+                const [orderVarHistory, posVarHistory, invVarHistory] = await Promise.all([
+                    pb.collection("sales_order_items").getList(1, 1, { filter: variantFilter }).catch(() => null),
+                    pb.collection("sale_items").getList(1, 1, { filter: variantFilter }).catch(() => null),
+                    pb.collection("invoice_items").getList(1, 1, { filter: variantFilter }).catch(() => null),
+                ]);
+                if (
+                    (orderVarHistory && orderVarHistory.totalItems > 0) ||
+                    (posVarHistory && posVarHistory.totalItems > 0) ||
+                    (invVarHistory && invVarHistory.totalItems > 0)
+                ) {
+                    toast.error("This product's variants have sales or invoice history and cannot be deleted. Unpublish it instead.");
+                    return;
+                }
             }
 
             // Clears the required-relation blockers (stock movements, label

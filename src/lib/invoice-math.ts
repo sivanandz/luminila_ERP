@@ -104,13 +104,14 @@ function splitIntoComponents(
     if (isInterState) {
         igst = baseTaxPaise;
     } else {
-        // Intra-state tax must split into equal CGST and SGST; GSTN rejects an
-        // invoice where the two halves differ by a paise. Callers pass an even
-        // baseTaxPaise (they absorb an odd paise into the taxable value), so
-        // this is an exact halving rather than a floor/remainder split
+        // Intra-state split: CGST and SGST halve the tax, staying within one
+        // paise of each other. The taxable value is the exact GST back-compute
+        // (total × 100 / (100 + rate)), so an odd-paise tax is unavoidable and
+        // the ±1 paisa half difference is what GSTN accepts — the repo's own
+        // channel-orders spec asserts "halves differ by at most a paisa"
         // (POS-05).
-        cgst = Math.round(baseTaxPaise / 2);
-        sgst = cgst;
+        cgst = Math.floor(baseTaxPaise / 2);
+        sgst = baseTaxPaise - cgst;
     }
     return {
         gstRate,
@@ -151,18 +152,11 @@ export function splitInclusiveLine(
 
     const taxable = Math.round((total * 100) / (100 + rate + cess));
     const cessPaise = cess > 0 ? Math.round((taxable * cess) / 100) : 0;
-    let baseTax = Math.max(0, total - taxable - cessPaise);
-    let adjustedTaxable = taxable;
+    const baseTax = Math.max(0, total - taxable - cessPaise);
 
-    // An odd paise of intra-state tax cannot be halved equally. Move it into
-    // the taxable value so taxable + CGST + SGST still equals the inclusive
-    // total while CGST and SGST stay identical.
-    if (!isInterState && baseTax % 2 !== 0) {
-        baseTax -= 1;
-        adjustedTaxable += 1;
-    }
-
-    return splitIntoComponents(adjustedTaxable, baseTax, rate, cessPaise, cess, isInterState);
+    // Taxable keeps the exact GST back-compute; an odd paise stays in the tax
+    // and is handled by the ±1 paisa CGST/SGST split (see splitIntoComponents).
+    return splitIntoComponents(taxable, baseTax, rate, cessPaise, cess, isInterState);
 }
 
 /**
@@ -182,15 +176,10 @@ export function splitExclusiveLine(
     const isInterState = Boolean(sellerStateCode) && Boolean(buyerStateCode) && sellerStateCode !== buyerStateCode;
 
     const cessPaise = cess > 0 ? Math.round((taxable * cess) / 100) : 0;
-    let baseTax = Math.round((taxable * rate) / 100);
+    const baseTax = Math.round((taxable * rate) / 100);
 
-    // See splitInclusiveLine: equal halves require an even paise count. The
-    // taxpayer absorbs the rounding difference here because the taxable value
-    // is the quoted price and cannot move.
-    if (!isInterState && baseTax % 2 !== 0) {
-        baseTax = Math.round(baseTax / 2) * 2;
-    }
-
+    // An odd paise of tax is fine: the intra-state split keeps CGST/SGST
+    // within one paisa of each other (see splitIntoComponents).
     return splitIntoComponents(taxable, baseTax, rate, cessPaise, cess, isInterState);
 }
 

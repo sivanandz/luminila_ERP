@@ -26,20 +26,25 @@ interface SalesChartProps {
 interface CustomTooltipProps {
     active?: boolean;
     label?: string;
-    payload?: Array<{ value: number }>;
+    payload?: Array<{ value: number; dataKey?: string; payload?: SalesDataPoint }>;
 }
 
 const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
     if (active && payload && payload.length) {
+        // Only revenue is rendered as a series; orders rides on the data point
+        // itself. Reading payload[1] always produced "0 orders" (FIN-15 regression).
+        const orders = payload[0]?.payload?.orders;
         return (
             <div className="bg-card border border-border rounded-lg p-3 shadow-lg">
                 <p className="text-sm text-muted-foreground mb-1">{label}</p>
                 <p className="text-sm font-semibold text-primary">
                     {formatINR(payload[0].value)}
                 </p>
-                <p className="text-xs text-muted-foreground">
-                    {payload[1]?.value || 0} orders
-                </p>
+                {typeof orders === 'number' && (
+                    <p className="text-xs text-muted-foreground">
+                        {orders} orders
+                    </p>
+                )}
             </div>
         );
     }

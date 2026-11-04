@@ -50,7 +50,11 @@ test('enqueue persists a create with its payload', () => {
     const queue = OfflineQueue.getQueue();
     assert.equal(queue.length, 1);
     assert.equal(queue[0].collection, 'activity_logs');
-    assert.deepEqual(queue[0].data, { description: 'Sold ring' });
+    // Creates are tenant-stamped at enqueue time (POS-10); the payload keeps
+    // its own fields and gains a non-empty account_email.
+    assert.equal(queue[0].data?.description, 'Sold ring');
+    assert.equal(typeof queue[0].data?.account_email, 'string');
+    assert.ok(String(queue[0].data?.account_email ?? '').length > 0);
 });
 
 test('updates keep their record id and deletes keep no payload', () => {

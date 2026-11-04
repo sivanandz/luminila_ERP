@@ -484,18 +484,26 @@ export default function CreateInvoicePage() {
             // A manual invoice is a sale, so it must consume stock like every
             // other channel. Credit/debit notes do not.
             if (invoiceType === 'regular') {
-                const stockLines = created.items
-                    .filter((item) => Boolean(item.variant_id))
-                    .map((item) => {
-                        const variant = products.find((v) => v.id === item.variant_id);
-                        return {
-                            productId: variant?.product?.id || '',
-                            variantId: item.variant_id,
-                            quantity: Number(item.quantity) || 0,
-                            name: item.description,
-                        };
-                    })
-                    .filter((line) => line.productId && line.quantity > 0);
+                const stockLines = (await Promise.all(
+                    created.items
+                        .filter((item) => Boolean(item.variant_id))
+                        .map(async (item) => {
+                            let pId = products.find((v) => v.id === item.variant_id)?.product?.id;
+                            if (!pId && item.variant_id) {
+                                const vRec = await pb
+                                    .collection('product_variants')
+                                    .getOne<{ product: string }>(item.variant_id)
+                                    .catch(() => null);
+                                pId = vRec?.product;
+                            }
+                            return {
+                                productId: pId || '',
+                                variantId: item.variant_id,
+                                quantity: Number(item.quantity) || 0,
+                                name: item.description,
+                            };
+                        })
+                )).filter((line) => line.productId && line.quantity > 0);
 
                 if (stockLines.length > 0) {
                     try {

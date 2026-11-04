@@ -226,6 +226,9 @@ export async function createCustomerFromChat(
 
     try {
         const result = await pb.collection('customers').create<CustomerRecord>({
+            // Tenant stamp: without it the row is unowned and every
+            // tenant-scoped CRM read loses the lead (audit N-D1).
+            account_email: accountScopeEmail(),
             name: safeName,
             phone: formattedPhone,
             source: 'whatsapp',
@@ -249,9 +252,13 @@ export async function createCustomerFromChat(
  * Get orders for a customer
  */
 export async function getCustomerOrders(customerId: string): Promise<CustomerOrder[]> {
+    const tenant = accountScopeEmail();
+    if (!tenant || !customerId) return [];
     try {
         const sales = await pb.collection('sales').getList<Sale>(1, 10, {
-            filter: `customer="${customerId}"`,
+            // Tenant-scoped + escaped: the last unscoped customer-adjacent
+            // read after the CRM-01 fix (audit N-D5).
+            filter: `customer="${sanitizeFilter(customerId)}" && account_email="${sanitizeFilter(tenant)}"`,
             sort: '-created',
         });
 
@@ -279,6 +286,7 @@ export async function logCustomerInteraction(
 ): Promise<void> {
     try {
         await pb.collection('customer_interactions').create({
+            account_email: accountScopeEmail(),
             customer: customerId,
             interaction_type: type,
             description,

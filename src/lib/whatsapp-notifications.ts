@@ -22,7 +22,8 @@ function formatINR(amount: number): string {
  * Clean phone number to WhatsApp format (e.g. 919876543210)
  */
 function toWhatsAppNumber(phone: string): string {
-    const digits = phone.replace(/\D/g, '');
+    let digits = phone.replace(/\D/g, '');
+    digits = digits.replace(/^0+/, '');
     if (digits.length === 10) {
         return `91${digits}`;
     }

@@ -133,7 +133,7 @@ export interface SaleItem extends PBRecord {
 // STOCK
 // ===========================================
 
-export type MovementType = 'sale' | 'purchase' | 'adjustment' | 'return' | 'sync' | 'manufacturing';
+export type MovementType = 'sale' | 'purchase' | 'adjustment' | 'return' | 'sync' | 'manufacturing' | 'restock' | 'quarantine' | 'replacement_issued';
 
 export interface StockMovement extends PBRecord {
     variant: string; // Relation → product_variants
@@ -328,6 +328,8 @@ export interface SaleWithItems extends Sale {
 
 // Cart types for PoS
 export interface CartItem {
+    /** Cart-line id; distinct from the variant id when the same variant appears twice. */
+    id?: string;
     variant: ProductVariant & { expand?: { product?: Product } };
     quantity: number;
     unit_price: number;

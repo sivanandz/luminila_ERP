@@ -13,6 +13,35 @@ interface PocketBaseFieldError {
     message?: string;
 }
 
+/**
+ * Resolve AuthGate's `?next=` to a safe in-app path (A14). Only same-origin,
+ * absolute paths are allowed; protocol-relative, backslash and encoded variants
+ * and the setup wizard itself are rejected.
+ */
+function safeNextPath(nextParam: string | null): string {
+    if (!nextParam) return "/";
+    if (nextParam.includes("\\") || !nextParam.startsWith("/") || nextParam.startsWith("//")) return "/";
+
+    let decoded: string;
+    try {
+        decoded = decodeURIComponent(nextParam);
+    } catch {
+        return "/";
+    }
+    if (decoded.includes("\\") || decoded.startsWith("//")) return "/";
+
+    const pathname = decoded.split(/[?#]/)[0];
+    if (pathname === "/setup" || pathname.startsWith("/setup/")) return "/";
+
+    try {
+        const parsed = new URL(nextParam, window.location.origin);
+        if (parsed.origin !== window.location.origin) return "/";
+        return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+        return "/";
+    }
+}
+
 import { useAuth } from "@/contexts/AuthContext";
 import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from "@/lib/deployment-mode";
 import Link from "next/link";
@@ -35,7 +64,12 @@ export default function LoginPage() {
         try {
             await login(formData.email, formData.password);
             toast.success("Welcome back!");
-            router.push("/");
+            // Honour AuthGate's ?next= (relative paths only) instead of always
+            // landing on the dashboard (audit A-22).
+            const nextParam = typeof window !== "undefined"
+                ? new URLSearchParams(window.location.search).get("next")
+                : null;
+            router.push(safeNextPath(nextParam));
         } catch (err) {
             console.error("Auth error:", err);
             const pbErr = err instanceof ClientResponseError ? err : null;
@@ -130,8 +164,8 @@ export default function LoginPage() {
                     {!isSingleAccountMode() && (
                         <div className="mt-6 text-center space-y-2">
                             <div>
-                                <Link href="/setup?force=true" className="text-muted-foreground hover:text-primary transition-colors text-xs font-medium">
-                                    First time here or need to reconfigure? Run initial setup wizard
+                                <Link href="/setup" className="text-muted-foreground hover:text-primary transition-colors text-xs font-medium">
+                                    First time here? Run initial setup wizard
                                 </Link>
                             </div>
                         </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 export interface POSShortcutsHandlers {
     onSearchFocus?: () => void;
@@ -13,6 +13,11 @@ export interface POSShortcutsHandlers {
 }
 
 export function usePOSShortcuts(handlers: POSShortcutsHandlers, enabled = true) {
+    const handlersRef = useRef(handlers);
+    useEffect(() => {
+        handlersRef.current = handlers;
+    });
+
     useEffect(() => {
         if (!enabled) return;
 
@@ -23,30 +28,30 @@ export function usePOSShortcuts(handlers: POSShortcutsHandlers, enabled = true) 
             switch (e.key) {
                 case "F2":
                     e.preventDefault();
-                    handlers.onSearchFocus?.();
+                    handlersRef.current.onSearchFocus?.();
                     break;
                 case "F3":
                     e.preventDefault();
-                    handlers.onCustomerModal?.();
+                    handlersRef.current.onCustomerModal?.();
                     break;
                 case "F4":
                     e.preventDefault();
-                    handlers.onPriceOverride?.();
+                    handlersRef.current.onPriceOverride?.();
                     break;
                 case "F8":
                     e.preventDefault();
-                    handlers.onHoldCart?.();
+                    handlersRef.current.onHoldCart?.();
                     break;
                 case "F9":
                     e.preventDefault();
-                    handlers.onTenderPay?.();
+                    handlersRef.current.onTenderPay?.();
                     break;
                 case "F12":
                     e.preventDefault();
-                    handlers.onPrintComplete?.();
+                    handlersRef.current.onPrintComplete?.();
                     break;
                 case "Escape":
-                    handlers.onEscape?.();
+                    handlersRef.current.onEscape?.();
                     break;
                 default:
                     break;
@@ -55,5 +60,5 @@ export function usePOSShortcuts(handlers: POSShortcutsHandlers, enabled = true) 
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [handlers, enabled]);
+    }, [enabled]);
 }

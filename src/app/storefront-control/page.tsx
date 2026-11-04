@@ -1245,7 +1245,7 @@ export default function StorefrontControlPage() {
                                 </Badge>
                             </div>
                             <CardDescription>
-                                Each storefront and domain integration is strictly mapped to one admin account. All online catalog orders, customer records, and inventory movements are tagged with this administrator's ID for data isolation.
+                                Each storefront and domain integration is strictly mapped to one admin account. All online catalog orders, customer records, and inventory movements are tagged with this administrator&apos;s ID for data isolation.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4 pt-1">
@@ -1387,7 +1387,7 @@ export default function StorefrontControlPage() {
                                     Homepage Section Builder & Sequence
                                 </CardTitle>
                                 <CardDescription>
-                                    Rearrange homepage visual hierarchy, customize section titles, toggle visibility, and click Configure to edit each section's content.
+                                    Rearrange homepage visual hierarchy, customize section titles, toggle visibility, and click Configure to edit each section&apos;s content.
                                 </CardDescription>
                             </div>
                             <div className="flex items-center gap-2">
@@ -2026,7 +2026,7 @@ export default function StorefrontControlPage() {
                     <CardHeader>
                         <CardTitle className="text-lg">Visual Merchandising & Product Badges</CardTitle>
                         <CardDescription>
-                            Pin flagship pieces to the top of catalog vitrines and assign custom tags (e.g. "CELEB PICK", "ROYAL BRIDAL").
+                            Pin flagship pieces to the top of catalog vitrines and assign custom tags (e.g. &quot;CELEB PICK&quot;, &quot;ROYAL BRIDAL&quot;).
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-5">
@@ -2048,7 +2048,7 @@ export default function StorefrontControlPage() {
                                 className="w-32"
                             />
                             <p className="text-xs text-muted-foreground">
-                                When product inventory drops to or below this number, storefront automatically displays an "ONLY X LEFT" badge.
+                                When product inventory drops to or below this number, storefront automatically displays an &quot;ONLY X LEFT&quot; badge.
                             </p>
                         </div>
 
@@ -2782,7 +2782,7 @@ export default function StorefrontControlPage() {
                                             color: content.theme?.colors?.accent || "#C5A059",
                                         }}
                                     >
-                                        "Where sacred South Indian temple heritage meets imperial Jaipur polki splendour."
+                                        &quot;Where sacred South Indian temple heritage meets imperial Jaipur polki splendour.&quot;
                                     </p>
                                 </div>
                             </div>

@@ -111,7 +111,10 @@ async function writeCheques(cheques: ChequeRecord[]): Promise<void> {
         .catch(() => null);
 
     if (row) {
-        await pb.collection('store_settings').update(row.id, { value });
+        await pb.collection('store_settings').update(row.id, {
+            value,
+            account_email: accountScopeEmail(),
+        });
     } else {
         await pb.collection('store_settings').create({
             account_email: accountScopeEmail(),
@@ -208,8 +211,8 @@ export async function deleteCheque(id: string): Promise<ChequeRecord[]> {
         const cheques = await readCheques();
         const target = cheques.find((cheque) => cheque.id === id);
         if (!target) throw new Error('Cheque not found.');
-        if (target.status === 'cleared') {
-            throw new Error('A cleared cheque is part of the bank audit trail and cannot be deleted.');
+        if (target.status === 'cleared' || target.status === 'deposited') {
+            throw new Error('A deposited or cleared cheque is in active banking clearing and cannot be deleted.');
         }
         const remaining = cheques.filter((cheque) => cheque.id !== id);
         await writeCheques(remaining);

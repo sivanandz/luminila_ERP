@@ -3,7 +3,7 @@
  * Handles product returns and credit note generation using PocketBase
  */
 
-import { getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
+import { getCurrentTenantEmail, pb, sanitizeFilter, accountScopeEmail } from './pocketbase';
 import { applyPurchaseReversal } from './channel-orders';
 import { adjustPoints } from './loyalty';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
@@ -453,6 +453,7 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                             reference_id: id,
                             source: 'customer_return_quarantine',
                             notes: `Defective customer return held in quarantine (Return #${cn.credit_note_number || id})`,
+                            account_email: accountScopeEmail() || getCurrentTenantEmail(),
                         }).catch((err) => console.warn('Failed to log quarantine movement for return:', err));
                     }
 
@@ -473,6 +474,7 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                         notes: options?.notes || `Customer: ${cn.buyer_name}. Routed to quarantine on approval.`,
                         status: 'active',
                         flagged_by: options?.flaggedBy || 'Staff',
+                        account_email: accountScopeEmail() || getCurrentTenantEmail(),
                     }).catch((err) => console.warn('Failed to create stock discrepancy for return:', err));
                 } else {
                     // 2. Resellable condition: Restore stock to variant — only
@@ -500,7 +502,8 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                                 quantity: item.quantity,
                                 reference_id: id,
                                 source: 'credit_note',
-                                notes: `Restock from Return #${cn.credit_note_number || id}`
+                                notes: `Restock from Return #${cn.credit_note_number || id}`,
+                                account_email: accountScopeEmail() || getCurrentTenantEmail(),
                             }).catch((err) => console.warn('Failed to log stock movement for return:', err));
                             } catch (variantErr) {
                                 console.warn(`Could not restore stock for variant ${item.variant}:`, variantErr);
@@ -670,8 +673,9 @@ export async function createReturnFromInvoice(
 ): Promise<CreditNote> {
     // Fetch original invoice
     const invoice = await pb.collection('invoices').getOne<Invoice>(invoiceId);
+    const tenant = getCurrentTenantEmail();
     const invoiceItems = await pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
-        filter: `invoice="${invoiceId}"`,
+        filter: `invoice="${sanitizeFilter(invoiceId)}" && account_email="${sanitizeFilter(tenant)}"`,
     });
 
     // Filter items being returned
@@ -1113,10 +1117,11 @@ export async function processExchange(
                     const movement = await pb.collection('stock_movements').create({
                         variant: item.variant_id,
                         movement_type: 'replacement_issued',
-                        quantity: item.quantity,
+                        quantity: -item.quantity,
                         reference_id: creditNoteId,
                         source: 'credit_note_exchange',
                         notes: `Replacement issued for Return #${creditNote.credit_note_number || creditNoteId} to ${creditNote.buyer_name}`,
+                        account_email: accountScopeEmail(),
                     });
                     movementId = movement.id;
                 } catch (movementErr) {

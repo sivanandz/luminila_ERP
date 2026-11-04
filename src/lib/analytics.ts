@@ -12,7 +12,7 @@
  * storefront/WhatsApp lines no longer vanish from the leaderboard.
  */
 
-import { pb, accountScopeEmail } from './pocketbase';
+import { pb, accountScopeEmail, sanitizeFilter } from './pocketbase';
 import { loadUnifiedLines, loadTxWindow } from './analytics-v2/load';
 import { buildChannelTable } from './analytics-v2/sales-metrics';
 import { resolveRange, compare, type ComparedMetric } from './analytics-v2/range';
@@ -144,19 +144,19 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         const cogs = lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
         const grossMargin = Math.round(totalRevenue - cogs);
         const prevLines = await loadUnifiedLines(tenant, win.previous);
-        const prevCogs = prevRevenue - prevLines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
-        const marginChange = compare(grossMargin, Math.round(prevCogs));
+        const prevGrossMargin = prevRevenue - prevLines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
+        const marginChange = compare(grossMargin, Math.round(prevGrossMargin));
 
         // Product count strictly scoped to tenant
         const products = await pb.collection('products').getList(1, 1, {
-            filter: `account_email="${tenant}" && is_active=true`
+            filter: `account_email="${sanitizeFilter(tenant)}" && is_active=true`
         });
         const totalProducts = products.totalItems;
 
         // Low stock honors each variant's own threshold (PB can't compare two
         // columns in a filter, so count over a light tenant-scoped fetch).
         const variants = await pb.collection('product_variants').getFullList<ProductVariant>({
-            filter: `account_email="${tenant}" && stock_level>0`,
+            filter: `account_email="${sanitizeFilter(tenant)}" && stock_level>0`,
             expand: 'product',
             fields: 'id,stock_level,low_stock_threshold,expand.product.is_active',
         }).catch(() => [] as ProductVariant[]);
@@ -170,7 +170,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         let pendingOrders = 0;
         try {
             const pending = await pb.collection('sales_orders').getList(1, 1, {
-                filter: `account_email="${tenant}" && (status="draft" || status="sent" || status="confirmed" || status="shipped")`,
+                filter: `account_email="${sanitizeFilter(tenant)}" && (status="draft" || status="sent" || status="confirmed" || status="shipped")`,
             });
             pendingOrders = pending.totalItems;
         } catch (e) {
@@ -321,7 +321,7 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
         // Recent sales (mirror rows still appear in the activity feed — they
         // are real events, just excluded from revenue math)
         const sales = await pb.collection('sales').getList<Sale>(1, 5, {
-            filter: `account_email="${tenant}"`,
+            filter: `account_email="${sanitizeFilter(tenant)}"`,
             sort: '-created'
         });
         sales.items.forEach((sale) => {
@@ -338,7 +338,7 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
         // Recent sales orders
         try {
             const orders = await pb.collection('sales_orders').getList<SalesOrder>(1, 5, {
-                filter: `account_email="${tenant}"`,
+                filter: `account_email="${sanitizeFilter(tenant)}"`,
                 sort: '-created'
             });
             orders.items.forEach((order) => {
@@ -358,7 +358,7 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
         // Recent purchase orders
         try {
             const purchases = await pb.collection('purchase_orders').getList<PurchaseOrderWithVendor>(1, 5, {
-                filter: `account_email="${tenant}"`,
+                filter: `account_email="${sanitizeFilter(tenant)}"`,
                 sort: '-created',
                 expand: 'vendor',
             });
@@ -379,7 +379,7 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
         // Recent stock movements
         try {
             const movements = await pb.collection('stock_movements').getList<StockMovementWithVariant>(1, 5, {
-                filter: `account_email="${tenant}"`,
+                filter: `account_email="${sanitizeFilter(tenant)}"`,
                 sort: '-created',
                 expand: 'variant,variant.product',
             });

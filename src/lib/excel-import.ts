@@ -4,7 +4,7 @@
  */
 
 import ExcelJS from 'exceljs';
-import { pb, sanitizeFilter } from './pocketbase';
+import { getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
 import { calculateLandedUnitCosts, reconcilePOWithInwardBatch, decodePOMetadata } from './purchase';
 
 export interface InventoryImportRow {
@@ -326,7 +326,7 @@ export async function persistDefaultTemplateToDatabase(pbClient = pb): Promise<v
     };
 
     const valStr = JSON.stringify(payload);
-    const userEmail = (pbClient.authStore.model as any)?.email?.trim().toLowerCase() || '';
+    const userEmail = getCurrentTenantEmail() || (pbClient.authStore.model as any)?.email?.trim().toLowerCase() || '';
     const filter = userEmail ? `key="${TEMPLATE_SETTING_KEY}" && account_email="${userEmail}"` : `key="${TEMPLATE_SETTING_KEY}"`;
 
     const existing = await pbClient
@@ -693,7 +693,7 @@ export async function commitBulkInventoryImport(
         }
     }
 
-    const accountEmail = (pbClient.authStore.model as any)?.email || '';
+    const accountEmail = getCurrentTenantEmail() || (pbClient.authStore.model as any)?.email || '';
     const importedProducts: { id: string; name: string; sku: string; stock: number; cost_price?: number }[] = [];
     const errors: { rowNumber: number; error: string }[] = [];
 

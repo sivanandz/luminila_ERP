@@ -11,7 +11,30 @@
  * Provisioning now authenticates with the credentials the operator chose.
  */
 
+import PocketBase, { BaseAuthStore } from 'pocketbase';
 import { pb, sanitizeFilter } from './pocketbase';
+
+/**
+ * In-memory auth store. The setup superuser token is a full database-admin
+ * credential; keeping it on the shared client persisted it to localStorage and
+ * left it behind whenever the follow-up app-user login failed (A8).
+ */
+class EphemeralAuthStore extends BaseAuthStore {}
+
+let setupClient: PocketBase | null = null;
+
+/** The superuser-authenticated client for setup writes, or the app client. */
+function setupDb(): PocketBase {
+    return setupClient ?? pb;
+}
+
+/** Drop the setup superuser session immediately. */
+export function clearSetupSession(): void {
+    if (setupClient) {
+        setupClient.authStore.clear();
+        setupClient = null;
+    }
+}
 
 export interface SetupBootstrapInput {
     adminEmail: string;
@@ -119,15 +142,20 @@ export async function checkPocketBaseHealth(): Promise<boolean> {
     }
 }
 
-/** Authenticate as the freshly provisioned tenant superuser. */
+/** Authenticate as the freshly provisioned tenant superuser (non-persisted). */
 export async function authenticateSetupSuperuser(
     email: string,
     password: string
 ): Promise<{ id: string; email?: string }> {
+    clearSetupSession();
+    // A dedicated client with an in-memory store: never written to localStorage.
+    const client = new PocketBase(pb.baseURL, new EphemeralAuthStore());
     try {
-        const authData = await pb.collection("_superusers").authWithPassword(email.trim(), password);
+        const authData = await client.collection("_superusers").authWithPassword(email.trim(), password);
+        setupClient = client;
         return authData.record;
     } catch {
+        client.authStore.clear();
         throw new Error(
             "Unable to authenticate as the superuser of the new database. Check that PocketBase provisioned successfully, then retry."
         );
@@ -139,14 +167,14 @@ export async function seedDefaultRoles(): Promise<Record<string, string>> {
 
     for (const role of DEFAULT_SETUP_ROLES) {
         try {
-            const existing = await pb.collection("roles").getFirstListItem(
+            const existing = await setupDb().collection("roles").getFirstListItem(
                 `name="${sanitizeFilter(role.name)}" && is_system = true`
             );
             roleMap[role.name] = existing.id;
         } catch (err: unknown) {
             if ((err as { status?: number })?.status !== 404) continue;
             try {
-                const created = await pb.collection("roles").create(role);
+                const created = await setupDb().collection("roles").create(role);
                 roleMap[role.name] = created.id;
             } catch (createErr) {
                 console.warn(`Could not create role ${role.name}:`, createErr);
@@ -166,8 +194,8 @@ export async function ensureSetupAdminUser(input: {
     // account_email scope or it is invisible under the tenant isolation rules.
     const accountEmail = input.email.trim().toLowerCase();
     try {
-        const existing = await pb.collection("users").getFirstListItem(`email="${sanitizeFilter(input.email)}"`);
-        return await pb.collection("users").update(existing.id, {
+        const existing = await setupDb().collection("users").getFirstListItem(`email="${sanitizeFilter(input.email)}"`);
+        return await setupDb().collection("users").update(existing.id, {
             name: input.name,
             password: input.password,
             passwordConfirm: input.password,
@@ -177,7 +205,7 @@ export async function ensureSetupAdminUser(input: {
         });
     } catch (err: unknown) {
         if ((err as { status?: number })?.status !== 404) throw err;
-        return await pb.collection("users").create({
+        return await setupDb().collection("users").create({
             email: input.email,
             password: input.password,
             passwordConfirm: input.password,
@@ -193,15 +221,15 @@ export async function ensureSetupAdminUser(input: {
 export async function linkUserToAdminRole(userId: string, roleId: string | undefined): Promise<void> {
     if (!roleId) return;
     try {
-        await pb.collection("user_roles").getFirstListItem(
+        await setupDb().collection("user_roles").getFirstListItem(
             `user="${sanitizeFilter(userId)}" && role="${sanitizeFilter(roleId)}"`
         );
     } catch (err: unknown) {
         if ((err as { status?: number })?.status !== 404) return;
         try {
             // Tenant-scope the role link so it stays visible only to this store.
-            const owner = await pb.collection("users").getOne(userId);
-            await pb.collection("user_roles").create({
+            const owner = await setupDb().collection("users").getOne(userId);
+            await setupDb().collection("user_roles").create({
                 user: userId,
                 role: roleId,
                 account_email: owner.account_email || owner.email?.trim().toLowerCase() || "",
@@ -219,22 +247,22 @@ export async function seedStoreSettings(
     const initialSettings = [
         { key: "store_name", value: storeName, category: "general", account_email: accountEmail },
         { key: "currency", value: "INR", category: "general", account_email: accountEmail },
-        { key: "currency_symbol", value: "₹", category: "general", account_email: accountEmail },
+        { key: "currency_symbol", value: "â‚¹", category: "general", account_email: accountEmail },
     ];
 
     for (const setting of initialSettings) {
         try {
-            const existingSetting = await pb.collection("store_settings").getFirstListItem(
+            const existingSetting = await setupDb().collection("store_settings").getFirstListItem(
                 `key="${sanitizeFilter(setting.key)}" && account_email="${sanitizeFilter(accountEmail)}"`
             );
-            await pb.collection("store_settings").update(existingSetting.id, {
+            await setupDb().collection("store_settings").update(existingSetting.id, {
                 value: setting.value,
                 account_email: accountEmail,
             });
         } catch (sErr: unknown) {
             if ((sErr as { status?: number })?.status !== 404) continue;
             try {
-                await pb.collection("store_settings").create(setting);
+                await setupDb().collection("store_settings").create(setting);
             } catch { /* ignore */ }
         }
     }
@@ -276,12 +304,12 @@ export async function purgeTenantDemoData(accountEmail: string): Promise<number>
 
     for (const collection of PURGE_COLLECTIONS) {
         try {
-            const records = await pb.collection(collection).getFullList({
+            const records = await setupDb().collection(collection).getFullList({
                 filter: `account_email = "${sanitizeFilter(accountEmail)}"`,
                 requestKey: null,
             }).catch(() => []);
             for (const record of records) {
-                await pb.collection(collection).delete(record.id).catch(() => {});
+                await setupDb().collection(collection).delete(record.id).catch(() => {});
                 deleted += 1;
             }
         } catch (error) {
@@ -292,8 +320,11 @@ export async function purgeTenantDemoData(accountEmail: string): Promise<number>
     return deleted;
 }
 
-/** Sign the new admin into the application session. */
+/** Sign the new admin into the application session on the shared client. */
 export async function loginSetupAdmin(email: string, password: string): Promise<void> {
+    // Drop the superuser session before switching the shared client to the app
+    // user; the superuser token must not survive setup (A8/A13).
+    clearSetupSession();
     pb.authStore.clear();
     await pb.collection("users").authWithPassword(email, password);
 }

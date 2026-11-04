@@ -49,7 +49,11 @@ export function usePermissions(): UsePermissionsResult {
             setPermissions(perms);
             setAdmin(adminStatus);
         } catch (error) {
+            // Fail closed (A7): keeping the previous permissions would leave a
+            // signed-in user with the last account's rights after a failed load.
             console.error("Error loading permissions:", error);
+            setPermissions({} as Record<Resource, Permission[]>);
+            setAdmin(false);
         } finally {
             setLoading(false);
         }

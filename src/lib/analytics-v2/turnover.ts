@@ -29,8 +29,9 @@
  */
 
 import { pb } from '../pocketbase';
-import { tenantEmail, loadUnifiedLines, type AnalyticsDb } from './load';
-import { resolveRange, type AnalyticsRange } from './range';
+import { tenantEmail, loadUnifiedLines, loadTxWindow, type AnalyticsDb } from './load';
+import { resolveRange, pbBound, type AnalyticsRange } from './range';
+import { adjustedLineRevenues } from './discount-allocation';
 import { getStockReport } from '../reports';
 import type { StockMovement } from '@/types/database';
 
@@ -155,7 +156,7 @@ function safeDiv(n: number, d: number): number | null {
 async function loadWindowMovements(db: AnalyticsDb, tenant: string, startISO: string, endISO: string): Promise<StockMovement[]> {
     try {
         return await db.collection('stock_movements').getFullList({
-            filter: `account_email="${tenant}" && created>="${startISO}" && created<"${endISO}"`,
+            filter: `account_email="${tenant}" && created>="${pbBound(startISO)}" && created<"${pbBound(endISO)}"`,
         }) as unknown as StockMovement[];
     } catch (e) {
         console.error('[turnover] movement window fetch failed:', e);
@@ -232,8 +233,9 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
     const win = resolveRange(range);
     const now = new Date();
 
-    const [lines, stockReport, movements, categoryMeta, lastSaleDays] = await Promise.all([
+    const [lines, txs, stockReport, movements, categoryMeta, lastSaleDays] = await Promise.all([
         loadUnifiedLines(tenant, win.current, db),
+        loadTxWindow(tenant, win.current, db),
         getStockReport(db as unknown as typeof pb, tenant).catch(() => ({ rows: [], summary: { totalProducts: 0, lowStock: 0, totalValue: 0, landedCount: 0 } })),
         loadWindowMovements(db, tenant, win.current.startISO, win.current.endISO),
         (async () => {
@@ -251,7 +253,7 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
     // variant id today — see reports.ts fix in this build; fall back to a
     // fresh minimal query keyed by id when unavailable).
     type StockRow = { variantId: string; productId: string; productName: string; sku: string; categoryId: string; stock: number; unitCost: number; stockValue: number };
-    let stockRows: StockRow[] = (stockReport.rows as Array<Record<string, unknown>>).map((r) => ({
+    const stockRows: StockRow[] = (stockReport.rows as Array<Record<string, unknown>>).map((r) => ({
         variantId: String(r.variantId || ''),
         productId: String(r.productId || ''),
         productName: String(r.productName || ''),
@@ -263,6 +265,10 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
     }));
 
     const catNameById = categoryMeta;
+
+    // Header-level discounts allocated once; shared with profitability so the
+    // same window reports the same margin on both tabs (audit AN-13).
+    const adjusted = adjustedLineRevenues(lines, txs);
 
     // ---- overall suite ----
     const stockValueCurrent = stockRows.reduce((s, r) => s + r.stockValue, 0);
@@ -280,18 +286,19 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
         const unitCost = unitCostByVariant.get(variantId) ?? row?.unitCost ?? 0;
         movementValueInWindow += qty * unitCost;
         netUnitsByVariant.set(variantId, (netUnitsByVariant.get(variantId) || 0) + qty);
-        if (qty > 0) {
+        const isReceipt = qty > 0 && (m.movement_type === 'purchase' || m.movement_type === 'restock');
+        if (isReceipt) {
             receiptsUnits += qty;
             const productId = row?.productId || '';
             if (productId) receiptsByProduct.set(productId, (receiptsByProduct.get(productId) || 0) + qty);
         }
     }
 
-    const stockValueStart = stockValueCurrent - movementValueInWindow;
+    const stockValueStart = Math.max(0, stockValueCurrent - movementValueInWindow);
     const avgInventoryValue = (stockValueStart + stockValueCurrent) / 2;
 
     const cogs = lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
-    const revenue = lines.reduce((s, l) => s + l.netRevenue, 0);
+    const revenue = lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0);
     const grossMargin = revenue - cogs;
     const soldUnits = lines.reduce((s, l) => s + l.quantity, 0);
     const unknownCostLines = lines.filter((l) => l.unitCost === 0);
@@ -325,7 +332,7 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
         if (!l.productId) continue;
         const a = byProduct.get(l.productId) || { units: 0, revenue: 0, cogs: 0 };
         a.units += l.quantity;
-        a.revenue += l.netRevenue;
+        a.revenue += adjusted.get(l) ?? l.netRevenue;
         a.cogs += l.quantity * l.unitCost;
         byProduct.set(l.productId, a);
     }
@@ -401,7 +408,7 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
 
     for (const l of lines) {
         const a = ensureCat(l.categoryId || '');
-        a.revenue += l.netRevenue;
+        a.revenue += adjusted.get(l) ?? l.netRevenue;
         a.cogs += l.quantity * l.unitCost;
         a.units += l.quantity;
     }
@@ -411,6 +418,10 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
         a.stock += s.stock;
         a.startUnits += s.startUnits;
     }
+    // Start stock defaults to current stock for EVERY category; categories
+    // with no in-window movements used to be left at 0, halving avg inventory
+    // and roughly doubling their turnover/GMROI (audit AN-11).
+    for (const [, a] of byCat) a.startStockValue = a.stockValue;
     // start stock value per category: current − movement value of its variants
     const catMovementValue = new Map<string, number>();
     for (const r of stockRows) {

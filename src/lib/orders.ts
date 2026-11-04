@@ -175,24 +175,32 @@ export async function createOrder(data: OrderInput) {
             return new Map<string, number>();
         });
 
-        const promises = data.items.map(item => {
-            const itemData: SalesOrderItemRecord & { account_email?: string } = {
-                order: order.id,
-                account_email: tenantEmail,
-                description: item.description,
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                unit_cost: unitCosts.get(item.variant_id || item.product_id || '') ?? null,
-                tax_rate: item.tax_rate || 0,
-                discount_amount: item.discount_amount || 0,
-                total: item.total
-            };
-            if (item.product_id) itemData.product = item.product_id;
-            if (item.variant_id) itemData.variant = item.variant_id;
-            return pb.collection('sales_order_items').create(itemData);
-        });
-
-        await Promise.all(promises);
+        const createdItemIds: string[] = [];
+        try {
+            for (const item of data.items) {
+                const itemData: SalesOrderItemRecord & { account_email?: string } = {
+                    order: order.id,
+                    account_email: tenantEmail,
+                    description: item.description,
+                    quantity: item.quantity,
+                    unit_price: item.unit_price,
+                    unit_cost: unitCosts.get(item.variant_id || item.product_id || '') ?? null,
+                    tax_rate: item.tax_rate || 0,
+                    discount_amount: item.discount_amount || 0,
+                    total: item.total
+                };
+                if (item.product_id) itemData.product = item.product_id;
+                if (item.variant_id) itemData.variant = item.variant_id;
+                const rec = await pb.collection('sales_order_items').create(itemData);
+                createdItemIds.push(rec.id);
+            }
+        } catch (itemErr) {
+            for (const itemId of createdItemIds) {
+                await pb.collection('sales_order_items').delete(itemId).catch(() => {});
+            }
+            await pb.collection('sales_orders').delete(order.id).catch(() => {});
+            throw itemErr;
+        }
 
         // B2B sales orders consume stock when they are confirmed (or already
         // beyond). Estimates and drafts do not. Oversell is rejected and the
@@ -280,6 +288,43 @@ async function deductStockForConfirmedOrder(orderId: string, orderNumber: string
 }
 
 /**
+ * Confirm a draft Sales Order and deduct stock
+ */
+export async function confirmSalesOrder(orderId: string): Promise<boolean> {
+    try {
+        const order = await pb.collection('sales_orders').getOne(orderId);
+        const tenantEmail = accountScopeEmail();
+        if (tenantEmail && order.account_email && order.account_email !== tenantEmail) {
+            throw new Error('Order does not belong to this store.');
+        }
+        if (order.status !== 'draft') {
+            toast.info(`Order is already ${order.status}`);
+            return true;
+        }
+
+        await pb.collection('sales_orders').update(orderId, {
+            status: 'confirmed',
+        });
+
+        try {
+            await deductStockForConfirmedOrder(orderId, order.order_number || orderId, tenantEmail);
+        } catch (stockErr) {
+            await pb.collection('sales_orders').update(orderId, {
+                status: 'draft',
+            }).catch(() => {});
+            throw stockErr;
+        }
+
+        toast.success("Sales Order confirmed and stock reserved");
+        return true;
+    } catch (error) {
+        console.error('Error confirming order:', error);
+        toast.error(error instanceof Error ? error.message : 'Failed to confirm order');
+        return false;
+    }
+}
+
+/**
  * Convert an Estimate to a Confirmed Sales Order
  */
 export async function convertEstimateToOrder(estimateId: string) {
@@ -328,6 +373,15 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
         const tenantEmailForRead = accountScopeEmail();
         if (tenantEmailForRead && order.account_email && order.account_email !== tenantEmailForRead) {
             throw new Error('Order does not belong to this store.');
+        }
+
+        if (order.status === 'cancelled') {
+            throw new Error('Cannot generate an invoice for a cancelled order.');
+        }
+
+        // If the order is draft, deduct stock before raising invoice
+        if (order.status === 'draft' && order.order_type === 'sales_order') {
+            await deductStockForConfirmedOrder(orderId, order.order_number || orderId, tenantEmailForRead);
         }
 
         // Idempotency: a retry after the order status update failed must reuse

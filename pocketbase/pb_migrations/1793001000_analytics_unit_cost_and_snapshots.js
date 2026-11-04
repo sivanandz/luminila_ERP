@@ -17,7 +17,8 @@
  * Idempotent: fresh schemas that already carry unit_cost no-op on part 1.
  */
 
-const TENANT_RULE = '@request.auth.email != "" && account_email = @request.auth.email';
+const TENANT_RULE =
+  '@request.auth.email != "" && (account_email = @request.auth.email || account_email = @request.auth.account_email)';
 
 migrate((app) => {
   // --- 1. unit_cost snapshots on the two sale-item tables ---
@@ -44,41 +45,49 @@ migrate((app) => {
   if (!snapshots) {
     snapshots = new Collection({ type: "base", name: "analytics_daily_snapshots" });
     app.save(snapshots);
-
-    const fields = [
-      // System fields declared explicitly — without created/updated any
-      // `sort=-updated` query 400s (see 1793000001 corrective).
-      { name: "created", type: "autodate", onCreate: true, onUpdate: false },
-      { name: "updated", type: "autodate", onCreate: true, onUpdate: true },
-      { name: "account_email", type: "text", required: true, max: 255 },
-      { name: "day", type: "text", required: true, max: 10 }, // YYYY-MM-DD
-      { name: "category_id", type: "text", max: 60 }, // '' = unclassified
-      { name: "category_name", type: "text", max: 200 },
-      { name: "revenue", type: "number" },
-      { name: "cogs", type: "number" },
-      { name: "units", type: "number" },
-      { name: "orders", type: "number" },
-      { name: "discounts", type: "number" },
-      { name: "stock_value", type: "number" }, // optional end-of-day stock value
-    ];
-    for (const def of fields) {
-      snapshots.fields.add(new Field(def));
-    }
-    app.save(snapshots);
-
-    unmarshal({
-      listRule: TENANT_RULE,
-      viewRule: TENANT_RULE,
-      createRule: TENANT_RULE,
-      updateRule: TENANT_RULE,
-      deleteRule: TENANT_RULE,
-      indexes: [
-        "CREATE UNIQUE INDEX idx_analytics_snap_day_cat ON analytics_daily_snapshots (account_email, day, category_id)",
-        "CREATE INDEX idx_analytics_snap_day ON analytics_daily_snapshots (account_email, day)",
-      ],
-    }, snapshots);
-    app.save(snapshots);
   }
+
+  // Self-healing (audit AN-18): a run that died between collection-save and
+  // field-add left a field-less, rule-less collection behind, and the old
+  // `if (!snapshots)` skip meant it never recovered. Add only missing fields
+  // and re-apply rules/indexes so a husk is completed on the next run.
+  const fieldDefs = [
+    // System fields declared explicitly — without created/updated any
+    // `sort=-updated` query 400s (see 1793000001 corrective).
+    { name: "created", type: "autodate", onCreate: true, onUpdate: false },
+    { name: "updated", type: "autodate", onCreate: true, onUpdate: true },
+    { name: "account_email", type: "text", required: true, max: 255 },
+    { name: "day", type: "text", required: true, max: 10 }, // YYYY-MM-DD
+    { name: "category_id", type: "text", max: 60 }, // '' = unclassified
+    { name: "category_name", type: "text", max: 200 },
+    { name: "revenue", type: "number" },
+    { name: "cogs", type: "number" },
+    { name: "units", type: "number" },
+    { name: "orders", type: "number" },
+    { name: "discounts", type: "number" },
+    { name: "stock_value", type: "number" }, // optional end-of-day stock value
+  ];
+  const existingFields = new Set(snapshots.fields.map((field) => field.name));
+  for (const def of fieldDefs) {
+    if (!existingFields.has(def.name)) {
+      snapshots.fields.add(new Field(def));
+      existingFields.add(def.name);
+    }
+  }
+  app.save(snapshots);
+
+  unmarshal({
+    listRule: TENANT_RULE,
+    viewRule: TENANT_RULE,
+    createRule: TENANT_RULE,
+    updateRule: TENANT_RULE,
+    deleteRule: TENANT_RULE,
+    indexes: [
+      "CREATE UNIQUE INDEX idx_analytics_snap_day_cat ON analytics_daily_snapshots (account_email, day, category_id)",
+      "CREATE INDEX idx_analytics_snap_day ON analytics_daily_snapshots (account_email, day)",
+    ],
+  }, snapshots);
+  app.save(snapshots);
 
   return null;
 }, (app) => {

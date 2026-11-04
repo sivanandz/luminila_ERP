@@ -78,8 +78,9 @@ import { includedTaxPaise } from "@/lib/invoice-math";
 import { getStoreSettings } from "@/lib/settings";
 import { GST_RATES } from "@/lib/gst";
 import { getTypeAheadProducts, type ProductVariant } from "@/lib/products";
-import { getCurrentTenantEmail, sanitizeFilter } from "@/lib/pocketbase";
+import { getCurrentTenantEmail, pb } from "@/lib/pocketbase";
 import { getPOSQuickAddVariants, resolvePOSBarcodeVariant } from "@/lib/products";
+import { assertStockAvailable, toStockDb } from "@/lib/channel-stock";
 import { ClientResponseError } from "pocketbase";
 import { subscribeRemoteCartItems, type POSCartBroadcastItem } from "@/lib/whatsapp-crm";
 import { POSWhatsAppWidget, sendPOSReceiptViaWhatsApp } from "@/components/pos/POSWhatsAppWidget";
@@ -121,6 +122,7 @@ interface CartItem {
     costPrice?: number;
     priceAdjustment?: number;
     channelPrices?: Record<string, number>;
+    isPriceOverridden?: boolean;
     quantity: number;
     stock?: number;
     remarks?: string;
@@ -133,8 +135,12 @@ interface CartItem {
     // weights, purity and HUID instead of dropping them (POS-07).
     gross_weight?: number;
     net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
     purity_karat?: string;
     making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    wastage_percent?: number;
     huid_code?: string;
 }
 
@@ -156,8 +162,12 @@ interface POSProduct {
     gst_rate?: number;
     gross_weight?: number;
     net_weight?: number;
+    stone_weight?: number;
+    stone_amount?: number;
     purity_karat?: string;
     making_charges?: number;
+    making_charges_type?: 'per_gram' | 'fixed' | 'percent';
+    wastage_percent?: number;
     huid_code?: string;
 }
 
@@ -183,6 +193,18 @@ export default function POSPage() {
     // Synchronous re-entrancy guard for processSale: state updates lag re-renders,
     // so key-repeat/double-tap checkout must be rejected via a ref instead.
     const isProcessingRef = useRef(false);
+    // One stable id per checkout attempt: a retry after a lost response is
+    // deduplicated by createPOSSale instead of inserting a second sale (P7).
+    const checkoutTxnIdRef = useRef<string | null>(null);
+    const checkoutTxnId = () => {
+        if (!checkoutTxnIdRef.current) {
+            const uuid = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+                ? crypto.randomUUID()
+                : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+            checkoutTxnIdRef.current = `TXN-${uuid}`;
+        }
+        return checkoutTxnIdRef.current;
+    };
 
     // Sync external toggle events (e.g. from Settings or WhatsApp Widget)
     useEffect(() => {
@@ -194,7 +216,7 @@ export default function POSPage() {
         return () => window.removeEventListener("luminila:upi-discount-toggled", handler);
     }, []);
 
-    // Anti-Fraud Visual Match Audit State (Spec §4.2)
+    // Anti-Fraud Visual Match Audit State (Spec Â§4.2)
     const [antiFraudAuditItem, setAntiFraudAuditItem] = useState<{
         name: string;
         sku: string;
@@ -242,6 +264,9 @@ export default function POSPage() {
         // Recalculate cart lines, quick-add tiles and search results with the
         // channel's current cost-based rule.
         setCart(prev => prev.map(item => {
+            if (item.isPriceOverridden) {
+                return item;
+            }
             const prodData = {
                 base_price: item.basePrice !== undefined ? item.basePrice : item.price,
                 cost_price: item.costPrice || 0,
@@ -299,6 +324,56 @@ export default function POSPage() {
     const [heldCarts, setHeldCarts] = useState<HeldCart[]>([]);
     const [showHeldCartsModal, setShowHeldCartsModal] = useState(false);
 
+    // Restore active cart and held carts on mount (BUG-POS-07)
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const tenant = getCurrentTenantEmail()?.trim().toLowerCase() || "default";
+        try {
+            const rawCart = localStorage.getItem(`luminila_pos_cart_${tenant}`);
+            if (rawCart) {
+                const parsed = JSON.parse(rawCart);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    setCart(parsed);
+                }
+            }
+            const rawHeld = localStorage.getItem(`luminila_pos_held_${tenant}`);
+            if (rawHeld) {
+                const parsed = JSON.parse(rawHeld);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    setHeldCarts(parsed);
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to restore cart state:", e);
+        }
+    }, []);
+
+    // Persist active cart across page refreshes
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const tenant = getCurrentTenantEmail()?.trim().toLowerCase() || "default";
+        try {
+            if (cart.length > 0) {
+                localStorage.setItem(`luminila_pos_cart_${tenant}`, JSON.stringify(cart));
+            } else {
+                localStorage.removeItem(`luminila_pos_cart_${tenant}`);
+            }
+        } catch {}
+    }, [cart]);
+
+    // Persist held carts across page refreshes
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const tenant = getCurrentTenantEmail()?.trim().toLowerCase() || "default";
+        try {
+            if (heldCarts.length > 0) {
+                localStorage.setItem(`luminila_pos_held_${tenant}`, JSON.stringify(heldCarts));
+            } else {
+                localStorage.removeItem(`luminila_pos_held_${tenant}`);
+            }
+        } catch {}
+    }, [heldCarts]);
+
     // Line-Item Rate & Wholesale Override State (F4)
     const [showPriceOverrideModal, setShowPriceOverrideModal] = useState(false);
     const [overrideItem, setOverrideItem] = useState<CartItem | null>(null);
@@ -339,7 +414,7 @@ export default function POSPage() {
         }).catch(() => {});
     }, []);
 
-    // WhatsApp CRM bridge (spec §3.3 / §8.3)
+    // WhatsApp CRM bridge (spec Â§3.3 / Â§8.3)
     const autoSendWhatsAppRef = useRef(false);
 
     // Loyalty State
@@ -441,6 +516,10 @@ export default function POSPage() {
                     const basePrice = p?.base_price || 0;
                     const channelPrices = p?.channel_prices;
                     const priceAdjustment = v.price_adjustment || 0;
+                    const pRec = (p || {}) as unknown as Record<string, unknown>;
+                    const vRec = (v || {}) as unknown as Record<string, unknown>;
+                    const jNum = (val: unknown): number | undefined => (val === null || val === undefined || val === '' ? undefined : Number(val));
+                    const jStr = (val: unknown): string | undefined => (val === null || val === undefined ? undefined : String(val));
                     posProducts.push({
                         id: v.id,
                         productId: v.product,
@@ -456,6 +535,15 @@ export default function POSPage() {
                         image: p?.image_data || p?.image_url || null,
                         hsn_code: p?.hsn_code || "71179010",
                         gst_rate: p?.gst_rate,
+                        gross_weight: jNum(vRec.gross_weight ?? pRec.gross_weight),
+                        net_weight: jNum(vRec.net_weight ?? pRec.net_weight),
+                        stone_weight: jNum(vRec.stone_weight ?? pRec.stone_weight),
+                        stone_amount: jNum(vRec.stone_amount ?? pRec.stone_amount),
+                        purity_karat: jStr(vRec.purity_karat || pRec.purity_karat),
+                        making_charges: jNum(vRec.making_charges ?? pRec.making_charges),
+                        making_charges_type: (vRec.making_charges_type || pRec.making_charges_type || 'per_gram') as 'per_gram' | 'fixed' | 'percent',
+                        wastage_percent: jNum(vRec.wastage_percent ?? pRec.wastage_percent),
+                        huid_code: jStr(vRec.huid_code || pRec.huid_code),
                     });
                 }
                 setQuickAddProducts(posProducts.filter(p => p.name !== 'Unknown Product'));
@@ -513,7 +601,7 @@ export default function POSPage() {
 
         try {
             // Sanitize the raw scanner payload before it is interpolated into the
-            // filter — arbitrary QR/DataMatrix content must not break or inject it.
+            // filter â€” arbitrary QR/DataMatrix content must not break or inject it.
             const resolved = await resolvePOSBarcodeVariant(code);
             const v: ProductVariant | undefined = resolved || undefined;
 
@@ -622,6 +710,15 @@ export default function POSPage() {
                     image: product.image || null,
                     hsn_code: product.hsn_code || "71179010",
                     gst_rate: product.gst_rate,
+                    gross_weight: product.gross_weight,
+                    net_weight: product.net_weight,
+                    stone_weight: product.stone_weight,
+                    stone_amount: product.stone_amount,
+                    purity_karat: product.purity_karat,
+                    making_charges: product.making_charges,
+                    making_charges_type: product.making_charges_type,
+                    wastage_percent: product.wastage_percent,
+                    huid_code: product.huid_code,
                 },
             ];
         });
@@ -700,7 +797,7 @@ export default function POSPage() {
         setRedemptionValue(0);
     };
 
-    // Remote "Add to POS Cart" from WhatsApp surfaces (spec §8.3)
+    // Remote "Add to POS Cart" from WhatsApp surfaces (spec Â§8.3)
     useEffect(() => {
         const unsubscribe = subscribeRemoteCartItems((item: POSCartBroadcastItem) => {
             setCart((prev) => {
@@ -737,23 +834,36 @@ export default function POSPage() {
 
     // Whether the store is GST registered decides whether the cart shows the
     // tax that is already inside the quoted price.
+    const [storeSettingsData, setStoreSettingsData] = useState<{
+        store_name?: string;
+        store_address?: string;
+        store_city?: string;
+        store_state?: string;
+        store_pincode?: string;
+        store_phone?: string;
+        store_gstin?: string;
+    } | null>(null);
+
     useEffect(() => {
         let cancelled = false;
         getStoreSettings()
             .then((settings) => {
                 if (!cancelled) {
                     setGstRegistered(settings.isGstRegistered !== false);
+                    setStoreSettingsData(settings as any);
                 }
             })
             .catch(() => {});
         return () => { cancelled = true; };
     }, []);
 
-    // Calculate totals
-    const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-    const discountAmount = (subtotal * discount) / 100;
-    const loyaltyDiscount = redemptionValue;  // Points redemption value
-    const total = Math.max(0, subtotal - discountAmount - loyaltyDiscount);
+    // Calculate totals in paise. P9: `discount` is clamped to 0â€“100 and every
+    // figure is rounded to 2 decimals so a bill can never go negative.
+    const safeDiscount = Math.min(100, Math.max(0, Number(discount) || 0));
+    const subtotal = Math.round(cart.reduce((sum, item) => sum + item.price * item.quantity, 0) * 100) / 100;
+    const discountAmount = Math.round(((subtotal * safeDiscount) / 100) * 100) / 100;
+    const loyaltyDiscount = Math.max(0, Math.round((Number(redemptionValue) || 0) * 100) / 100);  // Points redemption value
+    const total = Math.max(0, Math.round((subtotal - discountAmount - loyaltyDiscount) * 100) / 100);
     const gstIncluded = gstRegistered
         ? includedTaxPaise(
             cart.map((item) => ({
@@ -853,7 +963,7 @@ export default function POSPage() {
     const handleSelectCustomer = (cust: Customer) => {
         setSelectedCustomer(cust);
         setSelectedCustomerId(cust.id);
-        // A redemption belongs to the previously selected customer — never carry it over
+        // A redemption belongs to the previously selected customer â€” never carry it over
         setPointsToRedeem(0);
         setRedemptionValue(0);
         setShowCustomerModal(false);
@@ -914,7 +1024,7 @@ export default function POSPage() {
             setSelectedChannel(target.channel);
             selectedChannelRef.current = target.channel;
         }
-        // Held carts don't store a redemption — never carry one over
+        // Held carts don't store a redemption â€” never carry one over
         setPointsToRedeem(0);
         setRedemptionValue(0);
         setHeldCarts(prev => prev.filter(h => h.id !== heldId));
@@ -943,14 +1053,24 @@ export default function POSPage() {
         if (!overrideItem) return;
         const newPrice = parseFloat(overridePriceInput);
         const discPct = parseFloat(overrideDiscountInput) || 0;
-        if (isNaN(newPrice) || newPrice < 0) {
-            toast.error("Invalid price value");
+        // P10: 0 is not a valid override, and >100% produced a negative line
+        // that shrank the bill.
+        if (!Number.isFinite(newPrice) || newPrice <= 0) {
+            toast.error("Price must be greater than zero");
             return;
         }
-        const finalPrice = discPct > 0 ? Math.round(newPrice * (1 - discPct / 100)) : newPrice;
-        setCart(prev => prev.map(c => c.id === overrideItem.id ? { ...c, price: finalPrice } : c));
+        if (!Number.isFinite(discPct) || discPct < 0 || discPct > 100) {
+            toast.error("Override discount must be between 0% and 100%");
+            return;
+        }
+        const finalPrice = Math.round(newPrice * (1 - discPct / 100) * 100) / 100;
+        if (finalPrice <= 0) {
+            toast.error("Price override would make the line free; use a bill discount instead.");
+            return;
+        }
+        setCart(prev => prev.map(c => c.id === overrideItem.id ? { ...c, price: finalPrice, isPriceOverridden: true } : c));
         setShowPriceOverrideModal(false);
-        toast.success(`Updated rate for ${overrideItem.name} to ₹${formatPrice(finalPrice)}`);
+        toast.success(`Updated rate for ${overrideItem.name} to â‚¹${formatPrice(finalPrice)}`);
     };
 
     // Keyboard Shortcuts Listener (BillWiz feature)
@@ -998,13 +1118,13 @@ export default function POSPage() {
         const account = await getLoyaltyAccount(selectedCustomerId);
         const settings = await getLoyaltySettings();
         if (!account || pointsToRedeem > account.current_balance) {
-            toast.error('Insufficient loyalty points balance for this redemption. Sale cancelled — please adjust and retry.');
+            toast.error('Insufficient loyalty points balance for this redemption. Sale cancelled â€” please adjust and retry.');
             setPointsToRedeem(0);
             setRedemptionValue(0);
             return false;
         }
         if (pointsToRedeem < settings.min_redemption_points) {
-            toast.error(`Minimum ${settings.min_redemption_points} points required for redemption. Sale cancelled — please adjust and retry.`);
+            toast.error(`Minimum ${settings.min_redemption_points} points required for redemption. Sale cancelled â€” please adjust and retry.`);
             setPointsToRedeem(0);
             setRedemptionValue(0);
             return false;
@@ -1015,22 +1135,46 @@ export default function POSPage() {
     // Process sale
     const processSale = async () => {
         // Re-entrancy guard: the keyboard shortcut path (F12) and rapid clicks can
-        // fire again during the createPOSSale await — state alone updates too late,
+        // fire again during the createPOSSale await â€” state alone updates too late,
         // so a duplicate sale/double stock deduction must be rejected synchronously.
         if (isProcessingRef.current) return;
         if (!paymentMethod || cart.length === 0 || !currentShift || !userId) return;
 
-        // Pre-flight validation: verify no cart items exceed available stock
-        const oversoldItem = cart.find(item => item.stock !== undefined && item.quantity > item.stock);
-        if (oversoldItem) {
-            toast.error(`Cannot complete sale: "${oversoldItem.name}" exceeds available stock (${oversoldItem.quantity} in cart, ${oversoldItem.stock} in stock).`);
+        // P11: ask the server what is actually in stock now. The product stock
+        // snapshot in the cart is stale by the time checkout runs, and two
+        // terminals can both pass a client-side check.
+        try {
+            const availability = await assertStockAvailable(
+                toStockDb(pb),
+                cart.map((item) => ({
+                    productId: item.productId as string,
+                    variantId: item.variantId,
+                    quantity: item.quantity,
+                    name: item.name,
+                })),
+                { accountEmail: getCurrentTenantEmail() }
+            );
+            if (!availability.ok) {
+                const shortage = availability.shortages[0];
+                toast.error(
+                    `Cannot complete sale: "${shortage.name}" has only ${shortage.available} in stock (requested ${shortage.requested}).`
+                );
+                return;
+            }
+        } catch (stockError) {
+            console.error("Stock availability check failed:", stockError);
+            toast.error(
+                stockError instanceof Error ? stockError.message : "Could not verify stock availability. Sale cancelled."
+            );
             return;
         }
 
-        // Under-tendered cash must not complete as a fully paid sale.
-        if (paymentMethod === 'cash' && cashTendered !== '') {
-            const tendered = parseFloat(cashTendered);
-            if (!Number.isFinite(tendered) || tendered < total) {
+        // P8: cash must be tendered explicitly. An empty field used to complete
+        // the sale and record â‚¹0 cash against it.
+        if (paymentMethod === 'cash') {
+            const rawTendered = cashTendered.trim();
+            const tendered = parseFloat(rawTendered);
+            if (!rawTendered || !Number.isFinite(tendered) || tendered < total) {
                 toast.error(`Cash tendered (${formatPrice(Number.isFinite(tendered) ? tendered : 0)}) is less than the bill total (${formatPrice(total)}).`);
                 return;
             }
@@ -1059,9 +1203,9 @@ export default function POSPage() {
                     variantId: item.variantId,
                 })),
                 subtotal,
-                discountPercent: discount,
+                discountPercent: safeDiscount,
                 discountAmount,
-                loyaltyDiscount: redemptionValue,
+                loyaltyDiscount,
                 total,
                 paymentMethod: paymentMethod as 'cash' | 'card' | 'upi' | 'phonepe',
                 cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) || 0 : undefined,
@@ -1074,6 +1218,7 @@ export default function POSPage() {
                 locationId: selectedPosLocationId,
                 pointsRedeemed: pointsToRedeem,
                 pointsEarned: pointsToEarn,
+                transactionId: checkoutTxnId(),
             });
 
             // Handle loyalty points
@@ -1082,7 +1227,7 @@ export default function POSPage() {
                 result.warnings.forEach(w => toast.warning(w));
             }
 
-            // Loyalty updates run AFTER the sale is committed — a failure here
+            // Loyalty updates run AFTER the sale is committed â€” a failure here
             // must not be reported as a failed sale (retrying would double-sell).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
@@ -1115,8 +1260,10 @@ export default function POSPage() {
 
             setShowReceipt(true);
             clearCart();
+            // The checkout succeeded; the next sale gets a fresh id.
+            checkoutTxnIdRef.current = null;
 
-            // Auto-send receipt via WhatsApp (spec §3.3 checkbox)
+            // Auto-send receipt via WhatsApp (spec Â§3.3 checkbox)
             if (autoSendWhatsAppRef.current && selectedCustomerId) {
                 sendPOSReceiptViaWhatsApp({
                     customerId: selectedCustomerId,
@@ -1144,22 +1291,18 @@ export default function POSPage() {
         setIsProcessing(true);
         setShowPhonePeModal(false);
 
-        if (!currentShift || !userId) {
-            isProcessingRef.current = false;
-            console.error('No active shift or user');
-            return;
-        }
-
-        // Pre-flight validation: verify no cart items exceed available stock
-        const oversoldItem = cart.find(item => item.stock !== undefined && item.quantity > item.stock);
-        if (oversoldItem) {
-            toast.error(`Cannot complete sale: "${oversoldItem.name}" exceeds available stock (${oversoldItem.quantity} in cart, ${oversoldItem.stock} in stock).`);
-            return;
-        }
-
-        setIsProcessing(true);
-
         try {
+            if (!currentShift || !userId) {
+                console.error('No active shift or user');
+                return;
+            }
+
+            // Pre-flight validation: verify no cart items exceed available stock
+            const oversoldItem = cart.find(item => item.stock !== undefined && item.quantity > item.stock);
+            if (oversoldItem) {
+                toast.error(`Cannot complete sale: "${oversoldItem.name}" exceeds available stock (${oversoldItem.quantity} in cart, ${oversoldItem.stock} in stock).`);
+                return;
+            }
             // Save sale to PocketBase and generate invoice
             const result = await createPOSSale({
                 channel: selectedChannel as import('@/types/database').SalesChannel,
@@ -1169,9 +1312,9 @@ export default function POSPage() {
                     variantId: item.variantId,
                 })),
                 subtotal,
-                discountPercent: discount,
+                discountPercent: safeDiscount,
                 discountAmount,
-                loyaltyDiscount: redemptionValue,
+                loyaltyDiscount,
                 total,
                 paymentMethod: 'phonepe',
                 customerId: selectedCustomer?.id || selectedCustomerId || undefined,
@@ -1185,6 +1328,7 @@ export default function POSPage() {
                 notes: phonePeTransactionId ? `PhonePe: ${phonePeTransactionId}` : undefined,
                 pointsRedeemed: pointsToRedeem,
                 pointsEarned: pointsToEarn,
+                transactionId: checkoutTxnId(),
             });
 
             // Handle loyalty points
@@ -1193,7 +1337,7 @@ export default function POSPage() {
                 result.warnings.forEach(w => toast.warning(w));
             }
 
-            // Loyalty updates run AFTER the sale is committed — a failure here
+            // Loyalty updates run AFTER the sale is committed â€” a failure here
             // must not be reported as a failed sale (the payment was received).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
@@ -1223,6 +1367,7 @@ export default function POSPage() {
 
             setShowReceipt(true);
             clearCart();
+            checkoutTxnIdRef.current = null;
 
             if (autoSendWhatsAppRef.current && selectedCustomerId) {
                 sendPOSReceiptViaWhatsApp({
@@ -1500,7 +1645,7 @@ export default function POSPage() {
                                                         <p className="font-bold text-white text-sm">{product.name}</p>
                                                         <div className="flex items-center gap-2 mt-0.5">
                                                             <span className="text-xs text-moonstone">
-                                                                {product.sku} • {product.variant}
+                                                                {product.sku} â€¢ {product.variant}
                                                             </span>
                                                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
                                                                 isOutOfStock
@@ -1680,7 +1825,7 @@ export default function POSPage() {
                         )}
                     </div>
 
-                    {/* POS Real-Time Anti-Fraud Visual Match Audit Card (Architecture Spec §4.2) */}
+                    {/* POS Real-Time Anti-Fraud Visual Match Audit Card (Architecture Spec Â§4.2) */}
                     {antiFraudAuditItem && (
                         <div className="bg-bg-navy/95 border-2 border-emerald-500/50 rounded-xl p-3 shadow-xl mb-3 animate-in slide-in-from-top-2 fade-in relative">
                             <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-surface-hover/50">
@@ -1730,14 +1875,14 @@ export default function POSPage() {
                                     </div>
                                     <div className="flex items-center gap-2 mt-1">
                                         <span className="text-xs font-mono font-bold text-gold">
-                                            MRP ₹{antiFraudAuditItem.price.toLocaleString("en-IN")}
+                                            MRP â‚¹{antiFraudAuditItem.price.toLocaleString("en-IN")}
                                         </span>
                                         <span className="text-[9px] text-amber-300 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                                             HSN {antiFraudAuditItem.hsn} (3% GST)
                                         </span>
                                     </div>
                                     <div className="text-[9px] text-emerald-400 flex items-center gap-1 mt-1 font-medium">
-                                        ✓ Tag matches physical item • Ticket-switching protected
+                                        âœ“ Tag matches physical item â€¢ Ticket-switching protected
                                     </div>
                                 </div>
                             </div>
@@ -1772,10 +1917,10 @@ export default function POSPage() {
                                             <p className="font-bold text-white text-sm truncate">{item.name}</p>
                                             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                                                 <span className="text-xs text-moonstone truncate">
-                                                    {item.variant} • {formatPrice(item.price)}
+                                                    {item.variant} â€¢ {formatPrice(item.price)}
                                                 </span>
                                                 {item.channelPrices && item.channelPrices[selectedChannel] !== undefined && (
-                                                    <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-primary/20 text-primary border border-primary/30" title={`Channel rate: ₹${formatPrice(item.price)}`}>
+                                                    <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-primary/20 text-primary border border-primary/30" title={`Channel rate: â‚¹${formatPrice(item.price)}`}>
                                                         {availableChannels.find(c => c.id === selectedChannel)?.name || selectedChannel}
                                                     </span>
                                                 )}
@@ -1970,7 +2115,7 @@ export default function POSPage() {
                                 })}
                             </div>
 
-                            {/* UPI < ₹2,000 Zero-MDR Surcharge Discount Option */}
+                            {/* UPI < â‚¹2,000 Zero-MDR Surcharge Discount Option */}
                             {(paymentMethod === "upi" || paymentMethod === "phonepe") && total > 0 && total < DEFAULT_UPI_DISCOUNT_THRESHOLD && (
                                 <div className="mt-2.5 p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-xs animate-in fade-in">
                                     <div className="flex items-center justify-between">
@@ -1986,7 +2131,7 @@ export default function POSPage() {
                                                 className="accent-emerald-500 rounded"
                                             />
                                             <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
-                                                ⚡ UPI &lt; ₹2,000 Zero-MDR Surcharge Discount
+                                                âš¡ UPI &lt; â‚¹2,000 Zero-MDR Surcharge Discount
                                             </span>
                                         </label>
                                         <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
@@ -1995,7 +2140,7 @@ export default function POSPage() {
                                     </div>
                                     <p className="text-[10px] text-emerald-400/80 mt-1 leading-tight">
                                         {upiDiscountEnabled
-                                            ? "RBI/NPCI zero-MDR rule: Merchant surcharge waived for UPI under ₹2,000. Customer pays ₹0 surcharge."
+                                            ? "RBI/NPCI zero-MDR rule: Merchant surcharge waived for UPI under â‚¹2,000. Customer pays â‚¹0 surcharge."
                                             : "Feature disabled: Standard merchant surcharge policy applies."}
                                     </p>
                                 </div>
@@ -2009,7 +2154,7 @@ export default function POSPage() {
                             <p className="text-xs font-bold text-moonstone uppercase mb-2">Cash Tendered</p>
                             <div className="grid grid-cols-2 gap-3">
                                 <div className="relative">
-                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">₹</span>
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">â‚¹</span>
                                     <input
                                         type="number"
                                         placeholder="0.00"
@@ -2038,7 +2183,7 @@ export default function POSPage() {
                         </div>
                     )}
 
-                    {/* WhatsApp Checkout Messenger (spec §3.3) */}
+                    {/* WhatsApp Checkout Messenger (spec Â§3.3) */}
                     <POSWhatsAppWidget
                         mode="pre-sale"
                         customerId={selectedCustomerId}
@@ -2060,7 +2205,7 @@ export default function POSPage() {
                             </span>
                         ) : (
                             <>
-                                Complete Sale • {formatPrice(total)}
+                                Complete Sale â€¢ {formatPrice(total)}
                             </>
                         )}
                     </button>
@@ -2089,17 +2234,27 @@ export default function POSPage() {
                                 <Receipt
                                     ref={receiptRef}
                                     transactionId={lastTransaction.id}
+                                    invoiceNumber={lastTransaction.invoiceNumber}
+                                    cashierName={user?.name || user?.email || 'Staff'}
+                                    storeName={storeSettingsData?.store_name || 'Luminila Jewelry'}
+                                    storeAddress={[storeSettingsData?.store_address, storeSettingsData?.store_city, storeSettingsData?.store_state].filter(Boolean).join(', ')}
+                                    storePhone={storeSettingsData?.store_phone || ''}
+                                    storeGstin={storeSettingsData?.store_gstin || ''}
                                     items={lastTransaction.items.map((item) => ({
                                         name: item.name,
                                         variant: item.variant,
                                         quantity: item.quantity,
                                         unitPrice: item.price,
                                         remarks: item.remarks,
+                                        gross_weight: item.gross_weight,
+                                        purity_karat: item.purity_karat,
+                                        huid_code: item.huid_code,
                                     }))}
                                     subtotal={lastTransaction.subtotal}
                                     discount={lastTransaction.discount}
                                     total={lastTransaction.total}
                                     paymentMethod={lastTransaction.paymentMethod}
+                                    gstIncluded={gstIncluded}
                                 />
                             </div>
 
@@ -2121,7 +2276,7 @@ export default function POSPage() {
                                 </Button>
                             </div>
 
-                            {/* WhatsApp receipt dispatch (spec §3.3 / §5) */}
+                            {/* WhatsApp receipt dispatch (spec Â§3.3 / Â§5) */}
                             {selectedCustomerId && (
                                 <div className="flex gap-3 mt-3">
                                     <POSWhatsAppWidget
@@ -2154,7 +2309,7 @@ export default function POSPage() {
                         <div className="space-y-2">
                             <Label className="text-white">Opening Cash Balance</Label>
                             <div className="relative">
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">₹</span>
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">â‚¹</span>
                                 <Input
                                     type="number"
                                     placeholder="0.00"
@@ -2218,7 +2373,7 @@ export default function POSPage() {
                         <div className="space-y-2">
                             <Label className="text-white">Actual Closing Balance</Label>
                             <div className="relative">
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">₹</span>
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">â‚¹</span>
                                 <Input
                                     type="number"
                                     placeholder="Count your drawer..."
@@ -2288,7 +2443,7 @@ export default function POSPage() {
                             <div className="flex items-center justify-between p-3 rounded-lg bg-gold/10 border border-gold/30">
                                 <div>
                                     <p className="text-sm font-semibold text-gold">Currently Selected: {selectedCustomer.name}</p>
-                                    <p className="text-xs text-moonstone">{selectedCustomer.phone} • Tier: {selectedCustomer.tier || selectedCustomer.customer_type || 'Retail'}</p>
+                                    <p className="text-xs text-moonstone">{selectedCustomer.phone} â€¢ Tier: {selectedCustomer.tier || selectedCustomer.customer_type || 'Retail'}</p>
                                 </div>
                                 <Button size="sm" variant="outline" onClick={handleClearCustomer} className="border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs">
                                     Switch to Walk-in
@@ -2312,7 +2467,7 @@ export default function POSPage() {
                                         >
                                             <div>
                                                 <p className="text-sm font-medium text-white">{cust.name}</p>
-                                                <p className="text-xs text-moonstone">{cust.phone || "No phone"} {cust.email ? `• ${cust.email}` : ""}</p>
+                                                <p className="text-xs text-moonstone">{cust.phone || "No phone"} {cust.email ? `â€¢ ${cust.email}` : ""}</p>
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 {tierPct > 0 ? (
@@ -2366,7 +2521,7 @@ export default function POSPage() {
                                         <div>
                                             <p className="text-sm font-semibold text-white">{h.name}</p>
                                             <p className="text-xs text-moonstone mt-0.5">
-                                                {h.items.length} items • ₹{formatPrice(cartTotal)} • {new Date(h.timestamp).toLocaleTimeString()}
+                                                {h.items.length} items â€¢ â‚¹{formatPrice(cartTotal)} â€¢ {new Date(h.timestamp).toLocaleTimeString()}
                                             </p>
                                         </div>
                                         <div className="flex items-center gap-2">
@@ -2412,11 +2567,11 @@ export default function POSPage() {
                         <div className="space-y-4 py-2">
                             <div className="p-3 rounded-lg bg-surface-hover/30 border border-surface-hover">
                                 <p className="text-sm font-semibold text-white">{overrideItem.name}</p>
-                                <p className="text-xs text-moonstone">SKU: {overrideItem.sku} • Original: ₹{formatPrice(overrideItem.price)}</p>
+                                <p className="text-xs text-moonstone">SKU: {overrideItem.sku} â€¢ Original: â‚¹{formatPrice(overrideItem.price)}</p>
                             </div>
 
                             <div className="space-y-2">
-                                <Label className="text-xs text-moonstone uppercase tracking-wider font-semibold">Custom Unit Price (₹)</Label>
+                                <Label className="text-xs text-moonstone uppercase tracking-wider font-semibold">Custom Unit Price (â‚¹)</Label>
                                 <Input
                                     type="number"
                                     value={overridePriceInput}
@@ -2443,7 +2598,7 @@ export default function POSPage() {
                             <div className="p-3 rounded-lg bg-gold/10 border border-gold/30 flex justify-between items-center text-sm">
                                 <span className="text-moonstone">Calculated Final Rate:</span>
                                 <span className="font-bold text-gold text-base">
-                                    ₹{formatPrice(
+                                    â‚¹{formatPrice(
                                         Math.max(0, (parseFloat(overridePriceInput) || 0) * (1 - (parseFloat(overrideDiscountInput) || 0) / 100))
                                     )}
                                 </span>

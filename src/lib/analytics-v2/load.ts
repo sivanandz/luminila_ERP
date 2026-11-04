@@ -13,10 +13,23 @@
  *
  * All queries carry an explicit account_email filter (tenant-dual-layer rule);
  * PB rules are the second layer, never the only one.
+ *
+ * Datetime filter bounds are converted with pbBound() to PB's stored
+ * "YYYY-MM-DD HH:MM:SS.SSSZ" (space) format — PB compares datetime filters as
+ * strings, and a T-format bound would drop every boundary row on its UTC date
+ * (audit AN-02).
+ *
+ * Status guard (audit AN-08): the sales side excludes `status="cancelled"`,
+ * the only void status in the vocabulary (writers: pos-sales.ts 'delivered',
+ * chat-sales.ts 'pending', storefront settlement 'confirmed',
+ * orders.ts sets 'cancelled' on mirrors when an order is cancelled).
+ * KNOWN GAP: returns / credit notes do NOT net against analytics revenue —
+ * they are separate documents, so gross revenue here can exceed net realized
+ * revenue. Documented simplification, not a data bug.
  */
 
-import { pb } from '../pocketbase';
-import { inWindow, type DateWindow } from './range';
+import { pb, sanitizeFilter } from '../pocketbase';
+import { inWindow, pbBound, dayKey, type DateWindow } from './range';
 import type { Sale, SalesOrder, Product, ProductVariant } from '@/types/database';
 import type { Category } from '../categories';
 
@@ -56,6 +69,9 @@ export async function loadCategoryMeta(db: AnalyticsDb): Promise<Map<string, { n
 export function orderChannel(o: SalesOrder): string {
     const source = String((o as unknown as Record<string, unknown>).capture_source || '').toLowerCase();
     if (source === 'storefront') return 'Storefront';
+    // WhatsApp flash-drop orders must not fall through to the generic
+    // gateway/Razorpay label (audit FD-09) — check before the whatsapp marker.
+    if (source === 'whatsapp_flash_drop') return 'WhatsApp Flash Drop';
     if (o.whatsapp_order_id) return 'WhatsApp';
     if (source === 'whatsapp') return 'WhatsApp';
     if (String((o as unknown as Record<string, unknown>).gateway || '').toLowerCase() === 'razorpay') return 'Online (Razorpay)';
@@ -98,10 +114,23 @@ export interface UnifiedTx {
 export async function loadTxWindow(tenant: string, win: DateWindow, db: AnalyticsDb = pb as unknown as AnalyticsDb): Promise<UnifiedTx[]> {
     if (!tenant) return [];
 
-    const salesFilter = `account_email="${tenant}" && channel!="${MIRROR_CHANNEL}" && created>="${win.startISO}" && created<"${win.endISO}"`;
+    // Bounds are PB space-datetime (pbBound) so the string compare actually
+    // matches stored rows; `status!="cancelled"` is the sales-side void guard
+    // (orders are already whitelisted by REVENUE_ORDER_STATUSES).
+    //
+    // WhatsApp MIRROR exclusion (AN-01): chat-sales.ts writes a confirmed
+    // sales_orders row AND a pending `sales` mirror with channel='whatsapp' +
+    // channel_order_id set. Excluding only the storefront mirror counted the
+    // same WhatsApp order twice — and counted it before payment. A standalone
+    // sale with channel='whatsapp' and no channel_order_id is still revenue.
+    const salesFilter =
+        `account_email="${sanitizeFilter(tenant)}" && channel!="${MIRROR_CHANNEL}"` +
+        ` && !(channel="whatsapp" && channel_order_id != "")` +
+        ` && status!="cancelled"` +
+        ` && created>="${pbBound(win.startISO)}" && created<"${pbBound(win.endISO)}"`;
     const ordersFilter =
-        `account_email="${tenant}" && (order_date>="${win.startISO}" || (order_date="" && created>="${win.startISO}"))` +
-        ` && (order_date<"${win.endISO}" || (order_date="" && created<"${win.endISO}"))` +
+        `account_email="${sanitizeFilter(tenant)}" && (order_date>="${pbBound(win.startISO)}" || (order_date="" && created>="${pbBound(win.startISO)}"))` +
+        ` && (order_date<"${pbBound(win.endISO)}" || (order_date="" && created<"${pbBound(win.endISO)}"))` +
         ` && (${REVENUE_ORDER_STATUSES.map((s) => `status="${s}"`).join(' || ')})`;
 
     const [salesRows, orderRows] = await Promise.all([
@@ -120,7 +149,9 @@ export async function loadTxWindow(tenant: string, win: DateWindow, db: Analytic
         txs.push({
             id: s.id,
             kind: 'sale',
-            day: s.created.slice(0, 10),
+            // Local calendar day (dayKey), matching the window's day-key axis —
+            // a UTC slice put a 20:00Z sale in the previous local-day column (AN-07).
+            day: dayKey(new Date(s.created)),
             dateISO: s.created,
             revenue: Number(s.total || 0),
             discount: Number(s.discount || 0),
@@ -137,7 +168,8 @@ export async function loadTxWindow(tenant: string, win: DateWindow, db: Analytic
         txs.push({
             id: o.id,
             kind: 'order',
-            day: dateISO.slice(0, 10),
+            // Local calendar day (see the sale branch above) (AN-07).
+            day: dayKey(new Date(dateISO)),
             dateISO,
             revenue: Number(o.total || 0),
             discount: Number(o.discount_total || 0),
@@ -174,6 +206,13 @@ export interface UnifiedLine {
     netRevenue: number;
     /** cost snapshot; 0 means UNKNOWN (never claim margin) */
     unitCost: number;
+    /**
+     * true when unit_cost was substituted from the product's CURRENT cost
+     * because no sale-time snapshot exists (audit AN-12) — those units are
+     * estimates, not measurements, and must be reported as such
+     * (costEstimatedUnits in the profitability output).
+     */
+    costFallback: boolean;
     purityKarat: string;
     makingCharges: number;
 }
@@ -227,7 +266,8 @@ async function fetchByChunks(
  *  - sales_order_items whose order is a revenue-status order in the window
  * Category names come from the categories collection (relation ids resolved
  * once); cost prefers the unit_cost snapshot, falling back to current
- * product cost (flagged by callers via `unitCost === 0` = unknown).
+ * product cost — substitutions carry `costFallback: true` (audit AN-12),
+ * while `unitCost === 0` stays the no-basis-at-all marker.
  */
 export async function loadUnifiedLines(tenant: string, win: DateWindow, db: AnalyticsDb = pb as unknown as AnalyticsDb): Promise<UnifiedLine[]> {
     if (!tenant) return [];
@@ -239,8 +279,8 @@ export async function loadUnifiedLines(tenant: string, win: DateWindow, db: Anal
     const txById = new Map(txs.map((t) => [t.id, t]));
 
     const [saleItems, orderItems] = await Promise.all([
-        saleIds.length ? fetchByChunks(db, 'sale_items', 'sale', saleIds, `account_email="${tenant}"`, 'variant.product') : [],
-        orderIds.length ? fetchByChunks(db, 'sales_order_items', 'order', orderIds, `account_email="${tenant}"`, 'variant.product,product') : [],
+        saleIds.length ? fetchByChunks(db, 'sale_items', 'sale', saleIds, `account_email="${sanitizeFilter(tenant)}"`, 'variant.product') : [],
+        orderIds.length ? fetchByChunks(db, 'sales_order_items', 'order', orderIds, `account_email="${sanitizeFilter(tenant)}"`, 'variant.product,product') : [],
     ]);
 
     // category id → {name, parent name}
@@ -269,11 +309,15 @@ export async function loadUnifiedLines(tenant: string, win: DateWindow, db: Anal
 
         // Cost: snapshot first; missing snapshot falls back to current product
         // cost so backfill-less history still shows an ESTIMATE (basis loss is
-        // acceptable, silent zero is not).
-        let unitCost = Number(row.unit_cost || 0);
-        if (!unitCost && product) {
+        // acceptable, silent zero is not). costFallback distinguishes the
+        // substituted estimate from a true snapshot (audit AN-12).
+        const snapshotCost = Number(row.unit_cost || 0);
+        let unitCost = snapshotCost;
+        let costFallback = false;
+        if (!snapshotCost && product) {
             const p = product as unknown as Record<string, unknown>;
             unitCost = Number(p.cost_price || 0);
+            costFallback = true;
         }
 
         const catId = String((product as unknown as Record<string, unknown>)?.category || '');
@@ -295,6 +339,7 @@ export async function loadUnifiedLines(tenant: string, win: DateWindow, db: Anal
             lineDiscount,
             netRevenue,
             unitCost,
+            costFallback,
             purityKarat: String(row.purity_karat || ''),
             makingCharges: Number(row.making_charges || 0),
         });

@@ -155,7 +155,23 @@ export async function recordPayment(paymentDetails: {
     payment_date: string;
     recorded_by: string;
 }): Promise<void> {
+    if (!Number.isFinite(paymentDetails.amount) || paymentDetails.amount <= 0) {
+        throw new Error('Payment amount must be greater than zero.');
+    }
+
     const tenantEmail = getCurrentTenantEmail();
+    const invoice = await pb.collection('invoices').getOne(paymentDetails.invoice_id);
+    // Refuse to apply a payment to another tenant's invoice under a superuser client.
+    if (invoice.account_email && invoice.account_email !== tenantEmail) {
+        throw new Error('Invoice does not belong to this store.');
+    }
+    if (invoice.status === 'cancelled') {
+        throw new Error('Cannot record payment against a cancelled invoice.');
+    }
+    if (invoice.is_deleted) {
+        throw new Error('Cannot record payment against an invoice in trash.');
+    }
+
     // Record payment in invoice_payments collection (spec schema: reference_number, notes)
     await pb.collection('invoice_payments').create({
         account_email: tenantEmail,
@@ -166,17 +182,6 @@ export async function recordPayment(paymentDetails: {
         reference_number: paymentDetails.reference || '',
         notes: paymentDetails.recorded_by ? `Recorded by ${paymentDetails.recorded_by}` : '',
     });
-
-    // Update invoice paid amount and status. Derive the new amount from the invoice_payments
-    // ledger (the row above is already committed) instead of the record's paid_amount snapshot,
-    // so two concurrent payments cannot overwrite each other's increment (lost read-modify-write).
-    // Math.max keeps amounts recorded outside the ledger (e.g. paid at creation, markInvoicePaid,
-    // payment-link reconciliation) from being dropped.
-    const invoice = await pb.collection('invoices').getOne(paymentDetails.invoice_id);
-    // Refuse to apply a payment to another tenant's invoice under a superuser client.
-    if (invoice.account_email && invoice.account_email !== tenantEmail) {
-        throw new Error('Invoice does not belong to this store.');
-    }
     const ledgerRows = await pb.collection('invoice_payments').getFullList({
         filter: `invoice="${sanitizeFilter(paymentDetails.invoice_id)}" && account_email="${sanitizeFilter(tenantEmail)}"`,
         requestKey: null,
@@ -888,14 +893,19 @@ export async function getInvoices(filters?: {
             sort: '-invoice_date',
         });
 
-        // Fetch items for all invoices (batch)
+        // Fetch items for all invoices in safe batches of 30 to avoid URI length overflow
         const invoiceIds = invoices.map(inv => inv.id);
         let allItems: InvoiceItemRecord[] = [];
         if (invoiceIds.length > 0) {
-            const itemFilter = invoiceIds.map(id => `invoice="${id}"`).join(' || ');
-            allItems = await pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
-                filter: `(${itemFilter}) && account_email="${sanitizeFilter(tenantEmail)}"`,
-            });
+            const CHUNK_SIZE = 30;
+            for (let i = 0; i < invoiceIds.length; i += CHUNK_SIZE) {
+                const chunk = invoiceIds.slice(i, i + CHUNK_SIZE);
+                const itemFilter = chunk.map(id => `invoice="${id}"`).join(' || ');
+                const rows = await pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
+                    filter: `(${itemFilter}) && account_email="${sanitizeFilter(tenantEmail)}"`,
+                });
+                allItems.push(...rows);
+            }
         }
 
         // Group items by invoice
@@ -1084,9 +1094,14 @@ interface SaleItemRecord {
 }
 
 export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
+    const tenantEmail = getCurrentTenantEmail()?.trim().toLowerCase();
     const sale = await pb.collection('sales').getOne(saleId);
+    if (tenantEmail && sale.account_email && sale.account_email.toLowerCase() !== tenantEmail) {
+        throw new Error('Tenant mismatch: cannot generate invoice for another tenant sale.');
+    }
+    const tenantClause = tenantEmail ? ` && account_email="${sanitizeFilter(tenantEmail)}"` : '';
     const saleItems = await pb.collection('sale_items').getFullList<SaleItemRecord>({
-        filter: `sale="${saleId}"`,
+        filter: `sale="${sanitizeFilter(saleId)}"${tenantClause}`,
         expand: 'variant,variant.product',
     });
 
@@ -1261,7 +1276,10 @@ export function calculateInvoiceTotals(
     totalTax: number;
     grandTotal: number;
 } {
-    const round2 = (value: number) => Math.round((Number(value) || 0) * 100) / 100;
+    const round2 = (value: number) => {
+        const r = Math.round((Number(value) || 0) * 100) / 100;
+        return Object.is(r, -0) ? 0 : r;
+    };
     const calculatedItems = items.map((item, index) => {
         const lineSubtotal = item.quantity * item.unit_price;
         const discountAmount = round2(lineSubtotal * (item.discount_percent / 100));

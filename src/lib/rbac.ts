@@ -57,6 +57,47 @@ export interface UserProfile {
 
 
 // ===========================================
+// ROLE GUARDS
+// ===========================================
+
+/** Names reserved for the seeded system roles (A2). */
+const RESERVED_ADMIN_ROLE_NAMES = new Set(['admin', 'super admin']);
+
+/**
+ * Admin authority comes from a SYSTEM role only. A tenant admin can create a
+ * custom role, so matching on the name alone would let them mint an "Admin"
+ * role and escalate every member it is assigned to.
+ */
+export function isSystemAdminRole(role?: { name?: string; is_system?: boolean } | null): boolean {
+    if (!role?.name) return false;
+    if (role.is_system === false) return false;
+    return RESERVED_ADMIN_ROLE_NAMES.has(role.name.trim().toLowerCase());
+}
+
+function assertRoleNameAllowed(name: string): void {
+    if (RESERVED_ADMIN_ROLE_NAMES.has(name.trim().toLowerCase())) {
+        throw new Error('That role name is reserved for a system role.');
+    }
+}
+
+/** `&& account_email = "…"` for user_roles queries (A3). */
+function userRoleTenantClause(tenant: string): string {
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+}
+
+/**
+ * Resolve the caller's tenant or fail closed. Setup/bootstrap paths use the
+ * superuser client and have no tenant; they must pass their own explicit email.
+ */
+function requireTenant(): string {
+    const tenant = accountScopeEmail();
+    if (!tenant) {
+        throw new Error('No tenant context: sign in as a store account before managing users or roles.');
+    }
+    return tenant;
+}
+
+// ===========================================
 // ROLES
 // ===========================================
 
@@ -118,6 +159,7 @@ export async function createRole(
     description: string,
     permissions: Record<Resource, Permission[]>
 ): Promise<Role> {
+    assertRoleNameAllowed(name);
     const record = await pb.collection('roles').create({
         name,
         description,
@@ -144,9 +186,14 @@ export async function updateRole(
     if (existing.is_system) {
         throw new Error('System roles cannot be modified.');
     }
-    const tenant = accountScopeEmail();
-    if (tenant && existing.account_email && existing.account_email !== tenant) {
-        throw new Error('Role does not belong to this store.');
+    if (updates.name !== undefined) assertRoleNameAllowed(updates.name);
+    // Fail closed (A4): a tenant caller may only mutate a role it owns. Shared
+    // legacy rows have no owner and are therefore superuser-only.
+    if (!pb.authStore.isSuperuser) {
+        const tenant = requireTenant();
+        if (existing.account_email !== tenant) {
+            throw new Error('Role does not belong to this store.');
+        }
     }
     const record = await pb.collection('roles').update(id, updates);
     return {
@@ -165,9 +212,12 @@ export async function deleteRole(id: string): Promise<void> {
     if (existing.is_system) {
         throw new Error('System roles cannot be deleted.');
     }
-    const tenant = accountScopeEmail();
-    if (tenant && existing.account_email && existing.account_email !== tenant) {
-        throw new Error('Role does not belong to this store.');
+    // Fail closed (A4): see updateRole.
+    if (!pb.authStore.isSuperuser) {
+        const tenant = requireTenant();
+        if (existing.account_email !== tenant) {
+            throw new Error('Role does not belong to this store.');
+        }
     }
     await pb.collection('roles').delete(id);
 }
@@ -224,7 +274,23 @@ export async function getUsers(): Promise<UserProfile[]> {
 export async function setUserRoles(userId: string, roleIds: string[]): Promise<void> {
     // user_roles rows are tenant-scoped by account_email; stamp the acting
     // tenant so the assignment stays visible to this store only.
-    const accountEmail = accountScopeEmail();
+    const accountEmail = requireTenant();
+
+    // A5: only an administrator may rewrite roles, and only for a user that
+    // belongs to the same tenant. Otherwise any signed-in staff account could
+    // grant itself Admin.
+    if (!(await isAdmin(pb.authStore.model?.id ?? ''))) {
+        throw new Error('Only administrators can change user roles.');
+    }
+    const target = await pb
+        .collection('users')
+        .getOne<{ account_email?: string }>(userId)
+        .catch(() => null);
+    if (!target) throw new Error('User not found.');
+    if (target.account_email !== accountEmail) {
+        throw new Error('User does not belong to this store.');
+    }
+
     // A role id from another tenant must not be assignable even though the
     // join row itself would carry this tenant's stamp.
     for (const roleId of roleIds) {
@@ -234,9 +300,9 @@ export async function setUserRoles(userId: string, roleIds: string[]): Promise<v
         }
     }
     const safeUserId = sanitizeFilter(userId);
-    // Remove all existing roles
+    // Remove all existing roles this tenant owns for the user.
     const existingRoles = await pb.collection('user_roles').getFullList({
-        filter: `user="${safeUserId}"`
+        filter: `user="${safeUserId}"${userRoleTenantClause(accountEmail)}`
     });
     for (const ur of existingRoles) {
         await pb.collection('user_roles').delete(ur.id);
@@ -248,6 +314,51 @@ export async function setUserRoles(userId: string, roleIds: string[]): Promise<v
 }
 
 export async function toggleUserActive(userId: string, isActive: boolean): Promise<void> {
+    // A6: tenant + admin + self + last-admin guards. The users collection is
+    // tenant-scoped, so an unscoped update here could deactivate a user who
+    // belongs to a different store.
+    const accountEmail = requireTenant();
+    const callerId = pb.authStore.model?.id ?? '';
+    if (!(await isAdmin(callerId))) {
+        throw new Error('Only administrators can change user status.');
+    }
+    if (!isActive && callerId === userId) {
+        throw new Error('You cannot deactivate your own account.');
+    }
+
+    const target = await pb
+        .collection('users')
+        .getOne<{ account_email?: string; is_active?: boolean }>(userId)
+        .catch(() => null);
+    if (!target) throw new Error('User not found.');
+    if (target.account_email !== accountEmail) {
+        throw new Error('User does not belong to this store.');
+    }
+
+    if (!isActive && target.is_active !== false) {
+        const tenantFilter = `account_email = "${sanitizeFilter(accountEmail)}"`;
+        const links = await pb.collection('user_roles').getFullList({
+            filter: tenantFilter,
+            expand: 'role',
+        });
+        const adminUserIds = new Set(
+            links
+                .filter((link) => isSystemAdminRole(link.expand?.role as { name?: string; is_system?: boolean } | undefined))
+                .map((link) => String(link.user || ''))
+        );
+        if (adminUserIds.has(userId)) {
+            const tenantUsers = await pb.collection('users').getFullList({
+                filter: tenantFilter,
+            });
+            const activeAdmins = tenantUsers.filter(
+                (user) => adminUserIds.has(user.id) && user.is_active !== false
+            );
+            if (activeAdmins.length <= 1) {
+                throw new Error('Cannot deactivate the last active administrator.');
+            }
+        }
+    }
+
     await pb.collection('users').update(userId, { is_active: isActive });
 }
 
@@ -291,8 +402,9 @@ export async function assignRole(userId: string, roleId: string): Promise<void> 
 
 export async function removeRole(userId: string, roleId: string): Promise<void> {
     // Need to find the ID of the user_role record first
+    const tenant = accountScopeEmail();
     const record = await pb.collection('user_roles').getFirstListItem(
-        `user="${sanitizeFilter(userId)}" && role="${sanitizeFilter(roleId)}"`
+        `user="${sanitizeFilter(userId)}" && role="${sanitizeFilter(roleId)}"${userRoleTenantClause(tenant)}`
     );
     if (record) {
         await pb.collection('user_roles').delete(record.id);
@@ -307,13 +419,16 @@ export async function isAdmin(userId: string): Promise<boolean> {
     // 1. Check if actually Super Admin (context usually knows this efficiently)
     if (pb.authStore.isSuperuser) return true;
 
-    // 2. Check if assigned 'Admin' role
+    // 2. Check if assigned a system 'Admin' role for this tenant (A2/A3).
     try {
+        const tenant = accountScopeEmail();
         const userRoles = await pb.collection('user_roles').getFullList({
-            filter: `user="${sanitizeFilter(userId)}"`,
+            filter: `user="${sanitizeFilter(userId)}"${userRoleTenantClause(tenant)}`,
             expand: 'role'
         });
-        return userRoles.some(ur => ur.expand?.role?.name === 'Admin' || ur.expand?.role?.name === 'Super Admin');
+        return userRoles.some((ur) =>
+            isSystemAdminRole(ur.expand?.role as { name?: string; is_system?: boolean } | undefined)
+        );
     } catch {
         return false;
     }
@@ -323,9 +438,10 @@ export async function getCurrentUserPermissions(): Promise<Record<Resource, Perm
     const userId = pb.authStore.model?.id;
     if (!userId) return {} as Record<Resource, Permission[]>;
 
+    const tenant = accountScopeEmail();
     // 1. Get User Roles
     const userRoles = await pb.collection('user_roles').getFullList({
-        filter: `user="${sanitizeFilter(userId)}"`,
+        filter: `user="${sanitizeFilter(userId)}"${userRoleTenantClause(tenant)}`,
         expand: 'role'
     });
 
@@ -336,7 +452,8 @@ export async function getCurrentUserPermissions(): Promise<Record<Resource, Perm
 
     userRoles.forEach(ur => {
         const role = ur.expand?.role as Role;
-        if (role && role.permissions) {
+        // Ignore a role row that belongs to another tenant (A3).
+        if (role && role.permissions && roleAllowedForTenant(role, tenant)) {
             Object.entries(role.permissions).forEach(([resource, perms]) => {
                 if (!merged[resource as Resource]) {
                     merged[resource as Resource] = new Set();

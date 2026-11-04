@@ -38,6 +38,26 @@ export function dayKey(d: Date): string {
     return `${y}-${m}-${day}`;
 }
 
+/**
+ * Convert an ISO instant bound ("2026-01-03T18:30:00.000Z") into PocketBase's
+ * stored datetime format ("2026-01-03 18:30:00.000Z" — space separator).
+ *
+ * PB compares datetime filters as STRINGS: at index 10 a 'T' (0x54) sorts
+ * after the space (0x20) stored in every row, so a T-format bound silently
+ * excludes all boundary rows on the bound's UTC date (audit AN-02; the same
+ * conversion exists in src/lib/utils.ts normalizeDateBounds). Every
+ * analytics filter-bound interpolation MUST go through this helper.
+ *
+ * Idempotent: space-format bounds and date-only strings ("YYYY-MM-DD",
+ * expanded to UTC midnight) pass through unchanged.
+ */
+export function pbBound(iso: string): string {
+    if (!iso) return iso;
+    if (iso.length === 10) return `${iso} 00:00:00.000Z`;
+    if (iso.length > 10 && iso[10] === 'T') return `${iso.slice(0, 10)} ${iso.slice(11)}`;
+    return iso;
+}
+
 function buildWindow(start: Date, endExclusive: Date): DateWindow {
     const days: string[] = [];
     const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());

@@ -78,7 +78,10 @@ export function tenantDatabaseExists(email: string): boolean {
     const slug = getTenantDbSlug(clean);
     if (slug === 'primary') return true; // the primary database always exists
     const dataDir = path.join(PB_TENANTS_BASE_DIR, slug);
-    return fs.existsSync(path.join(dataDir, 'data.db')) || fs.existsSync(dataDir);
+    // Require the actual database file: an empty husk directory left by a
+    // failed first provisioning must not report "account exists", or every
+    // retry dead-ends at "sign in" with no superuser to sign in as (audit F2).
+    return fs.existsSync(path.join(dataDir, 'data.db'));
 }
 
 /**
@@ -445,7 +448,7 @@ export async function provisionTenantDatabase(params: {
         port,
         dataDir,
         storeName: params.storeName || existingRecord?.storeName,
-        adminPassword: params.password,
+        adminPassword: storedPassword,
         createdAt: existingRecord?.createdAt || now,
         updatedAt: now,
     };
@@ -501,6 +504,22 @@ export async function provisionTenantDatabase(params: {
 
         // Also detect if tenant directory already exists on disk even if registry was cleared
         if (!record && fs.existsSync(path.join(candidateDir, 'data.db'))) {
+            // Refuse to adopt a directory another account owns: after registry
+            // loss a slug-colliding email could boot and re-register a
+            // stranger's dataDir (audit F3). Fall through to the primary
+            // instance instead of waking someone else's database.
+            const slugOwner = findTenantSlugOwner(cleanEmail);
+            if (slugOwner) {
+                const primaryPort = await resolvePrimaryPocketBasePort();
+                return {
+                    success: true,
+                    found: false,
+                    pbUrl: `http://127.0.0.1:${primaryPort}`,
+                    port: primaryPort,
+                    tenantSlug: 'primary',
+                    isolated: false,
+                };
+            }
             const port = await allocateTenantPort(registry);
             record = {
                 email: cleanEmail,

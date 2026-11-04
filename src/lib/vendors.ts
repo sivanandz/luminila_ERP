@@ -127,6 +127,21 @@ export async function updateVendor(id: string, updates: Partial<Vendor>): Promis
 
 export async function deleteVendor(id: string): Promise<void> {
     try {
+        const tenant = accountScopeEmail();
+        const tenantFilter = tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+        const pos = await pb.collection('purchase_orders').getList(1, 1, {
+            filter: `vendor="${sanitizeFilter(id)}"${tenantFilter}`,
+        });
+        if (pos.totalItems > 0) {
+            throw new Error('Cannot delete vendor with existing purchase orders. Archive or deactivate instead.');
+        }
+        // Clean up vendor product mappings
+        const mappings = await pb.collection('vendor_products').getFullList({
+            filter: `vendor="${sanitizeFilter(id)}"${tenantFilter}`,
+        });
+        for (const mapping of mappings) {
+            await pb.collection('vendor_products').delete(mapping.id).catch(() => {});
+        }
         await pb.collection('vendors').delete(id);
     } catch (error) {
         console.error('Error deleting vendor:', error);

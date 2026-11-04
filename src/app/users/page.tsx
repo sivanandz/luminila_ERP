@@ -41,6 +41,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { ProtectedRoute, Can } from "@/components/auth/ProtectedRoute";
+import { usePermissions } from "@/hooks/usePermissions";
 
 import {
     getUsers,
@@ -62,6 +63,12 @@ const roleColors: Record<string, string> = {
 };
 
 function UsersContent() {
+    // A12: <Can> only hides the buttons. The handlers are the security boundary,
+    // so they re-check the same permission before doing any write.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canUpdateUsers = () => isAdmin || hasPermission("users", "update");
+    const canCreateUsers = () => isAdmin || hasPermission("users", "create");
+
     const [users, setUsers] = useState<UserProfile[]>([]);
     const [roles, setRoles] = useState<Role[]>([]);
     const [loading, setLoading] = useState(true);
@@ -110,6 +117,10 @@ function UsersContent() {
     });
 
     const handleEditRoles = (user: UserProfile) => {
+        if (!canUpdateUsers()) {
+            alert("You do not have permission to change user roles.");
+            return;
+        }
         setSelectedUser(user);
         setSelectedRoles(user.roles?.map(r => r.role_id) || []);
         setShowRoleDialog(true);
@@ -117,6 +128,10 @@ function UsersContent() {
 
     const handleSaveRoles = async () => {
         if (!selectedUser) return;
+        if (!canUpdateUsers()) {
+            alert("You do not have permission to change user roles.");
+            return;
+        }
         setSaving(true);
         try {
             await setUserRoles(selectedUser.id, selectedRoles);
@@ -131,15 +146,24 @@ function UsersContent() {
     };
 
     const handleToggleActive = async (user: UserProfile) => {
+        if (!canUpdateUsers()) {
+            alert("You do not have permission to change user status.");
+            return;
+        }
         try {
             await toggleUserActive(user.id, !user.is_active);
             loadData();
         } catch (error) {
             console.error("Error:", error);
+            alert(error instanceof Error ? error.message : "Failed to update user status");
         }
     };
 
     const handleAddUser = async () => {
+        if (!canCreateUsers()) {
+            alert("You do not have permission to create users.");
+            return;
+        }
         if (!newUser.email || !newUser.password || !newUser.name) {
             alert("Please fill in all fields");
             return;

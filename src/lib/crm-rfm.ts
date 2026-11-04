@@ -125,7 +125,7 @@ export async function computeRFMAnalysis(
 
     try {
         const sales = await pb.collection("sales").getFullList<Sale>({
-            filter: `channel != "storefront"${tenantClause()}`,
+            filter: `channel != "storefront" && status != "cancelled"${tenantClause()}`,
             fields: "customer,created,total",
             sort: "-created",
         });

@@ -838,7 +838,11 @@ export async function POST(req: Request) {
                     campaign: campaignName,
                     capture_source: "storefront",
                     gateway: body.paymentMethod === "razorpay_online" ? "razorpay" : "",
-                    gateway_payment_id: body.razorpayPaymentId || "",
+                    // Never trust a client-supplied payment id at intake (audit
+                    // N-C3): stamping someone else's id here made the confirm
+                    // endpoint's global replay check 409 the legitimate
+                    // settlement. Settlement writes the verified id.
+                    gateway_payment_id: "",
                     account_email: boundAdminEmail,
                     internal_notes: `Storefront Web Order [${body.paymentMethod.toUpperCase()} | Domain: ${boundDomain} | Admin: ${boundAdminEmail}]. Courier: ${
                         body.assignedCourier || "Smart Routing"
@@ -855,7 +859,7 @@ export async function POST(req: Request) {
                         ""
                 );
                 if (!/unique/i.test(msg)) throw createErr;
-                const raced = await findExistingChannelOrder(client, txnId);
+                const raced = await findExistingChannelOrder(client, txnId, boundAdminEmail, cleanPhoneDigits);
                 if (!raced) throw createErr;
                 salesOrder = raced;
             }

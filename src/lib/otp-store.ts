@@ -25,7 +25,10 @@ interface OtpRow {
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const MAX_VERIFY_ATTEMPTS = 5;
-const MAX_DAILY_REQUESTS = Math.max(1, Number(process.env.OTP_DAILY_LIMIT || 5));
+const OTP_DAILY_LIMIT_ENV = Number(process.env.OTP_DAILY_LIMIT || 5);
+// A non-numeric env value yields NaN, and `dayCount >= NaN` is always false —
+// silently disabling the cap (audit F6). Fall back to the default instead.
+const MAX_DAILY_REQUESTS = Number.isFinite(OTP_DAILY_LIMIT_ENV) ? Math.max(1, OTP_DAILY_LIMIT_ENV) : 5;
 
 function hashOtp(otp: string, salt: string): string {
     return crypto.createHmac("sha256", salt).update(otp).digest("hex");

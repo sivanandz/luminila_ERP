@@ -104,9 +104,16 @@ export class MobileScanner {
     }
 
     /**
-     * Notify subscribers of a scanned barcode in strict priority order
+     * Notify subscribers of a scanned barcode in strict priority order.
+     *
+     * Async handlers are awaited before deciding whether the scan was consumed
+     * (I7): a promise is not `false`, so the old synchronous check let a handler
+     * that eventually resolved `false` block every lower-priority context.
      */
-    static dispatchScan(barcode: string, source: 'hardware' | 'camera' | 'tauri_native' = 'camera'): boolean {
+    static async dispatchScan(
+        barcode: string,
+        source: 'hardware' | 'camera' | 'tauri_native' = 'camera'
+    ): Promise<boolean> {
         const cleaned = barcode.trim();
         if (!cleaned) return false;
 
@@ -118,7 +125,7 @@ export class MobileScanner {
         // Dispatch to registered handlers starting from highest priority
         for (const handler of [...this.handlers]) {
             try {
-                const handled = handler.callback({ ...result, context: handler.context });
+                const handled = await handler.callback({ ...result, context: handler.context });
                 // If the handler returned false, allow lower priority handlers to run.
                 // Otherwise (returned true or void), consume the scan exclusively.
                 if (handled !== false) {
@@ -134,7 +141,8 @@ export class MobileScanner {
 
     /**
      * Start camera barcode scanning
-     * Attempts native Tauri camera scanner on Android first, falls back to webview camera
+     * Attempts native Tauri camera scanner on Android first, then falls back to
+     * the browser's BarcodeDetector (I8 — the fallback was documented but absent).
      */
     static async startCameraScan(): Promise<string | null> {
         if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
@@ -151,7 +159,7 @@ export class MobileScanner {
                         formats: ['QRCode', 'Code128', 'EAN13', 'UPCA', 'DataMatrix'],
                     });
                     if (res?.content) {
-                        this.dispatchScan(res.content, 'tauri_native');
+                        await this.dispatchScan(res.content, 'tauri_native');
                         return res.content;
                     }
                 }
@@ -160,7 +168,67 @@ export class MobileScanner {
             }
         }
 
-        return null;
+        return this.scanWithBrowserCamera();
+    }
+
+    /** HTML5 camera fallback using the BarcodeDetector API. */
+    private static async scanWithBrowserCamera(): Promise<string | null> {
+        if (typeof window === 'undefined' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+            throw new Error('Camera scanning is not supported on this device.');
+        }
+
+        type DetectedBarcode = { rawValue?: string };
+        const Detector = (
+            window as unknown as {
+                BarcodeDetector?: new (options?: { formats?: string[] }) => {
+                    detect(source: CanvasImageSource): Promise<DetectedBarcode[]>;
+                };
+            }
+        ).BarcodeDetector;
+        if (!Detector) {
+            throw new Error('Camera barcode detection is not supported by this browser.');
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' },
+            audio: false,
+        });
+        const video = document.createElement('video');
+        video.setAttribute('playsinline', 'true');
+        video.muted = true;
+        video.srcObject = stream;
+
+        try {
+            await video.play();
+            const detector = new Detector({
+                formats: ['qr_code', 'code_128', 'ean_13', 'data_matrix', 'upc_a'],
+            });
+            const canvas = document.createElement('canvas');
+            const deadline = Date.now() + 30_000;
+
+            while (Date.now() < deadline) {
+                if (video.videoWidth > 0 && video.videoHeight > 0) {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    const context = canvas.getContext('2d');
+                    if (context) {
+                        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        const codes = await detector.detect(canvas);
+                        const value = codes[0]?.rawValue?.trim();
+                        if (value) {
+                            await this.dispatchScan(value, 'camera');
+                            return value;
+                        }
+                    }
+                }
+                await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+
+            return null;
+        } finally {
+            stream.getTracks().forEach((track) => track.stop());
+            video.srcObject = null;
+        }
     }
 
     /**
@@ -195,17 +263,17 @@ export class MobileScanner {
                     // Prevent enter submitting standard form or adding newline in textarea
                     e.preventDefault();
 
-                    // If user is focused in a regular input that inadvertently caught the characters, clean it
-                    if (isRegularInput && target instanceof HTMLInputElement) {
-                        target.value = '';
-                    } else if (isDedicatedScannerInput && target instanceof HTMLInputElement) {
+                    // I9: only a dedicated scanner field is written back. A
+                    // regular input's content is never blanked — that destroyed
+                    // whatever the operator had typed.
+                    if (isDedicatedScannerInput && target instanceof HTMLInputElement) {
                         target.value = scanned;
                         target.dispatchEvent(new Event('input', { bubbles: true }));
                         target.dispatchEvent(new Event('change', { bubbles: true }));
                     }
 
                     soundEffects.playScanSuccess();
-                    this.dispatchScan(scanned, 'hardware');
+                    void this.dispatchScan(scanned, 'hardware');
                 }
             } else if (e.key.length === 1) {
                 // If the user is typing slowly by hand in a standard text field (> 100ms between keys), don't buffer

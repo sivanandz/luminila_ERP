@@ -175,7 +175,10 @@ async function writeJobs(jobs: KarigarJobRecord[]): Promise<void> {
         .catch(() => null);
 
     if (row) {
-        await pb.collection('store_settings').update(row.id, { value });
+        await pb.collection('store_settings').update(row.id, {
+            value,
+            account_email: getCurrentTenantEmail(),
+        });
     } else {
         await pb.collection('store_settings').create({
             key: SETTINGS_KEY,
@@ -227,7 +230,7 @@ export async function setKarigarJobStatus(
             ? {
                 ...job,
                 status,
-                completedAt: status === 'completed' ? new Date().toISOString() : undefined,
+                completedAt: status === 'completed' ? (job.completedAt || new Date().toISOString()) : undefined,
             }
             : job
     );

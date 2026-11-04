@@ -84,7 +84,7 @@ export function SalesTab() {
         <div className="space-y-4 md:space-y-6">
             <KpiStrip items={kpis} />
 
-            {data.trend.length === 0 ? (
+            {data.kpis.orders.current === 0 ? (
                 <EmptyState
                     title="No sales recorded in this range"
                     hint="Once POS sales or confirmed orders land inside the selected window, the trend, channels and customer split populate here."

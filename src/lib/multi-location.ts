@@ -487,8 +487,13 @@ export async function createStockTransfer(params: {
 
     // 2. Persist transfer
     try {
-        await pb.collection("inventory_transfers").create(transfer);
-    } catch {}
+        const record = await pb.collection("inventory_transfers").create(transfer);
+        if (record && record.id) {
+            transfer.id = record.id;
+        }
+    } catch (err) {
+        console.warn("Could not persist transfer to PocketBase:", err);
+    }
 
     if (typeof window !== "undefined") {
         const existing = await getStockTransfers();

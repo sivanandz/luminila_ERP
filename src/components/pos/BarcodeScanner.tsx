@@ -137,8 +137,16 @@ export function BarcodeScanner({ onScan, onError, isActive = true }: BarcodeScan
         const currentIndex = cameras.findIndex((c) => c.id === selectedCamera);
         const nextIndex = (currentIndex + 1) % cameras.length;
 
-        if (scannerRef.current?.isScanning) {
-            await scannerRef.current.stop();
+        try {
+            if (scannerRef.current) {
+                const scanner = scannerRef.current as Html5Qrcode & { getState?: () => number; isScanning?: boolean };
+                const isCurrentlyScanning = typeof scanner.getState === 'function' ? scanner.getState() === 2 : Boolean(scanner.isScanning);
+                if (isCurrentlyScanning) {
+                    await scanner.stop();
+                }
+            }
+        } catch (err) {
+            console.warn("Error stopping scanner before camera switch:", err);
         }
         setSelectedCamera(cameras[nextIndex].id);
     };

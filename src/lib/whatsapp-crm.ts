@@ -559,7 +559,9 @@ export function extractVariantHints(body: string): VariantHints {
 export interface VendorOfferExtraction {
     purity?: string;        // e.g. "18K" | "925 Silver"
     weightGrams?: number;   // e.g. 14.2
-    price?: number;         // vendor cost price in ₹
+    price?: number;         // vendor cost price in ₹ (total unit cost)
+    ratePerGram?: number;   // extracted per-gram rate if applicable
+    isPerGram?: boolean;
     quantity?: number;
     category?: string;      // e.g. "Necklaces"
     genreCode?: string;     // e.g. "TMP"
@@ -590,6 +592,16 @@ export function parseVendorOffer(body: string): VendorOfferExtraction {
 
     const qtyMatch = text.match(/(\d{1,3})\s*(?:pcs?|pieces?|nos|qty)/i);
     const quantity = qtyMatch ? parseInt(qtyMatch[1], 10) : undefined;
+
+    const isPerGram = /(?:\/|\bper\s*)(?:g|gm|gram)\b/i.test(text);
+    let ratePerGram: number | undefined;
+    let finalPrice = price;
+    if (isPerGram && price) {
+        ratePerGram = price;
+        if (weightGrams && weightGrams > 0) {
+            finalPrice = Math.round(price * weightGrams);
+        }
+    }
 
     // 1. Detect Genre
     let genreCode = 'TMP'; // Default Temple
@@ -718,7 +730,9 @@ export function parseVendorOffer(body: string): VendorOfferExtraction {
     return {
         purity,
         weightGrams,
-        price,
+        price: finalPrice,
+        ratePerGram,
+        isPerGram,
         quantity,
         category,
         genreCode,

@@ -6,6 +6,7 @@ import { getPocketBaseUrl, autoDiscoverPocketBase, provisionTenantPocketBase } f
 import {
     authenticateSetupSuperuser,
     checkPocketBaseHealth,
+    clearSetupSession,
     ensureSetupAdminUser,
     isSetupComplete,
     linkUserToAdminRole,
@@ -68,10 +69,10 @@ export default function SetupWizardPage() {
             setDbConnected(await checkPocketBaseHealth());
 
             try {
-                const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-                const isForce = searchParams?.get("force") === "true" || searchParams?.get("reset") === "true";
-
-                if (!isForce && await isSetupComplete()) {
+                // A1: no force/reset bypass. Re-running the wizard after setup
+                // must not be possible from an unauthenticated browser; it
+                // provisions an admin account.
+                if (await isSetupComplete()) {
                     router.push("/login");
                     return;
                 }
@@ -162,15 +163,22 @@ export default function SetupWizardPage() {
                 await purgeTenantDemoData(formData.adminEmail);
             }
 
-            // Auto-login directly into the application.
+            // Auto-login directly into the application. A13: never advance to
+            // "complete" with the setup superuser session still active — that
+            // leaves database-admin credentials in the browser.
             try {
                 await loginSetupAdmin(formData.adminEmail, formData.adminPassword);
                 toast.success("System initialized and logged in!");
+                setCurrentStep("complete");
             } catch (authErr) {
                 console.warn("Direct login notice:", authErr);
+                clearSetupSession();
+                toast.error("Setup saved, but automatic sign-in failed. Please sign in from the login page.");
+                router.push("/login");
             }
-            setCurrentStep("complete");
         } catch (err: unknown) {
+            // Drop any superuser token obtained before the failure (A8).
+            clearSetupSession();
             let message = "Setup execution failed";
             if (err && typeof err === "object") {
                 const pbErr = err as { message?: string; data?: { data?: Record<string, { message?: string }> } };

@@ -17,6 +17,20 @@ import { getProducts } from "@/lib/products";
 import { getTenantStorageKey } from "@/lib/pocketbase";
 import { getChannelPrice, getConfiguredChannels, loadConfiguredChannels, type SalesChannelDef } from "@/lib/channel-pricing";
 import { formatImitationSpec, PLATING_DEFINITIONS } from "@/lib/imitation-jewelry-engine";
+import { toast } from "sonner";
+
+/** Per-product and per-job caps that keep Array.from() from freezing the tab (I14). */
+const MAX_LABEL_QUANTITY = 500;
+const MAX_LABELS_PER_PRINT = 500;
+
+/**
+ * CODE128 accepts printable ASCII only (I13). Validating up front lets the page
+ * refuse to print instead of emitting a blank, unscannable label.
+ */
+function isValidLabelSku(sku: string): boolean {
+    const value = (sku || '').trim();
+    return value.length > 0 && value.length <= 80 && /^[\x20-\x7E]+$/.test(value);
+}
 
 interface LabelData {
     sku: string;
@@ -288,9 +302,11 @@ function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: La
 
 function BarcodeLabel({ data }: { data: LabelData }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    // Purely derived: no state and no cascading render from the drawing effect.
+    const barcodeError = !isValidLabelSku(data.sku);
 
     useEffect(() => {
-        if (canvasRef.current) {
+        if (canvasRef.current && !barcodeError) {
             try {
                 JsBarcode(canvasRef.current, data.sku, {
                     format: "CODE128",
@@ -303,10 +319,11 @@ function BarcodeLabel({ data }: { data: LabelData }) {
                     lineColor: "#000000",
                 });
             } catch (e) {
+                // I13: a blank canvas used to print silently.
                 console.error("Barcode generation failed", e);
             }
         }
-    }, [data.sku]);
+    }, [data.sku, barcodeError]);
 
     return (
         <div className="barcode-label bg-white text-black border border-gray-200 rounded-lg p-3 w-[200px] h-[100px] flex flex-col justify-between shadow-sm">
@@ -317,7 +334,10 @@ function BarcodeLabel({ data }: { data: LabelData }) {
                 )}
             </div>
             <div className="flex justify-center my-1">
-                <canvas ref={canvasRef} className="max-w-full h-auto" />
+                <canvas ref={canvasRef} className={barcodeError ? "hidden" : "max-w-full h-auto"} />
+                {barcodeError && (
+                    <p className="text-[10px] text-red-600 font-semibold">Invalid barcode value</p>
+                )}
             </div>
             <p className="text-center font-bold text-sm">
                 ₹{data.price.toLocaleString("en-IN")}
@@ -468,19 +488,19 @@ function LabelsContent() {
                 const next = [...prev];
                 next[existingIndex] = {
                     ...next[existingIndex],
-                    quantity: next[existingIndex].quantity + quantity
+                    quantity: Math.min(MAX_LABEL_QUANTITY, next[existingIndex].quantity + quantity)
                 };
                 return next;
             }
-            return [...prev, { ...product, quantity }];
+            return [...prev, { ...product, quantity: Math.min(MAX_LABEL_QUANTITY, Math.max(1, quantity)) }];
         });
     };
 
     const updateQuantity = (index: number, newQty: number) => {
-        if (newQty < 1) return;
+        const clamped = Math.min(MAX_LABEL_QUANTITY, Math.max(1, Math.floor(Number(newQty)) || 1));
         setSelectedProducts(prev => {
             const next = [...prev];
-            next[index] = { ...next[index], quantity: newQty };
+            next[index] = { ...next[index], quantity: clamped };
             return next;
         });
     };
@@ -494,6 +514,19 @@ function LabelsContent() {
     };
 
     const handlePrint = () => {
+        // I13: refuse the whole job when any SKU cannot be encoded.
+        const invalid = selectedProducts.find((product) => !isValidLabelSku(product.sku));
+        if (invalid) {
+            toast.error(`Cannot print: "${invalid.sku || '(empty SKU)'}" is not a valid CODE128 value.`);
+            return;
+        }
+        // I14: cap the print sheet so a large queue cannot freeze the tab.
+        const totalToPrint = selectedProducts.reduce((sum, product) => sum + product.quantity, 0);
+        if (totalToPrint > MAX_LABELS_PER_PRINT) {
+            toast.error(`This job needs ${totalToPrint} labels; the limit per print is ${MAX_LABELS_PER_PRINT}.`);
+            return;
+        }
+
         // Symbol images come from remote generators; printing before they decode
         // produces blank tags, so wait for every image (with a hard timeout).
         const images = Array.from(document.querySelectorAll<HTMLImageElement>('.print-label-sheet img'));
@@ -690,13 +723,13 @@ function LabelsContent() {
                                             <input
                                                 type="number"
                                                 min={1}
-                                                max={100}
+                                                max={MAX_LABEL_QUANTITY}
                                                 value={quantity}
-                                                onChange={(e) => setQuantity(Number(e.target.value))}
+                                                onChange={(e) => setQuantity(Math.min(MAX_LABEL_QUANTITY, Math.max(1, Math.floor(Number(e.target.value)) || 1)))}
                                                 className="w-16 h-10 text-center bg-bg-navy border-y border-surface-hover text-white text-sm focus:outline-none"
                                             />
                                             <button
-                                                onClick={() => setQuantity(quantity + 1)}
+                                                onClick={() => setQuantity(Math.min(MAX_LABEL_QUANTITY, quantity + 1))}
                                                 className="w-10 h-10 flex items-center justify-center bg-bg-navy border border-surface-hover rounded-r-lg text-white hover:bg-surface-hover"
                                             >
                                                 +

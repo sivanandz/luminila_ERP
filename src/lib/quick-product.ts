@@ -10,6 +10,7 @@
 import {
     createProduct,
     createVariant,
+    recordManualIntakeMovement,
     type Product as PbProduct,
 } from "./products";
 import { createCategory, type Category } from "./categories";
@@ -235,6 +236,14 @@ export async function createDraftProduct(
             stock_level: row.stock,
         });
         variantIds.push(variant.id);
+        if (row.stock > 0) {
+            await recordManualIntakeMovement({
+                variantId: variant.id,
+                quantity: row.stock,
+                referenceId: product.id,
+                notes: `Initial draft stock setup for ${sku} (${row.name})`,
+            }).catch(err => console.warn('Could not log initial stock movement:', err));
+        }
     }
 
     return {

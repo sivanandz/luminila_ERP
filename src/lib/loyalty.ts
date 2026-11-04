@@ -317,6 +317,11 @@ export async function earnPoints(
 
             const newBalance = updated.current_balance;
 
+            // Sync balance to customer record
+            await db.collection('customers').update(customerId, {
+                loyalty_points: newBalance,
+            }).catch(() => {});
+
             // Record transaction
             await recordTransaction(
                 account.id,
@@ -384,6 +389,11 @@ export async function redeemPoints(
 
             const newBalance = updated.current_balance;
 
+            // Sync balance to customer record
+            await pb.collection('customers').update(customerId, {
+                loyalty_points: newBalance,
+            }).catch(() => {});
+
             // Record transaction (negative points for redemption)
             await recordTransaction(
                 account.id,
@@ -434,6 +444,11 @@ export async function adjustPoints(
             }).catch(() => {});
             throw new Error('Adjustment would result in negative balance');
         }
+
+        // Sync balance to customer record
+        await db.collection('customers').update(customerId, {
+            loyalty_points: newBalance,
+        }).catch(() => {});
 
         // Record transaction
         await recordTransaction(
