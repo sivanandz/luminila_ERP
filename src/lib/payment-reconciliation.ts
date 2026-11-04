@@ -21,10 +21,14 @@ import { sendPaidOrderInvoice } from './whatsapp-notifications';
 import { settleCapturedOrder } from './razorpay-webhook-handler';
 import { normalizeE164 } from './whatsapp-crm';
 
-/** `&& account_email = "…"` for tenant-scoped queries (SF-09). */
+/**
+ * `&& account_email = "…"` for tenant-scoped queries (SF-09). Without a resolved
+ * tenant the clause matches nothing — an empty clause silently widened every
+ * reconciliation query to all tenants (WA-14).
+ */
 function tenantClause(): string {
     const tenant = accountScopeEmail();
-    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : '';
+    return tenant ? ` && account_email = "${sanitizeFilter(tenant)}"` : ' && id = ""';
 }
 
 export interface ReconciliationSummary {
@@ -127,9 +131,8 @@ async function recordClearingDeposit(
     if (await hasClearingEntry(link.id)) return; // already ledgered (crash-retry)
 
     const accountId = await getRazorpayClearingAccountId();
-    const account = await pb.collection('bank_accounts').getOne(accountId);
 
-    await pb.collection('bank_transactions').create({
+    const created = await pb.collection('bank_transactions').create({
         account_email: accountScopeEmail(),
         account: accountId,
         transaction_date: new Date().toISOString(),
@@ -141,9 +144,25 @@ async function recordClearingDeposit(
         related_entity_id: link.id,
     });
 
-    const currentBal = (account as unknown as { current_balance?: number }).current_balance || 0;
+    // Two reconcilers can both pass the check above. Re-read the entries for
+    // this link and keep exactly one (lowest id); losers delete their own row
+    // and must not touch the balance (WA-1 / PAY-6).
+    const entries = await pb.collection('bank_transactions').getFullList({
+        filter: `related_entity_type="payment_link" && related_entity_id="${sanitizeFilter(link.id)}"${tenantClause()}`,
+        sort: 'id',
+    });
+    if (entries.length > 1) {
+        for (const duplicate of entries.slice(1)) {
+            await pb.collection('bank_transactions').delete(duplicate.id).catch((err) =>
+                console.warn('[reconciler] duplicate clearing entry cleanup failed:', err)
+            );
+        }
+    }
+    if (entries.length > 0 && entries[0].id !== created.id) return;
+
+    // Atomic increment: the old read-modify-write lost concurrent deposits (PAY-9).
     await pb.collection('bank_accounts').update(accountId, {
-        current_balance: currentBal + link.amount,
+        'current_balance+': link.amount,
     });
 }
 
@@ -182,13 +201,16 @@ async function settleLinkedOrder(
     }
 
     if (invoiceId) {
-        await pb.collection('invoices').update(invoiceId, {
-            status: 'paid',
-            paid_amount: link.amount,
-        }).catch(() => {});
-
         const reference = paymentRef || link.link_id;
+        const invoice = await pb.collection('invoices').getOne<{
+            grand_total?: number;
+            total?: number;
+        }>(invoiceId);
+        const invoiceTotal = Number(invoice.grand_total ?? invoice.total ?? 0);
+
         if (!(await hasInvoicePayment(invoiceId, reference))) {
+            // Let this throw: a swallowed create marked the link paid with no
+            // payment row, and the next pass never retried (WA-2 / PAY-8).
             await pb.collection('invoice_payments').create({
                 account_email: accountScopeEmail(),
                 invoice: invoiceId,
@@ -197,8 +219,23 @@ async function settleLinkedOrder(
                 payment_method: 'upi',
                 reference_number: reference,
                 notes: `Auto-settled via Razorpay Link ${link.link_id}`,
-            }).catch(() => {});
+            });
         }
+
+        // Derive paid_amount from the ledger instead of overwriting it with this
+        // link's amount — partial settlements stay partial and prior payments
+        // are never erased (WA-10).
+        const payments = await pb.collection('invoice_payments').getFullList({
+            filter: `invoice="${sanitizeFilter(invoiceId)}"${tenantClause()}`,
+        });
+        const ledgerTotal = payments.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+        const paidAmount = invoiceTotal > 0 ? Math.min(invoiceTotal, ledgerTotal) : ledgerTotal;
+        const isPaid = invoiceTotal > 0 && paidAmount >= invoiceTotal - 0.005;
+        await pb.collection('invoices').update(invoiceId, {
+            paid_amount: paidAmount,
+            status: isPaid ? 'paid' : 'partially_paid',
+            is_paid: isPaid,
+        });
     }
 
     // Loyalty is awarded by settleCapturedOrder (idempotently); report the

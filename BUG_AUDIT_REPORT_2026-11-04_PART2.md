@@ -3,9 +3,9 @@
 **Date:** 2026-11-04
 **Project:** `luminila_inv_mgmt` (Next.js 16 + PocketBase + Tauri v2)
 **Method:** Token-efficient, one feature at a time. Read-only audit agents, max 3 concurrent per wave, file:line-verified findings only.
-**Coverage this report:** the 12 domain groups NOT covered by `BUG_AUDIT_REPORT_2026-11-04.md` (Part 1: Auth/RBAC, POS, Inventory = 45 findings)
-**New findings:** 180 (Critical: 8, High: 69, Medium: 89, Low: 14)
-**Combined total across both reports:** 225 findings (Critical: 12, High: 92, Medium: 105, Low: 16)
+**Coverage this report:** ALL remaining domains after Part 1 (Auth/RBAC/POS/Inventory) — 12 domain groups + continuation waves 4–8 covering every src/lib module, page layer, components, ops scripts, WPPConnect sidecar, and Tauri Rust shell.
+**Findings in this report (Parts 2+3):** 344 (Critical: 10, High: 107, Medium: 164, Low: 63) — breakdown in §5 and §13
+**Combined total across both reports:** 389 findings (Critical: 14, High: 130, Medium: 180, Low: 65)
 
 ---
 
@@ -311,9 +311,10 @@ The dominant defect class is unchanged from Part 1: **client-trusted data on mon
 |---|---|---|---|---|---|---|
 | Part 1 (`BUG_AUDIT_REPORT_2026-11-04.md`) | Auth/RBAC, POS, Inventory | 45 | 4 | 23 | 16 | 2 |
 | Part 2 (this file) | Invoices/GST, Orders/Challan, Returns, Purchase/GRN, Banking/Cheques/Expenses/Multi-loc, Customers/Loyalty/CRM, Reports/Analytics/GSTR-1, WhatsApp/Recon, Payments/Webhooks, Sync/Tenant-DB, AI/OTP/API-auth, Settings/Backup/Misc | 180 | 8 | 69 | 89 | 14 |
-| **Combined** | **15 of ~17** | **225** | **12** | **92** | **105** | **16** |
+| Part 3 continuation (waves 4–8) | AI/WhatsApp/core-infra remainder, business libs, engines, analytics-v2, all pages, components, sidecar/Tauri, ops scripts | 164 | 2 | 38 | 75 | 49 |
+| **Combined** | **Everything that exists in-repo** | **389** | **14** | **130** | **180** | **65** |
 
-**Not audited:** WPPConnect sidecar internals (`wppconnect-sidecar/server.js`, Puppeteer layer), Rust Tauri core (`src-tauri`), runtime behavior, PocketBase API rules/migrations, and `src/lib/google-drive-sync.ts` (missing — see SET-15). Remaining thin coverage: `src/app/` page components beyond spot-checks, `src/components/`, sync connectors under `src/lib/sync/` (does not exist), `src/lib/niththigal-content.ts`, `src/lib/imitation-jewelry-engine.ts`, `src/lib/jewelry-engine.ts`, `src/lib/cross-border-engine.ts`.
+**Not audited:** the six PocketBase migration/rules scripts (init-pocketbase, update-whatsapp-crm-schema, sync-pb-schema, apply-pb-access-rules, seed-roles, create-admin-user) are **absent from the repo** (SCR-12) — PocketBase collection rules and live runtime were never executed. Files that do not exist and were skipped: `google-drive-sync.ts`, `src/lib/sync/`, `GoogleDriveSyncModal.tsx`. Runtime behavior, build output, and network-level tests were not performed.
 
 **Limitations:** Static audit only; PocketBase rules, migrations and live runtime were not executed. Severity reflects exploit/data-loss potential as read, not verified in a deployed instance. Line numbers reflect the tree at audit time (2026-11-04).
 
@@ -478,9 +479,117 @@ Manual checks: refund a partial return (points/spend must prorate); pay less tha
 | PG-14 | src/app/banking/page.tsx:74-89,272-281 | Low | Account create: account_number optional, IFSC unchecked, `parseFloat` negatives ⇒ junk accounts/negative opening balance. | Require acct no + IFSC regex; clamp ≥0. |
 | PG-15 | src/app/invoices/create/page.tsx:368-394 | Low | `updateItem` mutates shallow copy in place ⇒ previous state object mutated; breaks memo assumptions/stale renders. | New object per item. |
 
-## 11. Wave 7 (pending): remaining pages · components · sidecar/Tauri
+## 11. Wave 7 Findings (page layer — other pages · components · sidecar/Tauri)
 
-*Will be filled on completion.*
+### 11.1 Page layer — remaining pages
+
+| # | File:Line | Severity | Issue & evidence | Fix |
+|---|-----------|----------|------------------|-----|
+| PG-16 | src/app/whatsapp/page.tsx:2461-2523 | High | `sendReply` no try/catch; `ok=false` gives zero feedback — message silently not sent, composer not cleared. | try/catch + toast; surface ok=false. |
+| PG-17 | src/app/whatsapp/page.tsx:4142-4143 | High | Send button disabled only by `sendingAttachment` — no in-flight guard on plain-text path ⇒ duplicate customer-facing messages on double-click/double-Enter. | `isReplying` state + re-entry guard. |
+| PG-18 | src/app/inventory/page.tsx:846-861 | High | Delete-safety history checks `.catch(() => null)` — PB/network error treated as "no history" ⇒ product with sales/invoice history permanently deleted. | Fail closed — abort delete on query error. |
+| PG-19 | src/app/inventory/page.tsx:840; customers:434; vendors:77,593; cheques:101; manufacturing:139-158; orders/labels handlers | High | Destructive handlers across pages have NO permission guard (unlike users.tsx:69-70,131) — UI hiding only; any role with page access can delete/dispatch. | Re-check `isAdmin`/`hasPermission` in each handler. |
+| PG-20 | src/app/reports/gst/page.tsx:78-85 | Medium | `loadReport` no try/catch ⇒ unhandled rejection, `loading` stuck true, GSTR-1 page forever "Loading…"; no start≤end validation. | try/catch/finally + toast; validate range. |
+| PG-21 | src/app/reports/sales/page.tsx:50-56 | Medium | Same — `getSalesReport` unawaited catch ⇒ stuck "Loading…"; no date validation. | try/catch/finally + toast; validate range. |
+| PG-22 | src/app/activity/page.tsx:93-106 | Medium | `loadData` Promise.all no catch ⇒ unhandled rejection, stuck loading on PB error. | try/catch/finally + toast. |
+| PG-23 | src/app/users/page.tsx:93-104 | Medium | `loadData` no try/catch ⇒ unhandled rejection; user mgmt stuck loading. | try/catch/finally + toast. |
+| PG-24 | src/app/vendors/page.tsx:57-62,77-87 | Medium | `fetchVendors` no catch ⇒ infinite "Loading vendors…"; `handleDelete` logs console only, dialog closes silently — user never knows delete failed. | try/catch + toast; `isDeleting` guard. |
+| PG-25 | src/app/packing/page.tsx:147-153,221-230 | Medium | `refreshQueue` no catch ⇒ stuck "Loading the pack queue…"; deep-link `getOrderDetails(orderId)` no catch. | try/catch/finally both. |
+| PG-26 | src/app/settings/page.tsx:217-223,228-239 | Medium | getStoreSettings/getCategories/getAttributes/session-status `.then()` WITHOUT `.catch` ⇒ unhandled rejections; silently never load/refresh after save. | `.catch(console.error + toast.error)`. |
+| PG-27 | src/app/users/page.tsx:179-191 | Medium | `createAppUser` succeeds then `setUserRoles` fails ⇒ orphan user with default/no role; catch alerts "Failed to create user" (misleading). | Report "user created, role failed" (or roll back); don't misreport. |
+| PG-28 | src/app/inventory/page.tsx:434-438 | Medium | `handleApplyGeneratedSKU` awaits computeNextSkuSequence no try/catch wired to onClick ⇒ PB failure = unhandled rejection, dead button. | try/catch + toast. |
+| PG-29 | src/app/settings/page.tsx:364-404 | Medium | addCategory/addAttribute: no empty-name validation, failures console-only, no in-flight guard ⇒ double-click duplicates; dialog closes as if success. | Validate + toast + disable-while-pending. |
+| PG-30 | src/app/labels/page.tsx:458 | Low | `Number(price)` from `?price=` unvalidated ⇒ NaN printed onto barcode labels. | `Number.isFinite` check. |
+
+### 11.2 Components layer
+
+| # | File:Line | Severity | Issue & evidence | Fix |
+|---|-----------|----------|------------------|-----|
+| CMP-1 | src/components/whatsapp/WhatsAppDrawer.tsx:121-127 | High | Stale vendor attribution — no-match `findVendorByPhone` never clears `setActiveVendor`; previous chat's vendor id/name attached to GRN/inventory ingest for an unrelated chat; no race guard. | `setActiveVendor(v ?? null)`; verify activeChat unchanged. |
+| CMP-2 | src/components/whatsapp/BroadcastComposerModal.tsx:146-149,220-258 | High | Mass broadcast: NO permission guard, NO confirmation; communities+channels auto-selected — one click messages every destination. | Permission gate + mandatory confirm w/ target count. |
+| CMP-3 | src/components/pos/POSWhatsAppWidget.tsx:162 | High | WhatsApp session check reads hardcoded `wpp_session_id` `'luminila'` instead of tenant-scoped `getTenantWhatsAppSessionId()` ⇒ cross-tenant session misuse. | Use `getTenantWhatsAppSessionId(user?.id \|\| user?.email)`. |
+| CMP-4 | src/components/whatsapp/WhatsAppDrawer.tsx:129-138 | Medium | `openConversation` race: no cancel/sequence guard — chat A's response can overwrite chat B's transcript while header shows B. | request-sequence/cancelled guard. |
+| CMP-5 | src/components/whatsapp/RazorpayPaymentModal.tsx:420 | Medium | `window.open(generatedLink.url, "_blank")` — no https-scheme validation, no `noopener`; tampered/MITM'd response can open attacker/javascript: URL. | `^https://` check + `noopener,noreferrer`. |
+| CMP-6 | src/components/pos/POSWhatsAppWidget.tsx:177-250,252-272 | Medium | handleSendPaymentLink/Receipt: `try/finally` but NO `catch` ⇒ unhandled rejection, no error toast, only spinner resets. | `catch` with toast.error. |
+| CMP-7 | src/components/whatsapp/VendorIngestionModal.tsx:259,840-863 | Medium | Product ingest / GRN mutations + barcode-queue side effects, NO role/permission check ⇒ any staff can create products and stock movements. | Require inventory-write permission; guard handlers. |
+| CMP-8 | src/components/whatsapp/SlashCommandPalette.tsx:61-67 | Medium | Live bank account no., IFSC, account name, UPI VPA hardcoded in client bundle — shipped to every staff device, immutable w/o redeploy. | Config-fetched template, not static source. |
+| CMP-9 | src/components/whatsapp/WhatsAppDrawer.tsx:91-105,141-159 | Medium | `loadChats`/`handleSend` no catch ⇒ unhandled rejections; `sendStaffMessage` `ok===false` fails silently. | try/catch + toast. |
+| CMP-10 | src/components/whatsapp/RazorpayPaymentModal.tsx:69-77 | Medium | `isUpiEligible` computed but `calculateUpiSurchargeDiscount(amount, true, …)` passes literal true — eligibility ignored; discount applied outside the RBI ₹2,000 UPI threshold. | Pass `isUpiEligible`. |
+| CMP-11 | src/components/whatsapp/MessageActionMenu.tsx:250-254 | Low | Copy writes `getSelection()?.toString()` (not the message body); `setTimeout(500)` not cleared on unmount ⇒ setState-after-unmount. | Message-body prop; timeout ref + cleanup. |
+| CMP-12 | src/components/pos/Cart.tsx:62,89,98,107 | Low | Quantity/remove handlers pass `lineId` but props typed `variantId` — contract mismatch can target wrong/no lines (duplicate variant lines). | Rename to `lineId` end-to-end. |
+| CMP-13 | src/components/settings/ServerConfigModal.tsx:72-77 | Low | No admin guard on modal that rewrites PB + sidecar URLs app-wide; URLs unvalidated (any scheme/host). | Admin permission gate; `^https?://` validation. |
+| CMP-14 | src/components/auth/ProtectedRoute.tsx:37-49 | Low | Post-render redirect — Access Denied paints, THEN `router.replace` fires in useEffect; flash of forbidden content; client-render-only guard. | Return null/loading when redirectTo set. |
+| CMP-15 | src/components/settings/GoogleDriveSyncModal.tsx | Low | File does NOT exist — Drive sync audit coverage gap / stale spec reference. | Verify path; audit actual Drive impl. |
+
+### 11.3 Sidecar & Tauri core
+
+| # | File:Line | Severity | Issue & evidence | Fix |
+|---|-----------|----------|------------------|-----|
+| SIDE-1 | src-tauri/src/lib.rs:558-565 | High | `on_page_load` eval-injects `window.__WPPCONNECT_SECRET__` on EVERY page load, no URL/origin check — any page reaching the webview receives the sidecar bearer token. | Inject only when URL matches expected frontend origin; clear on external nav. |
+| SIDE-2 | src-tauri/tauri.conf.json:26 | High | CSP `script-src 'unsafe-inline'` + `connect-src https: wss:` (any host) — inline-script XSS exfiltrates the token (SIDE-1) anywhere. | Nonce/hash scripts; narrow connect-src to known hosts. |
+| SIDE-3 | src-tauri/tauri.conf.json:7 | Medium | Release `frontendDist = http://127.0.0.1:3210` — any local process squatting port 3210 before the bundled server is rendered, then handed the token. | Ship `../server-dist` as static frontendDist; verify origin before injection. |
+| SIDE-4 | wppconnect-sidecar/server.js:126,158 | Medium | Bearer token accepted via `?token=` query string — leaks into URLs, logs, browser history. | Authorization header / x-api-key only; drop query auth. |
+| SIDE-5 | wppconnect-sidecar/server.js:166 | Medium | NO rate limit on `/api/*` or socket.io handshake (grep: no limiter) — unlimited token-guess attempts & throttling-free message/browser-spawn abuse on loopback. | express-rate-limit + handshake attempt cap. |
+| SIDE-6 | src-tauri/tauri.conf.json:32-34 vs package.json:6,11-13 | Medium | Sidecar mismatch: `externalBin binaries/wppconnect-server` (target-triple suffix) but pkg emits `dist/wppconnect-server.exe`; `binaries/` does not exist ⇒ `tauri build` fails or ships stale sidecar. | Align pkg output w/ tauri externalBin naming / copy with triple suffix. |
+| SIDE-7 | src-tauri/src/lib.rs:187-192 | Medium | `check_sidecar_health()` bare `reqwest::get()`, NO timeout (others use 900ms) — hung connection stalls health loop forever, crash recovery silently disabled. | Client with 900ms timeout. |
+| SIDE-8 | wppconnect-sidecar/server.js:144-149,113 | Low | CORS `credentials: true` with any-port-localhost allowlist — any local page is a credentialed origin; only header-not-cookie token design mitigates. | Drop `credentials: true`; restrict ports. |
+| SIDE-9 | src-tauri/tauri.conf.json:36 vs 52-54 | Low | `bundle.resources` ships Windows-only `pocketbase.exe` to all targets incl. Android/macOS/Linux. | Per-target resources. |
+| SIDE-10 | src-tauri/src/lib.rs:151-169 | Low | `generate_sidecar_token` from RandomState+nanos, not CSPRNG — unpredictability rests on RandomState key randomness. | `OsRng`/getrandom 32 bytes. |
+| SIDE-11 | wppconnect-sidecar/server.js:3198 | Low | Auto-restore: hardcoded `sessionName === 'luminila'` treated as pre-verified even without `.authenticated` marker ⇒ stale expired profile booted unconditionally. | Require `.authenticated` for all sessions. |
+| SIDE-12 | wppconnect-sidecar/server.js:177 | Low | `express.json({limit:'50mb'})`, no per-IP limit ⇒ repeated 50MB parses DoS loopback service. | Lower to 2-5mb; capped upload route for media. |
+| SIDE-13 | wppconnect-sidecar/server.js:47-61 | Low | `killOrphanedSessionBrowsers` SIGKILLs any chrome.exe whose CommandLine contains substring session name — can kill unrelated user Chrome windows. | Match full `--user-data-dir=<path>` boundary. |
+| SIDE-14 | wppconnect-sidecar/server.js:342 vs lib.rs:546-565 | Low | No HMAC/signature verification of inbound webhook/message payloads; events re-emitted to all socket.io clients as-is — spoofable if webview compromised. | Verify at consumer; scope io.emit per-session room. |
+
+## 12. Wave 8 Findings (ops scripts — pocketbase schema/rules/seeds)
+
+Note: the six explicitly requested scripts (init-pocketbase, update-whatsapp-crm-schema, sync-pb-schema, apply-pb-access-rules, seed-roles, create-admin-user) do **not** exist anywhere in the repo (directory listing + repo-wide glob verified) — collection-rule audit could not be performed. Findings below cover what does exist.
+
+| # | File:Line | Severity | Issue & evidence | Fix |
+|---|-----------|----------|------------------|-----|
+| SCR-1 | src/scripts/seed-real-store-settings.js:48-59 | High | Live-looking store financial PII committed to VCS: GSTIN 29AAACN1234F1Z8, PAN AAACN1234F, bank account 40928371928, IFSC SBIN0001234, full address. | Purge from history; env/secret store; rotate if real. |
+| SCR-2 | src/scripts/seed-real-store-settings.js:74,93 | Medium | `.catch(() => null)` swallows ALL PB errors — "not found" conflated with failure ⇒ duplicate creates, masked misconfig. | Swallow 404 only; rethrow rest. |
+| SCR-3 | src/scripts/test-tenant-secrets.ts:68,82 | Medium | Silent plaintext downgrade enshrined as expected: `decryptSecret('legacy-plaintext', null)` returns plaintext; `readRegistrySecret('plain', {})` returns 'plain'. Encrypted-at-rest never enforced. | Require key for unencrypted-looking values in prod; fail closed. |
+| SCR-4 | src/scripts/verify-fresh-store-isolation.ts:113-116 | Medium | Bare `catch {}` ⇒ `unauthGetOneBlocked = true` for ANY error (network/500) — isolation test can false-pass when PB is unreachable. | Assert specific 403/404 only. |
+| SCR-5 | src/scripts/verify-fresh-store-isolation.ts:31-39,121 | Medium | Test tenant user (verified:true, is_active:true) deleted only on happy path — assertion failure leaves a verified active account; no `finally`. | try/finally; delete in finally. |
+| SCR-6 | src/scripts/seed-real-store-settings.js:93 | Low | Template-literal filter `key="${k}"` unescaped — unsafe pattern (keys hardcoded today). | Escaped/parameterized filter or key whitelist. |
+| SCR-7 | src/scripts/seed-real-store-settings.js:2-3 | Low | Cleartext `http://127.0.0.1:8091` client, `autoCancellation(false)`, no auth. | PB_URL env + admin auth. |
+| SCR-8 | src/scripts/seed-real-store-settings.js:29-101 | Low | Entire seed body is dead code after early `return` ("Deprecated") yet retains full live-looking dataset — run-able by future editors. | Delete dead block + literals. |
+| SCR-9 | src/scripts/verify-fresh-store-isolation.ts:36 | Low | `emailVisibility: true` on test tenant user — email exposed to any `users` lister. | `emailVisibility: false`. |
+| SCR-10 | src/scripts/verify-fresh-store-isolation.ts:19 | Low | Hardcoded default admin identity `admin@luminila.local` — only password env-gated; encourages default-account use. | Require PB_ADMIN_EMAIL; no default. |
+| SCR-11 | src/scripts/verify-fresh-store-isolation.ts:113 | Low | Hardcoded record id fixture — result depends on prior DB state of another tenant. | Create/lookup fixture or skip existence assertion. |
+| SCR-12 | src/scripts/* (glob) | Low | Requested migration/rules scripts ABSENT — empty list/view rules, hardcoded superuser passwords unverifiable. | Provide correct paths; re-audit. |
+| SCR-13 | src/scripts/seed-real-store-settings.js:37-38 | Low | `admin@luminila.local` duplicated as email/store_email — internal admin identity disclosure. | Placeholder/env contact. |
+| SCR-14 | src/scripts/test-tenant-secrets.ts:32-33 | Low | Cements "legacy-plaintext passthrough" as contract — weak migration path. | Add failing prod-config test to force migration. |
+
+---
+## 13. FINAL CONSOLIDATED TOTALS & VERDICT
+
+| Scope | Findings | C | H | M | L |
+|---|---|---|---|---|---|
+| Part 1 (Auth/POS/Inventory) | 45 | 4 | 23 | 16 | 2 |
+| Part 2 initial (12 domain groups) | 180 | 8 | 69 | 89 | 14 |
+| Part 3 continuation (this wave set) | 164 | 2 | 38 | 75 | 49 |
+| **GRAND TOTAL — full audit** | **389** | **14** | **130** | **180** | **65** |
+
+### Updated executive verdict
+
+The audit is now complete across **all source areas that exist in the repo** (except the six missing PocketBase migration scripts, SCR-12). ~100% of `src/lib`, all page handlers, all audited components, ops scripts, both sidecar and Tauri shells were covered.
+
+**New systemic findings from Part 3 that raise severity of the overall picture:**
+
+1. **The shared PocketBase singleton is a tenant-isolation time bomb** — `ensureServerAuth` mutates `pb.baseUrl` + `authStore` on the module-global client; concurrent requests leak across tenants with the wrong tenant's credentials (INF-1), plus unvalidated `/api/system/tenant-db` URLs let a hostile response re-point every API call (INF-5). This should be P0.
+2. **Destructive PocketBase paths fail open on auth/network errors everywhere** — database-snapshot (INF-6), inventory delete guard (PG-18), migration scripts (SCR-3/4), catalog sync (WA-28), payment reconciliation (WA-3).
+3. **Client bundle carries live secrets by construction**: hardcoded bank account/IFSC/UPI (CMP-8) and store PII in VCS (SCR-1), plus token injection into any webview page (SIDE-1) and CSP allowing any host (SIDE-2).
+4. **AI assistant is callable by the browser with a tenant header it controls** — the `x-tenant-email` header is trusted as the PB filter verbatim (AI-16); SSRF redirects bypass the guard (AI-17).
+
+### P0 additions from Part 3
+- [ ] INF-1 / INF-2 / INF-3 / INF-4 — retire shared-client mutation; fail-closed auth; restore baseUrl; validate pbUrl (INF-5)
+- [ ] INF-6 / PG-18 — no delete/snapshot on failed safety checks
+- [ ] SIDE-1 / SIDE-2 / SIDE-3 — origin-checked token injection; CSP nonce + host allowlist; static frontendDist
+- [ ] AI-16 / AI-17 — server-derived tenant scope; redirect-safe SSRF guard
+- [ ] CMP-8 / SCR-1 — remove hardcoded bank/store PII
+- [ ] BIZ-1 — tenant check before `stock_level-` in markStockDiscrepancy
+- [ ] WA-19 / CMP-3 — consent check with correct db; tenant-scoped WhatsApp session
 
 ---
 *Report generated 2026-11-04. Method: one feature per agent, max 3 concurrent, file:line-verified only. Part 1 remains the reference for Auth/POS/Inventory.*

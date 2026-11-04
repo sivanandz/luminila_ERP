@@ -31,9 +31,10 @@ function refreshConfigFromStorage() {
         if (stored) {
             const parsed = JSON.parse(stored);
             if (parsed.razorpayKeyId) {
+                // keyId is public (it is rendered into the checkout form).
+                // keySecret/webhookSecret are server-only and must never be
+                // hydrated into the browser module (PAY-1 / SET-4).
                 config.keyId = parsed.razorpayKeyId;
-                config.keySecret = parsed.razorpayKeySecret || config.keySecret;
-                config.webhookSecret = parsed.razorpayWebhookSecret || config.webhookSecret;
                 config.isTestMode = parsed.razorpayEnv !== 'PROD';
             }
         }
@@ -51,6 +52,12 @@ export function setRazorpayConfig(newConfig: Partial<RazorpayConfig>) {
 
 export function getRazorpayConfig(): RazorpayConfig {
     refreshConfigFromStorage();
+    if (typeof window !== 'undefined') {
+        // Payment operations run through /api/pos/payment, so the browser never
+        // needs the secret. Redact it even if a legacy build-time env var exists
+        // to keep it out of the JS heap and any XSS exfil path (PAY-1).
+        return { ...config, keySecret: '', webhookSecret: '' };
+    }
     return { ...config };
 }
 

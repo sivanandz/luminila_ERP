@@ -118,6 +118,24 @@ function tenantClause(tenant: string): string {
     return `account_email="${sanitizeFilter(tenant)}"`;
 }
 
+/**
+ * Settings fields that are payment-gateway credentials. They belong in the
+ * tenant's PocketBase settings row (server-read) and must never be mirrored into
+ * browser localStorage, where any XSS can read them (SET-4 / PAY-1).
+ */
+const CLIENT_SECRET_FIELDS = [
+    "razorpayKeySecret",
+    "razorpayWebhookSecret",
+    "phonepeSaltKey",
+    "shopifyToken",
+] as const;
+
+function stripClientSecrets(settings: Record<string, unknown>): Record<string, unknown> {
+    const clone = { ...settings };
+    for (const field of CLIENT_SECRET_FIELDS) delete clone[field];
+    return clone;
+}
+
 function readLocalSettings(storageId: string): Record<string, unknown> | null {
     if (typeof window === "undefined") return null;
     try {
@@ -169,7 +187,10 @@ export async function getStoreSettings(userId?: string, userName?: string, userE
                 const parsed = typeof rawValue === "string" ? JSON.parse(rawValue) : rawValue;
                 if (parsed && typeof parsed === "object") {
                     if (typeof window !== "undefined") {
-                        localStorage.setItem(`luminila_settings_${storageId}`, JSON.stringify(parsed));
+                        localStorage.setItem(
+                            `luminila_settings_${storageId}`,
+                            JSON.stringify(stripClientSecrets(parsed))
+                        );
                     }
                     return normalizeLoadedSettings(parsed as Record<string, unknown>, defaults);
                 }
@@ -193,9 +214,12 @@ export async function saveStoreSettings(settings: StoreSettings, userId?: string
     const tenant = tenantScopeEmail();
     const storageId = tenant || userId || "default";
 
-    // 1. Save to local storage namespaced by tenant.
+    // 1. Save to local storage namespaced by tenant — without gateway secrets.
     if (typeof window !== "undefined") {
-        localStorage.setItem(`luminila_settings_${storageId}`, JSON.stringify(settings));
+        localStorage.setItem(
+            `luminila_settings_${storageId}`,
+            JSON.stringify(stripClientSecrets(settings as unknown as Record<string, unknown>))
+        );
     }
 
     if (!tenant) {

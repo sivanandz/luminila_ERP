@@ -71,8 +71,17 @@ export async function markStockDiscrepancy(input: MarkDiscrepancyInput): Promise
         throw new Error('Quantity must be greater than zero');
     }
 
-    // 1. Fetch variant to verify available stock
+    // 1. Fetch variant and verify it belongs to the signed-in tenant before any
+    // stock mutation — superuser clients bypass PB rules (BIZ-1).
+    const accountEmail = accountScopeEmail();
+    if (!accountEmail) {
+        throw new Error('No tenant account resolved; refusing to flag stock.');
+    }
     const variant = await pb.collection('product_variants').getOne<ProductVariantRecord>(input.variant_id);
+    const owner = String((variant as { account_email?: string }).account_email || '').trim().toLowerCase();
+    if (owner && owner !== accountEmail) {
+        throw new Error('This variant does not belong to your store.');
+    }
     const availableStock = variant.stock_level || 0;
 
     if (input.quantity > availableStock) {
@@ -81,13 +90,8 @@ export async function markStockDiscrepancy(input: MarkDiscrepancyInput): Promise
         );
     }
 
-    // 2. Deduct from available sellable stock
-    await pb.collection('product_variants').update(input.variant_id, {
-        'stock_level-': input.quantity,
-    });
-
-    // 3. Create discrepancy record
-    const accountEmail = accountScopeEmail();
+    // 2. Create the discrepancy record FIRST. Deducting first meant a failed
+    // create left stock gone with no quarantine record (BIZ-6).
     const derivedSku = input.sku || variant.variant_name || variant.sku || 'SKU-UNKNOWN';
     const derivedProductName = input.product_name || derivedSku;
     const record = await pb.collection('stock_discrepancies').create({
@@ -104,6 +108,17 @@ export async function markStockDiscrepancy(input: MarkDiscrepancyInput): Promise
         status: 'active',
         flagged_by: input.flagged_by || 'Staff',
     });
+
+    // 3. Deduct from available sellable stock; roll the record back if the
+    // decrement fails so the ledger and the stock never disagree.
+    try {
+        await pb.collection('product_variants').update(input.variant_id, {
+            'stock_level-': input.quantity,
+        });
+    } catch (deductErr) {
+        await pb.collection('stock_discrepancies').delete(record.id).catch(() => {});
+        throw deductErr;
+    }
 
     // 4. Log stock movement
     await pb.collection('stock_movements').create({

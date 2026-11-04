@@ -184,9 +184,11 @@ export function aggregatesWereCounted(internalNotes?: string): boolean {
 export async function applyPurchaseReversal(
     client: PocketBase,
     customerId: string,
-    amountRupees: number
+    amountRupees: number,
+    options: { decrementOrders?: boolean } = {}
 ): Promise<void> {
     if (!customerId) return;
+    const decrementOrders = options.decrementOrders !== false;
     try {
         const customer = await client
             .collection('customers')
@@ -195,7 +197,7 @@ export async function applyPurchaseReversal(
         const orders = Math.max(0, Number(customer.total_orders) || 0);
         await client.collection('customers').update(customerId, {
             total_spent: Math.max(0, spent - Math.max(0, amountRupees)),
-            total_orders: Math.max(0, orders - 1),
+            ...(decrementOrders ? { total_orders: Math.max(0, orders - 1) } : {}),
         });
     } catch (err) {
         console.warn('[channel-orders] aggregate reversal failed:', err);

@@ -52,6 +52,13 @@ import { DiscrepancyModal } from "@/components/inventory/DiscrepancyModal";
 import { ProductPurchaseHistoryModal } from "@/components/inventory/ProductPurchaseHistoryModal";
 import { QuickReceivePOModal } from "@/components/inventory/QuickReceivePOModal";
 import { BulkInventoryImportModal } from "@/components/inventory/BulkInventoryImportModal";
+import { InventoryBulkActionBar } from "@/components/inventory/InventoryBulkActionBar";
+import { ProductStockLedgerModal } from "@/components/inventory/ProductStockLedgerModal";
+import { TrayCycleCountModal } from "@/components/inventory/TrayCycleCountModal";
+import { SmartReplenishmentModal } from "@/components/inventory/SmartReplenishmentModal";
+import { BundleComposerSection } from "@/components/inventory/BundleComposerSection";
+import type { BundleComponent } from "@/lib/bundles";
+import { History, ShoppingBag } from "lucide-react";
 import { getDiscrepancyStats } from "@/lib/discrepancies";
 import { getOpenPurchaseOrders, getOpenPurchaseOrderItems, reconcilePOWithInwardBatch } from "@/lib/purchase";
 import { getVariantStockSummary, recordManualIntakeMovement } from "@/lib/products";
@@ -155,6 +162,9 @@ interface Product {
     occasion?: string;
     base_metal?: string;
     is_active?: boolean;
+    variant_id?: string;
+    is_bundle?: boolean;
+    bundle_items?: BundleComponent[];
 }
 
 // PocketBase product row as returned by getProducts(), which queries with
@@ -217,6 +227,10 @@ function InventoryContent() {
     const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
     const [showBroadcastModal, setShowBroadcastModal] = useState(false);
     const [broadcastProductsList, setBroadcastProductsList] = useState<Product[]>([]);
+    const [showLedgerModal, setShowLedgerModal] = useState(false);
+    const [selectedLedgerProduct, setSelectedLedgerProduct] = useState<Product | null>(null);
+    const [showCycleCountModal, setShowCycleCountModal] = useState(false);
+    const [showReplenishmentModal, setShowReplenishmentModal] = useState(false);
 
     const toggleSelectProduct = (id: string) => {
         setSelectedProductIds((prev) =>
@@ -241,6 +255,8 @@ function InventoryContent() {
         plating: "",
         occasion: "",
         base_metal: "",
+        is_bundle: false,
+        bundle_items: [] as BundleComponent[],
     });
 
     // Auto-populate po_reference when opening add dialog during active inward mode
@@ -548,6 +564,8 @@ function InventoryContent() {
                     occasion: p.occasion || "",
                     base_metal: p.base_metal || "",
                     is_active: p.is_active !== false,
+                    is_bundle: Boolean((p as any).is_bundle),
+                    bundle_items: Array.isArray((p as any).bundle_items) ? (p as any).bundle_items : [],
                 };
             });
 
@@ -658,6 +676,8 @@ function InventoryContent() {
                 is_active: isEditMode
                     ? products.find((product) => product.id === editingProductId)?.is_active !== false
                     : false,
+                is_bundle: Boolean(newProduct.is_bundle),
+                bundle_items: (newProduct.is_bundle ? newProduct.bundle_items : []) as any,
             };
 
             let targetVariantId = "";
@@ -770,7 +790,7 @@ function InventoryContent() {
             }
 
             setShowAddDialog(false);
-            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '' });
+            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '', is_bundle: false, bundle_items: [] });
             fetchProducts();
         } catch (err) {
             console.error('Error saving product:', err);
@@ -912,6 +932,24 @@ function InventoryContent() {
                 subtitle={`${publishedCount} published • ${draftCount} drafts • ${products.reduce((acc, p) => acc + p.stock, 0)} units`}
                 action={
                     <div className="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            onClick={() => setShowCycleCountModal(true)}
+                            className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold border-surface-hover/70 bg-surface-navy/70 text-moonstone hover:text-white hover:bg-surface-hover/40"
+                            title="Barcode cycle count & tray reconciliation station"
+                        >
+                            <ScanBarcode size={15} className="text-cyan-400" />
+                            Tray Audit
+                        </Button>
+                        <Button
+                            variant="outline"
+                            onClick={() => setShowReplenishmentModal(true)}
+                            className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold border-surface-hover/70 bg-surface-navy/70 text-moonstone hover:text-white hover:bg-surface-hover/40"
+                            title="Smart Replenishment Queue & Supplier PO Generator"
+                        >
+                            <ShoppingBag size={15} className="text-amber-400" />
+                            Replenish
+                        </Button>
                         <Button
                             onClick={() => {
                                 setCloneSeed(null);
@@ -1107,6 +1145,14 @@ function InventoryContent() {
                                             <span className="text-[10px] text-moonstone">{openPOCount}</span>
                                         )}
                                     </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => setShowCycleCountModal(true)}>
+                                        <ScanBarcode size={14} className="text-cyan-400" />
+                                        <span className="flex-1">Tray cycle count</span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => setShowReplenishmentModal(true)}>
+                                        <ShoppingBag size={14} className="text-amber-400" />
+                                        <span className="flex-1">Replenishment queue</span>
+                                    </DropdownMenuItem>
                                     <DropdownMenuItem onClick={() => setShowTransferModal(true)}>
                                         <ArrowRightLeft size={14} />
                                         Transfer stock
@@ -1259,6 +1305,16 @@ function InventoryContent() {
                                                 >
                                                     <Truck size={18} />
                                                 </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedLedgerProduct(product);
+                                                        setShowLedgerModal(true);
+                                                    }}
+                                                    title="Stock Ledger Audit Trail (Movements & History)"
+                                                    className="bg-cyan-600 hover:bg-cyan-500 text-white p-2 rounded-lg hover:scale-110 transition-transform font-bold"
+                                                >
+                                                    <History size={18} />
+                                                </button>
                                                 <button onClick={() => {
                                                     setNewProduct({
                                                         name: product.name,
@@ -1276,6 +1332,8 @@ function InventoryContent() {
                                                         plating: product.plating || "",
                                                         occasion: product.occasion || "",
                                                         base_metal: product.base_metal || "",
+                                                        is_bundle: Boolean(product.is_bundle),
+                                                        bundle_items: product.bundle_items || [],
                                                     });
                                                     setIsEditMode(true);
                                                     setEditingProductId(product.id);
@@ -1302,6 +1360,11 @@ function InventoryContent() {
                                                     {product.is_active === false && (
                                                         <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-300">
                                                             Draft
+                                                        </span>
+                                                    )}
+                                                    {product.is_bundle && (
+                                                        <span className="shrink-0 rounded border border-purple-500/30 bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-purple-300">
+                                                            Bundle ({product.bundle_items?.length || 0})
                                                         </span>
                                                     )}
                                                 </div>
@@ -1877,6 +1940,15 @@ function InventoryContent() {
                                 </div>
                             </div>
 
+                            {/* Virtual Bundle / Combo Kit Composer */}
+                            <BundleComposerSection
+                                isBundle={newProduct.is_bundle}
+                                onIsBundleChange={(val: boolean) => setNewProduct(prev => ({ ...prev, is_bundle: val }))}
+                                bundleItems={newProduct.bundle_items}
+                                onBundleItemsChange={(items: BundleComponent[]) => setNewProduct(prev => ({ ...prev, bundle_items: items }))}
+                                availableProducts={products}
+                            />
+
                             {/* Stock & Storage Location */}
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
@@ -1952,44 +2024,18 @@ function InventoryContent() {
                 </DialogContent>
             </Dialog>
 
-            {/* Floating Selection Toolbar for WhatsApp Broadcast & Bulk Actions */}
-            {selectedProductIds.length > 0 && (
-                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-surface-navy/95 border border-primary/50 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-4 backdrop-blur-md animate-in fade-in slide-in-from-bottom-4">
-                    <div className="flex items-center gap-2">
-                        <span className="size-6 rounded-full bg-primary/20 text-primary flex items-center justify-center text-xs font-bold">
-                            {selectedProductIds.length}
-                        </span>
-                        <span className="text-xs font-semibold">
-                            {selectedProductIds.length} item{selectedProductIds.length === 1 ? '' : 's'} selected
-                        </span>
-                    </div>
-                    <div className="h-4 w-px bg-surface-hover" />
-                    <Button
-                        size="sm"
-                        onClick={() => {
-                            const list = products.filter(p => selectedProductIds.includes(p.id));
-                            setBroadcastProductsList(list);
-                            setShowBroadcastModal(true);
-                        }}
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold gap-1.5 h-8 px-3"
-                    >
-                        <Share2 size={14} />
-                        Broadcast to WhatsApp / Social
-                    </Button>
-                    <button
-                        onClick={() => setSelectedProductIds(filteredProducts.map(p => p.id))}
-                        className="text-xs text-moonstone hover:text-white px-2 py-1 transition-colors"
-                    >
-                        Select All ({filteredProducts.length})
-                    </button>
-                    <button
-                        onClick={() => setSelectedProductIds([])}
-                        className="text-xs text-muted-foreground hover:text-white px-2 py-1 transition-colors"
-                    >
-                        Clear
-                    </button>
-                </div>
-            )}
+            {/* Sticky Bottom Action Bar for Bulk Labels, Tray Moves, Price Updates & Broadcast */}
+            <InventoryBulkActionBar
+                selectedIds={selectedProductIds}
+                products={products}
+                onClearSelection={() => setSelectedProductIds([])}
+                onRefresh={fetchProducts}
+                onOpenBroadcast={() => {
+                    const list = products.filter(p => selectedProductIds.includes(p.id));
+                    setBroadcastProductsList(list);
+                    setShowBroadcastModal(true);
+                }}
+            />
 
             {/* Product Broadcast Modal */}
             <ProductBroadcastModal
@@ -2061,6 +2107,27 @@ function InventoryContent() {
                 onClose={() => setShowBulkImportModal(false)}
                 onImportSuccess={fetchProducts}
                 defaultPoReference={activeInwardPo || undefined}
+            />
+
+            {/* Chronological SKU Stock Ledger Audit Modal */}
+            <ProductStockLedgerModal
+                open={showLedgerModal}
+                onOpenChange={setShowLedgerModal}
+                product={selectedLedgerProduct}
+            />
+
+            {/* Tray / Location Barcode Cycle Count Audit Station */}
+            <TrayCycleCountModal
+                open={showCycleCountModal}
+                onOpenChange={setShowCycleCountModal}
+                products={products}
+                onAuditCompleted={fetchProducts}
+            />
+
+            {/* Smart Replenishment Queue & Supplier PO Generator */}
+            <SmartReplenishmentModal
+                open={showReplenishmentModal}
+                onOpenChange={setShowReplenishmentModal}
             />
         </div>
     );

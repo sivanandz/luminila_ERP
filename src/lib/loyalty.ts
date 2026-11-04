@@ -263,6 +263,11 @@ export async function calculateMaxRedeemablePoints(billAmount: number, currentBa
 // Transactions
 // =============================================
 
+/**
+ * Write the points ledger row. A failure here must reach the caller: a balance
+ * that moved without an audit row is exactly the drift this ledger exists to
+ * prevent (CUS-5).
+ */
 async function recordTransaction(
     accountId: string,
     type: TransactionType,
@@ -272,7 +277,7 @@ async function recordTransaction(
     referenceType?: string,
     referenceId?: string,
     db: PocketBase = pb
-): Promise<LoyaltyTransaction | null> {
+): Promise<LoyaltyTransaction> {
     try {
         const record = await db.collection('loyalty_transactions').create({
             account_email: dbTenant(db),
@@ -287,7 +292,7 @@ async function recordTransaction(
         return record as unknown as LoyaltyTransaction;
     } catch (error) {
         console.error('Error recording loyalty transaction:', error);
-        return null;
+        throw error;
     }
 }
 
@@ -347,10 +352,11 @@ export async function redeemPoints(
     pointsToRedeem: number,
     referenceType: string,
     referenceId: string,
-    billAmount?: number
+    billAmount?: number,
+    db: PocketBase = pb
 ): Promise<{ redeemed: boolean; valueApplied: number; newBalance: number } | null> {
     return enqueueTask(`loyalty_${customerId}`, async () => {
-        const account = await getLoyaltyAccount(customerId);
+        const account = await getLoyaltyAccount(customerId, db);
         if (!account) return null;
 
         if (!Number.isFinite(pointsToRedeem) || pointsToRedeem <= 0) {
@@ -362,7 +368,7 @@ export async function redeemPoints(
             throw new Error('Insufficient points balance');
         }
 
-        const settings = await getLoyaltySettings();
+        const settings = await getLoyaltySettings(db);
 
         if (pointsToRedeem < settings.min_redemption_points) {
             throw new Error(`Minimum ${settings.min_redemption_points} points required for redemption`);
@@ -381,7 +387,7 @@ export async function redeemPoints(
 
         try {
             // Update account atomically (guarded by min: 0 constraint against negative balance)
-            const updated = await pb.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
+            const updated = await db.collection('loyalty_accounts').update<LoyaltyAccount>(account.id, {
                 'current_balance-': pointsToRedeem,
                 'total_points_redeemed+': pointsToRedeem,
                 last_activity: new Date().toISOString(),
@@ -390,7 +396,7 @@ export async function redeemPoints(
             const newBalance = updated.current_balance;
 
             // Sync balance to customer record
-            await pb.collection('customers').update(customerId, {
+            await db.collection('customers').update(customerId, {
                 loyalty_points: newBalance,
             }).catch(() => {});
 
@@ -402,7 +408,8 @@ export async function redeemPoints(
                 newBalance,
                 `Redeemed for ${referenceType}`,
                 referenceType,
-                referenceId
+                referenceId,
+                db
             );
 
             return { redeemed: true, valueApplied, newBalance };

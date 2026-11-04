@@ -172,7 +172,23 @@ export async function recordPayment(paymentDetails: {
         throw new Error('Cannot record payment against an invoice in trash.');
     }
 
-    // Record payment in invoice_payments collection (spec schema: reference_number, notes)
+    // Record payment in invoice_payments collection (spec schema: reference_number, notes).
+    // Read the existing ledger BEFORE inserting so an overpayment can be refused
+    // rather than baked into paid_amount (INV-4).
+    const ledgerRows = await pb.collection('invoice_payments').getFullList({
+        filter: `invoice="${sanitizeFilter(paymentDetails.invoice_id)}" && account_email="${sanitizeFilter(tenantEmail)}"`,
+        requestKey: null,
+    });
+    const priorLedgerTotal = ledgerRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+    const invoiceTotal = Number(invoice.grand_total ?? invoice.total ?? 0);
+    const alreadyPaid = Math.max(Number(invoice.paid_amount || 0), priorLedgerTotal);
+    const balanceDue = Math.max(0, invoiceTotal - alreadyPaid);
+    if (invoiceTotal > 0 && paymentDetails.amount > balanceDue + 0.005) {
+        throw new Error(
+            `Payment of ₹${paymentDetails.amount.toFixed(2)} exceeds the balance due of ₹${balanceDue.toFixed(2)}.`
+        );
+    }
+
     await pb.collection('invoice_payments').create({
         account_email: tenantEmail,
         invoice: paymentDetails.invoice_id,
@@ -182,14 +198,9 @@ export async function recordPayment(paymentDetails: {
         reference_number: paymentDetails.reference || '',
         notes: paymentDetails.recorded_by ? `Recorded by ${paymentDetails.recorded_by}` : '',
     });
-    const ledgerRows = await pb.collection('invoice_payments').getFullList({
-        filter: `invoice="${sanitizeFilter(paymentDetails.invoice_id)}" && account_email="${sanitizeFilter(tenantEmail)}"`,
-        requestKey: null,
-    });
-    const ledgerTotal = ledgerRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
-    const invoiceTotal = Number(invoice.total || invoice.grand_total || 0);
-    const newPaidAmount = Math.max((invoice.paid_amount || 0) + paymentDetails.amount, ledgerTotal);
-    const isPaid = invoiceTotal > 0 && newPaidAmount >= invoiceTotal;
+    const settled = alreadyPaid + paymentDetails.amount;
+    const newPaidAmount = invoiceTotal > 0 ? Math.min(invoiceTotal, settled) : settled;
+    const isPaid = invoiceTotal > 0 && newPaidAmount >= invoiceTotal - 0.005;
 
     const updatePayload = {
         paid_amount: newPaidAmount,
@@ -1032,20 +1043,48 @@ export async function cloneInvoice(id: string): Promise<Invoice> {
     return createInvoice({ ...clonedData, invoice_number: nextNumber });
 }
 
+/**
+ * Fetch an invoice and refuse to mutate it unless it belongs to the signed-in
+ * tenant. Superuser-authenticated clients bypass PocketBase rules, so every
+ * id-addressed write has to verify ownership itself (INV-1).
+ */
+async function requireOwnedInvoice(id: string): Promise<Record<string, unknown>> {
+    const tenant = getCurrentTenantEmail();
+    const scopedTenant = tenant === 'default' ? '' : tenant;
+    if (!scopedTenant) {
+        throw new Error('No tenant account resolved; refusing invoice mutation.');
+    }
+    const invoice = await pb.collection('invoices').getOne(id);
+    const owner = String((invoice as { account_email?: string }).account_email || '').trim().toLowerCase();
+    if (owner && owner !== scopedTenant) {
+        throw new Error('Invoice does not belong to this store.');
+    }
+    return invoice as Record<string, unknown>;
+}
+
 export async function trashInvoice(id: string): Promise<void> {
+    await requireOwnedInvoice(id);
     await pb.collection('invoices').update(id, { is_deleted: true });
 }
 
 export async function restoreInvoice(id: string): Promise<void> {
+    await requireOwnedInvoice(id);
     await pb.collection('invoices').update(id, { is_deleted: false });
 }
 
 export async function deleteInvoicePermanently(id: string): Promise<void> {
-    const items = await pb.collection('invoice_items').getFullList({ filter: `invoice="${id}"` });
+    const invoice = await requireOwnedInvoice(id);
+    const tenant = String((invoice as { account_email?: string }).account_email || '').trim().toLowerCase();
+    const tenantClause = tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : '';
+    const items = await pb.collection('invoice_items').getFullList({
+        filter: `invoice="${sanitizeFilter(id)}"${tenantClause}`,
+    });
     for (const item of items) {
         await pb.collection('invoice_items').delete(item.id).catch(() => {});
     }
-    const payments = await pb.collection('invoice_payments').getFullList({ filter: `invoice="${id}"` });
+    const payments = await pb.collection('invoice_payments').getFullList({
+        filter: `invoice="${sanitizeFilter(id)}"${tenantClause}`,
+    });
     for (const p of payments) {
         await pb.collection('invoice_payments').delete(p.id).catch(() => {});
     }

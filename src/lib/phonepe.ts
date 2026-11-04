@@ -34,10 +34,11 @@ function loadConfigFromStorage() {
         const saved = localStorage.getItem(getTenantStorageKey("luminila_settings"));
         if (saved) {
             const parsed = JSON.parse(saved);
-            // Only override if settings exist in storage
+            // Only override if settings exist in storage. Salt key is
+            // server-only: hydrating it into the browser module exposed it to
+            // any XSS (PAY-10). Merchant id and salt index are not secrets.
             if (parsed.phonepeMerchantId) {
                 config.merchantId = parsed.phonepeMerchantId;
-                config.saltKey = parsed.phonepeSaltKey || config.saltKey;
                 config.saltIndex = parsed.phonepeSaltIndex || config.saltIndex;
                 config.isProduction = parsed.phonepeEnv === 'PROD';
             }

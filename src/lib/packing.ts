@@ -1,5 +1,5 @@
 /**
- * Packing & Dispatch Manager service layer.
+ * Packing & Dispatch Manager service layer (Packing Station 2.0).
  *
  * A packing session is one `order_packing` row per order. Scans resolve to a
  * `sales_order_items` line via the variant relation (jewelry tags carry the
@@ -7,20 +7,41 @@
  * and each line must be scanned `quantity` times before the session can
  * complete (strict verification, cross-order guard).
  *
- * The pure helpers (`matchResolvedToLine`, `incrementPackedItem`,
- * `derivePackingQueue`, `findOrderBySlipScan`) are deliberately IO-free so
- * `src/scripts/test-packing.ts` can exercise the packing grammar without a
- * PocketBase connection.
+ * Packing Station 2.0 enhancements:
+ * - Location-guided picking (`line.location`), product thumbnails (`line.image_url`),
+ *   and current shelf stock (`line.stock_level`).
+ * - Packaging Presets (`PACKAGING_PRESETS`) with weight and packaging material cost.
+ * - Virtual Combo / Bridal Set explosion into scannable component lines.
+ * - Multi-order Wave Pick List generation grouped by Tray/Location.
+ * - Mid-pack damage quarantine & short-ship support with `-1` undo.
+ * - Rapid 2-scan manifest dispatch support.
  */
 
 import { pb, getCurrentTenantEmail } from './pocketbase';
 import { logActivity } from './activity';
-import { resolvePOSBarcodeVariant, type ProductVariant } from './products';
+import { resolvePOSBarcodeVariant, type ProductVariant, getProductDisplayImage } from './products';
 import { parseSKUFromBarcode } from './barcode-generator';
-import { getOrders } from './orders';
+import { getOrders, getOrderDetails } from './orders';
 import type { OrderDetail, OrderDetailItem } from './orders';
+import { markStockDiscrepancy } from './discrepancies';
 
 export type PackingSessionStatus = 'in_progress' | 'completed' | 'cancelled';
+
+/** Packaging Presets with tare weight and standard container cost */
+export interface PackagingPreset {
+    id: string;
+    name: string;
+    weightGrams: number;
+    packagingCost: number;
+    description: string;
+}
+
+export const PACKAGING_PRESETS: PackagingPreset[] = [
+    { id: 'bubble_pouch', name: 'Bubble Mailer Pouch', weightGrams: 40, packagingCost: 8, description: 'Single rings, lightweight earrings, chains (40g)' },
+    { id: 'velvet_box', name: 'Velvet Presentation Box', weightGrams: 90, packagingCost: 35, description: 'Bangles, earrings & pendant sets (90g)' },
+    { id: 'rigid_bridal_box', name: 'Rigid Bridal Master Box', weightGrams: 280, packagingCost: 95, description: 'Heavy bridal sets, multi-piece necklaces (280g)' },
+    { id: 'ecom_carton', name: 'Corrugated E-Com Box', weightGrams: 140, packagingCost: 22, description: 'Multi-item bulk orders & secure shipping (140g)' },
+];
 
 /** One scanned piece against one order line, as persisted in packed_items. */
 export interface PackedItemEntry {
@@ -33,6 +54,20 @@ export interface PackedItemEntry {
     scanned_at: string;
 }
 
+/** Quarantined or short-shipped items recorded during packing */
+export interface ShortageItem {
+    item_id: string;
+    variant_id: string;
+    product_id: string;
+    sku: string;
+    quantity: number;
+    reason: string;
+    flagged_at: string;
+    status: 'quarantined' | 'short_shipped';
+    spare_allocated?: boolean;
+    customer_notified?: boolean;
+}
+
 export interface PackingSession {
     id: string;
     account_email: string;
@@ -42,6 +77,10 @@ export interface PackingSession {
     customer_phone?: string;
     status: PackingSessionStatus;
     packed_items: PackedItemEntry[];
+    shortage_items?: ShortageItem[];
+    packaging_preset?: string;
+    weight_grams?: number;
+    packaging_cost?: number;
     packed_by?: string;
     notes?: string;
     completed_at?: string;
@@ -60,6 +99,10 @@ export interface PackingLine {
     quantity: number;
     variant_size?: string;
     variant_color?: string;
+    location?: string;
+    image_url?: string | null;
+    stock_level?: number;
+    bundle_parent_sku?: string;
 }
 
 // ===========================================
@@ -67,21 +110,37 @@ export interface PackingLine {
 // ===========================================
 
 /**
- * sales_order_items as PocketBase actually returns them: the relation fields
+ * sales_order_items as PocketBase returns them: the relation fields
  * stay record-id strings and the expanded records live under `expand`.
- * `OrderDetailItem` types `variant` as the object, so accept both shapes.
  */
 interface ExpandedOrderItem extends Omit<OrderDetailItem, 'variant'> {
     variant?: ProductVariant | string;
     expand?: {
         variant?: ProductVariant;
-        product?: { id?: string; sku?: string; name?: string };
+        product?: {
+            id?: string;
+            sku?: string;
+            name?: string;
+            location?: string;
+            image_url?: string;
+            image_data?: string;
+            is_bundle?: boolean;
+            bundle_items?: Array<{
+                variant_id?: string;
+                product_id?: string;
+                sku: string;
+                name: string;
+                quantity: number;
+            }>;
+        };
     };
 }
 
-/** Build the checklist lines from an order's items (expand product,variant). */
+/** Build the checklist lines from an order's items (expand product,variant + bundle explosion). */
 export function buildPackingLines(items: Array<OrderDetailItem | ExpandedOrderItem> | undefined): PackingLine[] {
-    return (items || []).map((item) => {
+    const lines: PackingLine[] = [];
+
+    for (const item of items || []) {
         const rawVariant = item.variant as ProductVariant | string | undefined;
         const expanded = (item as ExpandedOrderItem).expand;
         const variant = rawVariant && typeof rawVariant === 'object' ? rawVariant : expanded?.variant;
@@ -89,23 +148,52 @@ export function buildPackingLines(items: Array<OrderDetailItem | ExpandedOrderIt
         const product = variant?.expand?.product || expanded?.product;
         const parentSku = String(product?.sku || '');
         const suffix = String(variant?.sku_suffix || '');
-        // Quick-added products carry the full child SKU on the product record,
-        // so the suffix may already be part of parentSku — don't append twice.
+
         const sku =
             suffix && parentSku && !parentSku.toUpperCase().endsWith(`-${suffix.toUpperCase()}`)
                 ? `${parentSku}-${suffix}`
                 : parentSku || suffix || item.description || item.id;
-        return {
-            item_id: item.id,
-            variant_id: variantId,
-            product_id: String(item.product || product?.id || ''),
-            sku,
-            description: item.description || product?.name || 'Item',
-            quantity: item.quantity || 1,
-            variant_size: variant?.size ? String(variant.size) : undefined,
-            variant_color: variant?.color ? String(variant.color) : undefined,
-        };
-    });
+
+        const image = getProductDisplayImage({ image_data: product?.image_data, image_url: product?.image_url });
+        const location = product?.location || 'Showcase Tray A';
+        const stockLevel = Number(variant?.stock_level) || 0;
+        const itemQuantity = item.quantity || 1;
+
+        // Virtual Bundle explosion: if product has component bundle items, explode into individual scannable lines
+        if (product?.is_bundle && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
+            for (const [compIdx, comp] of product.bundle_items.entries()) {
+                const compQty = (Number(comp.quantity) || 1) * itemQuantity;
+                lines.push({
+                    item_id: `${item.id}_comp_${compIdx}`,
+                    variant_id: ('variant_id' in comp ? (comp as any).variant_id : '') || '',
+                    product_id: comp.product_id || '',
+                    sku: comp.sku,
+                    description: comp.name || `Component of ${sku}`,
+                    quantity: compQty,
+                    location,
+                    image_url: image,
+                    stock_level: stockLevel,
+                    bundle_parent_sku: sku,
+                });
+            }
+        } else {
+            lines.push({
+                item_id: item.id,
+                variant_id: variantId,
+                product_id: String(item.product || product?.id || ''),
+                sku,
+                description: item.description || product?.name || 'Item',
+                quantity: itemQuantity,
+                variant_size: variant?.size ? String(variant.size) : undefined,
+                variant_color: variant?.color ? String(variant.color) : undefined,
+                location,
+                image_url: image,
+                stock_level: stockLevel,
+            });
+        }
+    }
+
+    return lines;
 }
 
 export type ScanMatchType =
@@ -122,8 +210,7 @@ export interface ScanMatchResult {
 
 /**
  * Match a resolved catalog identity to the order's lines. Variant match is
- * strict (channel orders always carry an explicit variant); a product-level
- * tag only counts when exactly one line carries that product.
+ * strict; a product-level tag only counts when exactly one line carries that product.
  */
 export function matchResolvedToLine(
     resolved: { productId?: string; variantId?: string },
@@ -186,20 +273,52 @@ export function incrementPackedItem(
     ];
 }
 
-/** Every line fully scanned? Pure. */
-export function isSessionComplete(lines: PackingLine[], packedItems: PackedItemEntry[]): boolean {
+/** Decrement (-1 undo) the packed entry for a line. Pure. */
+export function decrementPackedItem(
+    packedItems: PackedItemEntry[],
+    line: PackingLine
+): PackedItemEntry[] {
+    const existingIndex = packedItems.findIndex((entry) => entry.item_id === line.item_id);
+    if (existingIndex < 0) return packedItems;
+    const existing = packedItems[existingIndex];
+    if (existing.packed_qty <= 0) return packedItems;
+
+    const next = [...packedItems];
+    next[existingIndex] = {
+        ...existing,
+        packed_qty: existing.packed_qty - 1,
+    };
+    return next;
+}
+
+/** Every line fully scanned or short-shipped? Pure. */
+export function isSessionComplete(
+    lines: PackingLine[],
+    packedItems: PackedItemEntry[],
+    shortageItems?: ShortageItem[]
+): boolean {
     if (lines.length === 0) return false;
     return lines.every((line) => {
-        const packed = packedItems.find((entry) => entry.item_id === line.item_id);
-        return (packed?.packed_qty || 0) >= line.quantity;
+        const packed = packedItems.find((entry) => entry.item_id === line.item_id)?.packed_qty || 0;
+        const shortQty = (shortageItems || [])
+            .filter((s) => s.item_id === line.item_id && s.status === 'short_shipped')
+            .reduce((sum, s) => sum + s.quantity, 0);
+        return (packed + shortQty) >= line.quantity;
     });
 }
 
-/** Lines still missing scans (for the strict override prompt). */
-export function incompleteLines(lines: PackingLine[], packedItems: PackedItemEntry[]): PackingLine[] {
+/** Lines still missing scans (for the strict override prompt). Pure. */
+export function incompleteLines(
+    lines: PackingLine[],
+    packedItems: PackedItemEntry[],
+    shortageItems?: ShortageItem[]
+): PackingLine[] {
     return lines.filter((line) => {
-        const packed = packedItems.find((entry) => entry.item_id === line.item_id);
-        return (packed?.packed_qty || 0) < line.quantity;
+        const packed = packedItems.find((entry) => entry.item_id === line.item_id)?.packed_qty || 0;
+        const shortQty = (shortageItems || [])
+            .filter((s) => s.item_id === line.item_id && s.status === 'short_shipped')
+            .reduce((sum, s) => sum + s.quantity, 0);
+        return (packed + shortQty) < line.quantity;
     });
 }
 
@@ -298,6 +417,64 @@ export function findOrderBySlipScan(
     return all.find((order) => order.order_number.trim().toUpperCase() === normalized) || null;
 }
 
+/** Multi-order Wave Pick List item */
+export interface WavePickItem {
+    sku: string;
+    description: string;
+    totalQuantity: number;
+    orders: Array<{ order_number: string; quantity: number }>;
+    location: string;
+    image_url?: string | null;
+}
+
+export interface WavePickGroup {
+    location: string;
+    items: WavePickItem[];
+}
+
+/** Consolidates multiple queued orders into a unified Tray-by-Tray Wave Pick List. Pure. */
+export function buildWavePickList(
+    orders: QueueOrder[],
+    orderLinesMap: Map<string, PackingLine[]>
+): WavePickGroup[] {
+    const locationMap = new Map<string, Map<string, WavePickItem>>();
+
+    for (const order of orders) {
+        const lines = orderLinesMap.get(order.id) || [];
+        for (const line of lines) {
+            const loc = line.location || 'Showcase Tray A';
+            if (!locationMap.has(loc)) {
+                locationMap.set(loc, new Map());
+            }
+            const itemsInLoc = locationMap.get(loc)!;
+            const existing = itemsInLoc.get(line.sku);
+            if (existing) {
+                existing.totalQuantity += line.quantity;
+                existing.orders.push({ order_number: order.order_number, quantity: line.quantity });
+            } else {
+                itemsInLoc.set(line.sku, {
+                    sku: line.sku,
+                    description: line.description,
+                    totalQuantity: line.quantity,
+                    orders: [{ order_number: order.order_number, quantity: line.quantity }],
+                    location: loc,
+                    image_url: line.image_url,
+                });
+            }
+        }
+    }
+
+    const groups: WavePickGroup[] = [];
+    for (const [location, itemMap] of locationMap.entries()) {
+        groups.push({
+            location,
+            items: Array.from(itemMap.values()).sort((a, b) => a.sku.localeCompare(b.sku)),
+        });
+    }
+
+    return groups.sort((a, b) => a.location.localeCompare(b.location));
+}
+
 // ===========================================
 // IO LAYER
 // ===========================================
@@ -317,6 +494,10 @@ function toSession(record: Record<string, unknown>): PackingSession {
         customer_phone: record.customer_phone ? String(record.customer_phone) : undefined,
         status: (record.status as PackingSessionStatus) || 'in_progress',
         packed_items: Array.isArray(record.packed_items) ? (record.packed_items as PackedItemEntry[]) : [],
+        shortage_items: Array.isArray(record.shortage_items) ? (record.shortage_items as ShortageItem[]) : [],
+        packaging_preset: record.packaging_preset ? String(record.packaging_preset) : undefined,
+        weight_grams: typeof record.weight_grams === 'number' ? record.weight_grams : undefined,
+        packaging_cost: typeof record.packaging_cost === 'number' ? record.packaging_cost : undefined,
         packed_by: record.packed_by ? String(record.packed_by) : undefined,
         notes: record.notes ? String(record.notes) : undefined,
         completed_at: record.completed_at ? String(record.completed_at) : undefined,
@@ -396,6 +577,7 @@ export async function getOrCreateSession(
         console.warn('Session lookup failed, creating a new one:', error);
     }
 
+    const defaultPreset = PACKAGING_PRESETS[0];
     const created = await pb.collection('order_packing').create({
         account_email: accountEmail,
         order_id: order.id,
@@ -404,6 +586,10 @@ export async function getOrCreateSession(
         customer_phone: order.customer_phone || '',
         status: 'in_progress',
         packed_items: [] as PackedItemEntry[],
+        shortage_items: [] as ShortageItem[],
+        packaging_preset: defaultPreset.id,
+        weight_grams: defaultPreset.weightGrams,
+        packaging_cost: defaultPreset.packagingCost,
         packed_by: packedBy || '',
     });
     const session = toSession(created as unknown as Record<string, unknown>);
@@ -414,17 +600,21 @@ export async function getOrCreateSession(
     return session;
 }
 
-/** Persist scan progress on the session row. */
+/** Persist scan progress & packaging preset on the session row. */
 export async function saveSessionProgress(session: PackingSession): Promise<void> {
-    await pb.collection('order_packing').update(session.id, {
+    const payload: Record<string, unknown> = {
         packed_items: session.packed_items,
-    });
+    };
+    if (session.shortage_items) payload.shortage_items = session.shortage_items;
+    if (session.packaging_preset) payload.packaging_preset = session.packaging_preset;
+    if (typeof session.weight_grams === 'number') payload.weight_grams = session.weight_grams;
+    if (typeof session.packaging_cost === 'number') payload.packaging_cost = session.packaging_cost;
+
+    await pb.collection('order_packing').update(session.id, payload);
 }
 
 /**
- * Most recent session for an order regardless of status. Lets the station
- * re-open a completed checklist read-only instead of silently starting a new
- * empty session when a packed order is clicked from the queue.
+ * Most recent session for an order regardless of status.
  */
 export async function getLatestSessionForOrder(orderId: string): Promise<PackingSession | null> {
     const filterParts = [`order_id = "${orderId.replace(/"/g, '\\"')}"`];
@@ -444,16 +634,30 @@ export async function getLatestSessionForOrder(orderId: string): Promise<Packing
     }
 }
 
-/** Mark the session completed (strict gate is the caller's responsibility). */
-export async function completePackingSession(session: PackingSession, packedBy?: string): Promise<void> {
-    await pb.collection('order_packing').update(session.id, {
+/** Mark the session completed. */
+export async function completePackingSession(
+    session: PackingSession,
+    packedBy?: string
+): Promise<void> {
+    const payload: Record<string, unknown> = {
         status: 'completed',
         completed_at: new Date().toISOString(),
         packed_by: packedBy || session.packed_by || '',
-    });
+    };
+    if (session.packaging_preset) payload.packaging_preset = session.packaging_preset;
+    if (typeof session.weight_grams === 'number') payload.weight_grams = session.weight_grams;
+    if (typeof session.packaging_cost === 'number') payload.packaging_cost = session.packaging_cost;
+    if (session.shortage_items) payload.shortage_items = session.shortage_items;
+
+    await pb.collection('order_packing').update(session.id, payload);
     void logActivity('status_change', 'order', `Packing completed for ${session.order_number}`, {
         entityId: session.order_id,
-        newValues: { packing_status: 'completed', pieces: session.packed_items.reduce((sum, entry) => sum + entry.packed_qty, 0) },
+        newValues: {
+            packing_status: 'completed',
+            pieces: session.packed_items.reduce((sum, entry) => sum + entry.packed_qty, 0),
+            packaging_preset: session.packaging_preset,
+            weight_grams: session.weight_grams,
+        },
         userName: packedBy,
     });
 }
@@ -510,11 +714,123 @@ export async function loadPackingQueue(): Promise<PackingQueue> {
     );
 }
 
+/** Load detailed packing lines for any order id on demand */
+export async function loadPackingLinesForOrder(orderId: string): Promise<PackingLine[]> {
+    try {
+        const details = await getOrderDetails(orderId);
+        if (!details) return [];
+        return buildPackingLines(details.items);
+    } catch (err) {
+        console.warn(`Could not load packing lines for order ${orderId}:`, err);
+        return [];
+    }
+}
+
 /**
- * Cross-order guard: which queued orders contain this variant? Used to name
- * the owning order when a stray piece is scanned, and to jump to the right
- * order when a piece is scanned with no order open. Best-effort — an empty
- * result degrades to a generic message.
+ * Handle mid-pack damaged piece exception:
+ * 1. Checks if spare unit is available on shelf (`variant.stock_level >= 1`).
+ * 2. If spare exists: calls `markStockDiscrepancy` to quarantine 1 shelf unit and returns { action: 'spare_allocated' }.
+ * 3. If no spare: registers shortage in `stock_discrepancies` and returns { action: 'short_ship_required' }.
+ */
+export async function handleMidPackDamage(
+    session: PackingSession,
+    line: PackingLine,
+    reason: string,
+    flaggedBy: string = 'Packer'
+): Promise<{
+    action: 'spare_allocated' | 'short_ship_required';
+    availableStock: number;
+    updatedSession: PackingSession;
+}> {
+    let availableStock = 0;
+    if (line.variant_id) {
+        try {
+            const variant = await pb.collection('product_variants').getOne<{ stock_level?: number }>(line.variant_id);
+            availableStock = variant.stock_level || 0;
+        } catch {
+            availableStock = 0;
+        }
+    }
+
+    const hasSpare = availableStock >= 1;
+    const now = new Date().toISOString();
+
+    if (hasSpare && line.variant_id) {
+        // Quarantine 1 shelf spare
+        await markStockDiscrepancy({
+            product_id: line.product_id,
+            variant_id: line.variant_id,
+            sku: line.sku,
+            product_name: line.description,
+            discrepancy_type: 'damaged',
+            quantity: 1,
+            reason: `Damaged piece spotted at packing station for Order #${session.order_number}. ${reason}`.trim(),
+            flagged_by: flaggedBy,
+        });
+
+        const newShortage: ShortageItem = {
+            item_id: line.item_id,
+            variant_id: line.variant_id,
+            product_id: line.product_id,
+            sku: line.sku,
+            quantity: 1,
+            reason,
+            flagged_at: now,
+            status: 'quarantined',
+            spare_allocated: true,
+        };
+
+        const updatedShortages = [...(session.shortage_items || []), newShortage];
+        const updatedSession = { ...session, shortage_items: updatedShortages };
+        await saveSessionProgress(updatedSession);
+
+        return {
+            action: 'spare_allocated',
+            availableStock: availableStock - 1,
+            updatedSession,
+        };
+    }
+
+    // Zero spares remaining: short-ship flow
+    const accountEmail = getCurrentTenantEmail();
+    await pb.collection('stock_discrepancies').create({
+        account_email: accountEmail,
+        product: line.product_id || '',
+        variant: line.variant_id || '',
+        sku: line.sku,
+        product_name: line.description,
+        discrepancy_type: 'damaged',
+        quantity: 1,
+        reason: `Order #${session.order_number} short-shipped: 0 spare units on shelf. ${reason}`.trim(),
+        status: 'active',
+        flagged_by: flaggedBy,
+    }).catch((err) => console.warn('Discrepancy write warning:', err));
+
+    const newShortage: ShortageItem = {
+        item_id: line.item_id,
+        variant_id: line.variant_id,
+        product_id: line.product_id,
+        sku: line.sku,
+        quantity: 1,
+        reason,
+        flagged_at: now,
+        status: 'short_shipped',
+        spare_allocated: false,
+    };
+
+    const updatedShortages = [...(session.shortage_items || []), newShortage];
+    const updatedSession = { ...session, shortage_items: updatedShortages };
+    await saveSessionProgress(updatedSession);
+
+    return {
+        action: 'short_ship_required',
+        availableStock: 0,
+        updatedSession,
+    };
+}
+
+/**
+ * Cross-order guard: which queued orders contain this variant?
  */
 export async function findOpenOrdersForVariant(
     variantId: string,

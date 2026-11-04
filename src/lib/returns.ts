@@ -381,8 +381,52 @@ export interface ApproveCreditNoteOptions {
     karigarName?: string;
 }
 
+/**
+ * Refuse credit-note mutations unless the note belongs to the signed-in tenant.
+ * These paths run under superuser clients often enough that PocketBase rules
+ * cannot be the only gate (RET-1).
+ */
+async function requireOwnedCreditNote<T>(id: string): Promise<T & { account_email?: string }> {
+    const tenant = getCurrentTenantEmail();
+    const scopedTenant = tenant === 'default' ? '' : tenant;
+    if (!scopedTenant) {
+        throw new Error('No tenant account resolved; refusing credit-note mutation.');
+    }
+    const note = await pb.collection('credit_notes').getOne<T & { account_email?: string }>(id);
+    const owner = String(note.account_email || '').trim().toLowerCase();
+    if (owner && owner !== scopedTenant) {
+        throw new Error('Credit note does not belong to this store.');
+    }
+    return note;
+}
+
+/** Throw when a variant addressed by a return belongs to another tenant. */
+async function assertVariantOwned(variantId: string | undefined): Promise<void> {
+    if (!variantId) return;
+    const tenant = getCurrentTenantEmail();
+    const scopedTenant = tenant === 'default' ? '' : tenant;
+    if (!scopedTenant) {
+        throw new Error('No tenant account resolved; refusing variant mutation.');
+    }
+    const variant = await pb.collection('product_variants').getOne<{ account_email?: string }>(variantId, {
+        fields: 'account_email',
+    });
+    const owner = String(variant.account_email || '').trim().toLowerCase();
+    if (owner && owner !== scopedTenant) {
+        throw new Error('Variant does not belong to this store.');
+    }
+}
+
 export async function approveCreditNote(id: string, options?: ApproveCreditNoteOptions): Promise<void> {
-    const cn = await pb.collection('credit_notes').getOne(id);
+    const cn = await requireOwnedCreditNote<{
+        status?: string;
+        credit_note_number?: string;
+        return_reason?: string;
+        original_sale?: string;
+        original_invoice?: string;
+        buyer_name?: string;
+        notes?: string;
+    }>(id);
 
     // Idempotency guard: a note that is already settled must never have its
     // inventory side effects (restock / stock_discrepancies records) re-run.
@@ -403,8 +447,9 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
     await pb.collection('credit_notes').update(id, { status: 'approved' });
 
     try {
+        const noteOwner = String(cn.account_email || '').trim().toLowerCase();
         const items = await pb.collection('credit_note_items').getFullList({
-            filter: `credit_note="${id}"`
+            filter: `credit_note="${sanitizeFilter(id)}"${noteOwner ? ` && account_email="${sanitizeFilter(noteOwner)}"` : ''}`
         });
 
         // Inward QC: when a grade is supplied, the QC engine owns the routing
@@ -442,6 +487,9 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
 
         for (const item of items) {
             if (item.quantity > 0) {
+                // The variant being restocked must belong to this tenant too,
+                // otherwise a crafted note could mint stock elsewhere (RET-1).
+                await assertVariantOwned(item.variant);
                 if (routeToQuarantine) {
                     // 1. Quarantined / Defective goods: DO NOT restore to sellable inventory.
                     // Log quarantine movement and create stock_discrepancies record
@@ -533,8 +581,7 @@ export async function processRefund(
     refundMethod: string,
     refundReference?: string
 ): Promise<void> {
-    const cn = await pb.collection('credit_notes').getOne<{
-        id: string;
+    const cn = await requireOwnedCreditNote<{
         status?: string;
         grand_total?: number;
         credit_note_number?: string;
@@ -557,6 +604,13 @@ export async function processRefund(
         refund_reference: reference,
         refunded_at: new Date().toISOString(),
     });
+
+    // Re-read: two terminals refunding the same note write different references.
+    // Only the writer whose reference survived proceeds to move money (RET-2).
+    const claimed = await pb.collection('credit_notes').getOne<{ refund_reference?: string }>(id);
+    if (claimed.refund_reference !== reference) {
+        throw new Error('This credit note is already being refunded by another session.');
+    }
 
     // The money came back, so the customer's lifetime spend and loyalty earned
     // on that sale must come back too. Previously a refund left the CRM
@@ -584,17 +638,30 @@ export async function processRefund(
             ) || amount;
         }
 
+        // Only the refunded value leaves lifetime spend, and the order itself
+        // still exists for a partial return — so do not decrement the order
+        // counter unless the whole sale came back (RET-3).
+        const refundAmount = Math.max(0, amount);
+        const isPartialRefund = originalAmount > 0 && refundAmount < originalAmount - 0.005;
+
         if (refundCustomerId) {
-            await applyPurchaseReversal(pb, refundCustomerId, originalAmount);
+            await applyPurchaseReversal(pb, refundCustomerId, refundAmount, {
+                decrementOrders: !isPartialRefund,
+            });
             if (referenceId) {
                 const earned = await pb.collection('loyalty_transactions').getFirstListItem(
                     `type="earn" && reference_id="${sanitizeFilter(referenceId)}"`
                 ).catch(() => null);
                 const points = Number((earned as { points?: number } | null)?.points || 0);
-                if (points > 0) {
+                // Claw back only the fraction of the sale that was refunded so a
+                // one-line return cannot wipe the points of the whole invoice (RET-4).
+                const clawback = isPartialRefund
+                    ? Math.round(points * (refundAmount / originalAmount) * 100) / 100
+                    : points;
+                if (clawback > 0) {
                     await adjustPoints(
                         refundCustomerId,
-                        -points,
+                        -clawback,
                         `Refund reversal for credit note ${cn.credit_note_number || id}`
                     ).catch((err) => console.warn('Loyalty reversal failed:', err));
                 }
@@ -649,7 +716,7 @@ export async function processRefund(
 }
 
 export async function cancelCreditNote(id: string): Promise<void> {
-    const cn = await pb.collection('credit_notes').getOne<{ status?: string; credit_note_number?: string }>(id);
+    const cn = await requireOwnedCreditNote<{ status?: string; credit_note_number?: string }>(id);
     // An approved note has already moved inventory (restock or quarantine) and
     // may have paid out a refund. Cancelling it without reversing those effects
     // corrupts stock, so only a pending note may be cancelled (ORD-06).
@@ -671,11 +738,20 @@ export async function createReturnFromInvoice(
     reason: ReturnReason,
     notes?: string
 ): Promise<CreditNote> {
-    // Fetch original invoice
-    const invoice = await pb.collection('invoices').getOne<Invoice>(invoiceId);
+    // Fetch original invoice and verify it belongs to this store before any of
+    // its lines can be credited (RET-1).
+    const invoice = await pb.collection('invoices').getOne<Invoice & { account_email?: string }>(invoiceId);
     const tenant = getCurrentTenantEmail();
+    const scopedTenant = tenant === 'default' ? '' : tenant;
+    if (!scopedTenant) {
+        throw new Error('No tenant account resolved; refusing to create a return.');
+    }
+    const invoiceOwner = String(invoice.account_email || '').trim().toLowerCase();
+    if (invoiceOwner && invoiceOwner !== scopedTenant) {
+        throw new Error('Invoice does not belong to this store.');
+    }
     const invoiceItems = await pb.collection('invoice_items').getFullList<InvoiceItemRecord>({
-        filter: `invoice="${sanitizeFilter(invoiceId)}" && account_email="${sanitizeFilter(tenant)}"`,
+        filter: `invoice="${sanitizeFilter(invoiceId)}" && account_email="${sanitizeFilter(scopedTenant)}"`,
     });
 
     // Filter items being returned
@@ -693,13 +769,19 @@ export async function createReturnFromInvoice(
         throw new Error(`Invoice item(s) not found on this invoice: ${unknownIds.join(', ')}`);
     }
 
+    // A failed history read must block the return: treating it as "nothing was
+    // returned before" lets the same line be credited twice on a DB hiccup (RET-6).
     const priorReturns = await pb
         .collection('credit_note_items')
         .getFullList<{ original_invoice_item?: string; quantity?: number }>({
-            filter: `credit_note.original_invoice="${invoiceId}" && credit_note.status != "cancelled"`,
-            fields: 'original_invoice_item,quantity',
+            filter: `credit_note.original_invoice="${sanitizeFilter(invoiceId)}" && credit_note.status != "cancelled"`,
+            fields: 'original_invoice_item,quantity,account_email',
         })
-        .catch(() => []);
+        .catch((err) => {
+            throw new Error(
+                `Could not verify previously returned quantities; return blocked. ${err instanceof Error ? err.message : String(err)}`
+            );
+        });
 
     const priorByItem = new Map<string, number>();
     for (const prior of priorReturns) {

@@ -167,18 +167,26 @@ export function accountScopeEmail(): string {
     return String(model?.account_email || model?.email || '').trim().toLowerCase();
 }
 
-// Account Data Isolation: Auto-inject account_email on record creation
+/** True when the shared client is authenticated as PocketBase superuser. */
+function isSuperuserSession(): boolean {
+    const model = pb.authStore.model as { collectionName?: string } | null;
+    return Boolean((pb.authStore as unknown as { isSuperuser?: boolean }).isSuperuser)
+        || model?.collectionName === '_superusers';
+}
+
+// Account Data Isolation: Auto-inject account_email on record creation.
+// For a real tenant session the verified scope wins over any caller-supplied
+// value (the old "only when absent" rule let a client POST/PATCH another
+// tenant's owner stamp verbatim — INF-7). Superuser/server sessions are left
+// untouched: their explicit account_email is the tenant selector.
 pb.beforeSend = function (url, options) {
     const accountEmail = accountScopeEmail();
-    if (options.method === 'POST' && accountEmail) {
+    const isMutation = options.method === 'POST' || options.method === 'PATCH';
+    if (isMutation && accountEmail && !isSuperuserSession()) {
         if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
-            if (!(options.body as Record<string, unknown>).account_email) {
-                (options.body as Record<string, unknown>).account_email = accountEmail;
-            }
+            (options.body as Record<string, unknown>).account_email = accountEmail;
         } else if (options.body instanceof FormData) {
-            if (!options.body.has('account_email')) {
-                options.body.append('account_email', accountEmail);
-            }
+            options.body.set('account_email', accountEmail);
         }
     }
     return { url, options };
@@ -195,6 +203,13 @@ export function ensureAuth(): boolean {
                 const parsed = JSON.parse(raw);
                 if (parsed.token) {
                     pb.authStore.save(parsed.token, parsed.record || parsed.model);
+                    // A stored token that is already expired is not a session.
+                    // Returning true on save alone made every guard believe in a
+                    // dead login (INF-14).
+                    if (!pb.authStore.isValid) {
+                        pb.authStore.clear();
+                        return false;
+                    }
                     return true;
                 }
             }
@@ -208,42 +223,24 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * Ensure PocketBase client is authenticated in server-side API routes (Node.js)
- * Automatically routes to the active or preferred tenant's isolated PocketBase instance if provisioned.
+ * Ensure PocketBase client is authenticated in server-side API routes (Node.js).
+ *
+ * This deliberately does NOT re-point the shared client at a tenant database.
+ * `ensureServerAuth` used to mutate `pb.baseUrl` and `pb.authStore` for the
+ * requested tenant, so concurrent requests interleaved: tenant A's query could
+ * run against tenant B's database with B's credentials, and a failed
+ * fall-through left the shared client pointed at the last tenant (INF-1/2/3).
+ * Tenant-scoped server work must use `createTenantClient(email)`.
  */
 export async function ensureServerAuth(preferredTenantEmail?: string): Promise<boolean> {
-    // Single mode has one database: skip the tenant registry entirely.
-    if (typeof window === "undefined" && !isSingleAccountMode()) {
-        try {
-            const nodeRequire = eval("require") as NodeRequire;
-            const fs = nodeRequire("fs") as typeof import("fs");
-            const path = nodeRequire("path") as typeof import("path");
-            const registryPath = path.join(process.cwd(), "pocketbase", "pb_tenants", "registry.json");
-            if (fs.existsSync(registryPath)) {
-                const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
-                const targetEmail = (preferredTenantEmail || registry.activeTenantEmail || "").trim().toLowerCase();
-                const tenantRec = targetEmail ? registry.tenants?.[targetEmail] : undefined;
-                if (tenantRec?.port) {
-                    const targetUrl = `http://127.0.0.1:${tenantRec.port}`;
-                    if (pb.baseUrl !== targetUrl) {
-                        pb.baseUrl = targetUrl;
-                        pb.authStore.clear();
-                    }
-                    if (pb.authStore.isValid && (pb.authStore as any).isSuperuser) {
-                        return true;
-                    }
-                    if (tenantRec.email && tenantRec.adminPassword) {
-                        await pb.collection("_superusers").authWithPassword(tenantRec.email, readRegistrySecret(tenantRec.adminPassword));
-                        return true;
-                    }
-                }
-            }
-        } catch {
-            // Fall through to standard environment variable superuser auth
-        }
+    if (typeof window === 'undefined' && !isSingleAccountMode() && preferredTenantEmail) {
+        throw new Error(
+            'ensureServerAuth cannot switch the shared PocketBase client between tenants. ' +
+            'Use createTenantClient(preferredTenantEmail) for tenant-scoped server work.'
+        );
     }
 
-    if (pb.authStore.isValid && (pb.authStore as any).isSuperuser) return true;
+    if (pb.authStore.isValid && isSuperuserSession()) return true;
     // Single mode falls back to the one account so routes authenticate as the
     // identity their records are stamped with.
     const adminEmail = process.env.POCKETBASE_SUPERUSER_EMAIL
@@ -256,12 +253,18 @@ export async function ensureServerAuth(preferredTenantEmail?: string): Promise<b
     try {
         await pb.collection('_superusers').authWithPassword(adminEmail, adminPassword);
         return true;
-    } catch {
+    } catch (superuserErr) {
         try {
             await pb.collection('users').authWithPassword(adminEmail, adminPassword);
             return true;
-        } catch {
-            return false;
+        } catch (userErr) {
+            // Fail closed: an unauthenticated client silently produced empty
+            // results that callers read as "no data" (INF-4).
+            const detail = [superuserErr, userErr]
+                .map((err) => (err instanceof Error ? err.message : String(err)))
+                .filter(Boolean)
+                .join(' / ');
+            throw new Error(`Server authentication failed: ${detail}`);
         }
     }
 }

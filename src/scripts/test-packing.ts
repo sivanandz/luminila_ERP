@@ -9,6 +9,8 @@
 import assert from 'node:assert/strict';
 import {
     buildPackingLines,
+    buildWavePickList,
+    decrementPackedItem,
     derivePackingQueue,
     findOrderBySlipScan,
     incompleteLines,
@@ -228,6 +230,137 @@ test('a packing-slip scan resolves by exact order number, case-insensitively', (
     assert.equal(hit?.id, 'o1');
     assert.equal(findOrderBySlipScan('TMPNECCHK04821-MGRBSTD', queue), null);
     assert.equal(findOrderBySlipScan('', queue), null);
+});
+
+// ---- -1 undo decrement ----
+
+test('decrementPackedItem decrements packed quantity by 1', () => {
+    const line: PackingLine = {
+        item_id: 'item_1',
+        variant_id: 'var_ruby',
+        product_id: 'prod_1',
+        sku: 'TMPNECCHK04821-MGRBSTD',
+        description: 'Ruby Choker',
+        quantity: 3,
+        location: 'Showcase Tray A',
+    };
+
+    let entries: PackedItemEntry[] = [
+        {
+            item_id: 'item_1',
+            variant_id: 'var_ruby',
+            product_id: 'prod_1',
+            sku: 'TMPNECCHK04821-MGRBSTD',
+            packed_qty: 2,
+            quantity: 3,
+            scanned_at: new Date().toISOString(),
+        },
+    ];
+
+    entries = decrementPackedItem(entries, line);
+    assert.equal(entries[0].packed_qty, 1);
+
+    entries = decrementPackedItem(entries, line);
+    assert.equal(entries[0].packed_qty, 0);
+
+    // Decrementing when already 0 should not go negative
+    entries = decrementPackedItem(entries, line);
+    assert.equal(entries[0].packed_qty, 0);
+});
+
+// ---- Virtual Bundle explosion in buildPackingLines ----
+
+test('buildPackingLines explodes a virtual bundle product into individual scannable lines', () => {
+    const bundleProduct = {
+        id: 'prod_bundle',
+        sku: 'SET-BRIDAL-RUBY',
+        name: 'Bridal Set Complete',
+        is_bundle: true,
+        bundle_items: [
+            {
+                variant_id: 'var_chok',
+                product_id: 'prod_chok',
+                sku: 'TMP-CHOK-01',
+                name: 'Temple Choker',
+                quantity: 1,
+            },
+            {
+                variant_id: 'var_earr',
+                product_id: 'prod_earr',
+                sku: 'TMP-EARR-01',
+                name: 'Temple Earring',
+                quantity: 2,
+            },
+        ],
+    };
+
+    const bundleItem: OrderDetailItem = {
+        id: 'order_item_bundle',
+        order: 'order_1',
+        product: 'prod_bundle',
+        expand: {
+            product: bundleProduct,
+        },
+        quantity: 2, // 2 complete bridal sets ordered!
+        unit_price: 3500,
+        tax_rate: 3,
+        discount_amount: 0,
+        total: 7000,
+    } as unknown as OrderDetailItem;
+
+    const lines = buildPackingLines([bundleItem]);
+    assert.equal(lines.length, 2);
+
+    // Choker: 1 per set * 2 sets = 2
+    assert.equal(lines[0].sku, 'TMP-CHOK-01');
+    assert.equal(lines[0].quantity, 2);
+    assert.equal(lines[0].bundle_parent_sku, 'SET-BRIDAL-RUBY');
+
+    // Earring: 2 per set * 2 sets = 4
+    assert.equal(lines[1].sku, 'TMP-EARR-01');
+    assert.equal(lines[1].quantity, 4);
+    assert.equal(lines[1].bundle_parent_sku, 'SET-BRIDAL-RUBY');
+});
+
+// ---- Wave Pick List aggregation ----
+
+test('buildWavePickList aggregates items by storage location across multiple orders', () => {
+    const orders = [
+        { id: 'ord_1', order_number: 'ORD-101', customer_name: 'Priya', status: 'confirmed', total: 1000, item_count: 2 },
+        { id: 'ord_2', order_number: 'ORD-102', customer_name: 'Ananya', status: 'confirmed', total: 1500, item_count: 3 },
+    ];
+
+    const linesOrd1: PackingLine[] = [
+        { item_id: '1_1', variant_id: 'v1', product_id: 'p1', sku: 'TMP-CHOK-01', description: 'Choker', quantity: 1, location: 'Showcase Tray A' },
+        { item_id: '1_2', variant_id: 'v2', product_id: 'p2', sku: 'BAN-GOLD-206', description: 'Bangle', quantity: 2, location: 'Safe Vault 1' },
+    ];
+
+    const linesOrd2: PackingLine[] = [
+        { item_id: '2_1', variant_id: 'v1', product_id: 'p1', sku: 'TMP-CHOK-01', description: 'Choker', quantity: 2, location: 'Showcase Tray A' },
+        { item_id: '2_2', variant_id: 'v3', product_id: 'p3', sku: 'KND-EARR-01', description: 'Earring', quantity: 1, location: 'Showcase Tray A' },
+    ];
+
+    const orderLinesMap = new Map<string, PackingLine[]>([
+        ['ord_1', linesOrd1],
+        ['ord_2', linesOrd2],
+    ]);
+
+    const wave = buildWavePickList(orders, orderLinesMap);
+    assert.equal(wave.length, 2); // Safe Vault 1 & Showcase Tray A
+
+    const trayA = wave.find(g => g.location === 'Showcase Tray A');
+    assert.ok(trayA);
+    assert.equal(trayA.items.length, 2);
+
+    const chokerPick = trayA.items.find(i => i.sku === 'TMP-CHOK-01');
+    assert.ok(chokerPick);
+    // 1 from ord_1 + 2 from ord_2 = 3 total
+    assert.equal(chokerPick.totalQuantity, 3);
+    assert.equal(chokerPick.orders.length, 2);
+
+    const vault = wave.find(g => g.location === 'Safe Vault 1');
+    assert.ok(vault);
+    assert.equal(vault.items[0].totalQuantity, 2);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

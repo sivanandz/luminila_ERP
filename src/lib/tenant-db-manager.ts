@@ -142,22 +142,38 @@ export function readTenantRegistry(): TenantRegistryData {
             if (parsed && typeof parsed === 'object' && parsed.tenants) {
                 return parsed as TenantRegistryData;
             }
+            throw new Error('registry.json has no tenants map');
         }
     } catch (err) {
-        console.warn('[TenantDB] Failed to read registry.json:', err);
+        // Swallowing a corrupt registry made provisioning treat it as empty and
+        // hand out ports/slugs that are already taken (SYN-12). Fail loudly and
+        // let an operator restore the file from backup.
+        console.error('[TenantDB] Registry is unreadable:', err);
+        throw new Error(
+            `Tenant registry at ${REGISTRY_FILE_PATH} is corrupt or unreadable: ${err instanceof Error ? err.message : String(err)}`
+        );
     }
     return { tenants: {} };
 }
 
 /**
- * Save tenant registry to disk
+ * Save tenant registry to disk atomically (temp file + rename). A crash mid-write
+ * can no longer leave a truncated registry behind (SYN-12).
  */
 export function writeTenantRegistry(registry: TenantRegistryData): void {
+    ensureTenantsBaseDir();
+    const tmpPath = `${REGISTRY_FILE_PATH}.${process.pid}.tmp`;
     try {
-        ensureTenantsBaseDir();
-        fs.writeFileSync(REGISTRY_FILE_PATH, JSON.stringify(registry, null, 2), 'utf-8');
+        fs.writeFileSync(tmpPath, JSON.stringify(registry, null, 2), { encoding: 'utf-8', mode: 0o600 });
+        fs.renameSync(tmpPath, REGISTRY_FILE_PATH);
     } catch (err) {
+        try {
+            if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+        } catch { /* best-effort cleanup */ }
         console.error('[TenantDB] Failed to write registry.json:', err);
+        throw new Error(
+            `Could not persist the tenant registry: ${err instanceof Error ? err.message : String(err)}`
+        );
     }
 }
 
@@ -335,8 +351,34 @@ export async function ensureTenantPocketBaseRunning(port: number, dataDir: strin
 
 /**
  * Provision (or update) a dedicated, isolated PocketBase instance for an account during `/setup`
+ *
+ * Serialized: allocate→bootstrap→spawn is a check-then-act sequence, so two
+ * concurrent provisions could both probe the same free port and one tenant
+ * would end up pointing at the other's database (SYN-1). The in-process lock
+ * makes the sequence atomic for this server process.
  */
+let provisionChain: Promise<unknown> = Promise.resolve();
 export async function provisionTenantDatabase(params: {
+    email: string;
+    password: string;
+    storeName?: string;
+}): Promise<{
+    success: boolean;
+    pbUrl: string;
+    port: number;
+    tenantSlug: string;
+    dataDir: string;
+    isolated: boolean;
+}> {
+    const run = provisionChain.then(
+        () => provisionTenantDatabaseLocked(params),
+        () => provisionTenantDatabaseLocked(params)
+    );
+    provisionChain = run.then(() => undefined, () => undefined);
+    return run;
+}
+
+async function provisionTenantDatabaseLocked(params: {
     email: string;
     password: string;
     storeName?: string;
@@ -441,6 +483,18 @@ export async function provisionTenantDatabase(params: {
         throw new Error(`Failed to start isolated PocketBase instance on port ${port}`);
     }
 
+    // A different tenant must never be registered on the port we just bound:
+    // that is exactly the cross-tenant DB mix-up SYN-1 describes.
+    const latestRegistry = readTenantRegistry();
+    const portOwner = Object.entries(latestRegistry.tenants).find(
+        ([ownerEmail, record]) => ownerEmail !== cleanEmail && record.port === port
+    );
+    if (portOwner) {
+        throw new Error(
+            `Port ${port} is already registered to ${portOwner[0]}; refusing to bind this tenant to it.`
+        );
+    }
+
     registry.activeTenantEmail = cleanEmail;
     registry.tenants[cleanEmail] = {
         email: cleanEmail,
@@ -494,8 +548,9 @@ export async function provisionTenantDatabase(params: {
     const cleanEmail = (email || '').trim().toLowerCase();
     const registry = readTenantRegistry();
     // Callers that are only looking up a URL (login, API routes) must not change
-    // the process-global active tenant. That switch is opt-in.
-    const shouldActivate = options?.activate !== false;
+    // the process-global active tenant. Activation is strictly opt-in; the old
+    // `!== false` default flipped the global on every concurrent login (SYN-6).
+    const shouldActivate = options?.activate === true;
 
     if (cleanEmail && !LEGACY_PRIMARY_EMAILS.has(cleanEmail)) {
         let record = registry.tenants[cleanEmail];

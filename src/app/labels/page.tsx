@@ -18,6 +18,7 @@ import { getTenantStorageKey } from "@/lib/pocketbase";
 import { getChannelPrice, getConfiguredChannels, loadConfiguredChannels, type SalesChannelDef } from "@/lib/channel-pricing";
 import { formatImitationSpec, PLATING_DEFINITIONS } from "@/lib/imitation-jewelry-engine";
 import { toast } from "sonner";
+import { consumeLabelQueue } from "@/lib/label-queue";
 
 /** Per-product and per-job caps that keep Array.from() from freezing the tab (I14). */
 const MAX_LABEL_QUANTITY = 500;
@@ -361,6 +362,23 @@ function LabelsContent() {
 
     useEffect(() => {
         loadConfiguredChannels().then(setAvailableChannels).catch(console.error);
+        const batchItems = consumeLabelQueue();
+        if (batchItems.length > 0) {
+            setSelectedProducts((prev) => {
+                const next = [...prev];
+                for (const item of batchItems) {
+                    const idx = next.findIndex((p) => p.sku === item.sku);
+                    if (idx >= 0) {
+                        next[idx] = { ...next[idx], quantity: next[idx].quantity + item.quantity };
+                    } else {
+                        next.push(item);
+                    }
+                }
+                return next;
+            });
+            const totalTags = batchItems.reduce((sum, it) => sum + it.quantity, 0);
+            toast.success(`Loaded ${batchItems.length} products (${totalTags} labels) from queue!`);
+        }
     }, []);
 
     // Recompute tag prices once the tenant's channel rules are available.

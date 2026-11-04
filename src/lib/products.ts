@@ -51,6 +51,15 @@ export interface Product {
     location?: string;
     account_email?: string;
     is_active: boolean;
+    is_bundle?: boolean;
+    bundle_items?: Array<{
+        product_id: string;
+        sku: string;
+        name: string;
+        quantity: number;
+        image?: string;
+        default_price?: number;
+    }>;
     created: string;
     updated: string;
 }

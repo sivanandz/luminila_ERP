@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
     Camera,
     Check,
@@ -12,11 +13,13 @@ import {
     PackagePlus,
     Palette,
     Plus,
+    Printer,
     SlidersHorizontal,
     Sparkles,
     X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { pushToLabelQueue } from "@/lib/label-queue";
 import {
     Dialog,
     DialogContent,
@@ -149,6 +152,8 @@ export function QuickAddProductDialog({
     const [hsnTouched, setHsnTouched] = useState(false);
     const [taxonomies, setTaxonomies] = useState<SKUTaxonomies>(() => getSKUTaxonomies());
     const [memory, setMemory] = useState<QuickAddMemory>(() => getQuickAddMemory());
+    const [sessionCreatedPieces, setSessionCreatedPieces] = useState<Array<{ sku: string; name: string; price: number; quantity: number }>>([]);
+    const router = useRouter();
 
     const galleryInputRef = useRef<HTMLInputElement>(null);
     const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -513,6 +518,15 @@ export function QuickAddProductDialog({
                 sku: result.sku,
                 categoryName: effectiveCategory,
             });
+            setSessionCreatedPieces((prev) => [
+                ...prev,
+                {
+                    sku: result.sku,
+                    name: result.name,
+                    price: effectiveSelling,
+                    quantity: Math.max(1, parseInt(stock, 10) || 1),
+                },
+            ]);
 
             // The saved product now occupies the sequence; force a recompute.
             setSeqTick((tick) => tick + 1);
@@ -1312,18 +1326,37 @@ export function QuickAddProductDialog({
                 </div>
 
                 <div className="px-5 py-3 border-t border-surface-hover/60 flex items-center justify-between gap-2">
-                    <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() => {
-                            resetAll();
-                            onOpenChange(false);
-                        }}
-                        disabled={saving}
-                        className="h-9 text-xs text-moonstone hover:text-white"
-                    >
-                        Cancel
-                    </Button>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={() => {
+                                resetAll();
+                                onOpenChange(false);
+                            }}
+                            disabled={saving}
+                            className="h-9 text-xs text-moonstone hover:text-white"
+                        >
+                            Cancel
+                        </Button>
+                        {sessionCreatedPieces.length > 0 && (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                    pushToLabelQueue(sessionCreatedPieces);
+                                    toast.success(`Queued ${sessionCreatedPieces.length} items for printing.`);
+                                    onOpenChange(false);
+                                    router.push("/labels");
+                                }}
+                                className="h-8 text-xs border-primary/40 text-primary hover:bg-primary/10"
+                            >
+                                <Printer size={12} className="mr-1" />
+                                Print Labels ({sessionCreatedPieces.length})
+                            </Button>
+                        )}
+                    </div>
                     <div className="flex items-center gap-2">
                         <Button
                             type="button"

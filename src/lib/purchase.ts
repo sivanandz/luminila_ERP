@@ -306,9 +306,18 @@ export async function createPurchaseOrder(
         shippingCost = po.shipping_overhead || po.shipping_cost || 0;
         total = subtotal + gstAmount + shippingCost - discountAmount;
     } else {
-        subtotal = (po.items || []).reduce((sum, item) => sum + item.total_price, 0);
-        gstAmount = (po.items || []).reduce((sum, item) => sum + item.gst_amount, 0);
-        total = subtotal + gstAmount + shippingCost - discountAmount;
+        // item.total_price is GST-inclusive — summing it and then adding GST
+        // again double-counted tax in the stored PO total (PUR-1). The subtotal
+        // is the pre-tax base; gst_amount is added once below.
+        subtotal = (po.items || []).reduce(
+            (sum, item) => sum + (Number(item.quantity_ordered) || 0) * (Number(item.unit_price) || 0),
+            0
+        );
+        subtotal = Math.round(subtotal * 100) / 100;
+        gstAmount = Math.round(
+            (po.items || []).reduce((sum, item) => sum + (Number(item.gst_amount) || 0), 0) * 100
+        ) / 100;
+        total = Math.round((subtotal + gstAmount + shippingCost - discountAmount) * 100) / 100;
     }
 
     // Resolve Vendor name for Code generation

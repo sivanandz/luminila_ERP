@@ -181,26 +181,44 @@ export async function advanceCheque(
         const result = transitionChequeStatus(cheques[index], status, options);
         if (!result.success) throw new Error(result.error || 'That status change is not allowed.');
 
-        // Clearing / bouncing / reopening a cleared cheque moves real money.
-        // Post it to the bank ledger before committing the register change, so
-        // the balance and its audit row can never disagree (FIN-04).
+        // Commit the register transition FIRST. The state machine is itself the
+        // idempotency guard (a cheque already cleared cannot be cleared again),
+        // so a failed ledger post can be retried from the previous state without
+        // double-posting. Posting the ledger first left money in the bank ledger
+        // with no cheque transition on a write failure (BNK-1).
+        const previous = cheques[index];
+        cheques[index] = result.cheque;
+        await writeCheques(cheques);
+
         const { bankBalanceDelta, bankAccountId, description } = result.ledgerEffect;
         if (bankBalanceDelta !== 0 && bankAccountId) {
             const transactionDate = (options.transitionDate || new Date().toISOString()).slice(0, 10);
-            await createBankTransaction({
-                account: bankAccountId,
-                transaction_date: transactionDate,
-                type: bankBalanceDelta > 0 ? 'deposit' : 'withdrawal',
-                amount: Math.abs(bankBalanceDelta),
-                description: description || `Cheque #${result.cheque.chequeNumber}`,
-                reference_number: result.cheque.chequeNumber,
-                related_entity_type: 'cheque',
-                related_entity_id: result.cheque.id,
-            });
+            try {
+                await createBankTransaction({
+                    account: bankAccountId,
+                    transaction_date: transactionDate,
+                    type: bankBalanceDelta > 0 ? 'deposit' : 'withdrawal',
+                    amount: Math.abs(bankBalanceDelta),
+                    description: description || `Cheque #${result.cheque.chequeNumber}`,
+                    reference_number: result.cheque.chequeNumber,
+                    related_entity_type: 'cheque',
+                    related_entity_id: result.cheque.id,
+                });
+            } catch (ledgerErr) {
+                // Roll the register back so the cheque and the bank ledger agree;
+                // the caller can retry the whole transition.
+                const reverted = await readCheques();
+                const revertIndex = reverted.findIndex((cheque) => cheque.id === id);
+                if (revertIndex >= 0) {
+                    reverted[revertIndex] = previous;
+                    await writeCheques(reverted).catch((rollbackErr) =>
+                        console.error('Cheque register rollback failed:', rollbackErr)
+                    );
+                }
+                throw ledgerErr;
+            }
         }
 
-        cheques[index] = result.cheque;
-        await writeCheques(cheques);
         return { cheques: sortCheques(cheques), result };
     });
 }

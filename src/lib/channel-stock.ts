@@ -203,6 +203,25 @@ export async function resolveStockTargets(
         }
         const name = line.name || product.name || line.productId;
 
+        // Virtual Combo / Bridal Set Bundle support: explode into component variant targets
+        if ((product as any).is_bundle && Array.isArray((product as any).bundle_items) && (product as any).bundle_items.length > 0) {
+            for (const comp of (product as any).bundle_items) {
+                if (!comp.variant_id) continue;
+                const compVariant = await db.collection('product_variants').getOne<VariantRecord>(comp.variant_id).catch(() => null);
+                if (compVariant) {
+                    targets.push({
+                        kind: 'variant',
+                        id: compVariant.id,
+                        productId: comp.product_id || product.id,
+                        name: comp.name || name,
+                        quantity: quantity * (Number(comp.quantity) || 1),
+                        stockLevel: Number(compVariant.stock_level ?? 0),
+                    });
+                }
+            }
+            continue;
+        }
+
         if (line.variantId) {
             assertId(line.variantId, 'variant');
             const variant = await db
