@@ -39,6 +39,7 @@ import { Card, CardContent } from "@/components/ui/card";
 
 import { getPurchaseOrders, type PurchaseOrder, type POStatus } from "@/lib/purchase";
 import { formatINR } from "@/lib/gst";
+import { toast } from "sonner";
 
 const statusConfig: Record<POStatus, { label: string; icon: LucideIcon; color: string }> = {
     draft: { label: "Draft", icon: Clock, color: "bg-gray-500/20 text-gray-400 border-gray-500/30" },
@@ -61,9 +62,17 @@ export default function PurchaseOrdersPage() {
         if (statusFilter !== "all") {
             filters.status = statusFilter as POStatus;
         }
-        const data = await getPurchaseOrders(filters);
-        setOrders(data);
-        setLoading(false);
+        try {
+            const data = await getPurchaseOrders(filters);
+            setOrders(data);
+        } catch (error) {
+            // A failed query must not render as an empty purchase book (PUR-13).
+            console.error("Error loading purchase orders:", error);
+            toast.error("Could not load purchase orders. Please retry.");
+            setOrders([]);
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => {

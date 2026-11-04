@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { getOpenPurchaseOrders, type PurchaseOrder } from "@/lib/purchase";
 import { formatINR } from "@/lib/gst";
+import { toast } from "sonner";
 
 interface QuickReceivePOModalProps {
     isOpen: boolean;
@@ -46,7 +47,10 @@ export function QuickReceivePOModal({ isOpen, onClose }: QuickReceivePOModalProp
         setLoading(true);
         getOpenPurchaseOrders()
             .then(setOrders)
-            .catch((err) => console.error("Error loading open POs:", err))
+            .catch((err) => {
+                console.error("Error loading open POs:", err);
+                toast.error("Could not load open purchase orders. Please retry.");
+            })
             .finally(() => setLoading(false));
     }, [isOpen]);
 

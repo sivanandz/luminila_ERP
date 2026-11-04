@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { createTenantClient, sanitizeFilter } from "./pocketbase";
+import { enqueueTask } from "./concurrency";
 
 /**
  * OTP store backed by PocketBase (`otp_codes`), not disk.
@@ -87,65 +88,107 @@ export async function generateAndSaveOtp(phone: string, tenant?: string): Promis
     }
 
     const scope = normalizeTenant(tenant);
-    const client = await createTenantClient(scope || undefined);
-    const existing = await findRow(scope, cleanPhone);
-    const now = Date.now();
-    const today = todayKey();
 
-    const dayCount = existing && existing.day_key === today ? Number(existing.day_count || 0) : 0;
-    if (dayCount >= MAX_DAILY_REQUESTS) {
-        return {
-            success: false,
-            error: `Daily verification limit reached for this number. Try again tomorrow.`,
-        };
-    }
+    // Serialize generates for this (tenant, phone): the cooldown and daily-limit
+    // checks are read-then-write, so two concurrent requests could both pass
+    // them and overshoot MAX_DAILY_REQUESTS (AI-5). The daily counter is also
+    // reserved atomically below so a second host cannot overshoot either.
+    return enqueueTask(`otp_${scope}_${cleanPhone}`, async () => {
+        const client = await createTenantClient(scope || undefined);
+        const existing = await findRow(scope, cleanPhone);
+        const now = Date.now();
+        const today = todayKey();
 
-    if (existing?.last_requested_at) {
-        const lastRequested = new Date(existing.last_requested_at).getTime();
-        const timeSinceLast = now - lastRequested;
-        if (Number.isFinite(lastRequested) && timeSinceLast < RESEND_COOLDOWN_MS) {
-            const waitSeconds = Math.ceil((RESEND_COOLDOWN_MS - timeSinceLast) / 1000);
+        const dayCount = existing && existing.day_key === today ? Number(existing.day_count || 0) : 0;
+        if (dayCount >= MAX_DAILY_REQUESTS) {
             return {
                 success: false,
-                error: `Please wait ${waitSeconds}s before requesting a new OTP.`,
-                cooldownRemaining: waitSeconds,
+                error: `Daily verification limit reached for this number. Try again tomorrow.`,
             };
         }
-    }
 
-    // randomInt's upper bound is exclusive; 1000000 allows 999999 (A-22).
-    const otp = crypto.randomInt(100000, 1000000).toString();
-    const salt = crypto.randomBytes(16).toString("hex");
-    const hashedOtp = hashOtp(otp, salt);
-
-    const payload = {
-        account_email: scope,
-        phone: cleanPhone,
-        hashed_otp: hashedOtp,
-        salt,
-        expires_at: iso(now + OTP_TTL_MS),
-        attempts: 0,
-        last_requested_at: iso(now),
-        request_count: Number(existing?.request_count || 0) + 1,
-        day_key: today,
-        day_count: dayCount + 1,
-    };
-
-    try {
-        if (existing) {
-            await client.collection("otp_codes").update(existing.id, payload);
-        } else {
-            await client.collection("otp_codes").create(payload);
+        if (existing?.last_requested_at) {
+            const lastRequested = new Date(existing.last_requested_at).getTime();
+            const timeSinceLast = now - lastRequested;
+            if (Number.isFinite(lastRequested) && timeSinceLast < RESEND_COOLDOWN_MS) {
+                const waitSeconds = Math.ceil((RESEND_COOLDOWN_MS - timeSinceLast) / 1000);
+                return {
+                    success: false,
+                    error: `Please wait ${waitSeconds}s before requesting a new OTP.`,
+                    cooldownRemaining: waitSeconds,
+                };
+            }
         }
-    } catch (err) {
-        // A concurrent request may have created the unique (tenant, phone) row
-        // between the read and the write; update it instead of failing.
-        const raced = await findRow(scope, cleanPhone);
-        if (!raced) throw err;
-        await client.collection("otp_codes").update(raced.id, payload);
-    }
 
-    return { success: true, otp };
+        // randomInt's upper bound is exclusive; 1000000 allows 999999 (A-22).
+        const otp = crypto.randomInt(100000, 1000000).toString();
+        const salt = crypto.randomBytes(16).toString("hex");
+        const hashedOtp = hashOtp(otp, salt);
+
+        const buildPayload = (row: OtpRow | null) => ({
+            account_email: scope,
+            phone: cleanPhone,
+            hashed_otp: hashedOtp,
+            salt,
+            expires_at: iso(now + OTP_TTL_MS),
+            attempts: 0,
+            last_requested_at: iso(now),
+            request_count: Number(row?.request_count || 0) + 1,
+        });
+        const dailyLimit = {
+            success: false as const,
+            error: `Daily verification limit reached for this number. Try again tomorrow.`,
+        };
+
+        /**
+         * Write the new code and reserve the day's slot. Concurrent callers get
+         * an atomic `day_count+` first and are rejected on the post-increment
+         * value, so neither the read-then-write day check nor the cooldown can
+         * be bypassed by parallelism (AI-5).
+         */
+        const persist = async (row: OtpRow | null): Promise<{ ok: true } | { ok: false; error: string }> => {
+            const payload = buildPayload(row);
+            if (!row) {
+                await client.collection("otp_codes").create({ ...payload, day_key: today, day_count: 1 });
+                return { ok: true };
+            }
+            if (row.day_key === today) {
+                const reserved = await client
+                    .collection("otp_codes")
+                    .update<{ day_count?: number }>(row.id, { "day_count+": 1 });
+                if (Number(reserved.day_count || 0) > MAX_DAILY_REQUESTS) {
+                    await client
+                        .collection("otp_codes")
+                        .update(row.id, { "day_count+": -1 })
+                        .catch(() => {});
+                    return { ok: false, error: dailyLimit.error };
+                }
+                await client.collection("otp_codes").update(row.id, payload);
+                return { ok: true };
+            }
+            // First request of the day: reset the counter together with the row.
+            await client.collection("otp_codes").update(row.id, {
+                ...payload,
+                day_key: today,
+                day_count: 1,
+            });
+            return { ok: true };
+        };
+
+        try {
+            const stored = await persist(existing);
+            if (!stored.ok) return { success: false, error: stored.error };
+        } catch (err) {
+            // A concurrent request may have created the unique (tenant, phone) row
+            // between the read and the write; update it instead of failing.
+            const raced = await findRow(scope, cleanPhone);
+            if (!raced) throw err;
+            const stored = await persist(raced);
+            if (!stored.ok) return { success: false, error: stored.error };
+        }
+
+        return { success: true, otp };
+    });
 }
 
 /**
@@ -199,8 +242,15 @@ export async function verifyOtp(phone: string, inputOtp: string, tenant?: string
         return { valid: false, reason: "OTP has expired. Please request a new one." };
     }
 
-    const attempts = Number(row.attempts || 0);
-    if (attempts >= MAX_VERIFY_ATTEMPTS) {
+    // Atomic attempt accounting (AI-4): parallel verifies used to read the same
+    // `attempts` value and all pass the pre-check, allowing more than
+    // MAX_VERIFY_ATTEMPTS guesses. Increment first and reject from the
+    // post-increment value instead.
+    const bumped = await client
+        .collection("otp_codes")
+        .update<{ attempts?: number }>(row.id, { "attempts+": 1 });
+    const attempts = Number(bumped.attempts || 0);
+    if (attempts > MAX_VERIFY_ATTEMPTS) {
         await client.collection("otp_codes").update(row.id, clearCode);
         return { valid: false, reason: "Too many failed attempts. Please request a new OTP." };
     }
@@ -215,9 +265,8 @@ export async function verifyOtp(phone: string, inputOtp: string, tenant?: string
         return { valid: true };
     }
 
-    await client.collection("otp_codes").update(row.id, { attempts: attempts + 1 });
     return {
         valid: false,
-        reason: `Incorrect OTP. ${Math.max(0, MAX_VERIFY_ATTEMPTS - (attempts + 1))} attempts remaining.`,
+        reason: `Incorrect OTP. ${Math.max(0, MAX_VERIFY_ATTEMPTS - attempts)} attempts remaining.`,
     };
 }

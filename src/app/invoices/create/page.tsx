@@ -186,6 +186,29 @@ export default function CreateInvoicePage() {
             totalTax: calculated.totalTax,
             grandTotal: calculated.grandTotal,
         });
+        // Keep the rows themselves in step with the header: the old code only
+        // stored the totals, so lines were saved with zero tax while the header
+        // showed CGST/SGST (INV-2). Compare first to avoid an update loop.
+        setItems((previous) => {
+            const unchanged =
+                previous.length === calculated.items.length &&
+                previous.every((item, index) => {
+                    const next = calculated.items[index];
+                    return (
+                        item.sr_no === next.sr_no &&
+                        item.discount_amount === next.discount_amount &&
+                        item.taxable_amount === next.taxable_amount &&
+                        item.cgst_rate === next.cgst_rate &&
+                        item.cgst_amount === next.cgst_amount &&
+                        item.sgst_rate === next.sgst_rate &&
+                        item.sgst_amount === next.sgst_amount &&
+                        item.igst_rate === next.igst_rate &&
+                        item.igst_amount === next.igst_amount &&
+                        item.total_amount === next.total_amount
+                    );
+                });
+            return unchanged ? previous : calculated.items;
+        });
     }, [storeSettings, buyerState, placeOfSupply]);
 
     // Recalculate totals when settings or state codes change
@@ -463,6 +486,11 @@ export default function CreateInvoicePage() {
             const sellerStateCode = storeSettings.store_state_code || "";
             const buyerStateCode = getStateCode(buyerState) || placeOfSupply || sellerStateCode;
 
+            // Submit the recomputed rows, not raw editor state: a restored draft
+            // can still carry zero line tax, which the header would contradict
+            // (INV-2).
+            const calculated = calculateInvoiceTotals(items, sellerStateCode, buyerStateCode, isGstRegistered);
+
             const sellerStatePin = [storeSettings.store_state, storeSettings.store_pincode].filter(Boolean).join(" - ");
             const formattedSellerAddress = [storeSettings.store_address, storeSettings.store_city, sellerStatePin].filter(Boolean).join(", ");
 
@@ -483,15 +511,15 @@ export default function CreateInvoicePage() {
                 buyer_state_code: buyerStateCode,
                 place_of_supply: placeOfSupply || buyerStateCode,
 
-                taxable_value: totals.taxableValue,
-                cgst_amount: totals.cgstAmount,
-                sgst_amount: totals.sgstAmount,
-                igst_amount: totals.igstAmount,
+                taxable_value: calculated.taxableValue,
+                cgst_amount: calculated.cgstAmount,
+                sgst_amount: calculated.sgstAmount,
+                igst_amount: calculated.igstAmount,
                 cess_amount: 0,
-                total_tax: totals.totalTax,
+                total_tax: calculated.totalTax,
                 discount_amount: 0,
                 shipping_charges: 0,
-                grand_total: totals.grandTotal,
+                grand_total: calculated.grandTotal,
                 amount_in_words: "",
 
                 is_reverse_charge: isReverseCharge,
@@ -501,7 +529,7 @@ export default function CreateInvoicePage() {
                 paid_amount: 0,
                 notes,
 
-                items: items as InvoiceItem[],
+                items: calculated.items as InvoiceItem[],
             };
 
             const created = await createInvoice(invoice);

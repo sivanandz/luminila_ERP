@@ -503,12 +503,23 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                     variantId: item.variant || '',
                     productName: item.description || '',
                     quantityReturned: item.quantity || 0,
-                    unitPrice: item.unit_price || 0,
+                    // credit_note_items.unit_price is the pre-tax base, while the
+                    // QC engine splits amounts as tax-inclusive. Hand it the
+                    // inclusive value or its tax/GST figures are understated
+                    // (RET-10).
+                    unitPrice:
+                        Math.round(
+                            (Number(item.unit_price) || 0) *
+                                (1 + (Number(item.gst_rate) || 0) / 100) *
+                                100
+                        ) / 100,
                     taxRate: item.gst_rate || 0,
                     returnReason: qcReason,
                 })),
                 dispositionGrade: qcGrade,
                 inspectorNotes: options?.notes,
+                reverseShippingFeeDeduction: options?.reverseShippingFeeDeduction,
+                restockingFeePercent: options?.restockingFeePercent,
             })
             : null;
 
@@ -596,6 +607,11 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                 notes: [
                     cn.notes,
                     `[Inward QC ${new Date().toISOString().slice(0, 10)}]: ${qcResult.inspectorSummary}`,
+                    // processRefund reads this back to withhold the QC deduction
+                    // from the cash refund (RET-10).
+                    qcResult.totalDeductions > 0
+                        ? `${QC_DEDUCTION_MARKER} ${qcResult.totalDeductions}`
+                        : '',
                 ]
                     .filter(Boolean)
                     .join('\n\n'),
@@ -627,6 +643,7 @@ export async function processRefund(
         grand_total?: number;
         credit_note_number?: string;
         buyer_name?: string;
+        notes?: string;
     }>(id);
 
     // A refund settles an approved note exactly once.
@@ -635,7 +652,13 @@ export async function processRefund(
         throw new Error(`Credit note ${cn.credit_note_number || id} must be approved before it can be refunded`);
     }
 
-    const amount = Number(cn.grand_total) || 0;
+    // Withhold any QC restocking / reverse-logistics deduction recorded at
+    // approval: the customer gets the net amount, not the gross note (RET-10).
+    const deduction = parseQcDeduction(cn.notes);
+    const amount = Math.max(
+        0,
+        Math.round(((Number(cn.grand_total) || 0) - deduction) * 100) / 100
+    );
     const method = String(refundMethod || 'cash').toLowerCase();
     const reference = refundReference || `REFUND-${cn.credit_note_number || id}`;
 
@@ -653,75 +676,85 @@ export async function processRefund(
         throw new Error('This credit note is already being refunded by another session.');
     }
 
-    // The money came back, so the customer's lifetime spend and loyalty earned
-    // on that sale must come back too. Previously a refund left the CRM
-    // reporting revenue and points for goods that were returned (ORD-19).
     const linkage = await pb.collection('credit_notes').getOne<{
         original_invoice?: string;
         original_sale?: string;
     }>(id).catch(() => null);
-    try {
-        let refundCustomerId = '';
-        let originalAmount = amount;
-        let referenceId = '';
-        if (linkage?.original_sale) {
-            referenceId = linkage.original_sale;
-            const sale = await pb.collection('sales').getOne(linkage.original_sale).catch(() => null);
-            refundCustomerId = String((sale as { customer?: string } | null)?.customer || '');
-            originalAmount = Number((sale as { total?: number } | null)?.total) || amount;
-        } else if (linkage?.original_invoice) {
-            referenceId = linkage.original_invoice;
-            const invoice = await pb.collection('invoices').getOne(linkage.original_invoice).catch(() => null);
-            refundCustomerId = String((invoice as { customer?: string } | null)?.customer || '');
-            originalAmount = Number(
-                (invoice as { grand_total?: number; total?: number } | null)?.grand_total
-                ?? (invoice as { total?: number } | null)?.total
-            ) || amount;
-        }
 
-        // Only the refunded value leaves lifetime spend, and the order itself
-        // still exists for a partial return — so do not decrement the order
-        // counter unless the whole sale came back (RET-3).
-        const refundAmount = Math.max(0, amount);
-        const isPartialRefund = originalAmount > 0 && refundAmount < originalAmount - 0.005;
+    // Customer lifetime spend, loyalty and coupon entitlement are reversed only
+    // once the money movement below has succeeded. Running them first meant a
+    // failed cash drawer left the reversals applied while the note went back to
+    // 'approved', so a retry reversed everything twice (RET-5).
+    const reverseCustomerEntitlements = async () => {
+        // The money came back, so the customer's lifetime spend and loyalty earned
+        // on that sale must come back too. Previously a refund left the CRM
+        // reporting revenue and points for goods that were returned (ORD-19).
+        try {
+            let refundCustomerId = '';
+            let originalAmount = amount;
+            let referenceId = '';
+            if (linkage?.original_sale) {
+                referenceId = linkage.original_sale;
+                const sale = await pb.collection('sales').getOne(linkage.original_sale).catch(() => null);
+                refundCustomerId = String((sale as { customer?: string } | null)?.customer || '');
+                originalAmount = Number((sale as { total?: number } | null)?.total) || amount;
+            } else if (linkage?.original_invoice) {
+                referenceId = linkage.original_invoice;
+                const invoice = await pb.collection('invoices').getOne(linkage.original_invoice).catch(() => null);
+                refundCustomerId = String((invoice as { customer?: string } | null)?.customer || '');
+                originalAmount = Number(
+                    (invoice as { grand_total?: number; total?: number } | null)?.grand_total
+                    ?? (invoice as { total?: number } | null)?.total
+                ) || amount;
+            }
 
-        if (refundCustomerId) {
-            await applyPurchaseReversal(pb, refundCustomerId, refundAmount, {
-                decrementOrders: !isPartialRefund,
-            });
-            if (referenceId) {
-                const earned = await pb.collection('loyalty_transactions').getFirstListItem(
-                    `type="earn" && reference_id="${sanitizeFilter(referenceId)}"`
-                ).catch(() => null);
-                const points = Number((earned as { points?: number } | null)?.points || 0);
-                // Claw back only the fraction of the sale that was refunded so a
-                // one-line return cannot wipe the points of the whole invoice (RET-4).
-                const clawback = isPartialRefund
-                    ? Math.round(points * (refundAmount / originalAmount) * 100) / 100
-                    : points;
-                if (clawback > 0) {
-                    await adjustPoints(
-                        refundCustomerId,
-                        -clawback,
-                        `Refund reversal for credit note ${cn.credit_note_number || id}`
-                    ).catch((err) => console.warn('Loyalty reversal failed:', err));
+            // Only the refunded value leaves lifetime spend, and the order itself
+            // still exists for a partial return — so do not decrement the order
+            // counter unless the whole sale came back (RET-3).
+            const refundAmount = Math.max(0, amount);
+            const isPartialRefund = originalAmount > 0 && refundAmount < originalAmount - 0.005;
+
+            if (refundCustomerId) {
+                await applyPurchaseReversal(pb, refundCustomerId, refundAmount, {
+                    decrementOrders: !isPartialRefund,
+                });
+                if (referenceId) {
+                    const earned = await pb.collection('loyalty_transactions').getFirstListItem(
+                        `type="earn" && reference_id="${sanitizeFilter(referenceId)}"`
+                    ).catch(() => null);
+                    const points = Number((earned as { points?: number } | null)?.points || 0);
+                    // Claw back only the fraction of the sale that was refunded so a
+                    // one-line return cannot wipe the points of the whole invoice (RET-4).
+                    const clawback = isPartialRefund
+                        ? Math.round(points * (refundAmount / originalAmount) * 100) / 100
+                        : points;
+                    if (clawback > 0) {
+                        await adjustPoints(
+                            refundCustomerId,
+                            -clawback,
+                            `Refund reversal for credit note ${cn.credit_note_number || id}`
+                        ).catch((err) => console.warn('Loyalty reversal failed:', err));
+                    }
                 }
             }
+        } catch (reversalErr) {
+            console.warn('Refund aggregate/loyalty reversal failed:', reversalErr);
         }
-    } catch (reversalErr) {
-        console.warn('Refund aggregate/loyalty reversal failed:', reversalErr);
-    }
 
-    // The order came back, so the coupon use goes back to the pool too.
-    await reverseDiscountUsage({
-        invoiceId: linkage?.original_invoice,
-        saleId: linkage?.original_sale,
-    }).catch((error) => {
-        console.warn('Discount usage reversal failed:', error);
-    });
+        // The order came back, so the coupon use goes back to the pool too.
+        await reverseDiscountUsage({
+            invoiceId: linkage?.original_invoice,
+            saleId: linkage?.original_sale,
+        }).catch((error) => {
+            console.warn('Discount usage reversal failed:', error);
+        });
+    };
 
     // Only cash leaves the drawer. Bank, UPI, and store credit settle elsewhere.
-    if (method !== 'cash' || amount <= 0) return;
+    if (method !== 'cash' || amount <= 0) {
+        await reverseCustomerEntitlements();
+        return;
+    }
 
     const userId = pb.authStore.model?.id || '';
     const shift = userId ? await getCurrentShift(userId) : null;
@@ -736,6 +769,7 @@ export async function processRefund(
             description: `Cash refund of ${amount} for ${cn.credit_note_number || id} processed with no open shift.`,
             metadata: JSON.stringify({ amount, method, reference, customer: cn.buyer_name || '' }),
         }).catch(() => {});
+        await reverseCustomerEntitlements();
         return;
     }
 
@@ -754,6 +788,8 @@ export async function processRefund(
             .catch(() => {});
         throw new Error('Cash drawer entry failed; refund was rolled back');
     }
+
+    await reverseCustomerEntitlements();
 }
 
 export async function cancelCreditNote(id: string): Promise<void> {
@@ -1288,8 +1324,10 @@ export async function processExchange(
         // 3b. TAX DOCUMENT: replacement goods leave the store as a supply, so
         // they get their own invoice. The previous code wrote a negative payment
         // against the original invoice, which corrupted its paid_amount and
-        // recorded no output tax for the replacement.
-        if (creditNote.original_invoice_id) {
+        // recorded no output tax for the replacement. The invoice is raised even
+        // when the note has no original_invoice_id: stock was deducted, so the
+        // replacement must not leave the store with zero output GST (RET-8).
+        {
             const exchange = await createExchangeInvoice(creditNote, pricedItems, balanceDue, paymentMethod);
             exchangeInvoiceId = exchange.invoiceId;
             exchangeInvoiceNumber = exchange.invoiceNumber;
@@ -1403,4 +1441,26 @@ export async function getExchangeEligibleCreditNotes(): Promise<CreditNote[]> {
             credit_note_number: cn.credit_note_number,
             original_invoice_id: cn.original_invoice,
             original_sale_id: cn.original_sale,
-            return_reason: cn.return_reason
+            return_reason: cn.return_reason,
+            notes: cn.notes,
+            buyer_name: cn.buyer_name,
+            buyer_address: cn.buyer_address,
+            buyer_gstin: cn.buyer_gstin,
+            buyer_state_code: cn.buyer_state_code,
+            taxable_value: cn.taxable_value,
+            cgst_amount: cn.cgst_amount || 0,
+            sgst_amount: cn.sgst_amount || 0,
+            igst_amount: cn.igst_amount || 0,
+            total_tax: cn.total_tax || 0,
+            grand_total: cn.grand_total,
+            status: cn.status,
+            refund_method: cn.refund_method,
+            refund_reference: cn.refund_reference,
+            refunded_at: cn.refunded_at,
+            created_at: cn.created,
+        }));
+    } catch (error) {
+        console.error('Error fetching exchange-eligible credit notes:', error);
+        return [];
+    }
+}

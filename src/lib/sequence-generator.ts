@@ -41,14 +41,16 @@ function enqueueSequenceTask<T>(seqKey: string, task: () => Promise<T>): Promise
         .then(() => task());
 
     // Keep map clean when chain completes
-    sequenceQueues.set(
-        seqKey,
-        currentPromise.finally(() => {
-            if (sequenceQueues.get(seqKey) === currentPromise) {
-                sequenceQueues.delete(seqKey);
-            }
-        })
-    );
+    const tracked = currentPromise.finally(() => {
+        if (sequenceQueues.get(seqKey) === tracked) {
+            sequenceQueues.delete(seqKey);
+        }
+    });
+    // Rejections are delivered to the caller. The queue's bookkeeping promise
+    // must not also raise an unhandled rejection (Node terminates on those),
+    // which matters now that allocator exhaustion throws (INV-11).
+    tracked.catch(() => {});
+    sequenceQueues.set(seqKey, tracked);
 
     return currentPromise;
 }

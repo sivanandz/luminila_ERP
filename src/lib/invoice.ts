@@ -613,15 +613,15 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
         buyer_address: invoice.buyer_address || '',
         buyer_state_code: invoice.buyer_state_code || '',
         place_of_supply: invoice.place_of_supply || invoice.buyer_state_code || '',
-        taxable_value: invoice.taxable_value,
-        cgst_amount: invoice.cgst_amount || 0,
-        sgst_amount: invoice.sgst_amount || 0,
-        igst_amount: invoice.igst_amount || 0,
-        cess_amount: invoice.cess_amount || 0,
-        total_tax: invoice.total_tax,
+        taxable_value: computedHeader.taxableValue,
+        cgst_amount: computedHeader.cgstAmount,
+        sgst_amount: computedHeader.sgstAmount,
+        igst_amount: computedHeader.igstAmount,
+        cess_amount: computedHeader.cessAmount,
+        total_tax: computedHeader.totalTax,
         discount_amount: invoice.discount_amount || 0,
-        shipping_charges: invoice.shipping_charges || 0,
-        grand_total: invoice.grand_total,
+        shipping_charges: shippingCharges,
+        grand_total: computedHeader.grandTotal,
         amount_in_words: amountWords,
         is_reverse_charge: !!invoice.is_reverse_charge,
         transport_mode: invoice.transport_mode || '',
@@ -650,8 +650,8 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
     const itemsWithInvoiceId: InvoiceItem[] = [];
     const createdItemIds: string[] = [];
     try {
-        for (let index = 0; index < invoice.items.length; index++) {
-            const item = invoice.items[index];
+        for (let index = 0; index < computedItems.length; index++) {
+            const item = computedItems[index];
             const itemDiscount = item.discount_amount || (item.quantity * item.unit_price * (item.discount_percent / 100));
             const itemTax = (item.cgst_amount || 0) + (item.sgst_amount || 0) + (item.igst_amount || 0) + (item.cess_amount || 0);
 
@@ -721,6 +721,13 @@ export async function createInvoice(invoice: Omit<Invoice, 'id' | 'created_at' |
         discount: discount,
         tax: tax,
         total: total,
+        taxable_value: computedHeader.taxableValue,
+        cgst_amount: computedHeader.cgstAmount,
+        sgst_amount: computedHeader.sgstAmount,
+        igst_amount: computedHeader.igstAmount,
+        cess_amount: computedHeader.cessAmount,
+        total_tax: computedHeader.totalTax,
+        grand_total: computedHeader.grandTotal,
         items: itemsWithInvoiceId,
         created_at: invoiceData.created,
         updated_at: invoiceData.updated,
@@ -990,7 +997,7 @@ export async function getInvoices(filters?: {
             filterParts.push(`buyer_name ~ "${sanitizeFilter(filters.buyerName)}"`);
         }
         if (filters?.invoiceType) {
-            filterParts.push(`invoice_type = "${filters.invoiceType}"`);
+            filterParts.push(`invoice_type = "${sanitizeFilter(filters.invoiceType)}"`);
         }
         if (filters?.isPaid !== undefined) {
             filterParts.push(`is_paid = ${filters.isPaid}`);
@@ -1333,4 +1340,131 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
             stone_weight: item.stone_weight ?? variant?.stone_weight ?? product?.stone_weight,
             stone_amount: item.stone_amount ?? variant?.stone_amount ?? product?.stone_amount,
             purity_karat: item.purity_karat || variant?.purity_karat || product?.purity_karat,
-            making_charges: item.making_charges ?
+            making_charges: item.making_charges ?? variant?.making_charges ?? product?.making_charges,
+            making_charges_type: item.making_charges_type || variant?.making_charges_type || product?.making_charges_type,
+            wastage_percent: item.wastage_percent ?? variant?.wastage_percent ?? product?.wastage_percent,
+            huid_code: item.huid_code || variant?.huid_code || product?.huid_code,
+        };
+    });
+
+    const taxableValue = toRupees(taxed.taxablePaise);
+    const totalTax = toRupees(taxed.taxPaise);
+    const grandTotal = toRupees(taxed.totalPaise);
+    const cgstAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.cgstPaise, 0));
+    const sgstAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.sgstPaise, 0));
+    const igstAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.igstPaise, 0));
+    const cessAmount = toRupees(taxed.lines.reduce((sum, line) => sum + line.cessPaise, 0));
+
+    const sellerStatePin = [storeSettings.store_state, storeSettings.store_pincode].filter(Boolean).join(' - ');
+    const formattedSellerAddress = [storeSettings.store_address, storeSettings.store_city, sellerStatePin].filter(Boolean).join(', ');
+
+    const invoice: Omit<Invoice, 'id' | 'invoice_number' | 'created_at' | 'updated_at'> = {
+        invoice_date: new Date().toISOString(),
+        invoice_type: 'regular',
+
+        seller_gstin: isGstRegistered ? storeSettings.store_gstin : '',
+        seller_name: storeSettings.store_name,
+        seller_address: formattedSellerAddress,
+        seller_state_code: sellerStateCode,
+
+        buyer_name: sale.customer_name || 'Walk-in Customer',
+        buyer_gstin: buyerGstin,
+        buyer_phone: sale.customer_phone || '',
+        buyer_email: '',
+        buyer_address: sale.customer_address || '',
+        buyer_state_code: buyerStateCode,
+        place_of_supply: buyerStateCode,
+
+        customer_id: sale.customer || undefined,
+        sale_id: saleId,
+
+        status: 'paid',
+        subtotal: taxableValue,
+        discount: toRupees(effectiveDiscountPaise),
+        tax: totalTax,
+        total: grandTotal,
+
+        taxable_value: taxableValue,
+        cgst_amount: cgstAmount,
+        sgst_amount: sgstAmount,
+        igst_amount: igstAmount,
+        cess_amount: cessAmount,
+        total_tax: totalTax,
+        discount_amount: toRupees(effectiveDiscountPaise),
+        shipping_charges: 0,
+        grand_total: grandTotal,
+        amount_in_words: amountToWords(grandTotal),
+
+        is_reverse_charge: false,
+        payment_terms: storeSettings.invoice_terms,
+        is_paid: true,
+        paid_amount: grandTotal,
+        notes: sale.notes,
+
+        items: invoiceItems,
+    };
+
+    return createInvoice(invoice);
+}
+// ===========================================
+// INVOICE CALCULATIONS HELPER
+// ===========================================
+
+export function calculateInvoiceTotals(
+    items: Omit<InvoiceItem, 'id' | 'invoice_id'>[],
+    sellerStateCode: string,
+    buyerStateCode: string,
+    isGstRegistered: boolean = true
+): {
+    items: InvoiceItem[];
+    taxableValue: number;
+    cgstAmount: number;
+    sgstAmount: number;
+    igstAmount: number;
+    totalTax: number;
+    grandTotal: number;
+} {
+    const round2 = (value: number) => {
+        const r = Math.round((Number(value) || 0) * 100) / 100;
+        return Object.is(r, -0) ? 0 : r;
+    };
+    const calculatedItems = items.map((item, index) => {
+        const lineSubtotal = item.quantity * item.unit_price;
+        const discountAmount = round2(lineSubtotal * (item.discount_percent / 100));
+        const taxableAmount = round2(lineSubtotal - discountAmount);
+        const effectiveRate = isGstRegistered ? (item.gst_rate ?? GST_RATES.JEWELRY) : 0;
+
+        const gst = calculateGST(taxableAmount, sellerStateCode, buyerStateCode, effectiveRate);
+
+        return {
+            ...item,
+            sr_no: index + 1,
+            discount_amount: discountAmount,
+            taxable_amount: round2(gst.taxableAmount),
+            cgst_rate: gst.cgstRate,
+            cgst_amount: round2(gst.cgstAmount),
+            sgst_rate: gst.sgstRate,
+            sgst_amount: round2(gst.sgstAmount),
+            igst_rate: gst.igstRate,
+            igst_amount: round2(gst.igstAmount),
+            total_amount: round2(gst.grandTotal),
+        };
+    });
+
+    const taxableValue = round2(calculatedItems.reduce((sum, i) => sum + i.taxable_amount, 0));
+    const cgstAmount = round2(calculatedItems.reduce((sum, i) => sum + i.cgst_amount, 0));
+    const sgstAmount = round2(calculatedItems.reduce((sum, i) => sum + i.sgst_amount, 0));
+    const igstAmount = round2(calculatedItems.reduce((sum, i) => sum + i.igst_amount, 0));
+    const totalTax = round2(cgstAmount + sgstAmount + igstAmount);
+    const grandTotal = round2(taxableValue + totalTax);
+
+    return {
+        items: calculatedItems,
+        taxableValue,
+        cgstAmount,
+        sgstAmount,
+        igstAmount,
+        totalTax,
+        grandTotal,
+    };
+}

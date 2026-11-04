@@ -60,6 +60,8 @@ function isLocalHttpHost(hostname: string): boolean {
     if (isPrivateIpv4(host)) return true;
     // Any other IPv6 literal (public or link-local) is not an allowed http target.
     if (host.includes(":")) return false;
+    // Obfuscated numeric IPv4 (decimal/hex) is not a LAN hostname.
+    if (/^(?:0x[0-9a-f]+|\d+)$/i.test(host)) return false;
     // A bare hostname has no public TLD and is resolved on the local network.
     return !host.includes(".");
 }

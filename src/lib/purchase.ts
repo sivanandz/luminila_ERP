@@ -549,7 +549,11 @@ export async function getPurchaseOrder(id: string): Promise<PurchaseOrder | null
         };
     } catch (error) {
         console.error('Error fetching PO:', error);
-        return null;
+        // A failed read used to look like a missing PO (PUR-13). Callers must
+        // be able to tell an outage from a genuinely absent record.
+        throw new Error(
+            `Failed to load purchase order ${id}: ${error instanceof Error ? error.message : String(error)}`
+        );
     }
 }
 
@@ -664,7 +668,10 @@ export async function getPurchaseOrders(filters?: {
         });
     } catch (error) {
         console.error('Error fetching POs:', error);
-        return [];
+        // Do not render a database outage as an empty order book (PUR-13).
+        throw new Error(
+            `Failed to load purchase orders: ${error instanceof Error ? error.message : String(error)}`
+        );
     }
 }
 
@@ -936,7 +943,14 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
                 });
             }
         } catch (err) {
-            console.error('Error updating PO status:', err);
+            // The receipt itself succeeded, but leaving the PO at sent/partial
+            // makes it look unfulfilled forever (PUR-8). Surface it to the
+            // caller instead of only logging it.
+            const message =
+                `GRN ${allocatedGrnNumber} was saved but the purchase order status could not be recomputed: ` +
+                `${err instanceof Error ? err.message : String(err)}. Re-check the PO before treating it as open.`;
+            console.error('[createGRN] ' + message, err);
+            warnings.push(message);
         }
     }
 
@@ -1023,7 +1037,10 @@ export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
         }));
     } catch (error) {
         console.error('Error fetching GRNs:', error);
-        return [];
+        // An unreadable GRN history must not be shown as "no receipts" (PUR-13).
+        throw new Error(
+            `Failed to load GRNs for purchase order ${poId}: ${error instanceof Error ? error.message : String(error)}`
+        );
     }
 }
 
@@ -1305,12 +1322,11 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
         };
     } catch (err) {
         console.error('Error fetching product purchase history:', err);
-        return {
-            incomingPOs: [],
-            deliveries: [],
-            totalLifetimeReceived: 0,
-            totalPendingArrival: 0,
-        };
+        // Showing all-zero history on an outage hid the difference between
+        // "never purchased" and "could not read" (PUR-13).
+        throw new Error(
+            `Failed to load purchase history for product ${productId}: ${err instanceof Error ? err.message : String(err)}`
+        );
     }
 }
 
@@ -1363,7 +1379,11 @@ export async function getOpenPurchaseOrders(): Promise<PurchaseOrder[]> {
         });
     } catch (err) {
         console.error('Error fetching open POs:', err);
-        return [];
+        // The receive-good form must not silently offer an empty PO list when
+        // the query itself failed (PUR-13).
+        throw new Error(
+            `Failed to load open purchase orders: ${err instanceof Error ? err.message : String(err)}`
+        );
     }
 }
 

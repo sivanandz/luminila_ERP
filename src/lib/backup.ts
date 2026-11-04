@@ -201,9 +201,25 @@ export interface RestoreBackupResult {
     skipped: number;
     failed: number;
     errors: Array<{ table: string; id?: string; error: string }>;
+    /** Current rows captured before the first write, for manual rollback (SET-5). */
+    snapshot?: BackupData;
+    /** True when a non-404 error stopped the restore part-way through. */
+    aborted?: boolean;
 }
 
 const MAX_REPORTED_ERRORS = 50;
+
+/**
+ * PocketBase reports a missing record as a 404. Anything else (transport,
+ * auth, 5xx) must not be treated as "row does not exist" (SET-5).
+ */
+function isNotFoundError(error: unknown): boolean {
+    return (
+        typeof error === "object" &&
+        error !== null &&
+        (error as { status?: number }).status === 404
+    );
+}
 
 /** PocketBase system fields that must not be replayed into a write payload. */
 const SYSTEM_FIELDS = ["collectionId", "collectionName", "expand", "created", "updated"] as const;

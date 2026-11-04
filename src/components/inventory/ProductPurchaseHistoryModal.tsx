@@ -37,6 +37,7 @@ import {
     type ProductPurchaseHistory,
 } from "@/lib/purchase";
 import { formatINR } from "@/lib/gst";
+import { toast } from "sonner";
 
 interface ProductPurchaseHistoryModalProps {
     isOpen: boolean;
@@ -81,6 +82,7 @@ export function ProductPurchaseHistoryModal({
             })
             .catch((err) => {
                 console.error("Failed to load product purchase history:", err);
+                toast.error("Could not load purchase history. Please retry.");
             })
             .finally(() => {
                 if (!cancelled) setLoading(false);

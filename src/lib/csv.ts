@@ -32,7 +32,7 @@ interface ParseResult<T> {
  * or split one record into two (INF-13).
  */
 export function parseCSV<T extends Record<string, string>>(csvString: string): ParseResult<T> {
-    const text = csvString.replace(/^\uFEFF/, "");
+    const text = csvString.replace(/^\uFEFF/, "").trim();
     const lines = splitCSVRecords(text);
     const errors: { row: number; message: string }[] = [];
 

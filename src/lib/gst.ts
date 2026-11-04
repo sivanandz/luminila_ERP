@@ -107,6 +107,9 @@ export interface GSTCalculation {
     isInterState: boolean;
 }
 
+/** Warn once per session, not once per line item, about a missing seller state. */
+let warnedMissingSellerState = false;
+
 export function calculateGST(
     taxableAmount: number,
     sellerStateCode: string,
@@ -121,7 +124,8 @@ export function calculateGST(
     // (INV-15).
     const sellerCode = String(sellerStateCode ?? '').trim();
     const buyerCode = String(buyerStateCode ?? '').trim();
-    if (!sellerCode && buyerCode) {
+    if (!sellerCode && buyerCode && !warnedMissingSellerState) {
+        warnedMissingSellerState = true;
         console.warn(
             '[gst] Seller state code is not configured; treating the supply as intra-state (CGST/SGST). Set store_state_code or store_gstin.'
         );

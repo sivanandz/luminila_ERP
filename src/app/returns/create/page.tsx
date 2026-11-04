@@ -277,7 +277,7 @@ function CreateReturnContent() {
                                                     <TableCell>
                                                         <p className="font-medium">{item.description}</p>
                                                         <p className="text-sm text-muted-foreground">
-                                                            @ {formatINR(item.unit_price)}
+                                                            @ {formatINR(item.tax_inclusive_unit)}
                                                         </p>
                                                     </TableCell>
                                                     <TableCell className="text-center">{item.max_qty}</TableCell>
@@ -305,7 +305,7 @@ function CreateReturnContent() {
                                                         </div>
                                                     </TableCell>
                                                     <TableCell className="text-right font-mono">
-                                                        {formatINR(item.unit_price * item.quantity)}
+                                                        {formatINR(item.tax_inclusive_unit * item.quantity)}
                                                     </TableCell>
                                                 </TableRow>
                                             ))}
