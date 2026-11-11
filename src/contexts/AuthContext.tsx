@@ -1,8 +1,8 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { pb, autoDiscoverPocketBase, resolveTenantPocketBase, sanitizeFilter, accountScopeEmail } from "@/lib/pocketbase";
+import { pb, autoDiscoverPocketBase, resolveTenantPocketBase, resetPocketBaseClientState, sanitizeFilter, accountScopeEmail } from "@/lib/pocketbase";
 import { isSystemAdminRole } from "@/lib/rbac";
 import type { AuthModel, RecordAuthResponse } from "pocketbase";
 import { ClientResponseError } from "pocketbase";
@@ -25,6 +25,23 @@ const AuthContext = createContext<AuthContextType>({
     logout: () => { },
 });
 
+function syncAuthCookie(isValid: boolean) {
+    if (typeof document === 'undefined') return;
+    try {
+        if (isValid && pb.authStore.isValid) {
+            document.cookie = pb.authStore.exportToCookie({
+                httpOnly: false,
+                sameSite: 'lax',
+                secure: window.location.protocol === 'https:',
+            });
+        } else {
+            document.cookie = 'pb_auth=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT; SameSite=Lax';
+        }
+    } catch {
+        // Ignore cookie sync errors in restricted environments
+    }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
     const router = useRouter();
     const [user, setUser] = useState<AuthModel | null>(null);
@@ -32,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [isAdmin, setIsAdmin] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
-    const checkUserIsAdmin = async (model: AuthModel | null): Promise<boolean> => {
+    const checkUserIsAdmin = useCallback(async (model: AuthModel | null): Promise<boolean> => {
         if (!model) return false;
         if (pb.authStore.isSuperuser) return true;
         try {
@@ -49,20 +66,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch {
             return false;
         }
-    };
+    }, []);
+
+    const updateAuthState = useCallback(async (model: AuthModel | null) => {
+        setUser(model);
+        setIsValid(pb.authStore.isValid);
+        if (model) {
+            const adminStatus = await checkUserIsAdmin(model);
+            setIsAdmin(adminStatus);
+        } else {
+            setIsAdmin(false);
+        }
+        syncAuthCookie(pb.authStore.isValid);
+        setIsLoading(false);
+    }, [checkUserIsAdmin]);
 
     useEffect(() => {
-        const updateAuthState = async (model: AuthModel | null) => {
-            setUser(model);
-            setIsValid(pb.authStore.isValid);
-            if (model) {
-                const adminStatus = await checkUserIsAdmin(model);
-                setIsAdmin(adminStatus);
-            } else {
-                setIsAdmin(false);
-            }
+        // Hydrate immediately if stored auth is already present in client authStore
+        if (pb.authStore.isValid && pb.authStore.model) {
+            setUser(pb.authStore.model);
+            setIsValid(true);
             setIsLoading(false);
-        };
+            checkUserIsAdmin(pb.authStore.model).then(adminStatus => {
+                setIsAdmin(adminStatus);
+            }).catch(() => {});
+        }
 
         // Initialize from stored auth after verifying connection. A stored token
         // proves nothing about the account's current state: deactivated users
@@ -81,7 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     }
                 }
             }
-            updateAuthState(pb.authStore.model);
+            await updateAuthState(pb.authStore.model);
         });
 
         // Subscribe to auth changes
@@ -95,64 +123,98 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const login = async (email: string, password: string) => {
-        let authData: RecordAuthResponse | null = null;
-
-        // Route to and wake up this account's isolated PocketBase instance (if provisioned)
-        await resolveTenantPocketBase(email);
-        await autoDiscoverPocketBase();
-
+        setIsLoading(true);
         try {
-            authData = await pb.collection("users").authWithPassword(email, password);
-        } catch (userErr) {
-            // If connection failed without status code, try discovering port again
-            if (!(userErr instanceof ClientResponseError) || !userErr.status) {
-                await resolveTenantPocketBase(email);
-                await autoDiscoverPocketBase();
-                try {
-                    authData = await pb.collection("users").authWithPassword(email, password);
-                } catch {
+            let authData: RecordAuthResponse | null = null;
+
+            // Route to and wake up this account's isolated PocketBase instance (if provisioned)
+            await resolveTenantPocketBase(email);
+            await autoDiscoverPocketBase();
+
+            try {
+                authData = await pb.collection("users").authWithPassword(email, password);
+            } catch (userErr) {
+                // If connection failed without status code, try discovering port again
+                if (!(userErr instanceof ClientResponseError) || !userErr.status) {
+                    await resolveTenantPocketBase(email);
+                    await autoDiscoverPocketBase();
+                    try {
+                        authData = await pb.collection("users").authWithPassword(email, password);
+                    } catch {
+                        throw userErr;
+                    }
+                } else {
+                    // A9: never fall back to the _superusers collection on the normal
+                    // login path — that grants full database admin from the app login.
                     throw userErr;
                 }
-            } else {
-                // A9: never fall back to the _superusers collection on the normal
-                // login path — that grants full database admin from the app login.
-                throw userErr;
             }
-        }
 
-        // Treat a missing flag as inactive: the users authRule is is_active=true,
-        // and the old `=== false` check let null through (A11).
-        if (authData?.record?.is_active !== true) {
-            pb.authStore.clear();
-            throw new Error("Account is inactive");
-        }
-
-        // Update last_login
-        if (authData?.record?.id) {
-            try {
-                await pb.collection("users").update(authData.record.id, {
-                    last_login: new Date()
-                });
-            } catch (err) {
-                console.error("Failed to update last_login:", err);
+            // Treat a missing flag as inactive: the users authRule is is_active=true,
+            // and the old `=== false` check let null through (A11).
+            if (authData?.record?.is_active !== true) {
+                pb.authStore.clear();
+                throw new Error("Account is inactive");
             }
+
+            // Update last_login
+            if (authData?.record?.id) {
+                try {
+                    await pb.collection("users").update(authData.record.id, {
+                        last_login: new Date().toISOString()
+                    });
+                } catch (err) {
+                    // non-fatal
+                }
+            }
+
+            // Await full auth state synchronization before returning so isValid,
+            // user, and isAdmin are committed before the page navigates.
+            await updateAuthState(authData.record);
+        } catch (err) {
+            setIsLoading(false);
+            throw err;
         }
     };
 
     const logout = () => {
         pb.authStore.clear();
+        // Audit M-07: tear down realtime subscriptions and re-point the
+        // singleton away from the signed-out tenant's database. Without this,
+        // `pb.baseUrl` stayed on the previous tenant and a failed tenant
+        // resolve on the next login posted credentials to the wrong database.
+        syncAuthCookie(false);
+        void resetPocketBaseClientState();
         // Reset explicitly instead of relying on the authStore onChange
         // callback (A15); a stale user could stay rendered with admin UI.
         setUser(null);
         setIsValid(false);
         setIsAdmin(false);
         if (typeof window !== "undefined") {
-            localStorage.removeItem("PB_CUSTOM_URL");
+            try {
+                // Preserve only physical peripheral hardware configurations on POS terminals
+                const HARDWARE_PREFIXES = [
+                    'pos_printer',
+                    'thermal_printer',
+                    'barcode_scanner',
+                    'hardware_',
+                    'device_',
+                    'label_printer'
+                ];
+                const allKeys = Object.keys(localStorage);
+                for (const key of allKeys) {
+                    const isHardwareKey = HARDWARE_PREFIXES.some(prefix => key.toLowerCase().startsWith(prefix));
+                    if (!isHardwareKey) {
+                        localStorage.removeItem(key);
+                    }
+                }
+                sessionStorage.clear();
+            } catch {
+                localStorage.removeItem("PB_CUSTOM_URL");
+            }
             router.replace("/login");
         }
     };
-
-
 
     return (
         <AuthContext.Provider value={{ user, isValid, isAdmin, isLoading, login, logout }}>

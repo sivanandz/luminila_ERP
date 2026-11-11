@@ -32,6 +32,7 @@ import { loadTenantChannelDefinitions } from "@/lib/server-pricing";
 import { resolveCampaign } from "@/lib/campaigns";
 import { recordConsentEvents } from "@/lib/consent-ledger";
 import { getRazorpayConfig } from "@/lib/razorpay";
+import { FixedWindowRateLimiter } from "@/lib/rate-limit";
 import {
     gatewayConfigured,
     createGatewayOrder,
@@ -44,26 +45,12 @@ import { settleCapturedOrder } from "@/lib/razorpay-webhook-handler";
 // Retried/idempotent submissions are checked AFTER the idempotency lookup, so a
 // flaky network cannot 429 a request whose order already exists. The map is
 // pruned so a long-running server cannot grow it without bound.
-const orderRateLimit = new Map<string, { count: number; firstSeen: number }>();
-const RATE_LIMIT_MAX_ENTRIES = 5000;
+const orderRateLimiter = new FixedWindowRateLimiter({
+    max: 5,
+    windowMs: 10 * 60 * 1000,
+});
 function checkRateLimit(phone: string): boolean {
-    const now = Date.now();
-    const windowMs = 10 * 60 * 1000;
-    if (orderRateLimit.size > RATE_LIMIT_MAX_ENTRIES) {
-        for (const [key, value] of orderRateLimit) {
-            if (now - value.firstSeen > windowMs) orderRateLimit.delete(key);
-        }
-    }
-    const entry = orderRateLimit.get(phone);
-    if (!entry || now - entry.firstSeen > windowMs) {
-        orderRateLimit.set(phone, { count: 1, firstSeen: now });
-        return true;
-    }
-    if (entry.count >= 5) {
-        return false;
-    }
-    entry.count += 1;
-    return true;
+    return orderRateLimiter.check(phone).allowed;
 }
 
 const CORS_HEADERS = {
@@ -187,7 +174,7 @@ async function confirmStorefrontPayment(
             { status: 404, headers: CORS_HEADERS }
         );
     }
-    if (order.account_email && order.account_email !== tenant) {
+    if (!order.account_email || order.account_email !== tenant) {
         return NextResponse.json(
             { success: false, error: "Order does not belong to this store." },
             { status: 403, headers: CORS_HEADERS }

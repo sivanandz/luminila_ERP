@@ -71,6 +71,18 @@ export async function POST(req: Request) {
                 return NextResponse.json({ success: false, error: "paymentLinkId is required" }, { status: 400 });
             }
             const result = await serverFetchRazorpayStatus(paymentLinkId);
+            // M-05: the gateway is deployment-wide, so a caller must not read
+            // another tenant's link status. When the gateway echoes the notes
+            // stamped at creation, the tenant must match the session's.
+            const sessionTenant = String(session.accountEmail || session.email || "").trim().toLowerCase();
+            const echoNotes = (result as { data?: { notes?: Record<string, string> } } | undefined)?.data?.notes;
+            const linkTenant = String(echoNotes?.account_email || "").trim().toLowerCase();
+            if (sessionTenant && linkTenant && linkTenant !== sessionTenant) {
+                return NextResponse.json(
+                    { success: false, error: "Payment link not found for this account." },
+                    { status: 404 }
+                );
+            }
             return NextResponse.json(result, { status: result.success ? 200 : 400 });
         }
 

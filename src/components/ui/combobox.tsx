@@ -3,7 +3,7 @@
 import * as React from "react"
 import { Combobox as ComboboxPrimitive } from "@base-ui/react"
 
-import { cn } from "@/lib/utils"
+import { cn, getBottomDockInset } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
   InputGroup,
@@ -105,7 +105,8 @@ function ComboboxContent({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="isolate z-50"
+        collisionPadding={{ top: 8, bottom: getBottomDockInset(), left: 8, right: 8 }}
+        className="isolate z-[100]"
       >
         <ComboboxPrimitive.Popup
           data-slot="combobox-content"

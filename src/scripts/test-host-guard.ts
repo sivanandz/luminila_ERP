@@ -51,7 +51,10 @@ test('config parses lists and halves only when unset', () => {
 test('admin, storefront, loopback and unknown hosts classify correctly', () => {
     assert.equal(classifyHost('luminila-vps.tail1234.ts.net', enabled), 'admin');
     assert.equal(classifyHost('shop.example.com:443', enabled), 'storefront');
-    assert.equal(classifyHost('127.0.0.1:3000', enabled), 'admin');
+    // Loopback trust is opt-in: a tunnel can rewrite Host to 127.0.0.1, so the
+    // default view is public and callers must pass trustLoopback explicitly (AI-12).
+    assert.equal(classifyHost('127.0.0.1:3000', enabled), 'storefront');
+    assert.equal(classifyHost('127.0.0.1:3000', enabled, { trustLoopback: true }), 'admin');
     assert.equal(classifyHost('localhost', enabled), 'admin');
     // Unknown hosts get the public-safe view, never the ERP.
     assert.equal(classifyHost('random.example.net', enabled), 'storefront');

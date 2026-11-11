@@ -32,6 +32,21 @@ const CustomerAuthContext = createContext<CustomerAuthContextType | undefined>(u
 const STORAGE_USER_KEY = "luminila_storefront_customer";
 const STORAGE_TOKEN_KEY = "luminila_storefront_token";
 
+function isTokenExpired(jwt: string): boolean {
+    try {
+        const payloadBase64 = jwt.split('.')[1];
+        if (!payloadBase64) return true;
+        const json = atob(payloadBase64.replace(/-/g, '+').replace(/_/g, '/'));
+        const payload = JSON.parse(json);
+        if (payload.exp && Date.now() >= payload.exp * 1000) {
+            return true;
+        }
+        return false;
+    } catch {
+        return true;
+    }
+}
+
 export function CustomerAuthProvider({ children }: { children: React.ReactNode }) {
     const [customer, setCustomer] = useState<CustomerUser | null>(null);
     const [token, setToken] = useState<string | null>(null);
@@ -44,8 +59,13 @@ export function CustomerAuthProvider({ children }: { children: React.ReactNode }
             const savedUser = localStorage.getItem(STORAGE_USER_KEY);
             const savedToken = localStorage.getItem(STORAGE_TOKEN_KEY);
             if (savedUser && savedToken) {
-                setCustomer(JSON.parse(savedUser));
-                setToken(savedToken);
+                if (isTokenExpired(savedToken)) {
+                    localStorage.removeItem(STORAGE_USER_KEY);
+                    localStorage.removeItem(STORAGE_TOKEN_KEY);
+                } else {
+                    setCustomer(JSON.parse(savedUser));
+                    setToken(savedToken);
+                }
             }
         } catch (e) {
             console.warn("Failed to load customer session from storage:", e);

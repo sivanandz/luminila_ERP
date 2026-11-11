@@ -8,7 +8,7 @@
  */
 
 /** Public app paths (no session required, ERP chrome hidden). */
-export const PUBLIC_PATH_PREFIXES = ["/login", "/setup", "/tracking", "/checkout"] as const;
+export const PUBLIC_PATH_PREFIXES = ["/login", "/tracking", "/checkout"] as const;
 
 /** Paths the public storefront host may serve. Mirrors PUBLIC minus ERP-only routes. */
 export const STOREFRONT_PATH_PREFIXES = ["/checkout", "/tracking", "/api/storefront", "/api/tracking"] as const;

@@ -24,6 +24,7 @@
     },
     "dependencies": {
         "@wppconnect-team/wppconnect": "^2.3.6",
+        "@wppconnect/wa-version": "^1.5.5173",
         "cors": "^2.8.5",
         "express": "^4.22.3",
         "qrcode": "^1.5.4",

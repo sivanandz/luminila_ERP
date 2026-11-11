@@ -63,10 +63,16 @@ next-env.d.ts
 **.env.test.local
 **.env.production.local
 
-# PocketBase data files (runtime data is untouched, zero demo data shipped)
-pocketbase/pb_data/*
+# PocketBase data files and SQLite databases
+pocketbase/pb_data*/
+pocketbase/pb_data*/*
 !pocketbase/pb_data/.gitkeep
 pocketbase/pb_tenants/
+*.db
+*.db-shm
+*.db-wal
+*backup*/
+*.exe
 
 # Desktop build output (server-dist holds generated Next standalone output;
 # only the placeholder README is tracked)
@@ -102,3 +108,4 @@ scratch/
 
 # leftover PocketBase verification temp dir (ACL-locked; delete manually)
 %T%/
+.dev-wpp-secret

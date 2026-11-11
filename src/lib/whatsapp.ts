@@ -1776,11 +1776,52 @@ export async function getAllChats(sessionId: string): Promise<WPPChat[]> {
     }
 }
 
+// Profile pictures are requested for every chat in the list. Without a cache
+// and a concurrency cap a 100-chat load fires ~200 sidecar calls at once, trips
+// the 300/min limiter, and those 429s also hit /api/status — which flips the UI
+// to "WPPConnect Server Offline". Cache + a 4-way gate keeps it under.
+const PROFILE_PIC_TTL_MS = 10 * 60 * 1000;
+const PROFILE_PIC_MISS_TTL_MS = 60 * 1000;
+const PROFILE_PIC_CONCURRENCY = 4;
+const profilePicCache = new Map<string, { at: number; value: string | null }>();
+let profilePicActive = 0;
+const profilePicWaiters: Array<() => void> = [];
+
+function acquireProfilePicSlot(): Promise<void> {
+    if (profilePicActive < PROFILE_PIC_CONCURRENCY) {
+        profilePicActive += 1;
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => profilePicWaiters.push(() => { profilePicActive += 1; resolve(); }));
+}
+
+function releaseProfilePicSlot(): void {
+    const next = profilePicWaiters.shift();
+    if (next) next();
+    else if (profilePicActive > 0) profilePicActive -= 1;
+}
+
 /**
  * Get profile picture for a contact, group, community, or newsletter
  * Returns the direct URL (eurl) or data URI
  */
 export async function getProfilePicture(sessionId: string, contactId: string): Promise<string | null> {
+    const cacheKey = `${sessionId}:${contactId}`;
+    const hit = profilePicCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < (hit.value ? PROFILE_PIC_TTL_MS : PROFILE_PIC_MISS_TTL_MS)) return hit.value;
+
+    await acquireProfilePicSlot();
+    let value: string | null = null;
+    try {
+        value = await fetchProfilePictureUncached(sessionId, contactId);
+    } finally {
+        releaseProfilePicSlot();
+    }
+    profilePicCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+}
+
+async function fetchProfilePictureUncached(sessionId: string, contactId: string): Promise<string | null> {
     try {
         const response = await fetch(`${WPPCONNECT_URL}/api/${sessionId}/profile-pic/${encodeURIComponent(contactId)}`);
         if (!response.ok) return null;
@@ -2314,17 +2355,22 @@ export async function requestPairingCode(sessionId: string, phone: string): Prom
  * Guarantees zero cross-admin session collisions and prevents session hijacking.
  */
 export function getTenantWhatsAppSessionId(adminIdentifier?: string): string {
+    // Single-account mode has exactly one WhatsApp session: the legacy
+    // `luminila` profile the sidecar auto-restores on boot. Deriving a
+    // per-identifier name there orphaned that linked session (the UI fell back
+    // to a fresh QR), and call sites disagreed on the identifier (user id vs
+    // email), so they polled different sessions for the same account.
+    if (isSingleAccountMode()) {
+        return "luminila";
+    }
     if (!adminIdentifier || !adminIdentifier.trim()) {
         return "luminila";
     }
     const ident = adminIdentifier.trim().toLowerCase();
     // Seamless carryover for default primary admin WhatsApp session
     if (
-        ident === "wuag7qzp57319f5" ||
-        ident === "4u58n2xva02b64t" ||
         ident === "admin@luminila.com" ||
-        ident === "admin@luminila.local" ||
-        ident === "ananya@heritagejewels.com"
+        ident === "admin@luminila.local"
     ) {
         return "luminila";
     }

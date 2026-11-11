@@ -123,6 +123,9 @@ function trustedProxyHops(): number {
  * proxy appended), or `TRUSTED_PROXY_HOPS` entries from the right.
  */
 export function clientKeyFromHeaders(headers: Headers): string {
+    const cfConnectingIp = headers.get('cf-connecting-ip')?.trim();
+    if (cfConnectingIp) return cfConnectingIp;
+
     const forwarded = headers.get('x-forwarded-for');
     if (forwarded) {
         const hops = forwarded.split(',').map((hop) => hop.trim()).filter(Boolean);
@@ -132,9 +135,29 @@ export function clientKeyFromHeaders(headers: Headers): string {
             if (client) return client;
         }
     }
-    const direct = headers.get('x-real-ip')?.trim() || headers.get('cf-connecting-ip')?.trim();
+    const direct = headers.get('x-real-ip')?.trim();
     if (direct) return direct;
     // PAY-12: no forwarding header at all — give the request its own bucket
     // instead of a shared "unknown" that one caller can exhaust for everyone.
     return `direct:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
+}
+
+export function checkPublicRateLimit(
+    req: Request,
+    limiter: FixedWindowRateLimiter,
+    customKey?: string
+): RateLimitResult {
+    const key = customKey ?? clientKeyFromHeaders(req.headers);
+    return limiter.check(key);
+}
+
+export function rateLimitHeaders(result: RateLimitResult): Record<string, string> {
+    const headers: Record<string, string> = {
+        'X-RateLimit-Remaining': String(result.remaining),
+        'X-RateLimit-Reset': String(Math.ceil(result.resetAt / 1000)),
+    };
+    if (!result.allowed) {
+        headers['Retry-After'] = String(Math.ceil(result.retryAfterMs / 1000));
+    }
+    return headers;
 }

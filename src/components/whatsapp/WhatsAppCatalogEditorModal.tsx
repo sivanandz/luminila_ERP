@@ -43,6 +43,7 @@ import {
 import { Product, ProductVariant } from "@/types/database";
 import { getChannelPrice } from "@/lib/channel-pricing";
 import { resolveProductCatalogImage } from "@/lib/whatsapp-catalog";
+import { getCatalogSyncMode, CatalogSyncMode } from "@/lib/whatsapp-event-sync";
 import {
     getCatalogProducts,
     createCatalogProduct,
@@ -144,6 +145,63 @@ export function WhatsAppCatalogEditorModal({
     const [newCollectionName, setNewCollectionName] = useState("");
     const [collectionsBusy, setCollectionsBusy] = useState(false);
     const [addingImage, setAddingImage] = useState(false);
+
+    // Sync direction + edit-gate state (mirrors the stealth sync engine; the engine
+    // emits telemetry whenever the mode changes or WhatsApp rejects an edit).
+    const [syncMode, setSyncMode] = useState<CatalogSyncMode>("inventory_master");
+    const [editGate, setEditGate] = useState(false);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        setSyncMode(getCatalogSyncMode());
+        const onStatus = (e: Event) => {
+            const custom = e as CustomEvent<{ syncMode?: CatalogSyncMode; editGate?: boolean }>;
+            if (!custom.detail) return;
+            if (custom.detail.syncMode) setSyncMode(custom.detail.syncMode);
+            if (typeof custom.detail.editGate === "boolean") setEditGate(custom.detail.editGate);
+        };
+        window.addEventListener("whatsapp:stealth-sync-status", onStatus);
+        return () => window.removeEventListener("whatsapp:stealth-sync-status", onStatus);
+    }, [isOpen]);
+
+    // Adopt direction / gated session: the catalog price flows INTO inventory via
+    // PocketBase writes — no WhatsApp mutation involved, so the edit gate can't block it.
+    const adoptActive = syncMode === "catalog_master" || editGate;
+
+    const handleAdoptMismatches = async () => {
+        const adoptable = catalogItems.filter((i) => i.isPriceMismatch && i.linkedProduct);
+        if (adoptable.length === 0) {
+            toast.info("No price mismatches to adopt — catalog and inventory already agree.");
+            return;
+        }
+
+        setBulkSyncing(true);
+        let adoptedCount = 0;
+        let failCount = 0;
+
+        try {
+            for (const item of adoptable) {
+                if (!item.linkedProduct) continue;
+                try {
+                    await setWhatsAppCatalogPrice(item.linkedProduct.id, item.price);
+                    adoptedCount++;
+                } catch {
+                    failCount++;
+                }
+                // PocketBase write pacing (no WhatsApp anti-bot constraint here)
+                await new Promise((r) => setTimeout(r, 400));
+            }
+
+            toast.success(
+                `Adopted ${adoptedCount} catalog price(s) into inventory.${failCount > 0 ? ` (${failCount} failed)` : ""}`
+            );
+            await loadCatalogAndInventory();
+        } catch (err) {
+            toast.error("Adopt error: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            setBulkSyncing(false);
+        }
+    };
 
     const loadCollections = useCallback(async () => {
         setCollectionsBusy(true);
@@ -522,6 +580,21 @@ export function WhatsAppCatalogEditorModal({
                                 <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 font-semibold px-2">
                                     Meta Live Sync
                                 </Badge>
+                                <Badge
+                                    variant="outline"
+                                    className={`text-[10px] font-semibold px-2 ${
+                                        adoptActive
+                                            ? "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30"
+                                            : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                                    }`}
+                                    title={
+                                        adoptActive
+                                            ? "Catalog price is the master — drift is adopted into inventory automatically (stealth engine + Adopt button)"
+                                            : "Inventory channel price is the master — changes push to the catalog automatically (stealth engine)"
+                                    }
+                                >
+                                    {adoptActive ? (syncMode === "catalog_master" ? "Adopt Mode" : "Adopt (push blocked)") : "Push Mode"}
+                                </Badge>
                             </div>
                             <p className="text-xs text-muted-foreground">
                                 Real-time catalog editing, inventory SKU linking, and channel pricing synchronization
@@ -534,16 +607,27 @@ export function WhatsAppCatalogEditorModal({
                             <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={handleBulkSyncMismatches}
+                                onClick={adoptActive ? handleAdoptMismatches : handleBulkSyncMismatches}
                                 disabled={bulkSyncing || loading}
-                                className="h-8 border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 gap-1.5 font-semibold text-xs"
+                                className={`h-8 gap-1.5 font-semibold text-xs ${
+                                    adoptActive
+                                        ? "border-sky-500/40 text-sky-600 dark:text-sky-400 hover:bg-sky-500/10"
+                                        : "border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+                                }`}
+                                title={
+                                    adoptActive
+                                        ? "Write the live catalog price into inventory (PocketBase) — no WhatsApp edit needed"
+                                        : "Push inventory channel prices to the WhatsApp catalog with human-paced delays"
+                                }
                             >
                                 {bulkSyncing ? (
                                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                 ) : (
-                                    <Zap className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
+                                    <Zap
+                                        className={`w-3.5 h-3.5 fill-current ${adoptActive ? "text-sky-500" : "text-amber-500"}`}
+                                    />
                                 )}
-                                Sync All Prices ({metrics.mismatches})
+                                {adoptActive ? "Adopt Catalog Prices" : "Sync All Prices"} ({metrics.mismatches})
                             </Button>
                         )}
 

@@ -358,18 +358,7 @@ export function Sidebar() {
                             Sign Out
                         </Button>
                     </div>
-                ) : (
-                    <Link
-                        href="/login"
-                        className={cn(
-                            buttonVariants({ variant: "default" }),
-                            "w-full gap-2"
-                        )}
-                    >
-                        <LogIn size={16} />
-                        Sign In
-                    </Link>
-                )}
+                ) : null}
             </div>
         </aside>
     );

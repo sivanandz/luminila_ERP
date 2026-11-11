@@ -52,6 +52,8 @@ export interface POSSaleData {
     subtotal: number;
     discountPercent: number;
     discountAmount: number;
+    /** How the operator entered the bill discount. Stored for audit/receipts. */
+    discountMode?: 'percent' | 'fixed';
     loyaltyDiscount: number;
     total: number;
     paymentMethod: 'cash' | 'card' | 'upi' | 'phonepe';
@@ -252,6 +254,7 @@ export async function createPOSSale(data: POSSaleData): Promise<POSSaleResult> {
             customer_address: '',
             subtotal,
             discount: round2(discountAmount + loyaltyDiscount),
+            discount_mode: data.discountMode === 'fixed' ? 'fixed' : 'percent',
             total,
             payment_method: data.paymentMethod,
             status: 'delivered', // POS sales are immediate

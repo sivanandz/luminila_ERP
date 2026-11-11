@@ -125,7 +125,9 @@ export async function loadTxWindow(tenant: string, win: DateWindow, db: Analytic
     // sale with channel='whatsapp' and no channel_order_id is still revenue.
     const salesFilter =
         `account_email="${sanitizeFilter(tenant)}" && channel!="${MIRROR_CHANNEL}"` +
-        ` && !(channel="whatsapp" && channel_order_id != "")` +
+        // PocketBase filters have no unary `!`; the mirror exclusion is
+        // De Morgan'd (`!(A && B)` == `!A || !B`) or the query 400s wholesale.
+        ` && (channel!="whatsapp" || channel_order_id = "")` +
         ` && status!="cancelled"` +
         ` && created>="${pbBound(win.startISO)}" && created<"${pbBound(win.endISO)}"`;
     const ordersFilter =

@@ -4,21 +4,38 @@
  * 1. PocketBase DB (:8090)
  * 2. WPPConnect WhatsApp Sidecar (:21465)
  * 3. Next.js Frontend (:3000)
+ * 4. Standalone Storefront (:3001)
  */
 
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
-// Dev-only shared token: the sidecar refuses to start without one, and the dev
-// browser has no desktop shell to inject a per-launch value.
-const DEV_SIDECAR_SECRET = require('crypto').randomBytes(24).toString('hex');
-
 const ROOT_DIR = path.resolve(__dirname, '..');
+const DEV_SECRET_FILE = path.join(ROOT_DIR, '.dev-wpp-secret');
+
+// Dev-only shared token: the sidecar refuses to start without one, and the dev
+// browser has no desktop shell to inject a per-launch value. Persist it, because
+// a per-launch value silently desyncs from an already-running sidecar (and from
+// the browser) after any single-process restart.
+function resolveDevSidecarSecret() {
+    const fromEnv = (process.env.WPPCONNECT_SECRET || '').trim();
+    if (fromEnv.length >= 16) return fromEnv;
+    try {
+        const stored = fs.readFileSync(DEV_SECRET_FILE, 'utf8').trim();
+        if (stored.length >= 16) return stored;
+    } catch { /* first run */ }
+    const generated = require('crypto').randomBytes(24).toString('hex');
+    try { fs.writeFileSync(DEV_SECRET_FILE, generated, { mode: 0o600 }); } catch { /* read-only fs */ }
+    return generated;
+}
+
+const DEV_SIDECAR_SECRET = resolveDevSidecarSecret();
 const PB_DIR = path.join(ROOT_DIR, 'pocketbase');
 const PB_EXE = path.join(PB_DIR, process.platform === 'win32' ? 'pocketbase.exe' : 'pocketbase');
 const PB_DATA = path.join(PB_DIR, 'pb_data');
 const WPP_DIR = path.join(ROOT_DIR, 'wppconnect-sidecar');
+const STOREFRONT_DIR = path.join(ROOT_DIR, 'storefront');
 
 // Color helpers
 const GREEN = '\x1b[32m';
@@ -41,6 +58,28 @@ function isServerListening(url, timeoutMs = 1500) {
         req.on('timeout', () => {
             req.destroy();
             resolve(false);
+        });
+    });
+}
+
+// Returns the status of an authenticated sidecar probe, so a sidecar running
+// with a stale secret is reported instead of silently 401ing every call.
+function probeSidecarAuth(timeoutMs = 2000) {
+    return new Promise((resolve) => {
+        const req = http.get({
+            host: '127.0.0.1',
+            port: 21465,
+            path: '/api/status',
+            headers: { Authorization: `Bearer ${DEV_SIDECAR_SECRET}` },
+            timeout: timeoutMs
+        }, (res) => {
+            res.resume();
+            resolve(res.statusCode);
+        });
+        req.on('error', () => resolve(0));
+        req.on('timeout', () => {
+            req.destroy();
+            resolve(0);
         });
     });
 }
@@ -277,30 +316,18 @@ async function main() {
     console.log(`${CYAN}${BOLD}     Luminila Unified Server Orchestrator     ${RESET}`);
     console.log(`${CYAN}══════════════════════════════════════════════════════${RESET}\n`);
 
-    // 1. PocketBase DB
+    // 1. PocketBase DB - 8090 always (single deterministic port)
     let pbPort = process.env.PB_PORT ? parseInt(process.env.PB_PORT, 10) : 8090;
-    const pbRunning8090 = await isPocketBaseHealthy(8090);
-    const pbRunning8091 = await isPocketBaseHealthy(8091);
+    const pbRunning = await isPocketBaseHealthy(pbPort);
 
-    if (pbRunning8090) {
-        pbPort = 8090;
-        console.log(`${GREEN}[PB]${RESET} PocketBase is already running on http://127.0.0.1:8090`);
-    } else if (pbRunning8091) {
-        pbPort = 8091;
-        console.log(`${GREEN}[PB]${RESET} PocketBase is already running on http://127.0.0.1:8091`);
+    if (pbRunning) {
+        console.log(`${GREEN}[PB]${RESET} PocketBase is already running on http://127.0.0.1:${pbPort}`);
     } else {
         if (!fs.existsSync(PB_EXE)) {
             console.error(`${RED}[PB] PocketBase executable not found at: ${PB_EXE}${RESET}`);
         } else {
-            // Check if 8090 is occupied by a foreign process (e.g. Wondershare or other service)
-            const port8090Occupied = await isServerListening('http://127.0.0.1:8090/');
-            if (port8090Occupied && !process.env.PB_PORT) {
-                console.log(`${YELLOW}[PB] Notice: Port 8090 is occupied by a foreign process. Falling back to port 8091.${RESET}`);
-                pbPort = 8091;
-            }
-
             console.log(`${GREEN}[PB]${RESET} Starting PocketBase DB server on port ${pbPort}...`);
-            const pbProc = spawn(PB_EXE, ['serve', `--http=0.0.0.0:${pbPort}`, `--dir=${PB_DATA}`], {
+            const pbProc = spawn(PB_EXE, ['serve', `--http=127.0.0.1:${pbPort}`, `--dir=${PB_DATA}`], {
                 cwd: PB_DIR,
                 stdio: ['ignore', 'pipe', 'pipe']
             });
@@ -401,6 +428,13 @@ async function main() {
     const wppRunning = await isServerListening('http://127.0.0.1:21465/health');
     if (wppRunning) {
         console.log(`${MAGENTA}[WPP]${RESET} WhatsApp Sidecar is already running on http://127.0.0.1:21465`);
+        // An already-running sidecar cannot be re-keyed, so a stale instance
+        // leaves the app 401ing every call while the badge reads "Offline".
+        const authStatus = await probeSidecarAuth();
+        if (authStatus === 401) {
+            console.log(`${RED}[WPP]${RESET} It rejects this dev token (started with a different secret).`);
+            console.log(`${RED}[WPP]${RESET} Stop that sidecar and re-run \`npm run dev\`, or every WhatsApp call will 401.`);
+        }
     } else {
         console.log(`${MAGENTA}[WPP]${RESET} Starting WhatsApp Sidecar server...`);
         supervise('[WPP]', () => {
@@ -424,20 +458,55 @@ async function main() {
             ? spawn(process.execPath, [nextBin, 'dev', '--webpack'], {
                 cwd: ROOT_DIR,
                 stdio: ['ignore', 'pipe', 'pipe'],
-                env: { ...process.env, NEXT_PUBLIC_WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
+                // Server-side only: layout.tsx hands this to the browser at
+                // request time. A NEXT_PUBLIC_* value would be inlined into the
+                // client bundle and expose the sidecar token (WA-9).
+                env: { ...process.env, WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
             })
             : spawn(isWin ? 'npx.cmd' : 'npx', ['next', 'dev', '--webpack'], {
                 cwd: ROOT_DIR,
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: isWin,
-                env: { ...process.env }
+                env: { ...process.env, WPPCONNECT_SECRET: DEV_SIDECAR_SECRET }
             });
         children.push(nextProc);
         pipeOutput(nextProc, '[NEXT]', CYAN);
         return nextProc;
     });
 
+    // 4. Standalone Storefront — public customer site on :3001 (storefront/).
+    // Skipped silently when storefront/ is absent so trimmed clones still boot.
+    const storefrontScript = path.join(STOREFRONT_DIR, 'scripts', 'next-run.mjs');
+    if (!fs.existsSync(STOREFRONT_DIR) || !fs.existsSync(storefrontScript)) {
+        console.log(`${YELLOW}[STOREFRONT]${RESET} storefront/ not present; skipping public site (:3001).`);
+    } else if (await isServerListening('http://127.0.0.1:3001/')) {
+        console.log(`${GREEN}[STOREFRONT]${RESET} Storefront is already running on http://localhost:3001`);
+    } else {
+        console.log(`${GREEN}[STOREFRONT]${RESET} Starting storefront on http://localhost:3001 ...`);
+        supervise('[STOREFRONT]', () => {
+            const storefrontProc = spawn(
+                process.execPath,
+                [storefrontScript, 'dev', '-p', '3001', '--webpack'],
+                {
+                    cwd: STOREFRONT_DIR,
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                    env: {
+                        ...process.env,
+                        // Single deterministic PB port (:8090), same as the ERP.
+                        NEXT_PUBLIC_POCKETBASE_URL: process.env.NEXT_PUBLIC_POCKETBASE_URL,
+                    },
+                }
+            );
+            children.push(storefrontProc);
+            pipeOutput(storefrontProc, '[STOREFRONT]', GREEN);
+            return storefrontProc;
+        });
+    }
+
     console.log(`\n${GREEN}✓ All services triggered. Press Ctrl+C to stop all.${RESET}\n`);
+
+    // Keep process alive indefinitely
+    setInterval(() => {}, 1 << 30);
 
     // Precompile every route now so the app is fully warm once the user opens it.
     warmupNextRoutes('http://localhost:3000').catch((err) => {

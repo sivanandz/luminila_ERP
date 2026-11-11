@@ -5,6 +5,23 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/**
+ * Bottom inset (px) that floating popups must keep clear so they never sit
+ * under a bottom dock (mobile navigation, bulk action bar). Docks opt in with
+ * `data-bottom-dock`; their live rects are read, so a wrapped/taller bar is
+ * honoured. Returns just the gap when no dock is on screen.
+ */
+export function getBottomDockInset(gap = 8): number {
+  if (typeof window === "undefined") return gap;
+  const vh = window.innerHeight;
+  let top = vh;
+  document.querySelectorAll<HTMLElement>("[data-bottom-dock]").forEach((el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.height > 0 && rect.top > vh * 0.4) top = Math.min(top, rect.top);
+  });
+  return Math.max(gap, Math.round(vh - top) + gap);
+}
+
 export function formatPrice(price: number): string {
   return new Intl.NumberFormat("en-IN", {
     style: "currency",

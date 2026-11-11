@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Seznik rat-tail label — clerk code sample</title>
+<style>
+    body { margin: 0; background: #0b1220; font-family: ui-sans-serif, system-ui, sans-serif; color: #e5e7eb;
+           display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .stage { display: flex; gap: 48px; align-items: center; padding: 40px; }
+    /* Faithful replica of SeznikStripTag (src/app/labels/page.tsx) with the
+       same inline styles, scaled 4x for legibility. Sample data:
+       SKU TMPHARHAR00001-MGWHSTD · base selling price 800 → clerk code 1600
+       + stored location "A2" · PoS channel price ₹800 · 2D DataMatrix. */
+    .zoom { transform: scale(4); transform-origin: center center; }
+    .caption { max-width: 300px; font-size: 13px; line-height: 1.6; margin-left: 300px; }
+    .caption h1 { font-size: 16px; margin: 0 0 12px; color: #34d399; }
+    .caption b { color: #fbbf24; }
+    .caption .mono { font-family: ui-monospace, monospace; background: #1a2332; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="stage">
+    <div class="zoom">
+        <div style="width: 14.3mm; height: 100mm; box-sizing: border-box; display: flex; flex-direction: column; background: #fff; color: #000; overflow: hidden;">
+            <!-- 36mm tail: die-cut, adhesive, never printed (screen guide only) -->
+            <div style="position: relative; width: 100%; height: 36mm; flex: 0 0 auto; order: 2;">
+                <div style="position: absolute; top: 0; left: 50%; width: 2.5mm; height: 100%; transform: translateX(-50%);
+                            border-left: 0.15mm dashed #d1d5db; border-right: 0.15mm dashed #d1d5db; color: #9ca3af;
+                            font-size: 4px; writing-mode: vertical-rl; display: flex; align-items: center; justify-content: center;">TAIL</div>
+            </div>
+            <!-- Face 1: SKU + clerk code -->
+            <div style="position: relative; width: 100%; height: 32mm; flex: 0 0 auto; order: 0;">
+                <div style="position: absolute; top: 50%; left: 50%; width: 32mm; height: 14.3mm;
+                            transform: translate(-50%, -50%) rotate(90deg); display: flex; flex-direction: column;
+                            justify-content: center; align-items: center; padding: 0.5mm 0.8mm; box-sizing: border-box;
+                            line-height: 1.05; text-align: center; color: #000;">
+                    <div style="font-size: 9pt; font-family: monospace; font-weight: 700; line-height: 1;
+                                max-width: 30mm; max-height: 24pt; overflow: hidden; word-break: break-all;">TMPHARHAR00001-MGWHSTD</div>
+                    <div style="font-size: 6.5pt; font-family: monospace; font-weight: 700; line-height: 1;
+                                margin-top: 0.7mm; max-width: 30mm; overflow: hidden; white-space: nowrap;
+                                text-overflow: ellipsis;">1600A2</div>
+                </div>
+                <div style="position: absolute; left: 0; right: 0; bottom: 0; border-top: 0.15mm dashed #d1d5db;"></div>
+            </div>
+            <!-- Face 2: symbology + channel price -->
+            <div style="position: relative; width: 100%; height: 32mm; flex: 0 0 auto; order: 1;">
+                <div style="position: absolute; top: 50%; left: 50%; width: 32mm; height: 14.3mm;
+                            transform: translate(-50%, -50%) rotate(90deg); display: flex; align-items: center;
+                            justify-content: center; gap: 1mm; padding: 0.5mm 0.8mm; box-sizing: border-box; color: #000;">
+                    <div style="width: 11mm; height: 11mm; flex: 0 0 auto; display: flex; align-items: center; justify-content: center;">
+                        <img src="https://barcode.tec-it.com/barcode.ashx?data=TMPHARHAR00001-MGWHSTD&amp;code=DataMatrix&amp;unit=Fit&amp;dpi=300"
+                             alt="TMPHARHAR00001-MGWHSTD" style="width: 11mm; height: 11mm; object-fit: contain;">
+                    </div>
+                    <div style="flex: 1 1 auto; min-width: 0; text-align: center; font-size: 10pt; font-weight: 900;
+                                line-height: 1; white-space: nowrap;">₹800</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="caption">
+        <h1>Rat-tail label — sample print</h1>
+        <p><b>Face 1 (front):</b> SKU, then the clerk code <span class="mono">1600A2</span> —
+           <b>1600</b> = 2× base selling price (halve it for the minimum SP after discounts),
+           <b>A2</b> = tray location, printed exactly as stored on the product.</p>
+        <p><b>Face 2 (back):</b> DataMatrix of the SKU + the channel price (₹800 = PoS tier here).</p>
+        <p><b>36mm tail:</b> die-cut adhesive, never printed — loops through the ring.</p>
+        <p>Printed at true size 14.3×100mm; shown 4× here.</p>
+    </div>
+</div>
+</body>
+</html>

@@ -33,12 +33,14 @@ export function ProtectedRoute({
         : isAdmin || hasPermission(resource, action);
 
     const hasAnyPermissions = isAdmin || Object.keys(permissions || {}).length > 0;
+    const isUnauthenticated = !user || !isValid;
+    const effectiveRedirect = redirectTo || (isUnauthenticated ? "/login" : undefined);
 
     useEffect(() => {
-        if (!loading && !authorized && redirectTo) {
-            router.replace(redirectTo);
+        if (!loading && !authorized && effectiveRedirect) {
+            router.replace(effectiveRedirect);
         }
-    }, [loading, authorized, redirectTo, router]);
+    }, [loading, authorized, effectiveRedirect, router]);
 
     if (loading || authorized === null) {
         return (
@@ -50,7 +52,7 @@ export function ProtectedRoute({
 
     // CMP-14: a redirect is already pending in the effect above — show a neutral
     // placeholder instead of flashing the forbidden-content UI first.
-    if (!authorized && redirectTo) {
+    if (!authorized && effectiveRedirect) {
         return (
             <div className="flex items-center justify-center h-64">
                 <div className="text-muted-foreground">Redirecting...</div>
@@ -63,22 +65,16 @@ export function ProtectedRoute({
             return <>{fallback}</>;
         }
 
-        const isUnauthenticated = !user || !isValid;
-
         return (
             <div className="flex flex-col items-center justify-center h-64 gap-4">
                 <ShieldX className="w-16 h-16 text-red-400" />
                 <h2 className="text-xl font-semibold">
-                    {isUnauthenticated
-                        ? "Authentication Required"
-                        : !hasAnyPermissions
+                    {!hasAnyPermissions
                         ? "No Roles Assigned"
                         : "Access Denied"}
                 </h2>
                 <p className="text-muted-foreground text-center max-w-md">
-                    {isUnauthenticated
-                        ? "Please sign in to access this page."
-                        : !hasAnyPermissions
+                    {!hasAnyPermissions
                         ? "This account has not been assigned any roles yet. Please assign a role via the administrator account or re-run setup."
                         : "You don't have permission to access this resource. Contact your administrator if you believe this is an error."}
                 </p>
@@ -86,11 +82,7 @@ export function ProtectedRoute({
                     <Button variant="outline" onClick={() => router.back()}>
                         Go Back
                     </Button>
-                    {isUnauthenticated ? (
-                        <Button onClick={() => router.push('/login')}>
-                            Sign In
-                        </Button>
-                    ) : !hasAnyPermissions && isMultiAccountEnabled() ? (
+                    {!hasAnyPermissions && isMultiAccountEnabled() ? (
                         <Button onClick={() => router.push('/setup')}>
                             Check Setup
                         </Button>
@@ -146,5 +138,3 @@ export function AdminOnly({ children, fallback }: AdminOnlyProps) {
     if (isAdmin) return <>{children}</>;
     return fallback ? <>{fallback}</> : null;
 }
-
-

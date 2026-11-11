@@ -28,6 +28,17 @@ const jetbrainsMono = JetBrains_Mono({
  */
 const themeScript = `(function(){try{var dark=window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',dark);}catch(e){document.documentElement.classList.add('dark');}})();`;
 
+/**
+ * Dev-only sidecar token handoff. The browser dev server has no desktop shell to
+ * inject `window.__WPPCONNECT_SECRET__`, and the token must never become a
+ * NEXT_PUBLIC value (Next inlines those into the shipped bundle, WA-9). Read it
+ * from the server environment at request time; production renders nothing here.
+ */
+const devSidecarScript =
+  process.env.NODE_ENV === "development" && process.env.WPPCONNECT_SECRET
+    ? `window.__WPPCONNECT_SECRET__=${JSON.stringify(process.env.WPPCONNECT_SECRET)};`
+    : "";
+
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
@@ -58,6 +69,9 @@ export default function RootLayout({
         className={`${inter.variable} ${manrope.variable} ${jetbrainsMono.variable} antialiased flex h-screen w-full overflow-hidden bg-background`}
       >
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        {devSidecarScript ? (
+          <script dangerouslySetInnerHTML={{ __html: devSidecarScript }} />
+        ) : null}
         <AuthProvider>
           <AuthGate>
             <PricingRulesBootstrap />

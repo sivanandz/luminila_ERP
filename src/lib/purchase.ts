@@ -590,7 +590,7 @@ export async function getPurchaseOrders(filters?: {
 
         // Fetch items for all POs in chunks of 30 to avoid HTTP 414 URI Too Long
         const poIds = pos.map(p => p.id);
-        let allItems: POItemRecord[] = [];
+        const allItems: POItemRecord[] = [];
         if (poIds.length > 0) {
             const chunkSize = 30;
             for (let i = 0; i < poIds.length; i += chunkSize) {
@@ -977,7 +977,7 @@ export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
 
         // Fetch items for all GRNs in chunks of 30
         const grnIds = grns.map(g => g.id);
-        let allItems: any[] = [];
+        const allItems: any[] = [];
         if (grnIds.length > 0) {
             const chunkSize = 30;
             for (let i = 0; i < grnIds.length; i += chunkSize) {

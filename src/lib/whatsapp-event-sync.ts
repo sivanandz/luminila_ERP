@@ -9,7 +9,7 @@
 import { pb, ensureAuth, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
 import { Product, ProductVariant } from '../types/database';
 import { getChannelPrice } from './channel-pricing';
-import { resolveProductCatalogImage } from './whatsapp-catalog';
+import { resolveProductCatalogImage, setWhatsAppCatalogPrice } from './whatsapp-catalog';
 import {
     getSessionStatus,
     createCatalogProduct,
@@ -40,6 +40,15 @@ const SELF_UPDATE_SUPPRESS_MS = 6000;
 
 export type CatalogSyncAction = 'create' | 'update' | 'delete';
 
+/**
+ * Which side owns the catalog price.
+ * - `inventory_master`: PocketBase channel price is pushed to WhatsApp (realtime + reconcile).
+ * - `catalog_master`: live WhatsApp catalog price is adopted into PocketBase. Used when
+ *   WhatsApp refuses catalog edits from the linked session (GraphQL 2498050) — reads
+ *   always work, so price sync keeps flowing in the reverse direction.
+ */
+export type CatalogSyncMode = 'inventory_master' | 'catalog_master';
+
 export interface QueuedCatalogTask {
     productId: string;
     action: CatalogSyncAction;
@@ -52,7 +61,7 @@ export interface QueuedCatalogTask {
 
 export interface StealthSyncTelemetry {
     enabled: boolean;
-    workerState: 'idle' | 'settling' | 'inspecting' | 'mutating' | 'pacing' | 'rate_limited' | 'backoff';
+    workerState: 'idle' | 'settling' | 'inspecting' | 'mutating' | 'pacing' | 'rate_limited' | 'backoff' | 'gated';
     queueSize: number;
     currentProductName?: string;
     nextRunAt?: number;
@@ -61,6 +70,8 @@ export interface StealthSyncTelemetry {
     lastSyncedProductName?: string;
     lastSyncedAt?: string;
     lastError?: string | null;
+    syncMode?: CatalogSyncMode;
+    editGate?: boolean;
 }
 
 interface StoredCatalogIdentity {
@@ -83,6 +94,14 @@ let isWorkerRunning = false;
 let workerTimer: ReturnType<typeof setTimeout> | null = null;
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
 let consecutiveFailures = 0;
+
+/**
+ * True once WhatsApp's server has rejected a catalog edit with the linked-session
+ * authorization error (GraphQL 2498050). While set, event-driven pushes are held
+ * back (they cannot succeed); the reconcile keeps one probe per cycle so the flag
+ * clears itself automatically once the session regains edit rights (e.g. relink).
+ */
+let editGateDetected = false;
 
 let isSubscribed = false;
 let unsubscribeProducts: (() => void) | null = null;
@@ -276,6 +295,8 @@ function emitTelemetry(patch?: Partial<StealthSyncTelemetry>): void {
         ...currentTelemetry,
         ...patch,
         enabled: isAutoSyncEnabled(),
+        syncMode: getCatalogSyncMode(),
+        editGate: editGateDetected,
         queueSize: taskQueue.length + pendingSettleTimers.size,
         mutationsLast10Min: timestamps.filter((t) => t > tenMinCutoff).length,
         mutationsLastHour: timestamps.length,
@@ -295,6 +316,8 @@ export function getStealthSyncStatus(): StealthSyncTelemetry {
     return {
         ...currentTelemetry,
         enabled: isAutoSyncEnabled(),
+        syncMode: getCatalogSyncMode(),
+        editGate: editGateDetected,
         queueSize: taskQueue.length + pendingSettleTimers.size,
         mutationsLast10Min: timestamps.filter((t) => t > tenMinCutoff).length,
         mutationsLastHour: timestamps.length,
@@ -325,6 +348,50 @@ export function setAutoSyncEnabled(enabled: boolean): void {
     }
 }
 
+/** WA-16: sync direction is also a per-tenant preference. */
+function getSyncModeStorageKey(): string {
+    return `whatsapp_catalog_sync_mode${getTenantStorageSuffix()}`;
+}
+
+export function getCatalogSyncMode(): CatalogSyncMode {
+    if (typeof window === 'undefined') return 'inventory_master';
+    return localStorage.getItem(getSyncModeStorageKey()) === 'catalog_master'
+        ? 'catalog_master'
+        : 'inventory_master';
+}
+
+export function setCatalogSyncMode(mode: CatalogSyncMode): void {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(getSyncModeStorageKey(), mode);
+    emitTelemetry({ syncMode: mode });
+    // Apply the new direction immediately instead of waiting for the next cycle.
+    void triggerStealthCatalogReconcile().catch(() => {});
+}
+
+/**
+ * The sidecar maps Meta's GraphQL 2498050 rejection to this operator-facing text;
+ * matching on it keeps the gate detection independent of error-object shapes.
+ */
+const EDIT_GATE_ERROR_PATTERN = /no longer allows editing catalog products/i;
+
+function noteEditFailure(error?: string | null): void {
+    if (error && EDIT_GATE_ERROR_PATTERN.test(error) && !editGateDetected) {
+        editGateDetected = true;
+        emitTelemetry({ editGate: true, workerState: 'gated' });
+        toast.warning('WhatsApp is rejecting catalog edits from this session', {
+            description: 'Relink the WhatsApp session to restore push sync, or switch to "Catalog → Inventory" mode to keep prices in sync automatically.',
+            duration: 12000,
+        });
+    }
+}
+
+function clearEditGateOnSuccess(): void {
+    if (editGateDetected) {
+        editGateDetected = false;
+        emitTelemetry({ editGate: false, workerState: 'idle' });
+    }
+}
+
 function markSelfProductUpdate(productId: string): void {
     selfUpdateSuppression.set(productId, Date.now() + SELF_UPDATE_SUPPRESS_MS);
 }
@@ -347,6 +414,19 @@ export function queueProductCatalogSync(
 ): void {
     if (!isAutoSyncEnabled()) return;
     if (!productId) return;
+
+    // Adopt mode: PocketBase edits must not be pushed — the live catalog price is
+    // the master and flows the other way through the reconcile loop.
+    if (getCatalogSyncMode() === 'catalog_master') {
+        return;
+    }
+
+    // While WhatsApp refuses catalog edits from this session, event-driven pushes
+    // cannot succeed. The reconcile keeps a single probe per cycle instead, so the
+    // flag clears itself after a relink without burning the 4-attempt drop per task.
+    if (editGateDetected) {
+        return;
+    }
 
     if (action !== 'delete' && isSuppressedSelfUpdate(productId)) {
         return;
@@ -782,6 +862,8 @@ export async function executeProductCatalogSync(
                     whatsapp_last_synced: new Date().toISOString(),
                 }).catch(() => {});
 
+                clearEditGateOnSuccess();
+
                 if (showNotification) {
                     toast.success(`WhatsApp Catalog Updated: ${product.name}`, {
                         description: `₹${targetPrice.toLocaleString('en-IN')} • ${isHidden ? 'Hidden (Out of Stock / Inactive)' : `Active (${totalStock} in stock)`}`,
@@ -790,6 +872,7 @@ export async function executeProductCatalogSync(
                 return { success: true, productName: product.name };
             }
 
+            noteEditFailure(editRes.error);
             return { success: false, error: editRes.error || 'Failed to edit WhatsApp catalog item' };
         }
 
@@ -827,6 +910,8 @@ export async function executeProductCatalogSync(
                 whatsapp_last_synced: new Date().toISOString(),
             }).catch(() => {});
 
+            clearEditGateOnSuccess();
+
             if (showNotification) {
                 toast.success(`Added to WhatsApp Catalog: ${product.name}`, {
                     description: `Published at ₹${targetPrice.toLocaleString('en-IN')}`,
@@ -835,20 +920,36 @@ export async function executeProductCatalogSync(
             return { success: true, productName: product.name };
         }
 
+        noteEditFailure(createRes.error);
         return { success: false, error: createRes.error || 'Could not create WhatsApp catalog product' };
     } catch (err) {
         console.error('[wa-stealth-sync] Unexpected error during sync:', err);
+        noteEditFailure((err as Error)?.message || String(err));
         return { success: false, error: (err as Error)?.message || String(err) };
     }
+}
+
+/**
+ * Adopt a live WhatsApp catalog price into PocketBase (catalog_master mode).
+ * Price-only: the catalog owns the price; inventory keeps names/stock/hidden state.
+ * Mirrors the editor modal's micro-unit guard so a raw priceAmount1000 value that
+ * slipped through normalization is never written as rupees.
+ */
+function normalizeWaPrice(value: number): number {
+    if (value >= 100000 && value % 1000 === 0) return value / 1000;
+    return value;
 }
 
 /**
  * Periodic Background Drift Reconciler:
  * Compares PocketBase inventory against live WhatsApp Business App catalog
  * and enqueues any missing, price/status-drifted, or removed items into the stealth queue.
+ * In `catalog_master` mode the drift flows the other way: the live catalog price is
+ * adopted straight into PocketBase (`channel_prices.whatsapp`) without any WhatsApp write.
  */
-export async function triggerStealthCatalogReconcile(): Promise<{ queued: number }> {
-    if (!isAutoSyncEnabled()) return { queued: 0 };
+export async function triggerStealthCatalogReconcile(): Promise<{ queued: number; adopted: number }> {
+    if (!isAutoSyncEnabled()) return { queued: 0, adopted: 0 };
+    const syncMode = getCatalogSyncMode();
 
     try {
         const tenantEmail = getCurrentTenantEmail();
@@ -858,7 +959,7 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
             'luminila';
 
         const status = await getSessionStatus(sessionId);
-        if (status !== 'CONNECTED') return { queued: 0 };
+        if (status !== 'CONNECTED') return { queued: 0, adopted: 0 };
 
         type ReconcileProduct = Product & {
             whatsapp_catalog_id?: string;
@@ -898,6 +999,11 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
         }
 
         let queuedCount = 0;
+        let adoptedCount = 0;
+        // While the edit gate is active, push one probe task per reconcile cycle so a
+        // relinked session flips the flag back without flooding the queue with doomed
+        // 4-attempt retries.
+        let gateProbeUsed = false;
 
         for (const p of products) {
             saveIdentityRecord(p.id, {
@@ -917,8 +1023,24 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
                     (p.sku && w.retailerId && w.retailerId.toLowerCase() === p.sku.toLowerCase())
             );
 
+            if (syncMode === 'catalog_master') {
+                // Adopt direction: the live catalog owns the price; every other field
+                // stays inventory-driven and no WhatsApp writes are attempted.
+                if (!matchedLive || targetPrice === undefined) continue;
+                const livePrice = normalizeWaPrice(Number(matchedLive.price) || 0);
+                if (livePrice > 0 && Math.abs(livePrice - targetPrice) >= 1) {
+                    try {
+                        await setWhatsAppCatalogPrice(p.id, livePrice);
+                        adoptedCount++;
+                    } catch (adoptErr) {
+                        console.warn('[wa-stealth-sync] Price adoption failed for', p.sku, adoptErr);
+                    }
+                }
+                continue;
+            }
+
             if (!matchedLive) {
-                if (!shouldBeHidden) {
+                if (!shouldBeHidden && !(editGateDetected && gateProbeUsed)) {
                     enqueueSettledTask({
                         productId: p.id,
                         action: 'create',
@@ -928,16 +1050,17 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
                         attempts: 0,
                     });
                     queuedCount++;
+                    if (editGateDetected) gateProbeUsed = true;
                 }
             } else {
-                const livePrice = Number(matchedLive.price) || 0;
+                const livePrice = normalizeWaPrice(Number(matchedLive.price) || 0);
                 const liveHidden = Boolean(matchedLive.isHidden);
                 const liveName = (matchedLive.name || '').trim();
-                if (
+                const drifted =
                     liveName !== p.name.trim() ||
                     Math.abs(livePrice - targetPrice) >= 1 ||
-                    liveHidden !== shouldBeHidden
-                ) {
+                    liveHidden !== shouldBeHidden;
+                if (drifted && !(editGateDetected && gateProbeUsed)) {
                     enqueueSettledTask({
                         productId: p.id,
                         action: 'update',
@@ -948,14 +1071,23 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
                         attempts: 0,
                     });
                     queuedCount++;
+                    if (editGateDetected) gateProbeUsed = true;
                 }
             }
         }
 
-        return { queued: queuedCount };
+        if (adoptedCount > 0) {
+            emitTelemetry({
+                lastSyncedProductName: `${adoptedCount} price${adoptedCount > 1 ? 's' : ''} adopted from catalog`,
+                lastSyncedAt: new Date().toISOString(),
+                lastError: null,
+            });
+        }
+
+        return { queued: queuedCount, adopted: adoptedCount };
     } catch (err) {
         console.warn('[wa-stealth-sync] Background drift check skipped:', err);
-        return { queued: 0 };
+        return { queued: 0, adopted: 0 };
     }
 }
 

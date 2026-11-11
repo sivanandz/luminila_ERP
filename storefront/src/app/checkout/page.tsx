@@ -27,7 +27,7 @@ import { useCustomerAuth } from "@/context/CustomerAuthContext";
 
 export default function CheckoutPage() {
     const { cart, cartSubtotal, cartCount, clearCart, setIsCartOpen } = useCart();
-    const { customer, isAuthenticated, openAuthModal } = useCustomerAuth();
+    const { customer, isAuthenticated, openAuthModal, logout } = useCustomerAuth();
 
     const [customerName, setCustomerName] = useState("");
     const [customerPhone, setCustomerPhone] = useState("");
@@ -488,6 +488,22 @@ export default function CheckoutPage() {
                                     <span className="text-xs">
                                         Logged in as <strong>{customer.name}</strong> (+91 {customer.phone})
                                     </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            logout();
+                                            setCustomerName("");
+                                            setCustomerPhone("");
+                                            setCustomerEmail("");
+                                            setShippingAddress("");
+                                            setCity("");
+                                            setStateVal("");
+                                            setPincode("");
+                                        }}
+                                        className="text-[10px] text-emerald-700 underline hover:text-emerald-950 font-medium ml-1 cursor-pointer"
+                                    >
+                                        (Not you? Sign out)
+                                    </button>
                                 </div>
                                 {customer.loyalty_points !== undefined && customer.loyalty_points > 0 && (
                                     <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-full">

@@ -275,6 +275,22 @@ export async function restoreFromBackup(file: File): Promise<RestoreBackupResult
             });
         };
 
+        // Pre-restore snapshot (SET-5): the restore writes row by row without a
+        // transaction, so the current rows are the only rollback point. Refuse
+        // to overwrite data when the snapshot itself could not be completed.
+        const snapshot = await createBackup();
+        if (!snapshot) {
+            return empty("Restore refused: the current data could not be snapshotted.");
+        }
+        if (snapshot.errors && snapshot.errors.length > 0) {
+            return empty(
+                `Restore refused: the pre-restore snapshot is incomplete (${snapshot.errors
+                    .map((entry) => `${entry.table}: ${entry.error}`)
+                    .join("; ")}).`
+            );
+        }
+
+        let aborted = false;
         for (const table of BACKUP_TABLES) {
             const rows = Array.isArray(data.tables[table]) ? (data.tables[table] as unknown[]) : [];
             const stats: BackupTableRestoreResult = { table, created: 0, updated: 0, skipped: 0, failed: 0 };
@@ -308,26 +324,70 @@ export async function restoreFromBackup(file: File): Promise<RestoreBackupResult
                 delete row.id;
                 row.account_email = tenant;
 
+                let existing: { id: string } | null = null;
                 try {
-                    const existing = (await pb
+                    existing = (await pb
                         .collection(table)
                         .getFirstListItem(`${tenantScope} && id="${sanitizeFilter(id)}"`)) as { id: string };
-                    await pb.collection(table).update(existing.id, row);
-                    stats.updated += 1;
-                } catch {
-                    try {
-                        // Refuse to overwrite a record that exists under another tenant.
-                        const foreign = await pb.collection(table).getOne(id).catch(() => null);
-                        if (foreign) {
-                            stats.skipped += 1;
-                            continue;
-                        }
-                        await pb.collection(table).create({ ...row, id });
-                        stats.created += 1;
-                    } catch (error) {
+                } catch (lookupError) {
+                    // Only a 404 means "create this row". An outage or auth
+                    // failure must abort instead of being re-routed into a
+                    // create that may shadow another record (SET-5).
+                    if (!isNotFoundError(lookupError)) {
                         stats.failed += 1;
-                        recordError(table, id, error);
+                        recordError(
+                            table,
+                            id,
+                            `Lookup failed: ${lookupError instanceof Error ? lookupError.message : String(lookupError)}`
+                        );
+                        aborted = true;
+                        break;
                     }
+                }
+
+                if (existing) {
+                    try {
+                        await pb.collection(table).update(existing.id, row);
+                        stats.updated += 1;
+                    } catch (updateError) {
+                        stats.failed += 1;
+                        recordError(
+                            table,
+                            id,
+                            `Update failed: ${updateError instanceof Error ? updateError.message : String(updateError)}`
+                        );
+                        aborted = true;
+                        break;
+                    }
+                    continue;
+                }
+
+                try {
+                    // Refuse to overwrite a record that exists under another tenant.
+                    const foreign = await pb.collection(table).getOne(id);
+                    if (foreign) {
+                        stats.skipped += 1;
+                        continue;
+                    }
+                } catch (foreignError) {
+                    if (!isNotFoundError(foreignError)) {
+                        stats.failed += 1;
+                        recordError(
+                            table,
+                            id,
+                            `Ownership check failed: ${foreignError instanceof Error ? foreignError.message : String(foreignError)}`
+                        );
+                        aborted = true;
+                        break;
+                    }
+                }
+
+                try {
+                    await pb.collection(table).create({ ...row, id });
+                    stats.created += 1;
+                } catch (error) {
+                    stats.failed += 1;
+                    recordError(table, id, error);
                 }
             }
 
@@ -335,6 +395,7 @@ export async function restoreFromBackup(file: File): Promise<RestoreBackupResult
             failedTotal += stats.failed;
             if (stats.created + stats.updated > 0) restored[table] = stats.created + stats.updated;
             tablesResult.push(stats);
+            if (aborted) break;
         }
 
         const wrote = Object.values(restored).reduce((sum, count) => sum + count, 0);
@@ -343,18 +404,22 @@ export async function restoreFromBackup(file: File): Promise<RestoreBackupResult
             `${skippedTotal} skipped`,
             `${failedTotal} failed`,
         ].join(", ");
-        const message = failedTotal > 0 || skippedTotal > 0
-            ? `Backup from ${new Date(data.createdAt).toLocaleDateString()} restored with issues: ${detail}.`
-            : `Backup from ${new Date(data.createdAt).toLocaleDateString()} restored successfully (${detail}).`;
+        const message = aborted
+            ? `Restore aborted after an unexpected error (${detail}). The pre-restore snapshot is attached.`
+            : failedTotal > 0 || skippedTotal > 0
+                ? `Backup from ${new Date(data.createdAt).toLocaleDateString()} restored with issues: ${detail}.`
+                : `Backup from ${new Date(data.createdAt).toLocaleDateString()} restored successfully (${detail}).`;
 
         return {
-            success: failedTotal === 0 && skippedTotal === 0,
+            success: !aborted && failedTotal === 0 && skippedTotal === 0,
             message,
             restored,
             tables: tablesResult,
             skipped: skippedTotal,
             failed: failedTotal,
             errors,
+            snapshot,
+            ...(aborted ? { aborted: true } : {}),
         };
     } catch (err) {
         console.error("Restore failed:", err);
@@ -394,7 +459,8 @@ export function scheduleAutoBackup(
         if (typeof window === "undefined") return;
         try {
             const keys = getBackupStorageKeys();
-            localStorage.setItem(keys.autoBackup, JSON.stringify(backup));
+            // C-07: Never store full unencrypted database exports in browser localStorage
+            localStorage.removeItem(keys.autoBackup);
             localStorage.setItem(keys.lastBackup, new Date().toISOString());
         } catch {
             console.warn("Failed to store auto backup in localStorage");
@@ -436,7 +502,7 @@ export function getLastBackupInfo(): { date: string | null; available: boolean }
 
     return {
         date: lastBackup,
-        available: !!backupData,
+        available: !!lastBackup,
     };
 }
 

@@ -10,6 +10,7 @@
  *  - §8.2 Barcode tag print queue (label_print_queue)
  */
 
+import { ClientResponseError } from 'pocketbase';
 import { pb, accountScopeEmail, sanitizeFilter, getTenantStorageKey } from './pocketbase';
 import { recordConsentEvent } from './consent-ledger';
 import {
@@ -334,8 +335,31 @@ export async function ensureChat(opts: {
         if (opts.labels !== undefined) patch.labels = opts.labels;
 
         if (existing) {
-            const updated = await pb.collection('whatsapp_chats').update(existing.id, patch);
-            return updated as unknown as StoredChat;
+            try {
+                const updated = await pb.collection('whatsapp_chats').update(existing.id, patch);
+                return updated as unknown as StoredChat;
+            } catch (err) {
+                // PocketBase reports a rule-hidden or racing id as 404. The row
+                // is usually still there, so re-read once and retry before
+                // treating it as deleted. Creating blindly here hits the
+                // chat_id uniqueness constraint and fails with 400.
+                if (!(err instanceof ClientResponseError) || err.status !== 404) throw err;
+                const again = await pb.collection('whatsapp_chats')
+                    .getFirstListItem(withTenantFilter(`chat_id="${sanitizeFilter(opts.chatId)}"`))
+                    .catch(() => null);
+                if (again) {
+                    try {
+                        const updated = await pb.collection('whatsapp_chats').update(again.id, patch);
+                        return updated as unknown as StoredChat;
+                    } catch (retryErr) {
+                        // The chat is still usable with the row we already have;
+                        // a failed metadata refresh must not break message load.
+                        console.warn('[whatsapp-crm] ensureChat: update blocked, keeping existing row:', opts.chatId);
+                        return again as unknown as StoredChat;
+                    }
+                }
+                console.warn('[whatsapp-crm] ensureChat: chat row gone, recreating:', opts.chatId);
+            }
         }
 
         const created = await pb.collection('whatsapp_chats').create({

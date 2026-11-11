@@ -23,6 +23,7 @@ export {
     calculateGatewayMarkup,
     applyPriceRounding,
     computeRulePrice,
+    computeChannelFloor,
     resolveChannelPrice,
     getChannelPriceFromList,
     getShopPriceFromList,
@@ -49,7 +50,7 @@ export const DEFAULT_RAZORPAY_FEE_PERCENT = DEFAULT_GATEWAY_FEE_PERCENT;
 // module; see `normalizeChannelDefinitions`.
 
 function getStorageKey(): string {
-    const email = pb.authStore.model?.email || "default";
+    const email = (accountScopeEmail() || pb.authStore.model?.account_email || pb.authStore.model?.email || "default").trim().toLowerCase();
     return `luminila_configured_channels_${email}`;
 }
 

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { verifyOtp } from "@/lib/otp-store";
 import { isCustomerTokenConfigured, signCustomerToken } from "@/lib/customer-token";
 import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
-import { getStorefrontBinding } from "@/lib/storefront";
+import { getStorefrontBinding, resolvePublicStorefrontTenant } from "@/lib/storefront";
 import { recordConsentEvent } from "@/lib/consent-ledger";
 
 const CORS_HEADERS = {
@@ -37,10 +37,20 @@ export async function POST(req: Request) {
             );
         }
 
-        // 1. Resolve the tenant first: OTP codes are scoped to it, so a code
-        // minted for one storefront cannot be replayed against another.
+        // 1. Resolve the tenant from the server-side allow-list first (audit
+        // C-02): a caller-named tenant that is not a configured storefront
+        // fails closed, so no customer session can be minted for it. OTP codes
+        // are scoped to the resolved tenant, so a code minted for one
+        // storefront cannot be replayed against another.
         const reqEmail = typeof body.accountEmail === "string" ? body.accountEmail : undefined;
-        const { boundAdminEmail } = await getStorefrontBinding(reqEmail);
+        const publicTenant = resolvePublicStorefrontTenant(reqEmail);
+        if (!publicTenant) {
+            return NextResponse.json(
+                { success: false, error: "This storefront is not available." },
+                { status: 404, headers: CORS_HEADERS }
+            );
+        }
+        const { boundAdminEmail } = await getStorefrontBinding(publicTenant);
 
         // 2. Verify the code with attempts protection
         const check = await verifyOtp(cleanDigits, otp, boundAdminEmail);

@@ -445,11 +445,35 @@ export async function processRazorpayWebhookEvent(
                     return { success: true, event };
                 }
 
-                const existingOrder = (await db.collection('sales_orders').getOne(orderId)) as unknown as {
-                    payment_status?: string;
-                    total?: number;
-                    subtotal?: number;
-                };
+                // M-05: the order must belong to the tenant named in the signed
+                // gateway notes. `notes.order_id` is caller-settable at link
+                // creation, so an unscoped load let one tenant settle another
+                // tenant's order in a shared database. Load inside the tenant
+                // scope and fail closed when the notes carry no tenant.
+                const orderTenant = String(tenantEmail || '').trim().toLowerCase();
+                const existingOrder = orderTenant
+                    ? ((await db
+                          .collection('sales_orders')
+                          .getFirstListItem(
+                              `id = "${sanitizeFilter(orderId)}" && account_email = "${sanitizeFilter(orderTenant)}"`
+                          )
+                          .catch(() => null)) as unknown as {
+                          payment_status?: string;
+                          total?: number;
+                          subtotal?: number;
+                      } | null)
+                    : null;
+                if (!existingOrder) {
+                    console.error(
+                        `[webhook] Order ${orderId} not found in tenant scope; refusing to settle`
+                    );
+                    return {
+                        success: false,
+                        orderId,
+                        event,
+                        error: 'Order not found for the tenant in the payment notes',
+                    };
+                }
 
                 // The captured amount and currency must both be proven. The old
                 // check skipped verification whenever the gateway omitted

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import DOMPurify from "dompurify";
 import { format } from "date-fns";
 import {
     ArrowLeft,
@@ -150,7 +151,7 @@ function InvoiceDetailContent() {
                 ${styles}
             </head>
             <body>
-                ${element.innerHTML}
+                ${DOMPurify.sanitize(element.innerHTML)}
                 <script>
                     window.addEventListener("load", function () {
                         setTimeout(function () { window.print(); window.close(); }, 100);

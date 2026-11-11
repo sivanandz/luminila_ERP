@@ -258,17 +258,33 @@ const PB_KEY = "jewelry_sku_taxonomies";
 let currentTaxonomies: SKUTaxonomies = getDefaultTaxonomies();
 const listeners = new Set<(taxonomies: SKUTaxonomies) => void>();
 
+// Tenant stamp (audit C-09): the singleton used to hydrate once at import and
+// keep whichever tenant's taxonomy it saw, so switching accounts in the same
+// tab carried the previous tenant's custom genres/categories into the next
+// tenant and saved them into their store_settings. Every accessor re-scopes.
+let taxonomiesTenant: string | null = null;
+
+function ensureTenantScope(): string {
+    const tenant = getCurrentTenantEmail();
+    if (taxonomiesTenant === tenant) return tenant;
+    taxonomiesTenant = tenant;
+    currentTaxonomies = getDefaultTaxonomies();
+    if (typeof window !== "undefined") {
+        try {
+            const cached = localStorage.getItem(getSKUStorageKey());
+            if (cached) {
+                currentTaxonomies = mergeTaxonomiesWithDefaults(JSON.parse(cached));
+            }
+        } catch (e) {
+            console.error("Failed to parse cached SKU taxonomies", e);
+        }
+    }
+    return tenant;
+}
+
 // Load cached taxonomies from localStorage immediately if available in browser
 if (typeof window !== "undefined") {
-    try {
-        const cached = localStorage.getItem(getSKUStorageKey());
-        if (cached) {
-            const parsed = JSON.parse(cached);
-            currentTaxonomies = mergeTaxonomiesWithDefaults(parsed);
-        }
-    } catch (e) {
-        console.error("Failed to parse cached SKU taxonomies", e);
-    }
+    ensureTenantScope();
 }
 
 function dedupeList<T>(list: T[] | undefined, defaultList: T[], keyProp: string = "code"): T[] {
@@ -350,6 +366,7 @@ function notifyListeners() {
  * Returns current in-memory taxonomies synchronously
  */
 export function getSKUTaxonomies(): SKUTaxonomies {
+    ensureTenantScope();
     return { ...currentTaxonomies };
 }
 
@@ -443,7 +460,7 @@ export function subscribeSKUTaxonomies(callback: (taxonomies: SKUTaxonomies) => 
  * Loads taxonomies from PocketBase store_settings or local cache
  */
 export async function loadSKUTaxonomies(): Promise<SKUTaxonomies> {
-    const tenantEmail = getCurrentTenantEmail();
+    const tenantEmail = ensureTenantScope();
     try {
         const filter = tenantEmail && tenantEmail !== "default"
             ? `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`
@@ -479,6 +496,7 @@ export async function loadSKUTaxonomies(): Promise<SKUTaxonomies> {
  * Saves and broadcasts updated taxonomies to PocketBase & localStorage
  */
 export async function saveSKUTaxonomies(taxonomies: SKUTaxonomies): Promise<void> {
+    ensureTenantScope();
     currentTaxonomies = { ...taxonomies };
 
     if (typeof window !== "undefined") {
@@ -518,6 +536,7 @@ export async function addTaxonomyOption<K extends keyof SKUTaxonomies>(
     taxonomyKey: K,
     option: SKUTaxonomies[K][number]
 ): Promise<SKUTaxonomies> {
+    ensureTenantScope();
     const updated = { ...currentTaxonomies };
     const list = [...(updated[taxonomyKey] as any[])];
 
@@ -552,6 +571,7 @@ export async function removeTaxonomyOption<K extends keyof SKUTaxonomies>(
     taxonomyKey: K,
     codeOrSuffix: string
 ): Promise<SKUTaxonomies> {
+    ensureTenantScope();
     const updated = { ...currentTaxonomies };
     const codeKey = taxonomyKey === 'packagingTiers' ? 'suffix' : 'code';
     const cleanTarget = codeOrSuffix.toUpperCase().trim();
@@ -573,6 +593,7 @@ export async function updateTaxonomyOption<K extends keyof SKUTaxonomies>(
     oldCodeOrSuffix: string,
     updatedOption: SKUTaxonomies[K][number]
 ): Promise<SKUTaxonomies> {
+    ensureTenantScope();
     const updated = { ...currentTaxonomies };
     const list = [...(updated[taxonomyKey] as any[])];
     const codeKey = taxonomyKey === 'packagingTiers' ? 'suffix' : 'code';

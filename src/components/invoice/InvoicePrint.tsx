@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, forwardRef, useImperativeHandle } from "react";
+import DOMPurify from "dompurify";
 import { format } from "date-fns";
 import { formatINR } from "@/lib/gst";
 import { formatJewelrySpecs } from "@/lib/jewelry-engine";
@@ -175,7 +176,7 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                         <style>${styles}</style>
                     </head>
                     <body>
-                        ${content.innerHTML}
+                        ${DOMPurify.sanitize(content.innerHTML)}
                     </body>
                     </html>
                 `);

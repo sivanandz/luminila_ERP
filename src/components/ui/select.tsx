@@ -2,11 +2,26 @@
 
 import * as React from "react"
 import { Select as SelectPrimitive } from "@base-ui/react/select"
+import type { SelectRootProps } from "@base-ui/react/select"
 
 import { cn } from "@/lib/utils"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
+import { DockInsetContext, useDockInset } from "./dock-inset"
 
-const Select = SelectPrimitive.Root
+function Select<Value, Multiple extends boolean | undefined = false>({
+  onOpenChange,
+  children,
+  ...props
+}: SelectRootProps<Value, Multiple>) {
+  const [dock, handleOpenChange] = useDockInset(onOpenChange)
+  return (
+    <DockInsetContext.Provider value={dock}>
+      <SelectPrimitive.Root {...props} onOpenChange={handleOpenChange}>
+        {children}
+      </SelectPrimitive.Root>
+    </DockInsetContext.Provider>
+  )
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (
@@ -72,6 +87,38 @@ function SelectContent({
     SelectPrimitive.Positioner.Props,
     "align" | "alignOffset" | "side" | "sideOffset" | "alignItemWithTrigger"
   >) {
+  const dock = React.useContext(DockInsetContext)
+  const popupRef = React.useRef<HTMLDivElement | null>(null)
+  const [dockShift, setDockShift] = React.useState(0)
+
+  // Keep the popup's bottom above the app's bottom docks (same clamp as the
+  // dropdown menu: Base UI's collision padding does not re-seat a flipped popup).
+  React.useLayoutEffect(() => {
+    if (!dock.open) {
+      setDockShift(0)
+      return
+    }
+    const update = () => {
+      const el = popupRef.current
+      if (!el) return
+      const limit = window.innerHeight - dock.inset
+      setDockShift((prev) => {
+        const baseBottom = el.getBoundingClientRect().bottom + prev
+        const overflow = Math.max(0, Math.round(baseBottom - limit))
+        return Math.abs(overflow - prev) > 1 ? overflow : prev
+      })
+    }
+    update()
+    const raf = window.requestAnimationFrame(update)
+    window.addEventListener("resize", update)
+    window.addEventListener("scroll", update, true)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      window.removeEventListener("resize", update)
+      window.removeEventListener("scroll", update, true)
+    }
+  }, [dock.open, dock.inset])
+
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Positioner
@@ -80,12 +127,18 @@ function SelectContent({
         align={align}
         alignOffset={alignOffset}
         alignItemWithTrigger={alignItemWithTrigger}
-        className="isolate z-50"
+        collisionPadding={{ top: 8, bottom: dock.inset, left: 8, right: 8 }}
+        className="isolate z-[100]"
       >
         <SelectPrimitive.Popup
+          ref={popupRef}
           data-slot="select-content"
           className={cn("bg-popover text-popover-foreground border border-border data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 min-w-36 rounded-lg shadow-md duration-100 relative isolate z-50 max-h-(--available-height) w-(--anchor-width) origin-(--transform-origin) overflow-x-hidden overflow-y-auto", className)}
           {...props}
+          style={{
+            ...props.style,
+            top: dockShift > 0 ? -dockShift : undefined,
+          }}
         >
           <SelectScrollUpButton />
           <SelectPrimitive.List>{children}</SelectPrimitive.List>

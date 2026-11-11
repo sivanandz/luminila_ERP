@@ -8,6 +8,7 @@ import {
 } from '@/lib/tenant-db-manager';
 import { authenticateOperator, constantTimeEqual, tenantAccessAllowed } from '@/lib/api-auth';
 import { isSingleAccountMode } from '@/lib/deployment-mode';
+import { FixedWindowRateLimiter, clientKeyFromHeaders } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 
@@ -17,31 +18,20 @@ export const runtime = 'nodejs';
  * matters is one setup session, and a restart resets the counter rather than
  * locking an operator out.
  */
-const PROVISION_WINDOW_MS = 10 * 60 * 1000;
-const PROVISION_MAX_ATTEMPTS = 5;
-const provisionAttempts = new Map<string, { count: number; resetAt: number }>();
-
-function clientAddress(req: NextRequest): string {
-    const forwarded = req.headers.get('x-forwarded-for') || '';
-    return (forwarded.split(',')[0] || req.headers.get('x-real-ip') || 'unknown').trim();
-}
+const provisionLimiter = new FixedWindowRateLimiter({
+    max: 5,
+    windowMs: 10 * 60 * 1000,
+});
 
 function rateLimited(req: NextRequest): boolean {
-    const key = clientAddress(req);
-    const now = Date.now();
-    const entry = provisionAttempts.get(key);
-    if (!entry || entry.resetAt <= now) {
-        provisionAttempts.set(key, { count: 1, resetAt: now + PROVISION_WINDOW_MS });
-        return false;
-    }
-    entry.count += 1;
-    return entry.count > PROVISION_MAX_ATTEMPTS;
+    const key = clientKeyFromHeaders(req.headers);
+    return !provisionLimiter.check(key).allowed;
 }
 
-/** Optional shared secret for provisioning; required when configured. */
+/** Shared secret for provisioning; required and fails closed when unconfigured. */
 function setupTokenValid(req: NextRequest): boolean {
     const expected = (process.env.TENANT_SETUP_TOKEN || process.env.SETUP_TOKEN || '').trim();
-    if (!expected) return true;
+    if (!expected) return false;
     const provided = (req.headers.get('x-setup-token') || '').trim();
     return Boolean(provided) && constantTimeEqual(provided, expected);
 }
@@ -82,14 +72,15 @@ export async function GET(req: NextRequest) {
 
         const resolved = await resolveTenantDatabase(targetEmail, { activate: false });
 
-        if (targetEmail && req.headers.get('authorization')) {
-            const session = await authenticateOperator(req, targetEmail);
-            if (session.ok && tenantAccessAllowed(session.email, session.isSuperuser, targetEmail)) {
-                return NextResponse.json(resolved);
-            }
+        const session = await authenticateOperator(req, targetEmail);
+        if (targetEmail && session.ok && tenantAccessAllowed(session.email, session.isSuperuser, targetEmail)) {
+            return NextResponse.json(resolved);
         }
 
-        return NextResponse.json({ success: resolved.success, pbUrl: resolved.pbUrl });
+        return NextResponse.json(
+            { success: false, error: 'Authentication required to resolve tenant database endpoint' },
+            { status: 401 }
+        );
     } catch (err) {
         return errorResponse(err instanceof Error ? err.message : String(err), 500);
     }
@@ -109,17 +100,15 @@ export async function POST(req: NextRequest) {
         const body = await req.json();
         const mode: 'provision' | 'resolve' = body.mode || 'resolve';
 
-        // Provisioning is a multi-account operation and must be refused before
-        // any authentication or registry work. Resolve still answers with the
-        // primary instance so old clients can connect, but never with an
-        // emailed tenant.
+        if (mode === 'provision') {
+            return NextResponse.json(
+                { success: false, error: 'Dynamic web provisioning is disabled. Use server-side CLI bootstrap.' },
+                { status: 403 }
+            );
+        }
+
+        // Provisioning is disabled; resolve answers with the primary instance.
         if (isSingleAccountMode()) {
-            if (mode === 'provision') {
-                return NextResponse.json(
-                    { success: false, error: 'Multi-account provisioning is disabled in this single-account deployment.' },
-                    { status: 403 }
-                );
-            }
             return NextResponse.json({ success: true, pbUrl: await primaryPocketBaseUrl() });
         }
 
@@ -130,6 +119,13 @@ export async function POST(req: NextRequest) {
         }
 
         if (mode === 'resolve') {
+            const session = await authenticateOperator(req, email);
+            if (!session.ok || !tenantAccessAllowed(session.email, session.isSuperuser, email)) {
+                return NextResponse.json(
+                    { success: false, error: 'Authentication required to resolve tenant database endpoint' },
+                    { status: 401 }
+                );
+            }
             const resolved = await resolveTenantDatabase(email, { activate: false });
             return NextResponse.json({ success: resolved.success, pbUrl: resolved.pbUrl });
         }

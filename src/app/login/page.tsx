@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,7 +48,7 @@ import Link from "next/link";
 
 export default function LoginPage() {
     const router = useRouter();
-    const { login } = useAuth();
+    const { login, isValid, isLoading } = useAuth();
     const [loading, setLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
 
@@ -56,6 +56,16 @@ export default function LoginPage() {
         email: isSingleAccountMode() ? SINGLE_ACCOUNT_EMAIL : "",
         password: "",
     });
+
+    // Auto-forward if user already has an active authenticated session
+    useEffect(() => {
+        if (!isLoading && isValid) {
+            const nextParam = typeof window !== "undefined"
+                ? new URLSearchParams(window.location.search).get("next")
+                : null;
+            router.replace(safeNextPath(nextParam));
+        }
+    }, [isValid, isLoading, router]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -69,7 +79,7 @@ export default function LoginPage() {
             const nextParam = typeof window !== "undefined"
                 ? new URLSearchParams(window.location.search).get("next")
                 : null;
-            router.push(safeNextPath(nextParam));
+            router.replace(safeNextPath(nextParam));
         } catch (err) {
             console.error("Auth error:", err);
             const pbErr = err instanceof ClientResponseError ? err : null;

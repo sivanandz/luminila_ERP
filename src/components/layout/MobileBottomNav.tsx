@@ -51,6 +51,7 @@ export function MobileBottomNav({
             */}
             <nav
                 aria-label="Primary"
+                data-bottom-dock
                 className="no-print md:hidden fixed inset-x-3 z-40 mx-auto max-w-md"
                 style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)" }}
             >

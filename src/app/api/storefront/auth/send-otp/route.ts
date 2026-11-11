@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { generateAndSaveOtp, releaseOtpAttempt } from "@/lib/otp-store";
 import { sendMessage, getTenantWhatsAppSessionId } from "@/lib/whatsapp";
-import { getStorefrontBinding } from "@/lib/storefront";
+import { getStorefrontBinding, resolvePublicStorefrontTenant } from "@/lib/storefront";
+import { FixedWindowRateLimiter, checkPublicRateLimit, rateLimitHeaders } from "@/lib/rate-limit";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -15,26 +16,10 @@ const CORS_HEADERS = {
  * endpoint (A-13). In-memory is adequate here: a restart only resets the
  * window, and the per-phone daily cap still applies.
  */
-const IP_WINDOW_MS = 10 * 60 * 1000;
-const IP_MAX_REQUESTS = 20;
-const ipAttempts = new Map<string, { count: number; resetAt: number }>();
-
-function clientAddress(req: Request): string {
-    const forwarded = req.headers.get("x-forwarded-for") || "";
-    return (forwarded.split(",")[0] || req.headers.get("x-real-ip") || "unknown").trim();
-}
-
-function ipRateLimited(req: Request): boolean {
-    const key = clientAddress(req);
-    const now = Date.now();
-    const entry = ipAttempts.get(key);
-    if (!entry || entry.resetAt <= now) {
-        ipAttempts.set(key, { count: 1, resetAt: now + IP_WINDOW_MS });
-        return false;
-    }
-    entry.count += 1;
-    return entry.count > IP_MAX_REQUESTS;
-}
+const otpRateLimiter = new FixedWindowRateLimiter({
+    max: 20,
+    windowMs: 10 * 60 * 1000,
+});
 
 export async function OPTIONS() {
     return NextResponse.json({}, { headers: CORS_HEADERS });
@@ -42,10 +27,17 @@ export async function OPTIONS() {
 
 export async function POST(req: Request) {
     try {
-        if (ipRateLimited(req)) {
+        const rateCheck = checkPublicRateLimit(req, otpRateLimiter);
+        if (!rateCheck.allowed) {
             return NextResponse.json(
                 { success: false, error: "Too many verification requests. Please try again later." },
-                { status: 429, headers: CORS_HEADERS }
+                {
+                    status: 429,
+                    headers: {
+                        ...CORS_HEADERS,
+                        ...rateLimitHeaders(rateCheck),
+                    },
+                }
             );
         }
 
@@ -64,9 +56,18 @@ export async function POST(req: Request) {
         // Standardize to 91XXXXXXXXXX for WhatsApp delivery in India
         const waNumber = `91${phone10}`;
 
-        // 1. Fetch bound admin and branding from storefront content
+        // 1. Resolve the tenant from the server-side allow-list (audit C-02):
+        // a caller-supplied email that is not a configured storefront tenant
+        // fails closed instead of opening that tenant's database.
         const reqEmail = typeof body.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : undefined;
-        const { boundAdminEmail, brandName } = await getStorefrontBinding(reqEmail);
+        const publicTenant = resolvePublicStorefrontTenant(reqEmail);
+        if (!publicTenant) {
+            return NextResponse.json(
+                { success: false, error: "This storefront is not available." },
+                { status: 404, headers: CORS_HEADERS }
+            );
+        }
+        const { boundAdminEmail, brandName } = await getStorefrontBinding(publicTenant);
 
         // 2. Generate a secure 6-digit OTP scoped to this tenant
         const otpResult = await generateAndSaveOtp(phone10, boundAdminEmail);

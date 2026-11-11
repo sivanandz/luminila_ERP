@@ -26,6 +26,7 @@ import {
     Download,
     Barcode,
     Bot,
+    MapPin,
 } from "lucide-react";
 import { SKUTaxonomySettings } from "@/components/settings/SKUTaxonomySettings";
 import { SalesChannelsSettings } from "@/components/settings/SalesChannelsSettings";
@@ -52,6 +53,12 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { getCategories, createCategory, deleteCategory, type Category } from "@/lib/categories";
+import {
+    getManagedLocations,
+    saveInventoryLocation,
+    deleteInventoryLocation,
+    type InventoryLocation,
+} from "@/lib/multi-location";
 import { getAttributes, createAttribute, deleteAttribute, type ProductAttribute, type AttributeType } from "@/lib/attributes";
 import { EwayBillSettings } from "@/components/settings/EwayBillSettings";
 import { toast } from "sonner";
@@ -76,6 +83,7 @@ const sections: SettingSection[] = [
     { id: "invoice", title: "Invoice & GST", icon: <FileText size={20} /> },
     { id: "ewaybill", title: "E-way Bill", icon: <Truck size={20} /> },
     { id: "categories", title: "Categories", icon: <FolderTree size={20} /> },
+    { id: "locations", title: "Tray Locations", icon: <MapPin size={20} /> },
     { id: "attributes", title: "Product Attributes", icon: <Tags size={20} /> },
     { id: "integrations", title: "Integrations", icon: <Database size={20} /> },
     { id: "ai", title: "AI Providers", icon: <Bot size={20} /> },
@@ -93,6 +101,7 @@ const SELF_SAVING_TABS = new Set([
     "sku_taxonomies",
     "ewaybill",
     "categories",
+    "locations",
     "attributes",
     "ai",
     "notifications",
@@ -169,6 +178,13 @@ export default function SettingsPage() {
     const [newCategory, setNewCategory] = useState({ name: "", parent_id: "" });
     const [isAddingCategory, setIsAddingCategory] = useState(false);
 
+    // Tray / storage location state (editable codes printed on rat-tail labels)
+    const [trayLocations, setTrayLocations] = useState<InventoryLocation[]>([]);
+    const [isLocBusy, setIsLocBusy] = useState(false);
+    const [newLoc, setNewLoc] = useState({ code: "", name: "" });
+    const [editingLocId, setEditingLocId] = useState<string | null>(null);
+    const [editLoc, setEditLoc] = useState({ code: "", name: "" });
+
     // Attributes state
     const [attributes, setAttributes] = useState<ProductAttribute[]>([]);
     const [showAttributeDialog, setShowAttributeDialog] = useState(false);
@@ -240,6 +256,13 @@ export default function SettingsPage() {
                 console.error("Failed to load attributes:", error);
                 toast.error("Could not load attributes.");
             });
+        } else if (activeSection === "locations") {
+            getManagedLocations({ includeInactive: true })
+                .then(setTrayLocations)
+                .catch((error) => {
+                    console.error("Failed to load tray locations:", error);
+                    toast.error("Could not load tray locations.");
+                });
         } else if (activeSection === "whatsapp") {
             setCheckingWa(true);
             getDetailedSessionStatus()
@@ -409,6 +432,85 @@ export default function SettingsPage() {
         } catch (err) {
             console.error("Error deleting category:", err);
             toast.error(err instanceof Error ? err.message : "Could not delete the category.");
+        }
+    };
+
+    const refreshTrayLocations = () => {
+        getManagedLocations({ includeInactive: true })
+            .then(setTrayLocations)
+            .catch((error) => {
+                console.error("Failed to load tray locations:", error);
+                toast.error("Could not load tray locations.");
+            });
+    };
+
+    const handleAddTrayLocation = async () => {
+        const code = newLoc.code.trim();
+        if (!code) {
+            toast.error("Location code is required (e.g. A2).");
+            return;
+        }
+        if (isLocBusy) return;
+        setIsLocBusy(true);
+        try {
+            const saved = await saveInventoryLocation({ code, name: newLoc.name.trim() || code });
+            setNewLoc({ code: "", name: "" });
+            refreshTrayLocations();
+            toast.success(`Tray location ${saved.code} added.`);
+        } catch (err) {
+            console.error("Error adding tray location:", err);
+            toast.error(err instanceof Error ? err.message : "Could not add the tray location.");
+        } finally {
+            setIsLocBusy(false);
+        }
+    };
+
+    const handleSaveTrayLocation = async () => {
+        if (!editingLocId) return;
+        const existing = trayLocations.find((l) => l.id === editingLocId);
+        if (!existing) return;
+        const code = editLoc.code.trim();
+        if (!code) {
+            toast.error("Location code is required.");
+            return;
+        }
+        if (isLocBusy) return;
+        setIsLocBusy(true);
+        try {
+            await saveInventoryLocation({
+                ...existing,
+                code,
+                name: editLoc.name.trim() || code,
+            });
+            setEditingLocId(null);
+            refreshTrayLocations();
+            toast.success("Tray location updated.");
+        } catch (err) {
+            console.error("Error updating tray location:", err);
+            toast.error(err instanceof Error ? err.message : "Could not update the tray location.");
+        } finally {
+            setIsLocBusy(false);
+        }
+    };
+
+    const handleToggleTrayLocation = async (loc: InventoryLocation) => {
+        try {
+            await saveInventoryLocation({ ...loc, is_active: !loc.is_active });
+            refreshTrayLocations();
+        } catch (err) {
+            console.error("Error toggling tray location:", err);
+            toast.error(err instanceof Error ? err.message : "Could not update the tray location.");
+        }
+    };
+
+    const handleDeleteTrayLocation = async (id: string) => {
+        if (!confirm("Delete this tray location? Products still pointing at its code keep the raw text until reassigned.")) return;
+        try {
+            await deleteInventoryLocation(id);
+            refreshTrayLocations();
+        } catch (err) {
+            console.error("Error deleting tray location:", err);
+            toast.error(err instanceof Error ? err.message : "Could not delete the tray location.");
         }
     };
 
@@ -1029,6 +1131,125 @@ export default function SettingsPage() {
                                                         >
                                                             <Trash2 className="w-4 h-4" />
                                                         </Button>
+                                                    </CardContent>
+                                                </Card>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Tray Locations Section */}
+                            {activeSection === "locations" && (
+                                <div className="space-y-6 animate-fade-in">
+                                    <div className="border-b border-border pb-4">
+                                        <div>
+                                            <h2 className="text-xl font-bold flex items-center gap-2">
+                                                <MapPin className="text-primary" size={24} />
+                                                Tray Locations
+                                            </h2>
+                                            <p className="text-muted-foreground text-sm mt-1">
+                                                The trays, counters and bins you actually use. The <span className="font-mono bg-muted px-1.5 py-0.5 rounded">code</span> is what products store and what prints on rat-tail labels after the 2× base price (e.g. 1600<span className="font-mono">A2</span>).
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    {/* Add row */}
+                                    <Card className="bg-card border-border">
+                                        <CardContent className="py-3 px-4 flex flex-wrap items-center gap-2">
+                                            <Input
+                                                placeholder="Code (e.g. A2)"
+                                                value={newLoc.code}
+                                                onChange={(e) => setNewLoc((prev) => ({ ...prev, code: e.target.value }))}
+                                                className="w-32 font-mono"
+                                                maxLength={12}
+                                            />
+                                            <Input
+                                                placeholder="Name (e.g. Showcase Tray 2)"
+                                                value={newLoc.name}
+                                                onChange={(e) => setNewLoc((prev) => ({ ...prev, name: e.target.value }))}
+                                                className="flex-1 min-w-48"
+                                                onKeyDown={(e) => { if (e.key === "Enter") void handleAddTrayLocation(); }}
+                                            />
+                                            <Button onClick={() => void handleAddTrayLocation()} disabled={isLocBusy}>
+                                                {isLocBusy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
+                                                Add
+                                            </Button>
+                                        </CardContent>
+                                    </Card>
+
+                                    <div className="grid gap-3">
+                                        {trayLocations.length === 0 ? (
+                                            <Card className="bg-muted/30 border-dashed">
+                                                <CardContent className="py-12 text-center">
+                                                    <MapPin className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                                                    <p className="text-muted-foreground">No tray locations yet — editors still use the built-in presets until you add your own.</p>
+                                                </CardContent>
+                                            </Card>
+                                        ) : (
+                                            trayLocations.map((loc) => (
+                                                <Card key={loc.id} className="bg-card border-border">
+                                                    <CardContent className="py-3 px-4 flex flex-wrap items-center justify-between gap-3">
+                                                        {editingLocId === loc.id ? (
+                                                            <>
+                                                                <div className="flex flex-wrap items-center gap-2 flex-1">
+                                                                    <Input
+                                                                        placeholder="Code"
+                                                                        value={editLoc.code}
+                                                                        onChange={(e) => setEditLoc((prev) => ({ ...prev, code: e.target.value }))}
+                                                                        className="w-28 font-mono"
+                                                                        maxLength={12}
+                                                                    />
+                                                                    <Input
+                                                                        placeholder="Name"
+                                                                        value={editLoc.name}
+                                                                        onChange={(e) => setEditLoc((prev) => ({ ...prev, name: e.target.value }))}
+                                                                        className="flex-1 min-w-40"
+                                                                        onKeyDown={(e) => { if (e.key === "Enter") void handleSaveTrayLocation(); }}
+                                                                    />
+                                                                </div>
+                                                                <div className="flex items-center gap-1">
+                                                                    <Button size="sm" onClick={() => void handleSaveTrayLocation()} disabled={isLocBusy}>
+                                                                        {isLocBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                                                                    </Button>
+                                                                    <Button size="sm" variant="ghost" onClick={() => setEditingLocId(null)}>Cancel</Button>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <div className="flex items-center gap-3 min-w-0">
+                                                                    <MapPin className="w-5 h-5 text-primary shrink-0" />
+                                                                    <span className="font-mono text-xs bg-muted px-2 py-0.5 rounded">{loc.code}</span>
+                                                                    <span className="font-medium truncate">{loc.name}</span>
+                                                                    {!loc.is_active && (
+                                                                        <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">Inactive</span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex items-center gap-1">
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="ghost"
+                                                                        onClick={() => {
+                                                                            setEditingLocId(loc.id);
+                                                                            setEditLoc({ code: loc.code, name: loc.name });
+                                                                        }}
+                                                                    >
+                                                                        Edit
+                                                                    </Button>
+                                                                    <Button size="sm" variant="ghost" onClick={() => void handleToggleTrayLocation(loc)}>
+                                                                        {loc.is_active ? "Deactivate" : "Activate"}
+                                                                    </Button>
+                                                                    <Button
+                                                                        size="icon"
+                                                                        variant="ghost"
+                                                                        className="text-destructive hover:text-destructive"
+                                                                        onClick={() => void handleDeleteTrayLocation(loc.id)}
+                                                                    >
+                                                                        <Trash2 className="w-4 h-4" />
+                                                                    </Button>
+                                                                </div>
+                                                            </>
+                                                        )}
                                                     </CardContent>
                                                 </Card>
                                             ))

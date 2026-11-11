@@ -145,9 +145,8 @@ export async function createTenantClient(preferredTenantEmail?: string): Promise
 
     if (typeof window === "undefined") {
         try {
-            const nodeRequire = eval("require") as NodeRequire;
-            const fs = nodeRequire("fs") as typeof import("fs");
-            const path = nodeRequire("path") as typeof import("path");
+            const fs = await import("fs");
+            const path = await import("path");
             const registryPath = path.join(process.cwd(), "pocketbase", "pb_tenants", "registry.json");
             if (fs.existsSync(registryPath)) {
                 registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as TenantRegistryLike;
@@ -240,10 +239,15 @@ export function canActOnTenant(ownerEmail?: string | null, client: PocketBase = 
 // value (the old "only when absent" rule let a client POST/PATCH another
 // tenant's owner stamp verbatim — INF-7). Superuser/server sessions are left
 // untouched: their explicit account_email is the tenant selector.
+//
+// Create only: tenant hardening freezes the key on update
+// (`@request.body.account_email:isset = false`), and PocketBase reports that
+// rule denial as a 404 — stamping PATCH bodies broke every update
+// (last_login, chat metadata, read receipts) while GETs kept working.
 pb.beforeSend = function (url, options) {
     const accountEmail = accountScopeEmail();
-    const isMutation = options.method === 'POST' || options.method === 'PATCH';
-    if (isMutation && accountEmail && !isSuperuserSession()) {
+    const isCreate = options.method === 'POST';
+    if (isCreate && accountEmail && !isSuperuserSession()) {
         if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
             (options.body as Record<string, unknown>).account_email = accountEmail;
         } else if (options.body instanceof FormData) {
@@ -371,6 +375,39 @@ export function setPocketBaseUrl(url: string): string {
     }
 
     return pb.baseUrl;
+}
+
+/**
+ * Full client-side tenant reset (audit M-07): call on logout and account
+ * switch. Tears down live subscriptions, clears the auth store, drops every
+ * persisted URL override (hint + scoped + legacy) and re-points the singleton
+ * at the deployment default, so the next login can never silently authenticate
+ * against the previous tenant's database.
+ */
+export async function resetPocketBaseClientState(): Promise<void> {
+    try {
+        await pb.collection("*").unsubscribe("*");
+    } catch {
+        /* no subscriptions or already disconnected */
+    }
+    try {
+        (pb.realtime as unknown as { disconnect?: () => void }).disconnect?.();
+        pb.realtime.unsubscribe();
+    } catch {
+        /* SDK build without an explicit disconnect */
+    }
+    pb.authStore.clear();
+    if (typeof window !== "undefined") {
+        try {
+            localStorage.removeItem(TENANT_HINT_KEY);
+            const scopedKey = tenantScopedUrlKey();
+            if (scopedKey) localStorage.removeItem(scopedKey);
+            localStorage.removeItem("PB_CUSTOM_URL");
+        } catch {
+            /* storage unavailable */
+        }
+    }
+    setPocketBaseUrl(getPocketBaseUrl());
 }
 
 /**
@@ -532,7 +569,7 @@ async function autoDiscoverSingleAccountPocketBase(): Promise<string> {
     }
 
     if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-        const candidatePorts = [8091, 8090];
+        const candidatePorts = [8090];
         for (const port of candidatePorts) {
             const candidateUrl = `http://127.0.0.1:${port}`;
             if (candidateUrl === resolved) continue;
@@ -591,9 +628,9 @@ export async function autoDiscoverPocketBase(): Promise<string> {
             }
         }
 
-        // Current URL failed, probe alternative ports on localhost
+        // Current URL failed, probe standard port 8090 on localhost
         if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-            const candidatePorts = [8091, 8090, 8092];
+            const candidatePorts = [8090];
             for (const port of candidatePorts) {
                 const candidateUrl = `http://127.0.0.1:${port}`;
                 if (candidateUrl === current) continue;

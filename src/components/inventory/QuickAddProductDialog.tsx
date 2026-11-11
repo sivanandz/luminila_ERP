@@ -46,7 +46,7 @@ import {
 } from "@/lib/channel-pricing";
 import { CRAFT_DEFINITIONS, PLATING_DEFINITIONS, OCCASION_DEFINITIONS, BASE_METAL_DEFINITIONS } from "@/lib/imitation-jewelry-engine";
 import { ChannelPricingInput } from "@/components/pricing/ChannelPricingInput";
-import { STORAGE_LOCATIONS } from "@/lib/products";
+import { loadTrayLocationOptions, trayChoices, trayChoiceLabel, type TrayLocationOption } from "@/lib/tray-locations";
 import {
     compressImageFile,
     createDraftProduct,
@@ -129,6 +129,15 @@ export function QuickAddProductDialog({
     const [expanded, setExpanded] = useState(false);
     const [sku, setSku] = useState("");
     const [location, setLocation] = useState("Showcase Tray A");
+    // Editable tray locations (Settings → Tray Locations); presets until defined.
+    const [trayOptions, setTrayOptions] = useState<TrayLocationOption[]>([]);
+    useEffect(() => {
+        let alive = true;
+        loadTrayLocationOptions()
+            .then((opts) => { if (alive) setTrayOptions(opts); })
+            .catch(() => { /* presets already cover the select */ });
+        return () => { alive = false; };
+    }, []);
     const [hsnCode, setHsnCode] = useState("71179010");
     const [plating, setPlating] = useState("");
     const [occasion, setOccasion] = useState("");
@@ -371,7 +380,7 @@ export function QuickAddProductDialog({
         setSellingPrice("");
         setStock("0");
         setCraft("");
-        setLocation("Showcase Tray A");
+        setLocation(trayOptions[0]?.code ?? "Showcase Tray A");
         setHsnCode("71179010");
         setPlating("");
         setOccasion("");
@@ -1198,9 +1207,9 @@ export function QuickAddProductDialog({
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {STORAGE_LOCATIONS.map((entry) => (
-                                                <SelectItem key={entry} value={entry}>
-                                                    {entry}
+                                            {trayChoices(trayOptions, location).map((opt) => (
+                                                <SelectItem key={opt.code} value={opt.code}>
+                                                    {trayChoiceLabel(opt)}
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>

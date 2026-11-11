@@ -54,7 +54,12 @@ async function loadRow(
     return client
         .collection('store_settings')
         .getFirstListItem<EwayRow>(
-            `key="eway_bill" && (account_email="${sanitizeFilter(tenant)}" || account_email="")`,
+            // Strict tenant match (audit L-01): an empty-owner legacy row is
+            // nobody's credential store, not everybody's. The live
+            // store_settings rule already hides such rows from operator
+            // tokens; dropping the "" arm keeps the API honest if that rule
+            // ever regresses.
+            `key="eway_bill" && account_email="${sanitizeFilter(tenant)}"`,
             { requestKey: null }
         )
         .catch(() => null);
@@ -193,8 +198,9 @@ export async function POST(req: NextRequest) {
     if (existing) {
         await session.client.collection('store_settings').update(existing.id, {
             ...payload,
-            // Preserve the row's existing tenant if it was a legacy empty one.
-            account_email: existing.account_email || tenant,
+            // Always stamp the caller's tenant (audit L-01): preserving a
+            // legacy empty owner kept the row globally readable forever.
+            account_email: tenant,
         });
     } else {
         await session.client.collection('store_settings').create(payload);

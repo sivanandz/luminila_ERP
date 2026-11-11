@@ -127,8 +127,11 @@ interface CreditNoteItemRecord {
 const QC_DEDUCTION_MARKER = 'RefundDeductions:';
 
 function parseQcDeduction(notes?: string): number {
-    const match = String(notes || '').match(/RefundDeductions:\s*([0-9]+(?:\.[0-9]+)?)/);
-    const value = match ? Number(match[1]) : 0;
+    // The marker is appended by approval, so the LAST occurrence is ours even
+    // if the free-text notes happened to contain the same words.
+    const matches = String(notes || '').match(/RefundDeductions:\s*([0-9]+(?:\.[0-9]+)?)/g);
+    const last = matches && matches.length > 0 ? matches[matches.length - 1] : '';
+    const value = Number(last.replace(/^RefundDeductions:\s*/, '')) || 0;
     return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
@@ -523,8 +526,24 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
             })
             : null;
 
-        const isQuarantine = options?.routeDefectiveToQuarantine ?? (cn.return_reason === 'defective' || cn.return_reason === 'quality_issue');
-        const routeToQuarantine = qcGrade ? qcGrade !== 'restock_grade_a' : isQuarantine;
+        // Persist the QC outcome (including any withholding) BEFORE inventory is
+        // touched: if this write fails the note reverts to pending with nothing
+        // moved, and processRefund can always read the deduction back (RET-10).
+        if (qcResult) {
+            await pb.collection('credit_notes').update(id, {
+                notes: [
+                    cn.notes,
+                    `[Inward QC ${new Date().toISOString().slice(0, 10)}]: ${qcResult.inspectorSummary}`,
+                    qcResult.totalDeductions > 0
+                        ? `${QC_DEDUCTION_MARKER} ${qcResult.totalDeductions}`
+                        : '',
+                ]
+                    .filter(Boolean)
+                    .join('\n\n'),
+            });
+        }
+
+        const isQuarantine = options?.routeDefectiveToQuarantine ?? (cn.return_reason === 'defective' || cn.return_reason === 'quality_issue');        const routeToQuarantine = qcGrade ? qcGrade !== 'restock_grade_a' : isQuarantine;
         const quarantineType = qcGrade === 'karigar_repair' ? 'vendor_replacement' : (options?.discrepancyType || 'damaged');
 
         for (const item of items) {
@@ -601,21 +620,6 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                     }
                 }
             }
-        }
-        if (qcResult) {
-            await pb.collection('credit_notes').update(id, {
-                notes: [
-                    cn.notes,
-                    `[Inward QC ${new Date().toISOString().slice(0, 10)}]: ${qcResult.inspectorSummary}`,
-                    // processRefund reads this back to withhold the QC deduction
-                    // from the cash refund (RET-10).
-                    qcResult.totalDeductions > 0
-                        ? `${QC_DEDUCTION_MARKER} ${qcResult.totalDeductions}`
-                        : '',
-                ]
-                    .filter(Boolean)
-                    .join('\n\n'),
-            }).catch((err) => console.warn('Could not attach the QC summary to the credit note:', err));
         }
     } catch (itemErr) {
         console.error('Error handling inventory for credit note:', itemErr);

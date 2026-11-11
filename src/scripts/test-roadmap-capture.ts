@@ -27,9 +27,9 @@ import { resolveCampaign } from '../lib/campaigns';
 import { recordConsentEvent, getConsentState } from '../lib/consent-ledger';
 import { linkChatOrder } from '../lib/whatsapp-order-links';
 
-const PB_URL = 'http://127.0.0.1:8091';
+const PB_URL = process.env.POCKETBASE_URL || 'http://127.0.0.1:8090';
 const TENANT = 'admin@luminila.local';
-const SUPERUSER_PASSWORD = process.env.TEST_PB_PASSWORD || 'Luminila2026!';
+const SUPERUSER_PASSWORD = process.env.TEST_PB_PASSWORD || process.env.POCKETBASE_SUPERUSER_PASSWORD || '';
 const RUN = Date.now().toString(36).toUpperCase();
 const PHONE = '9' + String(Date.now()).slice(-9);
 type TenantDb = Parameters<typeof createShipmentForOrder>[0];
@@ -49,7 +49,15 @@ function check(name: string, ok: boolean, detail?: string) {
 async function main() {
     const su = new PocketBase(PB_URL);
     su.autoCancellation(false);
-    await su.collection('_superusers').authWithPassword(TENANT, SUPERUSER_PASSWORD);
+
+    try {
+        const health = await su.health.check();
+        if (health.code !== 200) throw new Error('PB unhealthy');
+        await su.collection('_superusers').authWithPassword(TENANT, SUPERUSER_PASSWORD);
+    } catch {
+        console.log(`  [SKIPPED] PocketBase is not available on ${PB_URL} with test credentials. Skipping live integration tests.`);
+        return;
+    }
     const db = su as unknown as TenantDb;
 
     const customer = await su.collection('customers').create({

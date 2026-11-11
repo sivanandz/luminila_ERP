@@ -14,6 +14,7 @@ import {
     generateBarcodeURL,
 } from "@/lib/barcode-generator";
 import { getProducts } from "@/lib/products";
+import { getStoreSettings } from "@/lib/settings";
 import { getTenantStorageKey } from "@/lib/pocketbase";
 import { getChannelPrice, getConfiguredChannels, loadConfiguredChannels, type SalesChannelDef } from "@/lib/channel-pricing";
 import { formatImitationSpec, PLATING_DEFINITIONS } from "@/lib/imitation-jewelry-engine";
@@ -44,6 +45,11 @@ interface LabelData {
     plating?: string;
     occasion?: string;
     base_metal?: string;
+    /** Base selling price = the no-loss floor (not visible anywhere else);
+     *  the clerk code prints 2× it, halved by staff for the minimum SP. */
+    base_price?: number;
+    /** Tray / storage location, printed as stored (e.g. "A2") in the clerk code. */
+    location?: string;
 }
 
 // Product type from DB
@@ -61,6 +67,7 @@ interface DBProduct {
     plating?: string;
     occasion?: string;
     base_metal?: string;
+    location?: string;
 }
 
 // Standard label size presets
@@ -73,7 +80,7 @@ interface LabelSize {
 }
 
 const LABEL_SIZES: LabelSize[] = [
-    { id: "seznik-strip", name: "Seznik Jewellery Roll (14.3×100mm)", width: 14.3, height: 100, description: "Fold-in-half direct thermal stock: 64mm body (two 32mm faces) + 36mm unprinted tail, 3-up on a 45mm web" },
+    { id: "seznik-strip", name: "Seznik Jewellery Roll (14.3×100mm)", width: 14.3, height: 100, description: "Fold-in-half direct thermal stock: 64mm body (two 32mm faces) with a 36mm unprinted tail, 3-up on a 45mm web" },
     { id: "dumbbell", name: "Legacy Dumbbell Tag (54×11mm)", width: 54, height: 11, description: "Old two-wing barbell stock (Wing A Symbology + Bridge + Wing B Text)" },
     { id: "small", name: "Small (25×15mm)", width: 25, height: 15, description: "Jewelry tags, small items" },
     { id: "medium", name: "Medium (50×25mm)", width: 50, height: 25, description: "Standard product labels" },
@@ -148,13 +155,22 @@ function DumbbellTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: Label
 /**
  * Seznik 14.3 x 100 mm single-tail jewellery label.
  *
- * Stock geometry: the 100 mm feed pitch is a 64 mm body with a fold at 32 mm,
- * followed by a 36 mm narrow tail. Folding the body back-to-back produces a
- * 32 x 14.3 mm tag with two printed faces: price/SKU/HSN on one, symbology on
- * the other. The tail loops through the ring and is never printed. Three labels
- * sit across a 45 mm web, so the print sheet imposes them 3-up.
+ * Stock geometry: the 100 mm feed pitch leads with the 36 mm narrow tail (the
+ * roll feeds tail-first), then the 64 mm body with a fold at its midpoint, 68 mm
+ * from the leading edge. Folding the body back-to-back produces a 32 x 14.3 mm
+ * tag with two printed faces: price/SKU/HSN on one, symbology on the other. The
+ * tail loops through the ring and is never printed. Three labels sit across a
+ * 45 mm web, so the print sheet imposes them 3-up.
  */
-function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: LabelData; symbology?: SymbologyMode }) {
+function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200', feedDirection = 'tag-first', printBrand = false, brandName = '' }: {
+    data: LabelData;
+    symbology?: SymbologyMode;
+    /** Which end of the 100 mm pitch enters the printer first. */
+    feedDirection?: "tail-first" | "tag-first";
+    /** Print the store/brand name on face 1 (off: nothing is printed). */
+    printBrand?: boolean;
+    brandName?: string;
+}) {
     let codeUrl = '';
     if (symbology === '2D_DATAMATRIX_ECC200') {
         codeUrl = generateDataMatrixURL(data.sku);
@@ -164,33 +180,58 @@ function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: La
         codeUrl = generateBarcodeURL(data.sku);
     }
 
-    const hasCraft = !!(data.craft || data.plating || data.occasion || data.base_metal);
-    const specLine = hasCraft
-        ? formatImitationSpec({
-            craft: data.craft || '',
-            plating: data.plating || '',
-            occasion: data.occasion || '',
-            baseMetal: data.base_metal || '',
-            stoneType: '',
-            sku: data.sku,
-            name: data.name,
-            mrpPrice: data.price,
-        })
-        : '';
-    const durability = data.plating ? PLATING_DEFINITIONS[data.plating]?.durabilityMonths : undefined;
+    // LUMINILA is no longer printed by default; the operator can opt into the
+    // store's brand name instead.
+    const brand = printBrand ? (brandName || 'LUMINILA').trim() : '';
     const is1D = symbology === '1D_CODE128_POINTER';
     // Each 32 mm face has to carry its own quiet zone inside the 14.3 mm width.
     const codeLength = is1D ? '26mm' : symbology === '2D_QRCODE' ? '9mm' : '11mm';
     const codeHeight = is1D ? '9mm' : codeLength;
 
+    // Clerk code under the SKU: <2× base selling price><location as stored>,
+    // e.g. "1600A2". The doubled base selling price is the shop-floor
+    // reference — halve it for the minimum sellable price after discounts;
+    // base selling price is the no-loss floor and is not printed anywhere
+    // else. The location prints exactly as stored on the product. The 36 mm
+    // tail stays die-cut blank as before.
+    const storedLocation = (data.location || '').trim();
+    const baseForCode = data.base_price && data.base_price > 0 ? data.base_price : data.price;
+    const doubleBase = 2 * baseForCode;
+    const doubleBaseStr = Number.isInteger(doubleBase)
+        ? String(doubleBase)
+        : String(Number(doubleBase.toFixed(2)));
+    const clerkCode = `${doubleBaseStr}${storedLocation}`;
+
     return (
         <div
             className="seznik-strip-tag bg-white text-black overflow-hidden shadow-sm print:shadow-none"
-            style={{ width: '14.3mm', height: '100mm', boxSizing: 'border-box' }}
+            style={{ width: '14.3mm', height: '100mm', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}
         >
-            {/* Face 1 (0-32 mm): price. The 64 mm body folds at 32 mm, so each
+            {/* 36 mm tail: die-cut, adhesive, and never printed. Its page order
+                follows the feed direction: "tail first" puts it last on the page
+                so it lands at the leading edge on the stock; "tag first" trails
+                it. Guide is screen-only. */}
+            <div style={{ position: 'relative', width: '100%', height: '36mm', flex: '0 0 auto', order: feedDirection === 'tag-first' ? 2 : 0 }}>
+                <div className="print:hidden flex items-center justify-center" style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: '50%',
+                    width: '2.5mm',
+                    height: '100%',
+                    transform: 'translateX(-50%)',
+                    borderLeft: '0.15mm dashed #d1d5db',
+                    borderRight: '0.15mm dashed #d1d5db',
+                    color: '#9ca3af',
+                    fontSize: '4px',
+                    writingMode: 'vertical-rl',
+                }}>
+                    TAIL
+                </div>
+            </div>
+
+            {/* Face 1: price. The 64 mm body folds at its midpoint, so each
                 half must be a self-contained 32 x 14.3 mm face. */}
-            <div style={{ position: 'relative', width: '100%', height: '32mm' }}>
+            <div style={{ position: 'relative', width: '100%', height: '32mm', flex: '0 0 auto', order: feedDirection === 'tag-first' ? 0 : 1 }}>
                 <div style={{
                     position: 'absolute',
                     top: '50%',
@@ -202,20 +243,55 @@ function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: La
                     flexDirection: 'column',
                     justifyContent: 'center',
                     alignItems: 'center',
-                    padding: '0.9mm 1mm',
+                    padding: '0.5mm 0.8mm',
                     boxSizing: 'border-box',
                     lineHeight: 1.05,
                     textAlign: 'center',
                     color: '#000',
                 }}>
-                    <div style={{ fontSize: '8pt', fontWeight: 900, letterSpacing: '0.3mm' }}>LUMINILA</div>
-                    <div style={{ fontSize: '6pt', fontFamily: 'monospace', fontWeight: 700, maxWidth: '29mm', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {(brand || is1D) && (
+                        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: '0.8mm', lineHeight: 1, maxWidth: '30mm' }}>
+                            {brand && (
+                                <span style={{ fontSize: '6pt', fontWeight: 900, letterSpacing: '0.2mm', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{brand}</span>
+                            )}
+                            {is1D && (
+                                <span style={{ fontSize: '10pt', fontWeight: 900, whiteSpace: 'nowrap' }}>₹{data.price.toLocaleString('en-IN')}</span>
+                            )}
+                        </div>
+                    )}
+                    {/* SKU: 9pt when it is the only content on the face, 7pt when
+                        the price shares it. Up to 3 lines either way; sharing
+                        with the clerk-code line trims to ~2.5 lines. */}
+                    <div style={{
+                        fontSize: is1D ? '7pt' : '9pt',
+                        fontFamily: 'monospace',
+                        fontWeight: 700,
+                        lineHeight: 1,
+                        maxWidth: '30mm',
+                        maxHeight: clerkCode ? (is1D ? '17.5pt' : '24pt') : (is1D ? '21pt' : '27pt'),
+                        overflow: 'hidden',
+                        wordBreak: 'break-all',
+                    }}>
                         {data.sku}
                     </div>
-                    <div style={{ fontSize: '10pt', fontWeight: 900 }}>₹{data.price.toLocaleString('en-IN')}</div>
-                    <div style={{ fontSize: '5pt', fontWeight: 700, maxWidth: '29mm', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {specLine ? `${specLine}${durability ? ` · ~${durability}mo` : ''}` : `HSN ${data.hsn_code || '71179010'}`}
-                    </div>
+                    {clerkCode && (
+                        <div
+                            title={clerkCode}
+                            style={{
+                                fontSize: '6.5pt',
+                                fontFamily: 'monospace',
+                                fontWeight: 700,
+                                lineHeight: 1,
+                                marginTop: '0.7mm',
+                                maxWidth: '30mm',
+                                overflow: 'hidden',
+                                whiteSpace: 'nowrap',
+                                textOverflow: 'ellipsis',
+                            }}
+                        >
+                            {clerkCode}
+                        </div>
+                    )}
                 </div>
                 <div className="print:hidden" style={{
                     position: 'absolute',
@@ -226,8 +302,9 @@ function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: La
                 }} />
             </div>
 
-            {/* Face 2 (32-64 mm): symbology plus a human-readable SKU. */}
-            <div style={{ position: 'relative', width: '100%', height: '32mm' }}>
+            {/* Face 2: symbology. A 2D code leaves room for the price; a 1D
+                barcode needs the full face width, so its price moves to face 1. */}
+            <div style={{ position: 'relative', width: '100%', height: '32mm', flex: '0 0 auto', order: feedDirection === 'tag-first' ? 1 : 2 }}>
                 <div style={{
                     position: 'absolute',
                     top: '50%',
@@ -239,7 +316,7 @@ function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: La
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '1mm',
-                    padding: '0.9mm 1mm',
+                    padding: '0.5mm 0.8mm',
                     boxSizing: 'border-box',
                     color: '#000',
                 }}>
@@ -266,37 +343,18 @@ function SeznikStripTag({ data, symbology = '2D_DATAMATRIX_ECC200' }: { data: La
                         <div style={{
                             flex: '1 1 auto',
                             minWidth: 0,
-                            fontSize: '4.8pt',
-                            fontFamily: 'monospace',
-                            fontWeight: 700,
+                            textAlign: 'center',
+                            fontSize: '10pt',
+                            fontWeight: 900,
+                            lineHeight: 1,
                             whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
                         }}>
-                            {data.sku}
+                            ₹{data.price.toLocaleString('en-IN')}
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* 36 mm tail: die-cut, adhesive, and never printed. The guide is screen-only. */}
-            <div style={{ position: 'relative', width: '100%', height: '36mm' }}>
-                <div className="print:hidden flex items-center justify-center" style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: '50%',
-                    width: '2.5mm',
-                    height: '100%',
-                    transform: 'translateX(-50%)',
-                    borderLeft: '0.15mm dashed #d1d5db',
-                    borderRight: '0.15mm dashed #d1d5db',
-                    color: '#9ca3af',
-                    fontSize: '4px',
-                    writingMode: 'vertical-rl',
-                }}>
-                    TAIL
-                </div>
-            </div>
         </div>
     );
 }
@@ -357,6 +415,16 @@ function LabelsContent() {
     const [selectedLabelSize, setSelectedLabelSize] = useState<LabelSize>(LABEL_SIZES[0]); // Default to the Seznik production roll
     const [symbologyMode, setSymbologyMode] = useState<SymbologyMode>("2D_DATAMATRIX_ECC200");
     const [rollLayout, setRollLayout] = useState<"3-up" | "1-up">("3-up");
+    // Seznik rolls are wound either way; which end reaches the print head first
+    // decides whether the blank 36 mm tail must lead the 100 mm pitch or trail it.
+    const [feedDirection, setFeedDirection] = useState<"tail-first" | "tag-first">("tag-first");
+    // Brand name is opt-in: the tag prints nothing where LUMINILA used to be
+    // unless the operator asks for the store's brand.
+    const [printBrand, setPrintBrand] = useState(false);
+    const [storeName, setStoreName] = useState('');
+    // A 3-up pitch carries three tags; a partial row left by the previous run is
+    // reused by starting at the 2nd or 3rd tag instead of feeding a fresh row.
+    const [startSlot, setStartSlot] = useState<0 | 1 | 2>(0);
     const [selectedChannel, setSelectedChannel] = useState<string>("pos");
     const [availableChannels, setAvailableChannels] = useState<SalesChannelDef[]>(getConfiguredChannels());
 
@@ -379,6 +447,15 @@ function LabelsContent() {
             const totalTags = batchItems.reduce((sum, it) => sum + it.quantity, 0);
             toast.success(`Loaded ${batchItems.length} products (${totalTags} labels) from queue!`);
         }
+    }, []);
+
+    // Store brand name for the optional brand line on the tag.
+    useEffect(() => {
+        let alive = true;
+        getStoreSettings()
+            .then(settings => { if (alive) setStoreName(settings.storeName || ''); })
+            .catch(() => { /* brand stays unavailable */ });
+        return () => { alive = false; };
     }, []);
 
     // Recompute tag prices once the tenant's channel rules are available.
@@ -435,6 +512,7 @@ function LabelsContent() {
                         plating: p.plating || '',
                         occasion: p.occasion || '',
                         base_metal: p.base_metal || '',
+                        location: p.location || '',
                     })));
                     return;
                 }
@@ -579,14 +657,31 @@ function LabelsContent() {
         window.setTimeout(fire, 5000);
     };
 
-    const flatLabels = selectedProducts.flatMap(product =>
-        Array.from({ length: product.quantity }, () => product)
-    );
+    // Queue lines and ?sku= deep links carry only a printed price; the base
+    // selling price (2× line) and tray location are back-filled from the
+    // catalog by SKU so every producer (bulk bar, quick-add, WhatsApp, PO
+    // links) prints them without changing its payload.
+    const catalogBySku = new Map(availableProducts.map(p => [p.sku, p]));
+    const flatLabels = selectedProducts.flatMap(product => {
+        const cat = catalogBySku.get(product.sku);
+        const enriched: LabelData = {
+            ...product,
+            base_price: product.base_price ?? cat?.base_price,
+            location: product.location ?? cat?.location ?? '',
+        };
+        return Array.from({ length: product.quantity }, () => enriched);
+    });
     const totalLabels = flatLabels.length;
     const labelsPerRow = selectedLabelSize.id === 'seznik-strip' && rollLayout === '3-up' ? 3 : 1;
-    const printRows: LabelData[][] = [];
-    for (let i = 0; i < flatLabels.length; i += labelsPerRow) {
-        printRows.push(flatLabels.slice(i, i + labelsPerRow));
+    // Leading blanks push the first label onto the requested tag of the shared
+    // 3-up pitch; every later row stays full.
+    const leadingBlanks = labelsPerRow === 3 ? startSlot : 0;
+    const paddedLabels: (LabelData | null)[] = leadingBlanks > 0
+        ? [...Array.from({ length: leadingBlanks }, () => null), ...flatLabels]
+        : flatLabels;
+    const printRows: (LabelData | null)[][] = [];
+    for (let i = 0; i < paddedLabels.length; i += labelsPerRow) {
+        printRows.push(paddedLabels.slice(i, i + labelsPerRow));
     }
 
     return (
@@ -639,6 +734,8 @@ function LabelsContent() {
                                                 plating: product.plating,
                                                 occasion: product.occasion,
                                                 base_metal: product.base_metal,
+                                                base_price: product.base_price,
+                                                location: product.location,
                                             })}
                                             className="p-3 bg-bg-navy border border-surface-hover rounded-lg hover:border-primary/50 hover:bg-bg-navy/80 transition-all text-left group"
                                         >
@@ -700,8 +797,64 @@ function LabelsContent() {
                                                         </button>
                                                     ))}
                                                 </div>
+                                                {rollLayout === '3-up' && (
+                                                    <div className="mt-2 flex items-center gap-2">
+                                                        <span className="text-[10px] font-bold text-moonstone uppercase">Start at:</span>
+                                                        {([0, 1, 2] as const).map(slot => (
+                                                            <button
+                                                                key={slot}
+                                                                type="button"
+                                                                onClick={() => setStartSlot(slot)}
+                                                                className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors ${startSlot === slot
+                                                                    ? 'bg-primary/20 border-primary text-primary'
+                                                                    : 'bg-bg-navy border-surface-hover text-moonstone hover:text-white'
+                                                                    }`}
+                                                                title={slot === 0 ? 'Start a fresh 3-up row' : `Reuse the ${slot} blank tag(s) left on the previous row`}
+                                                            >
+                                                                {slot === 0 ? 'Tag 1 (fresh row)' : `Tag ${slot + 1}`}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                <div className="mt-2 flex items-center gap-2">
+                                                    <span className="text-[10px] font-bold text-moonstone uppercase">Feed:</span>
+                                                    {(["tag-first", "tail-first"] as const).map(dir => (
+                                                        <button
+                                                            key={dir}
+                                                            type="button"
+                                                            onClick={() => setFeedDirection(dir)}
+                                                            className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors ${feedDirection === dir
+                                                                ? 'bg-primary/20 border-primary text-primary'
+                                                                : 'bg-bg-navy border-surface-hover text-moonstone hover:text-white'
+                                                                }`}
+                                                        >
+                                                            {dir === 'tag-first' ? 'Tag first' : 'Tail first (36mm blank)'}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <div className="mt-2 flex items-center gap-2">
+                                                    <span className="text-[10px] font-bold text-moonstone uppercase">Brand:</span>
+                                                    {([false, true] as const).map(show => (
+                                                        <button
+                                                            key={String(show)}
+                                                            type="button"
+                                                            onClick={() => setPrintBrand(show)}
+                                                            className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors ${printBrand === show
+                                                                ? 'bg-primary/20 border-primary text-primary'
+                                                                : 'bg-bg-navy border-surface-hover text-moonstone hover:text-white'
+                                                                }`}
+                                                        >
+                                                            {show
+                                                                ? (storeName ? `Store name (${storeName.length > 16 ? `${storeName.slice(0, 16)}…` : storeName})` : 'Store name')
+                                                                : 'None'}
+                                                        </button>
+                                                    ))}
+                                                </div>
                                                 <p className="text-[10px] text-gold/80 mt-2">
-                                                    203 dpi direct thermal · paper {rollLayout === '3-up' ? '45×100mm (2-inch, 3-up)' : '14.3×100mm'} · margins None · scale 100%. Body folds at 32mm; the 36mm tail stays blank.
+                                                    203 dpi direct thermal · paper {rollLayout === '3-up' ? '45×100mm (2-inch, 3-up)' : '14.3×100mm'} · margins None · scale 100%. {feedDirection === 'tag-first'
+                                                        ? 'Tag leads the feed; the blank 36mm tail trails and is never printed.'
+                                                        : 'Tail leads the feed (36mm, blank); the body folds at its midpoint.'}{' '}
+                                                    Face 1 prints the SKU{printBrand ? ' and brand' : ''}{symbologyMode === '1D_CODE128_POINTER' ? ' and price' : ''}; face 2 prints {symbologyMode === '1D_CODE128_POINTER' ? 'the 1D barcode alone' : 'the code with the price'}. Below the SKU every tag prints the clerk code: 2× the base selling price followed by the location as stored (e.g. 1600A2 — halve it for the minimum sellable price after discounts).
                                                 </p>
                                             </>
                                         )}
@@ -792,7 +945,7 @@ function LabelsContent() {
                                         </Select>
                                         <p className="text-[10px] text-moonstone">
                                             {selectedLabelSize.id === 'seznik-strip'
-                                                ? 'Symbology prints on one 32mm face; the other face carries brand, price and HSN. Use 2D for full SKUs — 1D only fits a short pointer ID.'
+                                                ? 'The SKU prints on one 32mm face. A 2D code shares the other face with the price; a 1D barcode needs the full face, so the price moves to the SKU face. Use 2D for full SKUs — 1D only fits a short pointer ID.'
                                                 : 'Legacy dumbbell format (54×11mm) with adhesive-free central bridge protecting fine necklaces & earring posts.'}
                                         </p>
                                     </div>
@@ -821,21 +974,57 @@ function LabelsContent() {
                             <div className="card bg-surface-navy border-surface-hover">
                                 <h2 className="text-lg font-bold text-white mb-4">Preview</h2>
                                 <div className="flex flex-wrap gap-4 p-4 bg-bg-navy/50 rounded-lg border border-surface-hover justify-center sm:justify-start">
-                                    {selectedProducts.slice(0, 6).map((product, index) => (
-                                        selectedLabelSize.id === 'seznik-strip' ? (
-                                            <SeznikStripTag key={`${product.sku}-${index}`} data={product} symbology={symbologyMode} />
-                                        ) : selectedLabelSize.id === 'dumbbell' ? (
-                                            <DumbbellTag key={`${product.sku}-${index}`} data={product} symbology={symbologyMode} />
-                                        ) : (
-                                            <BarcodeLabel key={`${product.sku}-${index}`} data={product} />
-                                        )
-                                    ))}
-                                    {selectedProducts.length > 6 && (
-                                        <div className="w-[200px] h-[100px] border-2 border-dashed border-surface-hover rounded-lg flex items-center justify-center bg-bg-navy/30">
-                                            <p className="text-moonstone font-bold">
-                                                +{selectedProducts.length - 6} more
+                                    {selectedLabelSize.id === 'seznik-strip' ? (
+                                        <div className="flex flex-col items-center gap-2">
+                                            <div className="flex items-start" style={{ gap: '1mm' }}>
+                                                {Array.from({ length: labelsPerRow }).map((_, slot) => {
+                                                    // Shown in print-sheet order, matching the Windows
+                                                    // preview: the printer mirrors the sheet onto the
+                                                    // stock, so the sheet's left cell is physical tag 3.
+                                                    const physical = labelsPerRow - 1 - slot;
+                                                    const product = printRows[0]?.[physical] ?? null;
+                                                    return (
+                                                    <div key={`preview-slot-${slot}`} className="flex flex-col items-center gap-1">
+                                                        <span className={`text-[10px] font-bold uppercase ${product ? 'text-moonstone' : 'text-amber-500/80'}`}>
+                                                            Tag {physical + 1}{product ? '' : ' · blank'}
+                                                        </span>
+                                                        {product ? (
+                                                            <SeznikStripTag data={product} symbology={symbologyMode} feedDirection={feedDirection} printBrand={printBrand} brandName={storeName} />
+                                                        ) : (
+                                                            <div
+                                                                style={{ width: '14.3mm', height: '100mm' }}
+                                                                className="rounded border border-dashed border-surface-hover bg-bg-navy/30 flex items-center justify-center"
+                                                            >
+                                                                <span className="text-[9px] text-moonstone/60 whitespace-nowrap" style={{ writingMode: 'vertical-rl' }}>
+                                                                    BLANK
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    );
+                                                })}
+                                            </div>
+                                            <p className="text-[10px] text-moonstone">
+                                                First pitch in print-sheet order — {labelsPerRow} tag{labelsPerRow === 1 ? '' : 's'} across{labelsPerRow === 3 ? ' the 45mm web' : ''}; the printer mirrors this onto the stock.
                                             </p>
                                         </div>
+                                    ) : (
+                                        <>
+                                            {selectedProducts.slice(0, 6).map((product, index) => (
+                                                selectedLabelSize.id === 'dumbbell' ? (
+                                                    <DumbbellTag key={`${product.sku}-${index}`} data={product} symbology={symbologyMode} />
+                                                ) : (
+                                                    <BarcodeLabel key={`${product.sku}-${index}`} data={product} />
+                                                )
+                                            ))}
+                                            {selectedProducts.length > 6 && (
+                                                <div className="w-[200px] h-[100px] border-2 border-dashed border-surface-hover rounded-lg flex items-center justify-center bg-bg-navy/30">
+                                                    <p className="text-moonstone font-bold">
+                                                        +{selectedProducts.length - 6} more
+                                                    </p>
+                                                </div>
+                                            )}
+                                        </>
                                     )}
                                 </div>
                             </div>
@@ -915,6 +1104,7 @@ function LabelsContent() {
                                 {selectedLabelSize.id === 'seznik-strip' && totalLabels > 0 && (
                                     <p className="text-xs text-moonstone">
                                         {rollLayout} roll · {printRows.length} row{printRows.length === 1 ? '' : 's'}
+                                        {rollLayout === '3-up' && startSlot > 0 ? ` · starts at tag ${startSlot + 1}` : ''}
                                         {rollLayout === '3-up' && printRows.length * 3 > totalLabels
                                             ? ` · ${printRows.length * 3 - totalLabels} blank`
                                             : ''}
@@ -1042,14 +1232,19 @@ function LabelsContent() {
                                 className="seznik-print-row"
                                 data-layout={rollLayout}
                             >
-                                {row.map((product, cellIndex) => (
-                                    <div key={`seznik-cell-${rowIndex}-${cellIndex}`} className="seznik-print-cell">
-                                        <SeznikStripTag data={product} symbology={symbologyMode} />
-                                    </div>
-                                ))}
-                                {Array.from({ length: labelsPerRow - row.length }).map((_, blankIndex) => (
-                                    <div key={`seznik-blank-${rowIndex}-${blankIndex}`} className="seznik-print-cell" />
-                                ))}
+                                {Array.from({ length: labelsPerRow }).map((_, slot) => {
+                                    // The printer lays the 45 mm web out right-to-left, so
+                                    // the row is emitted reversed: tag 1 goes to the last
+                                    // DOM cell and lands at physical left.
+                                    const product = row[labelsPerRow - 1 - slot] ?? null;
+                                    return (
+                                        <div key={`seznik-cell-${rowIndex}-${slot}`} className="seznik-print-cell">
+                                            {product && (
+                                                <SeznikStripTag data={product} symbology={symbologyMode} feedDirection={feedDirection} printBrand={printBrand} brandName={storeName} />
+                                            )}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         ))}
                     </div>

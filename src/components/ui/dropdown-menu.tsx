@@ -5,9 +5,21 @@ import { Menu as MenuPrimitive } from "@base-ui/react/menu"
 
 import { cn } from "@/lib/utils"
 import { ChevronRightIcon, CheckIcon } from "lucide-react"
+import { DockInsetContext, useDockInset } from "./dock-inset"
 
-function DropdownMenu({ ...props }: MenuPrimitive.Root.Props) {
-  return <MenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+function DropdownMenu({ onOpenChange, children, ...props }: MenuPrimitive.Root.Props) {
+  const [dock, handleOpenChange] = useDockInset(onOpenChange)
+  return (
+    <DockInsetContext.Provider value={dock}>
+      <MenuPrimitive.Root
+        data-slot="dropdown-menu"
+        {...props}
+        onOpenChange={handleOpenChange}
+      >
+        {children}
+      </MenuPrimitive.Root>
+    </DockInsetContext.Provider>
+  )
 }
 
 function DropdownMenuPortal({ ...props }: MenuPrimitive.Portal.Props) {
@@ -30,19 +42,60 @@ function DropdownMenuContent({
     MenuPrimitive.Positioner.Props,
     "align" | "alignOffset" | "side" | "sideOffset"
   >) {
+  const dock = React.useContext(DockInsetContext)
+  const popupRef = React.useRef<HTMLDivElement | null>(null)
+  const [dockShift, setDockShift] = React.useState(0)
+
+  // Base UI's collision padding does not re-seat an already-flipped popup, so
+  // clamp it manually: keep the popup's bottom above the dock on open, scroll
+  // and resize. `position: relative` avoids fighting the open/close transform
+  // animations.
+  React.useLayoutEffect(() => {
+    if (!dock.open) {
+      setDockShift(0)
+      return
+    }
+    const update = () => {
+      const el = popupRef.current
+      if (!el) return
+      const limit = window.innerHeight - dock.inset
+      setDockShift((prev) => {
+        const baseBottom = el.getBoundingClientRect().bottom + prev
+        const overflow = Math.max(0, Math.round(baseBottom - limit))
+        return Math.abs(overflow - prev) > 1 ? overflow : prev
+      })
+    }
+    update()
+    const raf = window.requestAnimationFrame(update)
+    window.addEventListener("resize", update)
+    window.addEventListener("scroll", update, true)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      window.removeEventListener("resize", update)
+      window.removeEventListener("scroll", update, true)
+    }
+  }, [dock.open, dock.inset])
+
   return (
     <MenuPrimitive.Portal>
       <MenuPrimitive.Positioner
-        className="isolate z-50 outline-none"
+        className="isolate z-[100] outline-none"
+        collisionPadding={{ top: 8, bottom: dock.inset, left: 8, right: 8 }}
         align={align}
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
       >
         <MenuPrimitive.Popup
+          ref={popupRef}
           data-slot="dropdown-menu-content"
           className={cn("border border-border bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 min-w-32 rounded-lg p-1 shadow-md duration-100 z-50 max-h-(--available-height) w-(--anchor-width) origin-(--transform-origin) overflow-x-hidden overflow-y-auto outline-none data-closed:overflow-hidden", className )}
           {...props}
+          style={{
+            ...props.style,
+            position: "relative",
+            top: dockShift > 0 ? -dockShift : undefined,
+          }}
         />
       </MenuPrimitive.Positioner>
     </MenuPrimitive.Portal>

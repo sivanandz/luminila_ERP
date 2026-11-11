@@ -11,6 +11,7 @@ import {
     DropdownMenuItem,
     DropdownMenuSeparator,
     DropdownMenuLabel,
+    DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import {
     Dialog,
@@ -35,7 +36,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { pushToLabelQueue } from "@/lib/label-queue";
-import { STORAGE_LOCATIONS } from "@/lib/products";
+import { loadTrayLocationOptions, trayChoices, trayChoiceLabel, type TrayLocationOption } from "@/lib/tray-locations";
 import { pb } from "@/lib/pocketbase";
 
 interface BulkProduct {
@@ -69,6 +70,15 @@ export function InventoryBulkActionBar({
     const [priceAdjustModalOpen, setPriceAdjustModalOpen] = useState(false);
     const [pricePercent, setPricePercent] = useState("");
     const [fixedAdjustment, setFixedAdjustment] = useState("");
+    // Editable tray locations (Settings → Tray Locations); presets until defined.
+    const [trayOptions, setTrayOptions] = useState<TrayLocationOption[]>([]);
+    React.useEffect(() => {
+        let alive = true;
+        loadTrayLocationOptions()
+            .then((opts) => { if (alive) setTrayOptions(opts); })
+            .catch(() => { /* presets already cover the grid */ });
+        return () => { alive = false; };
+    }, []);
 
     if (selectedIds.length === 0) return null;
 
@@ -175,7 +185,7 @@ async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => P
 
     return (
         <>
-            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-surface-navy/95 border border-primary/40 shadow-2xl backdrop-blur-md rounded-2xl p-2 px-4 flex items-center gap-2 max-w-2xl w-[92vw] sm:w-auto animate-in fade-in slide-in-from-bottom-4">
+            <div data-bottom-dock className="fixed bottom-[calc(env(safe-area-inset-bottom,0px)_+_5.5rem)] md:bottom-6 left-1/2 -translate-x-1/2 z-[95] bg-surface-navy/95 border border-primary/40 shadow-2xl backdrop-blur-md rounded-2xl p-2 px-4 flex items-center gap-2 max-w-2xl w-[92vw] sm:w-auto animate-in fade-in slide-in-from-bottom-4">
                 <div className="flex items-center gap-2 border-r border-surface-hover pr-3 mr-1">
                     <Badge className="bg-primary text-primary-foreground font-mono font-bold text-xs">
                         {selectedIds.length}
@@ -196,6 +206,7 @@ async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => P
                             Print Labels
                         </DropdownMenuTrigger>
                         <DropdownMenuContent className="bg-surface-navy border-surface-hover text-white text-xs">
+                            <DropdownMenuGroup>
                             <DropdownMenuLabel className="text-[10px] text-moonstone uppercase tracking-wider">
                                 Barcode Tag Queue
                             </DropdownMenuLabel>
@@ -213,6 +224,7 @@ async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => P
                                 {selectedProducts.reduce((sum, p) => sum + Math.max(1, p.stock), 0)}{" "}
                                 total)
                             </DropdownMenuItem>
+                            </DropdownMenuGroup>
                         </DropdownMenuContent>
                     </DropdownMenu>
 
@@ -305,16 +317,16 @@ async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => P
                     </DialogHeader>
 
                     <div className="grid grid-cols-2 gap-2 py-3">
-                        {STORAGE_LOCATIONS.map((loc) => (
+                        {trayChoices(trayOptions).map((opt) => (
                             <button
-                                key={loc}
+                                key={opt.code}
                                 type="button"
                                 disabled={busy}
-                                onClick={() => void handleConfirmMoveLocation(loc)}
-                                className="p-3 rounded-lg border border-surface-hover bg-bg-navy text-left text-xs font-bold text-white hover:border-primary hover:bg-primary/10 transition-colors flex items-center justify-between"
+                                onClick={() => void handleConfirmMoveLocation(opt.code)}
+                                className="p-3 rounded-lg border border-surface-hover bg-bg-navy text-left text-xs font-bold text-white hover:border-primary hover:bg-primary/10 transition-colors flex items-center justify-between gap-2"
                             >
-                                <span>{loc}</span>
-                                {busy ? <Loader2 size={12} className="animate-spin text-primary" /> : null}
+                                <span className="truncate">{trayChoiceLabel(opt)}</span>
+                                {busy ? <Loader2 size={12} className="animate-spin text-primary shrink-0" /> : null}
                             </button>
                         ))}
                     </div>

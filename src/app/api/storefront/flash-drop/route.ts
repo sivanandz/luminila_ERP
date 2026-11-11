@@ -23,8 +23,9 @@
  */
 
 import { NextResponse } from "next/server";
+import { FixedWindowRateLimiter, clientKeyFromHeaders } from "@/lib/rate-limit";
 import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
-import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from "@/lib/deployment-mode";
+import { resolvePublicStorefrontTenant } from "@/lib/storefront";
 import {
     upsertChannelCustomer,
     loadChannelStoreTaxContext,
@@ -68,35 +69,23 @@ export async function OPTIONS() {
 // Rate limiting (per phone and per IP, in memory)
 // ---------------------------------------------------------------------------
 
-interface LimitEntry {
-    count: number;
-    firstSeen: number;
+const rateLimiters = new Map<string, FixedWindowRateLimiter>();
+function getRateLimiter(max: number, windowMs: number): FixedWindowRateLimiter {
+    const key = `${max}:${windowMs}`;
+    let limiter = rateLimiters.get(key);
+    if (!limiter) {
+        limiter = new FixedWindowRateLimiter({ max, windowMs });
+        rateLimiters.set(key, limiter);
+    }
+    return limiter;
 }
 
-const limits = new Map<string, LimitEntry>();
-const MAX_LIMIT_ENTRIES = 5000;
-
 function checkLimit(key: string, max: number, windowMs = 10 * 60 * 1000): boolean {
-    const now = Date.now();
-    if (limits.size > MAX_LIMIT_ENTRIES) {
-        for (const [k, v] of limits) {
-            if (now - v.firstSeen > windowMs) limits.delete(k);
-        }
-    }
-    const entry = limits.get(key);
-    if (!entry || now - entry.firstSeen > windowMs) {
-        limits.set(key, { count: 1, firstSeen: now });
-        return true;
-    }
-    if (entry.count >= max) return false;
-    entry.count += 1;
-    return true;
+    return getRateLimiter(max, windowMs).check(key).allowed;
 }
 
 function clientIp(req: Request): string {
-    const forwarded = req.headers.get("x-forwarded-for") || "";
-    const first = forwarded.split(",")[0]?.trim();
-    return first || req.headers.get("x-real-ip") || "unknown";
+    return clientKeyFromHeaders(req.headers);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,14 +157,10 @@ function phoneLast10(phone: string): string {
 }
 
 function resolveAccountEmail(raw?: string | null): string {
-    const requested = String(raw || "").trim().toLowerCase();
-    if (requested) {
-        // A tenant is an email address; rejecting anything else prevents a
-        // crafted value from reaching the registry lookup.
-        if (!/^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(requested)) return "";
-        return requested;
-    }
-    return isSingleAccountMode() ? SINGLE_ACCOUNT_EMAIL : "";
+    // Server-side allow-list (audit C-01/C-02): an anonymous caller may only
+    // address a configured storefront tenant. Anything else resolves to "" and
+    // the route handlers fail closed before any tenant database is opened.
+    return resolvePublicStorefrontTenant(raw);
 }
 
 function tenantFilter(accountEmail: string, extra?: string): string {
@@ -184,8 +169,11 @@ function tenantFilter(accountEmail: string, extra?: string): string {
 }
 
 function belongsToTenant(record: { account_email?: string }, accountEmail: string): boolean {
+    // Strict (audit M-03): an empty owner is an unassigned legacy row, not
+    // "belongs to everyone". The tenant clause in every query already filters
+    // stamped rows; this is the last check before anything is returned.
     const stored = String(record.account_email || "").trim().toLowerCase();
-    return !stored || stored === accountEmail;
+    return Boolean(stored) && stored === accountEmail;
 }
 
 /** Map a drop record to the public projection (no phone numbers, no holds). */
@@ -903,7 +891,9 @@ async function handleOrderConfirmation(
         );
     }
     const orderPhone = phoneLast10(String(order.customer_phone || ""));
-    if (phone && orderPhone && orderPhone !== phone) {
+    // Phone proof is mandatory when the order carries one (audit M-03): a
+    // caller who omits `phone` no longer skips ownership verification.
+    if (orderPhone && orderPhone !== phone) {
         return NextResponse.json(
             { success: false, error: "This order belongs to a different phone number." },
             { status: 403, headers: CORS_HEADERS }

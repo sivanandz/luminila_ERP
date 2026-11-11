@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import DOMPurify from "dompurify";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useAuth } from "@/contexts/AuthContext";
@@ -89,6 +90,7 @@ import {
     getChannelPrice,
     getConfiguredChannels,
     loadConfiguredChannels,
+    computeChannelFloor,
     type SalesChannelDef,
     isUpiDiscountEnabled,
     setUpiDiscountEnabled,
@@ -178,6 +180,8 @@ export interface HeldCart {
     items: CartItem[];
     customer: Customer | null;
     discount: number;
+    /** How `discount` is interpreted when the cart is resumed. */
+    discountMode?: 'percent' | 'fixed';
     channel?: string;
 }
 
@@ -187,6 +191,7 @@ export default function POSPage() {
     const [showSearch, setShowSearch] = useState(false);
     const [scannerEnabled, setScannerEnabled] = useState(false);
     const [discount, setDiscount] = useState(0);
+    const [discountMode, setDiscountMode] = useState<'percent' | 'fixed'>('percent');
     const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
     const [upiDiscountEnabled, setUpiDiscountState] = useState<boolean>(() => isUpiDiscountEnabled());
     const [isProcessing, setIsProcessing] = useState(false);
@@ -216,7 +221,7 @@ export default function POSPage() {
         return () => window.removeEventListener("luminila:upi-discount-toggled", handler);
     }, []);
 
-    // Anti-Fraud Visual Match Audit State (Spec Â§4.2)
+    // Anti-Fraud Visual Match Audit State (Spec §4.2)
     const [antiFraudAuditItem, setAntiFraudAuditItem] = useState<{
         name: string;
         sku: string;
@@ -416,7 +421,7 @@ export default function POSPage() {
         }).catch(() => {});
     }, []);
 
-    // WhatsApp CRM bridge (spec Â§3.3 / Â§8.3)
+    // WhatsApp CRM bridge (spec §3.3 / §8.3)
     const autoSendWhatsAppRef = useRef(false);
 
     // Loyalty State
@@ -603,7 +608,7 @@ export default function POSPage() {
 
         try {
             // Sanitize the raw scanner payload before it is interpolated into the
-            // filter â€” arbitrary QR/DataMatrix content must not break or inject it.
+            // filter — arbitrary QR/DataMatrix content must not break or inject it.
             const resolved = await resolvePOSBarcodeVariant(code);
             const v: ProductVariant | undefined = resolved || undefined;
 
@@ -806,7 +811,7 @@ export default function POSPage() {
         setRedemptionValue(0);
     };
 
-    // Remote "Add to POS Cart" from WhatsApp surfaces (spec Â§8.3)
+    // Remote "Add to POS Cart" from WhatsApp surfaces (spec §8.3)
     useEffect(() => {
         const unsubscribe = subscribeRemoteCartItems((item: POSCartBroadcastItem) => {
             setCart((prev) => {
@@ -866,13 +871,31 @@ export default function POSPage() {
         return () => { cancelled = true; };
     }, []);
 
-    // Calculate totals in paise. P9: `discount` is clamped to 0â€“100 and every
-    // figure is rounded to 2 decimals so a bill can never go negative.
-    const safeDiscount = Math.min(100, Math.max(0, Number(discount) || 0));
+    // Calculate totals in paise. The bill discount is entered either as a
+    // percentage of the subtotal or as a flat rupee amount; both are clamped so
+    // a bill can never go negative.
+    const discountInput = Math.max(0, Number(discount) || 0);
     const subtotal = Math.round(cart.reduce((sum, item) => sum + item.price * item.quantity, 0) * 100) / 100;
-    const discountAmount = Math.round(((subtotal * safeDiscount) / 100) * 100) / 100;
+    const discountAmount = discountMode === 'fixed'
+        ? Math.min(subtotal, Math.round(discountInput * 100) / 100)
+        : Math.round(((subtotal * Math.min(100, discountInput)) / 100) * 100) / 100;
+    // Effective percentage, persisted with the sale so invoices, reports and
+    // loyalty all agree whichever way the operator entered the discount.
+    const effectiveDiscountPercent = subtotal > 0
+        ? Math.round((discountAmount / subtotal) * 10000) / 100
+        : 0;
     const loyaltyDiscount = Math.max(0, Math.round((Number(redemptionValue) || 0) * 100) / 100);  // Points redemption value
     const total = Math.max(0, Math.round((subtotal - discountAmount - loyaltyDiscount) * 100) / 100);
+
+    // Lowest price this channel can take without losing money: zero margin over
+    // cost, keeping the channel's gateway gross-up. Operator-only guidance; it
+    // is never written to the sale, bill or invoice.
+    const activeChannel = availableChannels.find(c => c.id === selectedChannel);
+    const floorLines = cart.filter(item => (item.costPrice ?? 0) > 0);
+    const channelFloor = Math.round(floorLines.reduce((sum, item) =>
+        sum + (computeChannelFloor(item.costPrice || 0, activeChannel?.pricingRule) ?? 0) * item.quantity, 0) * 100) / 100;
+    const floorKnown = floorLines.length > 0;
+    const belowFloor = floorKnown && total + 0.005 < channelFloor;
     const gstIncluded = gstRegistered
         ? includedTaxPaise(
             cart.map((item) => ({
@@ -941,7 +964,7 @@ export default function POSPage() {
                 * { font-family: 'Courier New', monospace; }
               </style>
             </head>
-            <body>${receiptRef.current.innerHTML}</body>
+            <body>${DOMPurify.sanitize(receiptRef.current.innerHTML)}</body>
           </html>
         `);
                 printWindow.document.close();
@@ -972,13 +995,14 @@ export default function POSPage() {
     const handleSelectCustomer = (cust: Customer) => {
         setSelectedCustomer(cust);
         setSelectedCustomerId(cust.id);
-        // A redemption belongs to the previously selected customer â€” never carry it over
+        // A redemption belongs to the previously selected customer — never carry it over
         setPointsToRedeem(0);
         setRedemptionValue(0);
         setShowCustomerModal(false);
 
         const tierDiscount = getTierDiscountPercent(cust.tier, cust.customer_type);
         if (tierDiscount > 0) {
+            setDiscountMode('percent');
             setDiscount(tierDiscount);
             toast.success(`Applied ${tierDiscount}% ${cust.tier || cust.customer_type} wholesale discount!`);
         } else {
@@ -1012,6 +1036,7 @@ export default function POSPage() {
             items: [...cart],
             customer: selectedCustomer,
             discount: discount,
+            discountMode,
             channel: selectedChannel,
         };
 
@@ -1029,11 +1054,12 @@ export default function POSPage() {
         setSelectedCustomer(target.customer);
         setSelectedCustomerId(target.customer?.id || null);
         setDiscount(target.discount || 0);
+        setDiscountMode(target.discountMode || 'percent');
         if (target.channel) {
             setSelectedChannel(target.channel);
             selectedChannelRef.current = target.channel;
         }
-        // Held carts don't store a redemption â€” never carry one over
+        // Held carts don't store a redemption — never carry one over
         setPointsToRedeem(0);
         setRedemptionValue(0);
         setHeldCarts(prev => prev.filter(h => h.id !== heldId));
@@ -1079,7 +1105,7 @@ export default function POSPage() {
         }
         setCart(prev => prev.map(c => c.id === overrideItem.id ? { ...c, price: finalPrice, isPriceOverridden: true } : c));
         setShowPriceOverrideModal(false);
-        toast.success(`Updated rate for ${overrideItem.name} to â‚¹${formatPrice(finalPrice)}`);
+        toast.success(`Updated rate for ${overrideItem.name} to ₹${formatPrice(finalPrice)}`);
     };
 
     // Keyboard Shortcuts Listener (BillWiz feature)
@@ -1127,13 +1153,13 @@ export default function POSPage() {
         const account = await getLoyaltyAccount(selectedCustomerId);
         const settings = await getLoyaltySettings();
         if (!account || pointsToRedeem > account.current_balance) {
-            toast.error('Insufficient loyalty points balance for this redemption. Sale cancelled â€” please adjust and retry.');
+            toast.error('Insufficient loyalty points balance for this redemption. Sale cancelled — please adjust and retry.');
             setPointsToRedeem(0);
             setRedemptionValue(0);
             return false;
         }
         if (pointsToRedeem < settings.min_redemption_points) {
-            toast.error(`Minimum ${settings.min_redemption_points} points required for redemption. Sale cancelled â€” please adjust and retry.`);
+            toast.error(`Minimum ${settings.min_redemption_points} points required for redemption. Sale cancelled — please adjust and retry.`);
             setPointsToRedeem(0);
             setRedemptionValue(0);
             return false;
@@ -1183,7 +1209,7 @@ export default function POSPage() {
         if (!(await assertCartStock())) return;
 
         // P8: cash must be tendered explicitly. An empty field used to complete
-        // the sale and record â‚¹0 cash against it.
+        // the sale and record ₹0 cash against it.
         if (paymentMethod === 'cash') {
             const rawTendered = cashTendered.trim();
             const tendered = parseFloat(rawTendered);
@@ -1213,8 +1239,9 @@ export default function POSPage() {
                     variantId: item.variantId,
                 })),
                 subtotal,
-                discountPercent: safeDiscount,
+                discountPercent: effectiveDiscountPercent,
                 discountAmount,
+                discountMode,
                 loyaltyDiscount,
                 total,
                 paymentMethod: paymentMethod as 'cash' | 'card' | 'upi' | 'phonepe',
@@ -1237,7 +1264,7 @@ export default function POSPage() {
                 result.warnings.forEach(w => toast.warning(w));
             }
 
-            // Loyalty updates run AFTER the sale is committed â€” a failure here
+            // Loyalty updates run AFTER the sale is committed — a failure here
             // must not be reported as a failed sale (retrying would double-sell).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
@@ -1276,7 +1303,7 @@ export default function POSPage() {
             // The checkout succeeded; the next sale gets a fresh id.
             checkoutTxnIdRef.current = null;
 
-            // Auto-send receipt via WhatsApp (spec Â§3.3 checkbox)
+            // Auto-send receipt via WhatsApp (spec §3.3 checkbox)
             if (autoSendWhatsAppRef.current && selectedCustomerId) {
                 sendPOSReceiptViaWhatsApp({
                     customerId: selectedCustomerId,
@@ -1342,8 +1369,9 @@ export default function POSPage() {
                     variantId: item.variantId,
                 })),
                 subtotal,
-                discountPercent: safeDiscount,
+                discountPercent: effectiveDiscountPercent,
                 discountAmount,
+                discountMode,
                 loyaltyDiscount,
                 total,
                 paymentMethod: 'phonepe',
@@ -1367,7 +1395,7 @@ export default function POSPage() {
                 result.warnings.forEach(w => toast.warning(w));
             }
 
-            // Loyalty updates run AFTER the sale is committed â€” a failure here
+            // Loyalty updates run AFTER the sale is committed — a failure here
             // must not be reported as a failed sale (the payment was received).
             try {
                 if (selectedCustomerId && pointsToRedeem > 0) {
@@ -1677,7 +1705,7 @@ export default function POSPage() {
                                                         <p className="font-bold text-white text-sm">{product.name}</p>
                                                         <div className="flex items-center gap-2 mt-0.5">
                                                             <span className="text-xs text-moonstone">
-                                                                {product.sku} â€¢ {product.variant}
+                                                                {product.sku} • {product.variant}
                                                             </span>
                                                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
                                                                 isOutOfStock
@@ -1857,7 +1885,7 @@ export default function POSPage() {
                         )}
                     </div>
 
-                    {/* POS Real-Time Anti-Fraud Visual Match Audit Card (Architecture Spec Â§4.2) */}
+                    {/* POS Real-Time Anti-Fraud Visual Match Audit Card (Architecture Spec §4.2) */}
                     {antiFraudAuditItem && (
                         <div className="bg-bg-navy/95 border-2 border-emerald-500/50 rounded-xl p-3 shadow-xl mb-3 animate-in slide-in-from-top-2 fade-in relative">
                             <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-surface-hover/50">
@@ -1907,14 +1935,14 @@ export default function POSPage() {
                                     </div>
                                     <div className="flex items-center gap-2 mt-1">
                                         <span className="text-xs font-mono font-bold text-gold">
-                                            MRP â‚¹{antiFraudAuditItem.price.toLocaleString("en-IN")}
+                                            MRP ₹{antiFraudAuditItem.price.toLocaleString("en-IN")}
                                         </span>
                                         <span className="text-[9px] text-amber-300 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                                             HSN {antiFraudAuditItem.hsn} (3% GST)
                                         </span>
                                     </div>
                                     <div className="text-[9px] text-emerald-400 flex items-center gap-1 mt-1 font-medium">
-                                        âœ“ Tag matches physical item â€¢ Ticket-switching protected
+                                        ✓ Tag matches physical item • Ticket-switching protected
                                     </div>
                                 </div>
                             </div>
@@ -1949,10 +1977,10 @@ export default function POSPage() {
                                             <p className="font-bold text-white text-sm truncate">{item.name}</p>
                                             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                                                 <span className="text-xs text-moonstone truncate">
-                                                    {item.variant} â€¢ {formatPrice(item.price)}
+                                                    {item.variant} • {formatPrice(item.price)}
                                                 </span>
                                                 {item.channelPrices && item.channelPrices[selectedChannel] !== undefined && (
-                                                    <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-primary/20 text-primary border border-primary/30" title={`Channel rate: â‚¹${formatPrice(item.price)}`}>
+                                                    <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-primary/20 text-primary border border-primary/30" title={`Channel rate: ₹${formatPrice(item.price)}`}>
                                                         {availableChannels.find(c => c.id === selectedChannel)?.name || selectedChannel}
                                                     </span>
                                                 )}
@@ -2018,20 +2046,50 @@ export default function POSPage() {
                         )}
                     </div>
 
-                    {/* Discount */}
+                    {/* Discount: percentage or flat amount, operator's choice */}
                     {cart.length > 0 && (
-                        <div className="mt-4 pt-4 border-t border-surface-hover">
-                            <div className="flex items-center justify-between">
-                                <label className="text-xs font-bold text-moonstone uppercase">Discount %</label>
+                        <div className="mt-4 pt-4 border-t border-surface-hover space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                    <label className="text-xs font-bold text-moonstone uppercase">Discount</label>
+                                    <div className="flex overflow-hidden rounded border border-surface-hover">
+                                        {(['percent', 'fixed'] as const).map(mode => (
+                                            <button
+                                                key={mode}
+                                                type="button"
+                                                onClick={() => { setDiscountMode(mode); setDiscount(0); }}
+                                                title={mode === 'percent' ? 'Percentage discount' : 'Fixed rupee discount'}
+                                                className={`px-2 py-0.5 text-[10px] font-bold transition-colors ${discountMode === mode
+                                                    ? 'bg-primary text-primary-foreground'
+                                                    : 'bg-bg-navy text-moonstone hover:text-white'
+                                                    }`}
+                                            >
+                                                {mode === 'percent' ? '%' : '₹'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
                                 <input
                                     type="number"
                                     min="0"
-                                    max="100"
+                                    max={discountMode === 'percent' ? 100 : subtotal}
+                                    step={discountMode === 'percent' ? 1 : 0.01}
                                     value={discount}
-                                    onChange={(e) => setDiscount(Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
-                                    className="bg-bg-navy border border-surface-hover text-white text-sm rounded px-2 py-1 w-16 text-center focus:ring-1 focus:ring-primary focus:border-primary"
+                                    onChange={(e) => {
+                                        const raw = Number(e.target.value) || 0;
+                                        setDiscount(discountMode === 'percent'
+                                            ? Math.min(100, Math.max(0, raw))
+                                            : Math.min(subtotal, Math.max(0, raw)));
+                                    }}
+                                    className="bg-bg-navy border border-surface-hover text-white text-sm rounded px-2 py-1 w-20 text-center focus:ring-1 focus:ring-primary focus:border-primary"
                                 />
                             </div>
+                            {floorKnown && (
+                                <div className={`flex items-center justify-between text-[11px] ${belowFloor ? 'text-red-400 font-semibold' : 'text-amber-300/80'}`}>
+                                    <span>Lowest safe price · {activeChannel?.shortLabel || activeChannel?.name || selectedChannel}</span>
+                                    <span>{formatPrice(channelFloor)}{belowFloor ? ' — below floor' : ''}</span>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -2041,9 +2099,9 @@ export default function POSPage() {
                             <span className="text-moonstone">Subtotal</span>
                             <span className="text-white font-medium">{formatPrice(subtotal)}</span>
                         </div>
-                        {discount > 0 && (
+                        {discountAmount > 0 && (
                             <div className="flex justify-between text-sm text-green-400">
-                                <span>Discount ({discount}%)</span>
+                                <span>Discount ({discountMode === 'percent' ? `${discount}%` : formatPrice(discountAmount)})</span>
                                 <span>-{formatPrice(discountAmount)}</span>
                             </div>
                         )}
@@ -2147,7 +2205,7 @@ export default function POSPage() {
                                 })}
                             </div>
 
-                            {/* UPI < â‚¹2,000 Zero-MDR Surcharge Discount Option */}
+                            {/* UPI < ₹2,000 Zero-MDR Surcharge Discount Option */}
                             {(paymentMethod === "upi" || paymentMethod === "phonepe") && total > 0 && total < DEFAULT_UPI_DISCOUNT_THRESHOLD && (
                                 <div className="mt-2.5 p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-xs animate-in fade-in">
                                     <div className="flex items-center justify-between">
@@ -2163,7 +2221,7 @@ export default function POSPage() {
                                                 className="accent-emerald-500 rounded"
                                             />
                                             <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
-                                                âš¡ UPI &lt; â‚¹2,000 Zero-MDR Surcharge Discount
+                                                ⚡ UPI &lt; ₹2,000 Zero-MDR Surcharge Discount
                                             </span>
                                         </label>
                                         <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
@@ -2172,7 +2230,7 @@ export default function POSPage() {
                                     </div>
                                     <p className="text-[10px] text-emerald-400/80 mt-1 leading-tight">
                                         {upiDiscountEnabled
-                                            ? "RBI/NPCI zero-MDR rule: Merchant surcharge waived for UPI under â‚¹2,000. Customer pays â‚¹0 surcharge."
+                                            ? "RBI/NPCI zero-MDR rule: Merchant surcharge waived for UPI under ₹2,000. Customer pays ₹0 surcharge."
                                             : "Feature disabled: Standard merchant surcharge policy applies."}
                                     </p>
                                 </div>
@@ -2186,7 +2244,7 @@ export default function POSPage() {
                             <p className="text-xs font-bold text-moonstone uppercase mb-2">Cash Tendered</p>
                             <div className="grid grid-cols-2 gap-3">
                                 <div className="relative">
-                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">â‚¹</span>
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">₹</span>
                                     <input
                                         type="number"
                                         placeholder="0.00"
@@ -2215,7 +2273,7 @@ export default function POSPage() {
                         </div>
                     )}
 
-                    {/* WhatsApp Checkout Messenger (spec Â§3.3) */}
+                    {/* WhatsApp Checkout Messenger (spec §3.3) */}
                     <POSWhatsAppWidget
                         mode="pre-sale"
                         customerId={selectedCustomerId}
@@ -2237,7 +2295,7 @@ export default function POSPage() {
                             </span>
                         ) : (
                             <>
-                                Complete Sale â€¢ {formatPrice(total)}
+                                Complete Sale • {formatPrice(total)}
                             </>
                         )}
                     </button>
@@ -2308,7 +2366,7 @@ export default function POSPage() {
                                 </Button>
                             </div>
 
-                            {/* WhatsApp receipt dispatch (spec Â§3.3 / Â§5) */}
+                            {/* WhatsApp receipt dispatch (spec §3.3 / §5) */}
                             {selectedCustomerId && (
                                 <div className="flex gap-3 mt-3">
                                     <POSWhatsAppWidget
@@ -2341,7 +2399,7 @@ export default function POSPage() {
                         <div className="space-y-2">
                             <Label className="text-white">Opening Cash Balance</Label>
                             <div className="relative">
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">â‚¹</span>
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">₹</span>
                                 <Input
                                     type="number"
                                     placeholder="0.00"
@@ -2405,7 +2463,7 @@ export default function POSPage() {
                         <div className="space-y-2">
                             <Label className="text-white">Actual Closing Balance</Label>
                             <div className="relative">
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">â‚¹</span>
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-moonstone">₹</span>
                                 <Input
                                     type="number"
                                     placeholder="Count your drawer..."
@@ -2475,7 +2533,7 @@ export default function POSPage() {
                             <div className="flex items-center justify-between p-3 rounded-lg bg-gold/10 border border-gold/30">
                                 <div>
                                     <p className="text-sm font-semibold text-gold">Currently Selected: {selectedCustomer.name}</p>
-                                    <p className="text-xs text-moonstone">{selectedCustomer.phone} â€¢ Tier: {selectedCustomer.tier || selectedCustomer.customer_type || 'Retail'}</p>
+                                    <p className="text-xs text-moonstone">{selectedCustomer.phone} • Tier: {selectedCustomer.tier || selectedCustomer.customer_type || 'Retail'}</p>
                                 </div>
                                 <Button size="sm" variant="outline" onClick={handleClearCustomer} className="border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs">
                                     Switch to Walk-in
@@ -2499,7 +2557,7 @@ export default function POSPage() {
                                         >
                                             <div>
                                                 <p className="text-sm font-medium text-white">{cust.name}</p>
-                                                <p className="text-xs text-moonstone">{cust.phone || "No phone"} {cust.email ? `â€¢ ${cust.email}` : ""}</p>
+                                                <p className="text-xs text-moonstone">{cust.phone || "No phone"} {cust.email ? `• ${cust.email}` : ""}</p>
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 {tierPct > 0 ? (
@@ -2553,7 +2611,7 @@ export default function POSPage() {
                                         <div>
                                             <p className="text-sm font-semibold text-white">{h.name}</p>
                                             <p className="text-xs text-moonstone mt-0.5">
-                                                {h.items.length} items â€¢ â‚¹{formatPrice(cartTotal)} â€¢ {new Date(h.timestamp).toLocaleTimeString()}
+                                                {h.items.length} items • ₹{formatPrice(cartTotal)} • {new Date(h.timestamp).toLocaleTimeString()}
                                             </p>
                                         </div>
                                         <div className="flex items-center gap-2">
@@ -2599,11 +2657,11 @@ export default function POSPage() {
                         <div className="space-y-4 py-2">
                             <div className="p-3 rounded-lg bg-surface-hover/30 border border-surface-hover">
                                 <p className="text-sm font-semibold text-white">{overrideItem.name}</p>
-                                <p className="text-xs text-moonstone">SKU: {overrideItem.sku} â€¢ Original: â‚¹{formatPrice(overrideItem.price)}</p>
+                                <p className="text-xs text-moonstone">SKU: {overrideItem.sku} • Original: ₹{formatPrice(overrideItem.price)}</p>
                             </div>
 
                             <div className="space-y-2">
-                                <Label className="text-xs text-moonstone uppercase tracking-wider font-semibold">Custom Unit Price (â‚¹)</Label>
+                                <Label className="text-xs text-moonstone uppercase tracking-wider font-semibold">Custom Unit Price (₹)</Label>
                                 <Input
                                     type="number"
                                     value={overridePriceInput}
@@ -2630,7 +2688,7 @@ export default function POSPage() {
                             <div className="p-3 rounded-lg bg-gold/10 border border-gold/30 flex justify-between items-center text-sm">
                                 <span className="text-moonstone">Calculated Final Rate:</span>
                                 <span className="font-bold text-gold text-base">
-                                    â‚¹{formatPrice(
+                                    ₹{formatPrice(
                                         Math.max(0, (parseFloat(overridePriceInput) || 0) * (1 - (parseFloat(overrideDiscountInput) || 0) / 100))
                                     )}
                                 </span>

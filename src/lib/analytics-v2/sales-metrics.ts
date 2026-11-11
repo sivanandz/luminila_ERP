@@ -298,7 +298,8 @@ export async function buildCustomerSplit(tenant: string, win: { current: DateWin
     // PB space-datetime bound (AN-02).
     const historyFilterSales =
         `account_email="${sanitizeFilter(tenant)}" && channel!="storefront"` +
-        ` && !(channel="whatsapp" && channel_order_id != "") && status!="cancelled"` +
+        // Same De Morgan rewrite as load.ts: PocketBase rejects unary `!`.
+        ` && (channel!="whatsapp" || channel_order_id = "") && status!="cancelled"` +
         ` && created<"${pbBound(win.current.startISO)}"`;
     const historyFilterOrders =
         `account_email="${sanitizeFilter(tenant)}" && created<"${pbBound(win.current.startISO)}"` +

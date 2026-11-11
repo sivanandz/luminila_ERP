@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
         const product = await client
             .collection('products')
             .getFirstListItem(
-                `id = "${sanitizeFilter(id)}" && is_active = true && (account_email = "${sanitizeFilter(accountEmail)}" || account_email = "")`
+                `id = "${sanitizeFilter(id)}" && is_active = true && account_email = "${sanitizeFilter(accountEmail)}"`
             )
             .catch(() => null);
 

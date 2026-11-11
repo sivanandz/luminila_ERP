@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Printer, Download, Truck, PackageCheck, AlertCircle } from "lucide-react";
 import { CourierCarrier } from "@/lib/logistics-engine";
 import { escapeHtml } from "@/lib/utils";
+import DOMPurify from "dompurify";
 
 export interface ShippingLabelData {
     orderNumber: string;
@@ -210,7 +211,7 @@ export function ShippingLabelPrintModal({
                 </style>
             </head>
             <body>
-                ${content.innerHTML}
+                ${DOMPurify.sanitize(content.innerHTML)}
                 <script>
                     window.onload = function() {
                         window.print();

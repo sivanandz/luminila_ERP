@@ -181,6 +181,53 @@ export async function getInventoryLocations(): Promise<InventoryLocation[]> {
 }
 
 /**
+ * Raw registry read WITHOUT the POS-MAIN/default fallback: returns [] when
+ * nothing has been configured, so callers (tray-location editors) can fall
+ * back to the legacy preset list themselves.
+ */
+export async function getManagedLocations(opts?: { includeInactive?: boolean }): Promise<InventoryLocation[]> {
+    ensureAuth();
+    const userEmail = tenantScope();
+    const activeOnly = !(opts?.includeInactive);
+    const filter = `account_email = "${sanitizeFilter(userEmail)}"${activeOnly ? " && is_active = true" : ""}`;
+    try {
+        const records = await pb.collection("inventory_locations").getFullList<InventoryLocation>({
+            filter,
+            sort: "code",
+        });
+        return records ?? [];
+    } catch (err) {
+        if (isMissingCollection(err)) return [];
+        throw err;
+    }
+}
+
+/**
+ * Hard-delete a location row and drop it from the tenant cache. Products
+ * already storing its code keep the raw string (labels print it as-is).
+ */
+export async function deleteInventoryLocation(id: string): Promise<void> {
+    ensureAuth();
+    try {
+        await pb.collection("inventory_locations").delete(id);
+    } catch (err) {
+        if (!isMissingCollection(err)) throw err;
+    }
+    if (typeof window !== "undefined") {
+        const storageKey = getLocationsStorageKey();
+        const cached = localStorage.getItem(storageKey);
+        if (cached) {
+            try {
+                const parsed = JSON.parse(cached);
+                if (Array.isArray(parsed)) {
+                    localStorage.setItem(storageKey, JSON.stringify(parsed.filter((l) => (l as InventoryLocation).id !== id)));
+                }
+            } catch {}
+        }
+    }
+}
+
+/**
  * Get POS-eligible selling locations (Counters and Stores)
  */
 export async function getPOSLocations(): Promise<InventoryLocation[]> {
@@ -228,7 +275,11 @@ export async function saveInventoryLocation(loc: Partial<InventoryLocation>): Pr
         if (loc.id) {
             await pb.collection("inventory_locations").update(id, fullLoc);
         } else {
-            await pb.collection("inventory_locations").create(fullLoc);
+            // PB mints the id on create (15-char); a client-supplied
+            // "loc_<uuid>" id is rejected with 400 "Failed to create record".
+            const { id: _clientIgnored, ...createPayload } = fullLoc;
+            const created = await pb.collection("inventory_locations").create(createPayload);
+            fullLoc.id = created.id;
         }
     } catch (err) {
         // A failed write used to be swallowed and reported as success through
@@ -240,7 +291,7 @@ export async function saveInventoryLocation(loc: Partial<InventoryLocation>): Pr
 
     if (typeof window !== "undefined") {
         const existing = await getInventoryLocations();
-        const updated = existing.filter((l) => l.id !== id);
+        const updated = existing.filter((l) => l.id !== fullLoc.id);
         updated.push(fullLoc);
         localStorage.setItem(storageKey, JSON.stringify(updated));
     }

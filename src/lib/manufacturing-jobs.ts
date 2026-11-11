@@ -9,6 +9,7 @@
  */
 
 import { pb, getCurrentTenantEmail, sanitizeFilter } from './pocketbase';
+import { enqueueTask } from './concurrency';
 import {
     calculateRawMaterialsCost,
     calculateTotalAdditionalCosts,
@@ -19,6 +20,8 @@ import {
 } from './manufacturing-engine';
 
 const SETTINGS_KEY = 'manufacturing_jobs';
+/** Oldest job cards beyond this count are dropped (and reported) on save. */
+const MAX_STORED_JOBS = 500;
 
 /**
  * The tenant that owns the jobs. Fail closed: a missing/'default' tenant used
@@ -213,45 +216,73 @@ export async function listKarigarJobs(): Promise<KarigarJobRecord[]> {
     return jobs.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
+/**
+ * Serialize every read-modify-write of the jobs blob for this tenant. Two tabs
+ * saving at once used to lose a job (and reuse its `nextJobNumber`) because the
+ * whole list is rewritten into one `store_settings` row (SET-13).
+ */
+function jobsQueueKey(tenant: string): string {
+    return `${SETTINGS_KEY}_${tenant}`;
+}
+
 export async function saveKarigarJob(input: KarigarJobInput): Promise<KarigarJobRecord[]> {
     if (!input.karigarName.trim()) throw new Error('Karigar name is required.');
     if (!input.productName.trim()) throw new Error('Piece description is required.');
     if (input.metalGrams <= 0) throw new Error('Metal issued must be greater than zero grams.');
 
-    const jobs = await readJobs();
-    const record: KarigarJobRecord = {
-        ...input,
-        id: `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
-        jobNumber: nextJobNumber(jobs),
-        status: 'in_progress',
-        createdAt: new Date().toISOString(),
-        cost: computeKarigarJobCost(input),
-    };
+    const tenant = requireTenantEmail();
+    return enqueueTask(jobsQueueKey(tenant), async () => {
+        const jobs = await readJobs();
+        const record: KarigarJobRecord = {
+            ...input,
+            id: `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+            jobNumber: nextJobNumber(jobs),
+            status: 'in_progress',
+            createdAt: new Date().toISOString(),
+            cost: computeKarigarJobCost(input),
+        };
 
-    await writeJobs([record, ...jobs].slice(0, 500));
-    return listKarigarJobs();
+        const merged = [record, ...jobs];
+        if (merged.length > MAX_STORED_JOBS) {
+            // The history cap is a storage limit, not a licence to drop silently.
+            console.warn(
+                `[manufacturing-jobs] History cap ${MAX_STORED_JOBS} reached; dropping ${
+                    merged.length - MAX_STORED_JOBS
+                } oldest job card(s).`
+            );
+        }
+
+        await writeJobs(merged.slice(0, MAX_STORED_JOBS));
+        return listKarigarJobs();
+    });
 }
 
 export async function setKarigarJobStatus(
     id: string,
     status: KarigarJobStatus
 ): Promise<KarigarJobRecord[]> {
-    const jobs = await readJobs();
-    const next = jobs.map((job) =>
-        job.id === id
-            ? {
-                ...job,
-                status,
-                completedAt: status === 'completed' ? (job.completedAt || new Date().toISOString()) : undefined,
-            }
-            : job
-    );
-    await writeJobs(next);
-    return listKarigarJobs();
+    const tenant = requireTenantEmail();
+    return enqueueTask(jobsQueueKey(tenant), async () => {
+        const jobs = await readJobs();
+        const next = jobs.map((job) =>
+            job.id === id
+                ? {
+                    ...job,
+                    status,
+                    completedAt: status === 'completed' ? (job.completedAt || new Date().toISOString()) : undefined,
+                }
+                : job
+        );
+        await writeJobs(next);
+        return listKarigarJobs();
+    });
 }
 
 export async function deleteKarigarJob(id: string): Promise<KarigarJobRecord[]> {
-    const jobs = await readJobs();
-    await writeJobs(jobs.filter((job) => job.id !== id));
-    return listKarigarJobs();
+    const tenant = requireTenantEmail();
+    return enqueueTask(jobsQueueKey(tenant), async () => {
+        const jobs = await readJobs();
+        await writeJobs(jobs.filter((job) => job.id !== id));
+        return listKarigarJobs();
+    });
 }

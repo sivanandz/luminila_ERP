@@ -99,6 +99,7 @@ import {
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuLabel,
+    DropdownMenuGroup,
     DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
@@ -137,6 +138,7 @@ import {
     getProductDisplayImage,
     type Product as PbProduct,
 } from "@/lib/products";
+import { loadTrayLocationOptions, trayChoices, trayChoiceLabel, type TrayLocationOption } from "@/lib/tray-locations";
 import { toast } from "sonner";
 import { pb } from "@/lib/pocketbase";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -236,6 +238,17 @@ function InventoryContent() {
     const [selectedLedgerProduct, setSelectedLedgerProduct] = useState<Product | null>(null);
     const [showCycleCountModal, setShowCycleCountModal] = useState(false);
     const [showReplenishmentModal, setShowReplenishmentModal] = useState(false);
+
+    // Editable tray locations (Settings → Tray Locations). Falls back to the
+    // built-in presets until the shop defines its own codes.
+    const [trayOptions, setTrayOptions] = useState<TrayLocationOption[]>([]);
+    useEffect(() => {
+        let alive = true;
+        loadTrayLocationOptions()
+            .then((opts) => { if (alive) setTrayOptions(opts); })
+            .catch(() => { /* presets already cover the select */ });
+        return () => { alive = false; };
+    }, []);
 
     const toggleSelectProduct = (id: string) => {
         setSelectedProductIds((prev) =>
@@ -808,7 +821,7 @@ function InventoryContent() {
             }
 
             setShowAddDialog(false);
-            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '', is_bundle: false, bundle_items: [] });
+            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: trayOptions[0]?.code ?? 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '', is_bundle: false, bundle_items: [] });
             fetchProducts();
         } catch (err) {
             console.error('Error saving product:', err);
@@ -1161,6 +1174,7 @@ function InventoryContent() {
                                     )}
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end" className="w-60">
+                                    <DropdownMenuGroup>
                                     <DropdownMenuLabel>Operations</DropdownMenuLabel>
                                     <DropdownMenuItem onClick={() => setShowQuickReceiveModal(true)}>
                                         <Truck size={14} />
@@ -1193,7 +1207,9 @@ function InventoryContent() {
                                             <span className="text-[10px] text-amber-300">{activeDiscrepanciesCount}</span>
                                         )}
                                     </DropdownMenuItem>
+                                    </DropdownMenuGroup>
                                     <DropdownMenuSeparator />
+                                    <DropdownMenuGroup>
                                     <DropdownMenuLabel>Inventory</DropdownMenuLabel>
                                     <DropdownMenuItem onClick={() => setShowBulkImportModal(true)}>
                                         <Upload size={14} />
@@ -1217,6 +1233,7 @@ function InventoryContent() {
                                         <Edit size={14} />
                                         Advanced product form
                                     </DropdownMenuItem>
+                                    </DropdownMenuGroup>
                                     <DropdownMenuSeparator />
                                     <DropdownMenuItem onClick={fetchProducts}>
                                         <RefreshCw size={14} />
@@ -1987,10 +2004,12 @@ function InventoryContent() {
                                 </div>
                                 <div>
                                     <Label className="flex items-center gap-1.5 text-xs"><MapPin size={13} className="text-gold" /> Storage Location</Label>
-                                    <Select value={newProduct.location || "Showcase Tray A"} onValueChange={v => setNewProduct({ ...newProduct, location: v || "Showcase Tray A" })}>
+                                    <Select value={newProduct.location || trayOptions[0]?.code || "Showcase Tray A"} onValueChange={v => setNewProduct({ ...newProduct, location: v || trayOptions[0]?.code || "Showcase Tray A" })}>
                                         <SelectTrigger className="bg-bg-navy border-surface-hover text-sm h-9 mt-1"><SelectValue /></SelectTrigger>
                                         <SelectContent>
-                                            {STORAGE_LOCATIONS.map(loc => <SelectItem key={loc} value={loc}>{loc}</SelectItem>)}
+                                            {trayChoices(trayOptions, newProduct.location).map((opt) => (
+                                                <SelectItem key={opt.code} value={opt.code}>{trayChoiceLabel(opt)}</SelectItem>
+                                            ))}
                                         </SelectContent>
                                     </Select>
                                 </div>

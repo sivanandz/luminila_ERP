@@ -1,8 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import PocketBase from "pocketbase";
-import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
+import { createTenantClient, sanitizeFilter, getPocketBaseUrl } from "@/lib/pocketbase";
 import { hasCapability } from "@/lib/api-auth";
-import { DEFAULT_STOREFRONT_TENANT_EMAIL, normalizeBindingEmail } from "@/lib/storefront";
+import { normalizeBindingEmail, resolvePublicStorefrontTenant } from "@/lib/storefront";
 import { NITHTHIGAL_DEFAULTS, mergeNiththigal } from "@/lib/niththigal-content";
 
 const PB_KEY = "storefront_content";
@@ -254,15 +254,18 @@ export async function OPTIONS() {
 
 export async function GET(req: NextRequest) {
     try {
-        // A public caller selects a tenant by sending a plain email; anything
-        // else is dropped before it reaches a filter (A-04).
+        // A public caller may only address a server-side allow-listed
+        // storefront tenant (audit C-01). Anything else resolves to "" and no
+        // tenant database is opened at all: the fallback client stays null and
+        // the route answers with the built-in default content.
         const queryEmail = normalizeBindingEmail(
             req.nextUrl.searchParams.get("account_email") || req.headers.get("x-account-email") || ""
         );
-        // One client per request, authenticated for this tenant.
-        const client = await createTenantClient(queryEmail || undefined);
+        const publicTenant = resolvePublicStorefrontTenant(queryEmail);
+        // One client per request, authenticated for the sanctioned tenant only.
+        const client = publicTenant ? await createTenantClient(publicTenant) : null;
 
-        const pb = new PocketBase(client.baseUrl);
+        const pb = new PocketBase(client?.baseUrl || getPocketBaseUrl());
         const authHeader = req.headers.get("authorization") || "";
         const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
         
@@ -287,18 +290,20 @@ export async function GET(req: NextRequest) {
             }
         }
 
-        const targetEmail = normalizeBindingEmail(staffEmail) || queryEmail || DEFAULT_STOREFRONT_TENANT_EMAIL;
+        const targetEmail = normalizeBindingEmail(staffEmail) || publicTenant;
 
         let record = null;
         const readPb = isAuthorized ? pb : client;
 
         // Only the scoped row is readable. An unscoped `key = "storefront_content"`
         // fallback returns another tenant's CMS (A-08 / SF-05).
-        try {
-            record = await readPb.collection("store_settings").getFirstListItem(
-                `key="${PB_KEY}" && account_email="${sanitizeFilter(targetEmail)}"`
-            );
-        } catch {}
+        if (readPb && targetEmail) {
+            try {
+                record = await readPb.collection("store_settings").getFirstListItem(
+                    `key="${PB_KEY}" && account_email="${sanitizeFilter(targetEmail)}"`
+                );
+            } catch {}
+        }
 
         let content = DEFAULT_CONTENT;
         if (record && record.value) {
@@ -350,7 +355,7 @@ export async function POST(req: Request) {
         // instance so it cannot replace the tenant session.
         const client = await createTenantClient(hintEmail || undefined);
 
-        const pb = new PocketBase(client.baseUrl);
+        const pb = new PocketBase(client?.baseUrl || getPocketBaseUrl());
         let staffEmail = "";
         let isAuthorized = false;
 
@@ -383,6 +388,9 @@ export async function POST(req: Request) {
             ok: true,
             status: 200,
             email: staffEmail,
+            // hasCapability short-circuits without a tenant scope (audit SK-10):
+            // without it every non-superuser save was rejected with 403.
+            accountEmail: String(pb.authStore.record?.account_email || staffEmail).trim().toLowerCase(),
             userId: pb.authStore.record?.id,
             isSuperuser: Boolean(pb.authStore.isSuperuser),
             client: pb,

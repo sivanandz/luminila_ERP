@@ -167,17 +167,34 @@ function sanitizeMemory(raw: unknown): QuickAddMemory {
 let currentMemory: QuickAddMemory = { recent: [] };
 const listeners = new Set<(memory: QuickAddMemory) => void>();
 
+// Tenant stamp (audit C-09): the module singleton used to hydrate once at
+// import and keep whichever tenant's data it saw, so switching accounts in the
+// same tab leaked the previous tenant's series into the next tenant's form and
+// persisted it into their store_settings. Every accessor now re-scopes first.
+let memoryTenant: string | null = null;
+
+function ensureTenantScope(): string {
+    const tenant = getCurrentTenantEmail();
+    if (memoryTenant === tenant) return tenant;
+    memoryTenant = tenant;
+    currentMemory = { recent: [] };
+    if (typeof window !== "undefined") {
+        try {
+            const cached = localStorage.getItem(getStorageKey());
+            if (cached) {
+                currentMemory = sanitizeMemory(JSON.parse(cached));
+            }
+        } catch (e) {
+            console.error("Failed to parse cached quick add memory", e);
+        }
+    }
+    return tenant;
+}
+
 // Hydrate from localStorage synchronously so the first dialog open of a
 // session already has the last series (PocketBase refresh follows async).
 if (typeof window !== "undefined") {
-    try {
-        const cached = localStorage.getItem(getStorageKey());
-        if (cached) {
-            currentMemory = sanitizeMemory(JSON.parse(cached));
-        }
-    } catch (e) {
-        console.error("Failed to parse cached quick add memory", e);
-    }
+    ensureTenantScope();
 }
 
 function notifyListeners() {
@@ -191,6 +208,7 @@ function notifyListeners() {
 }
 
 export function getQuickAddMemory(): QuickAddMemory {
+    ensureTenantScope();
     return { ...currentMemory, recent: [...currentMemory.recent] };
 }
 
@@ -249,6 +267,7 @@ async function persistToPocketBase() {
  * colour) bumps to the front with refreshed colour + commercial fields.
  */
 export function rememberQuickAdd(entry: Omit<QuickAddSeriesEntry, "usedAt">): QuickAddMemory {
+    ensureTenantScope();
     const stamped: QuickAddSeriesEntry = { ...entry, usedAt: new Date().toISOString() };
     const key = seriesKeyOf(stamped);
     const rest = currentMemory.recent.filter((existing) => seriesKeyOf(existing) !== key);
@@ -267,7 +286,7 @@ export function rememberQuickAdd(entry: Omit<QuickAddSeriesEntry, "usedAt">): Qu
  * back to the localStorage cache hydrated at module init.
  */
 export async function loadQuickAddMemory(): Promise<QuickAddMemory> {
-    const tenantEmail = getCurrentTenantEmail();
+    const tenantEmail = ensureTenantScope();
     try {
         const filter =
             tenantEmail && tenantEmail !== "default"

@@ -11,6 +11,7 @@
  */
 
 import { usePathname } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
 import { Sidebar, MobileBottomNav } from "@/components/layout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { WhatsAppEventSyncProvider } from "@/components/whatsapp/WhatsAppEventSyncProvider";
@@ -20,6 +21,7 @@ import { isPublicAppPath } from "@/lib/public-surfaces";
 
 export function AppChrome({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
+    const { isValid, isLoading } = useAuth();
     const isPublic = isPublicAppPath(pathname);
 
     if (isPublic) {
@@ -28,6 +30,12 @@ export function AppChrome({ children }: { children: React.ReactNode }) {
                 <ErrorBoundary>{children}</ErrorBoundary>
             </div>
         );
+    }
+
+    // Defense-in-depth: Never mount operations sidebar or realtime background
+    // sync providers if the session is still loading or unauthenticated.
+    if (!isValid || isLoading) {
+        return null;
     }
 
     return (

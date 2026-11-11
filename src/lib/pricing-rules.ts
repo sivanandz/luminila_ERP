@@ -204,6 +204,26 @@ export function computeRulePrice(
     return applyPriceRounding(price, rule.rounding || "none");
 }
 
+/**
+ * Lowest price for a channel that still covers cost: zero margin, but the same
+ * gateway gross-up and rounding the channel's selling price uses. Selling below
+ * this line loses money, so the POS shows it to the operator (never on a bill).
+ * Returns null when cost is unknown.
+ */
+export function computeChannelFloor(
+    costPrice: number,
+    rule?: ChannelPricingRule | null
+): number | null {
+    const cost = Number(costPrice);
+    if (!Number.isFinite(cost) || cost <= 0) return null;
+
+    let floor = cost;
+    if (rule?.gatewayGrossUp) {
+        floor = Math.ceil(floor / (1 - DEFAULT_GATEWAY_FEE_PERCENT / 100));
+    }
+    return applyPriceRounding(floor, rule?.rounding || "none");
+}
+
 function findChannel(
     channels: SalesChannelDefinition[],
     channelId: string

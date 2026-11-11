@@ -19,6 +19,10 @@ export interface QueuedLabelItem {
     plating?: string;
     occasion?: string;
     base_metal?: string;
+    /** Optional: producers that already hold the catalog row can pass these;
+     * /labels back-fills both by SKU from the catalog when absent. */
+    base_price?: number;
+    location?: string;
 }
 
 const getQueueStorageKey = () => getTenantStorageKey("luminila_label_print_queue_v1");

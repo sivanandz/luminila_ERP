@@ -272,7 +272,8 @@ function encryptWithPublicKey(_data: string): never {
 }
 
 function encryptWithSEK(data: string, sek: string): string {
-    // Encrypt data using Session Encryption Key (AES)
+    // Note: NIC e-Way Bill government API v1.03 mandates AES-256 ECB mode with PKCS7
+    // padding for symmetric session encryption (SEK). Government NIC gateways reject other modes.
     const encrypted = CryptoJS.AES.encrypt(data, CryptoJS.enc.Base64.parse(sek), {
         mode: CryptoJS.mode.ECB,
         padding: CryptoJS.pad.Pkcs7,

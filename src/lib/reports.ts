@@ -8,6 +8,7 @@ import { pb, accountScopeEmail, sanitizeFilter } from './pocketbase';
 import { allocateLandedCosts, weightedAverageCost } from './valuation';
 import { format } from 'date-fns';
 import { normalizeDateRange, escapeHtml } from './utils';
+import DOMPurify from 'dompurify';
 import { getCategories } from './categories';
 import { getStoreSettings } from './invoice';
 import type { Customer } from './customers';
@@ -832,7 +833,7 @@ export function printReport(elementId: string, title: string): void {
         <body>
             <h2>${escapeHtml(title)}</h2>
             <p>Generated: ${format(new Date(), 'dd/MM/yyyy HH:mm')}</p>
-            ${element.innerHTML}
+            ${DOMPurify.sanitize(element.innerHTML)}
         </body>
         </html>
     `);

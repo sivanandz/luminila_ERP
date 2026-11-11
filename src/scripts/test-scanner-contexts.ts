@@ -14,10 +14,10 @@ import { MobileScanner, ScanResult } from "../lib/mobile-scanner";
 
 function assert(condition: boolean, message: string) {
     if (!condition) {
-        console.error(`âŒ ASSERTION FAILED: ${message}`);
+        console.error(`❌ ASSERTION FAILED: ${message}`);
         process.exit(1);
     }
-    console.log(`  âœ“ ${message}`);
+    console.log(`  ✓ ${message}`);
 }
 
 async function runTests() {
@@ -110,7 +110,7 @@ async function runTests() {
     unregisterPOS();
 
     console.log("\n======================================================");
-    console.log("âœ… ALL CONTEXT-AWARE SCANNER PRIORITY TESTS PASSED (100%)");
+    console.log("✅ ALL CONTEXT-AWARE SCANNER PRIORITY TESTS PASSED (100%)");
     console.log("======================================================");
 }
 

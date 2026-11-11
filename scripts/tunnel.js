@@ -71,32 +71,13 @@ function probeHttp(url, timeoutMs = 1200) {
     });
 }
 
-// Determine PocketBase active port (with fallback from 8090 to 8091 if occupied/specified)
+// Determine PocketBase active port (deterministic 8090 unless configured)
 async function resolvePbPort() {
     if (process.env.PB_PORT) {
         return parseInt(process.env.PB_PORT, 10);
     }
     const explicitPort = getCustomPort('--pb-port', null);
     if (explicitPort) return explicitPort;
-
-    // Check if PB responds on 8090
-    const pb8090 = await probeHttp('http://127.0.0.1:8090/api/health');
-    if (pb8090) return 8090;
-
-    // Check if PB responds on 8091
-    const pb8091 = await probeHttp('http://127.0.0.1:8091/api/health');
-    if (pb8091) {
-        console.log(`${YELLOW}Notice: PocketBase detected running on fallback port 8091.${RESET}`);
-        return 8091;
-    }
-
-    // Check if 8090 is in use by non-PB (e.g. WsToastNotification)
-    const is8090Occupied = await probeHttp('http://127.0.0.1:8090/');
-    if (is8090Occupied) {
-        console.log(`${YELLOW}Notice: Port 8090 is occupied by another process. Routing tunnel to fallback port 8091.${RESET}`);
-        return 8091;
-    }
-
     return 8090;
 }
 
@@ -148,7 +129,8 @@ async function main() {
         });
     }
 
-    if (tunnelAll || onlyPb) {
+    if (onlyPb) {
+        console.log(`${YELLOW}[SECURITY WARNING] PocketBase DB is being exposed over a public tunnel. Ensure authentication is required.${RESET}`);
         services.push({
             id: 'pb',
             name: 'PocketBase DB',

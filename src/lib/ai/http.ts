@@ -88,7 +88,12 @@ export async function authenticateAiRequest(
             response: jsonError(session.status || 401, session.error || 'Operator session required.', 'unauthorized'),
         };
     }
-    const operatorEmail = (session.email || '').trim().toLowerCase();
+    // M-08: transcripts are scoped by `created_by`, so the identity here must
+    // be the signed-in account. `session.email` is the *tenant* owner for
+    // every staff login, which made all staff share one transcript pool; the
+    // personal login address (`staffEmail`) is the right key, with the tenant
+    // owner as the fallback for owner accounts.
+    const operatorEmail = (session.staffEmail || session.email || '').trim().toLowerCase();
     if (!operatorEmail) {
         return { ok: false, response: jsonError(401, 'Operator session has no usable email.', 'unauthorized') };
     }

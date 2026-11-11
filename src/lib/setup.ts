@@ -247,7 +247,7 @@ export async function seedStoreSettings(
     const initialSettings = [
         { key: "store_name", value: storeName, category: "general", account_email: accountEmail },
         { key: "currency", value: "INR", category: "general", account_email: accountEmail },
-        { key: "currency_symbol", value: "â‚¹", category: "general", account_email: accountEmail },
+        { key: "currency_symbol", value: "₹", category: "general", account_email: accountEmail },
     ];
 
     for (const setting of initialSettings) {

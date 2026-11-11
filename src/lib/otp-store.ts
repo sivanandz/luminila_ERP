@@ -31,8 +31,28 @@ const OTP_DAILY_LIMIT_ENV = Number(process.env.OTP_DAILY_LIMIT || 5);
 // silently disabling the cap (audit F6). Fall back to the default instead.
 const MAX_DAILY_REQUESTS = Number.isFinite(OTP_DAILY_LIMIT_ENV) ? Math.max(1, OTP_DAILY_LIMIT_ENV) : 5;
 
-function hashOtp(otp: string, salt: string): string {
-    return crypto.createHmac("sha256", salt).update(otp).digest("hex");
+/**
+ * Server-side pepper (audit C-06): the per-row salt used to be the HMAC key and
+ * lived in the same row as the hash, so anyone who could read the row could
+ * brute-force the 6-digit code offline. `otp_codes` is superuser-only since
+ * migration 1793003100; the pepper keeps the hash brute-force-proof even if
+ * that rule ever regresses. The salt stays in the payload for schema
+ * compatibility but carries no security weight.
+ */
+function otpPepper(): string {
+    return (
+        process.env.OTP_HASH_PEPPER ||
+        process.env.TENANT_REGISTRY_KEY ||
+        process.env.CUSTOMER_SESSION_SECRET ||
+        process.env.POCKETBASE_SUPERUSER_PASSWORD ||
+        process.env.PB_ADMIN_PASSWORD ||
+        ""
+    );
+}
+
+function hashOtp(otp: string, salt: string, phone: string): string {
+    const key = otpPepper() || salt || "luminila-otp";
+    return crypto.createHmac("sha256", key).update(`${phone}:${otp}`).digest("hex");
 }
 
 function normalizeTenant(tenant?: string): string {
@@ -123,7 +143,7 @@ export async function generateAndSaveOtp(phone: string, tenant?: string): Promis
         // randomInt's upper bound is exclusive; 1000000 allows 999999 (A-22).
         const otp = crypto.randomInt(100000, 1000000).toString();
         const salt = crypto.randomBytes(16).toString("hex");
-        const hashedOtp = hashOtp(otp, salt);
+        const hashedOtp = hashOtp(otp, salt, cleanPhone);
 
         const buildPayload = (row: OtpRow | null) => ({
             account_email: scope,
@@ -255,7 +275,7 @@ export async function verifyOtp(phone: string, inputOtp: string, tenant?: string
         return { valid: false, reason: "Too many failed attempts. Please request a new OTP." };
     }
 
-    const computed = hashOtp(inputOtp.trim(), row.salt || "");
+    const computed = hashOtp(inputOtp.trim(), row.salt || "", cleanPhone);
     const expected = row.hashed_otp;
     const matches = computed.length === expected.length
         && crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(expected));

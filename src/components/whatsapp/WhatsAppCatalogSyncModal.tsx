@@ -20,9 +20,12 @@ import {
 import {
     isAutoSyncEnabled,
     setAutoSyncEnabled,
+    getCatalogSyncMode,
+    setCatalogSyncMode,
     getStealthSyncStatus,
     triggerStealthCatalogReconcile,
     StealthSyncTelemetry,
+    CatalogSyncMode,
 } from "@/lib/whatsapp-event-sync";
 
 export interface WhatsAppCatalogSyncModalProps {
@@ -40,11 +43,13 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
     const [filterSynced, setFilterSynced] = useState<"all" | "synced" | "unsynced">("all");
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [autoSync, setAutoSync] = useState<boolean>(true);
+    const [syncMode, setSyncMode] = useState<CatalogSyncMode>("inventory_master");
     const [telemetry, setTelemetry] = useState<StealthSyncTelemetry>(() => getStealthSyncStatus());
 
     useEffect(() => {
         if (isOpen) {
             setAutoSync(isAutoSyncEnabled());
+            setSyncMode(getCatalogSyncMode());
             setTelemetry(getStealthSyncStatus());
             loadProducts();
         }
@@ -151,13 +156,17 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
         try {
             const res = await triggerStealthCatalogReconcile();
             setTelemetry(getStealthSyncStatus());
-            if (res.queued > 0) {
-                setStatusMessage(
-                    `Queued ${res.queued} drifted/new item(s) into Stealth Sync Queue (human-paced 9–22s intervals).`
-                );
-            } else {
-                setStatusMessage("All inventory items are already in sync with your WhatsApp Business App catalog!");
+            const parts: string[] = [];
+            if (res.adopted > 0) {
+                parts.push(`Adopted ${res.adopted} catalog price(s) into inventory.`);
             }
+            if (res.queued > 0) {
+                parts.push(`Queued ${res.queued} drifted/new item(s) into Stealth Sync Queue (human-paced 9–22s intervals).`);
+            }
+            if (parts.length === 0) {
+                parts.push("All inventory items are already in sync with your WhatsApp Business App catalog!");
+            }
+            setStatusMessage(parts.join(" "));
             await loadProducts();
         } catch (err) {
             setStatusMessage(`Reconcile error: ${err instanceof Error ? err.message : String(err)}`);
@@ -226,6 +235,57 @@ export function WhatsAppCatalogSyncModal({ isOpen, onClose }: WhatsAppCatalogSyn
                         {autoSync ? "Enabled" : "Disabled"}
                     </button>
                 </div>
+
+                {/* Sync Direction (who owns the price) */}
+                <div className="px-5 py-2.5 bg-muted/20 border-b border-border flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold flex items-center gap-1.5">
+                        <Zap size={13} className="text-amber-500" />
+                        Sync direction:
+                    </span>
+                    <div className="flex rounded-lg overflow-hidden border border-border">
+                        <button
+                            onClick={() => {
+                                setSyncMode("inventory_master");
+                                setCatalogSyncMode("inventory_master");
+                            }}
+                            className={`px-3 py-1 text-xs font-semibold transition-all ${
+                                syncMode === "inventory_master"
+                                    ? "bg-emerald-600 text-white"
+                                    : "bg-background text-muted-foreground hover:bg-muted"
+                            }`}
+                            title="Inventory channel price is pushed to the WhatsApp catalog automatically"
+                        >
+                            Inventory → Catalog (push)
+                        </button>
+                        <button
+                            onClick={() => {
+                                setSyncMode("catalog_master");
+                                setCatalogSyncMode("catalog_master");
+                            }}
+                            className={`px-3 py-1 text-xs font-semibold transition-all ${
+                                syncMode === "catalog_master"
+                                    ? "bg-sky-600 text-white"
+                                    : "bg-background text-muted-foreground hover:bg-muted"
+                            }`}
+                            title="Live WhatsApp catalog price is adopted into inventory automatically — works even when WhatsApp rejects catalog edits"
+                        >
+                            Catalog → Inventory (adopt)
+                        </button>
+                    </div>
+                </div>
+
+                {/* Edit-gate banner */}
+                {telemetry.editGate && (
+                    <div className="px-5 py-2.5 bg-amber-500/10 border-b border-amber-500/30 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
+                        <ShieldCheck size={14} className="mt-0.5 shrink-0" />
+                        <span>
+                            WhatsApp is rejecting catalog edits from this linked session (push sync paused).{" "}
+                            <b>Relink the WhatsApp session</b> to restore push, or keep{" "}
+                            <b>Catalog → Inventory (adopt)</b> mode — price adoption from the catalog keeps running
+                            automatically either way.
+                        </span>
+                    </div>
+                )}
 
                 {/* Filters & Actions Bar */}
                 <div className="p-4 bg-muted/20 border-b border-border flex flex-wrap items-center justify-between gap-3">

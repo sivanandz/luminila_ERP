@@ -53,13 +53,6 @@ export function cartLineKey(item: Pick<StorefrontCartItem, "product" | "variantI
     return `${item.product.id}:${item.variantId || "base"}`;
 }
 
-function variantLabel(v: any): string {
-    const label = [v.variant_name, v.size, v.color, v.purity_karat ? `${v.purity_karat}K` : ""]
-        .filter(Boolean)
-        .join(" · ");
-    return label || v.sku_suffix || `Variant ${String(v.id || "").slice(-4)}`;
-}
-
 export interface StorefrontOrderInput {
     customerName: string;
     customerPhone: string;
@@ -124,76 +117,12 @@ export async function getStorefrontCatalog(adminEmail?: string): Promise<Storefr
             console.warn("[Storefront] Catalog route unreachable, falling back to direct PB:", routeErr);
         }
 
-        // Secondary: direct PocketBase read — only works for sessions whose
-        // auth email matches the tenant (operator previews).
-        const filter = adminEmail && adminEmail.trim()
-            ? `is_active = true && account_email = "${adminEmail.trim()}"`
-            : "is_active = true";
-
-        const records = await pb.collection("products").getFullList({
-            filter,
-            sort: "-created",
-            expand: "category",
-        });
-
-        if (!records || records.length === 0) {
-            return [];
-        }
-
-        const variants = await pb.collection("product_variants").getFullList().catch(() => []);
-
-        return records.map((rec: any) => {
-            const productVariants = variants.filter((v: any) => v.product === rec.id);
-            const totalStock = productVariants.reduce(
-                (sum: number, v: any) => sum + (Number(v.stock_level) || 0),
-                Number(rec.stock_level) || 0
-            );
-
-            // Channel pricing: check if website custom rate exists
-            const channelPrices = rec.channel_prices || {};
-            const websitePrice = Number(channelPrices.website) || Number(rec.base_price) || 0;
-            const mrp = websitePrice;
-
-            let stock_status: "in_stock" | "low_stock" | "out_of_stock" = "in_stock";
-            if (totalStock <= 0) stock_status = "out_of_stock";
-            else if (totalStock <= 3) stock_status = "low_stock";
-
-            const rawCat = rec.expand?.category?.name || rec.category;
-            const cleanCategory =
-                rawCat && !rawCat.startsWith("iq") && rawCat.length < 50
-                    ? rawCat
-                    : "Jewellery";
-
-            // Gracefully handle images: prefer base64 image_data or clean web URLs, avoiding broken WhatsApp CDN tokens
-            const resolvedImage = (rec.image_data && rec.image_data.length > 20)
-                ? rec.image_data
-                : (rec.image_url && !rec.image_url.includes("whatsapp.net") ? rec.image_url : "");
-
-            return {
-                id: rec.id,
-                sku: rec.sku,
-                name: rec.name,
-                category: cleanCategory,
-                sub_style: (rec.sub_style as any) || rec.craft || "",
-                description: rec.description,
-                base_price: rec.base_price,
-                website_price: websitePrice,
-                mrp,
-                image_url: resolvedImage,
-                total_stock: totalStock,
-                stock_status,
-                variants: productVariants.map((v: any) => ({
-                    id: v.id,
-                    label: variantLabel(v),
-                    stock_level: Math.max(0, Number(v.stock_level) || 0),
-                })),
-                base_metal: rec.base_metal || "",
-                plating_type: rec.plating_type || rec.plating || "",
-                stone_type: rec.stone_type || "",
-                occasion: rec.occasion || "",
-                care_instructions: rec.care_instructions || "",
-            };
-        });
+        // Secondary fallback removed (audit L-04 + migration 1793003000):
+        // `products` is sealed against anonymous reads, so a direct PocketBase
+        // query can no longer serve the storefront. When the ERP catalog route
+        // is unreachable the catalogue is empty rather than leaking; offline
+        // builds use STOREFRONT_CATALOG_SNAPSHOT instead.
+        return [];
     } catch (err) {
         console.warn("Failed to load storefront products:", err);
         return [];

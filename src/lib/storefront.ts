@@ -1,4 +1,5 @@
 import { createTenantClient, sanitizeFilter } from "@/lib/pocketbase";
+import { isSingleAccountMode, SINGLE_ACCOUNT_EMAIL } from "@/lib/deployment-mode";
 
 export interface StorefrontBinding {
     boundAdminEmail: string;
@@ -32,6 +33,26 @@ export function normalizeBindingEmail(raw?: string | null): string {
 }
 
 /**
+ * The tenants a public (unauthenticated) storefront caller may address.
+ *
+ * Single mode: the one account, always. Multi mode: an explicit server-side
+ * allowlist (`STOREFRONT_TENANTS` / `STOREFRONT_TENANT_EMAILS`, comma
+ * separated). A caller-supplied email that is not allow-listed resolves to ""
+ * and every public route must fail closed — an anonymous request must never
+ * open a tenant database it was not configured to serve (audit C-01/C-02).
+ */
+export function resolvePublicStorefrontTenant(raw?: string | null): string {
+    if (isSingleAccountMode()) return SINGLE_ACCOUNT_EMAIL;
+    const clean = normalizeBindingEmail(raw);
+    if (!clean) return "";
+    const allowList = (process.env.STOREFRONT_TENANTS || process.env.STOREFRONT_TENANT_EMAILS || "")
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean);
+    return allowList.includes(clean) ? clean : "";
+}
+
+/**
  * An order belongs to the tenant in the customer's signed session. The body may
  * repeat that tenant, but it may not choose a different one.
  */
@@ -54,6 +75,28 @@ export function resolveOrderTenant(
  * Resolves active storefront binding (admin email & brand name) from PocketBase store_settings
  */
 export async function getStorefrontBinding(preferredEmail?: string): Promise<StorefrontBinding> {
+    // Single mode has exactly one account. The legacy `admin@luminila.local`
+    // default must never win here: the catalog resolver pins the same
+    // deployment to SINGLE_ACCOUNT_EMAIL, so a different binding here would
+    // make every storefront order fail the product-ownership check (M-02).
+    if (isSingleAccountMode()) {
+        const single = await createTenantClient();
+        const record = await single
+            .collection("store_settings")
+            .getFirstListItem(
+                `key="storefront_content" && account_email="${sanitizeFilter(SINGLE_ACCOUNT_EMAIL)}"`
+            )
+            .catch(() => null);
+        let brandName = DEFAULT_BINDING.brandName;
+        let customDomain = DEFAULT_BINDING.customDomain;
+        if (record && record.value) {
+            const cms = typeof record.value === "string" ? JSON.parse(record.value) : record.value;
+            brandName = cms?.branding?.wordmark?.text || cms?.hero?.brandName || brandName;
+            customDomain = cms?.adminBinding?.customDomain || customDomain;
+        }
+        return { boundAdminEmail: SINGLE_ACCOUNT_EMAIL, brandName, customDomain };
+    }
+
     const cleanEmail = normalizeBindingEmail(preferredEmail);
     // The caller may be anonymous, but the lookup may not be: a bare
     // `key="storefront_content"` read returns whichever tenant owns the first

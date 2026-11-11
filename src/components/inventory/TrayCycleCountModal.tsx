@@ -34,6 +34,7 @@ import {
     type TrayAuditLineItem,
 } from "@/lib/cycle-count";
 import { STORAGE_LOCATIONS } from "@/lib/products";
+import { loadTrayLocationOptions, trayChoices, trayChoiceLabel, type TrayLocationOption } from "@/lib/tray-locations";
 import { soundEffects } from "@/lib/sound-effects";
 import dynamic from "next/dynamic";
 
@@ -64,6 +65,19 @@ export function TrayCycleCountModal({
     onAuditCompleted,
 }: TrayCycleCountModalProps) {
     const [selectedLocation, setSelectedLocation] = useState<string>(STORAGE_LOCATIONS[0]);
+    // Editable tray locations (Settings → Tray Locations); presets until defined.
+    const [trayOptions, setTrayOptions] = useState<TrayLocationOption[]>([]);
+    useEffect(() => {
+        let alive = true;
+        loadTrayLocationOptions()
+            .then((opts) => {
+                if (!alive) return;
+                setTrayOptions(opts);
+                setSelectedLocation((cur) => (opts.some((o) => o.code === cur) ? cur : opts[0]?.code ?? cur));
+            })
+            .catch(() => { /* presets already cover the select */ });
+        return () => { alive = false; };
+    }, []);
     const [scannedCounts, setScannedCounts] = useState<Map<string, number>>(new Map());
     const [scanInput, setScanInput] = useState("");
     const [showCamera, setShowCamera] = useState(false);
@@ -179,9 +193,9 @@ export function TrayCycleCountModal({
                                 onChange={(e) => setSelectedLocation(e.target.value)}
                                 className="h-8 rounded bg-bg-navy border border-surface-hover text-xs font-bold text-white px-2.5 focus:border-primary"
                             >
-                                {STORAGE_LOCATIONS.map((loc) => (
-                                    <option key={loc} value={loc}>
-                                        {loc}
+                                {trayChoices(trayOptions, selectedLocation).map((opt) => (
+                                    <option key={opt.code} value={opt.code}>
+                                        {trayChoiceLabel(opt)}
                                     </option>
                                 ))}
                             </select>

@@ -103,6 +103,8 @@ export interface Invoice {
     cess_amount: number;
     total_tax: number;
     discount_amount: number;
+    /** How the bill discount was entered (POS stores percent vs flat). */
+    discount_mode?: 'percent' | 'fixed';
     shipping_charges: number;
     grand_total: number;
     amount_in_words: string;
@@ -163,7 +165,9 @@ export async function recordPayment(paymentDetails: {
     const tenantEmail = getCurrentTenantEmail();
     const invoice = await pb.collection('invoices').getOne(paymentDetails.invoice_id);
     // Refuse to apply a payment to another tenant's invoice under a superuser client.
-    if (invoice.account_email && invoice.account_email !== tenantEmail) {
+    const invTenant = String(invoice.account_email || '').trim().toLowerCase();
+    const curTenant = tenantEmail.trim().toLowerCase();
+    if (invTenant && invTenant !== curTenant) {
         throw new Error('Invoice does not belong to this store.');
     }
     if (invoice.status === 'cancelled') {
@@ -906,6 +910,7 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
             cess_amount: invoice.cess_amount || 0,
             total_tax: invoice.total_tax ?? invoice.tax ?? 0,
             discount_amount: invoice.discount_amount ?? invoice.discount ?? 0,
+            discount_mode: invoice.discount_mode || 'percent',
             shipping_charges: invoice.shipping_charges || 0,
             grand_total: grandTotal,
             amount_in_words: invoice.amount_in_words || '',
@@ -1015,7 +1020,7 @@ export async function getInvoices(filters?: {
 
         // Fetch items for all invoices in safe batches of 30 to avoid URI length overflow
         const invoiceIds = invoices.map(inv => inv.id);
-        let allItems: InvoiceItemRecord[] = [];
+        const allItems: InvoiceItemRecord[] = [];
         if (invoiceIds.length > 0) {
             const CHUNK_SIZE = 30;
             for (let i = 0; i < invoiceIds.length; i += CHUNK_SIZE) {
@@ -1391,6 +1396,7 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
         cess_amount: cessAmount,
         total_tax: totalTax,
         discount_amount: toRupees(effectiveDiscountPaise),
+        discount_mode: sale.discount_mode === 'fixed' ? 'fixed' : 'percent',
         shipping_charges: 0,
         grand_total: grandTotal,
         amount_in_words: amountToWords(grandTotal),

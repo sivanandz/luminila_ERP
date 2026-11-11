@@ -311,11 +311,25 @@ export async function logCustomerInteraction(
     }
 }
 
+function canActOnCustomerRecord(record?: { account_email?: string } | Record<string, any> | null): boolean {
+    if (!record) return false;
+    const scope = accountScopeEmail();
+    if (!scope) return true;
+    const recEmail = (record as Record<string, any>).account_email;
+    if (!recEmail) return true;
+    return String(recEmail).trim().toLowerCase() === scope.trim().toLowerCase();
+}
+
 /**
  * Update customer notes
  */
 export async function updateCustomerNotes(customerId: string, notes: string): Promise<void> {
     try {
+        const existing = await pb.collection('customers').getOne(customerId);
+        if (!canActOnCustomerRecord(existing)) {
+            console.warn('[customer-lookup] Tenancy check failed for customer notes update:', customerId);
+            return;
+        }
         await pb.collection('customers').update(customerId, { notes });
     } catch (error) {
         console.error('Failed to update notes:', error);
@@ -328,6 +342,10 @@ export async function updateCustomerNotes(customerId: string, notes: string): Pr
 export async function addCustomerTag(customerId: string, tag: string): Promise<void> {
     try {
         const customer = await pb.collection('customers').getOne(customerId);
+        if (!canActOnCustomerRecord(customer)) {
+            console.warn('[customer-lookup] Tenancy check failed for customer tag update:', customerId);
+            return;
+        }
         const currentTags = customer.tags || [];
 
         if (!currentTags.includes(tag)) {
@@ -365,6 +383,12 @@ export async function updateCustomerCRMProfile(
     }
 ): Promise<Customer | null> {
     try {
+        const existing = await pb.collection('customers').getOne(customerId);
+        if (!canActOnCustomerRecord(existing)) {
+            console.warn('[customer-lookup] Tenancy check failed for CRM profile update:', customerId);
+            return null;
+        }
+
         const payload: Record<string, unknown> = { ...data };
         // Dual-write anniversary and birthday to both canonical and legacy column names
         if (data.anniversary_date !== undefined) {
@@ -392,6 +416,11 @@ export async function setCustomerLeadStatus(
     status: 'new_lead' | 'contacted' | 'quoted' | 'awaiting_payment' | 'won' | 'vip'
 ): Promise<void> {
     try {
+        const existing = await pb.collection('customers').getOne(customerId);
+        if (!canActOnCustomerRecord(existing)) {
+            console.warn('[customer-lookup] Tenancy check failed for lead status update:', customerId);
+            return;
+        }
         await pb.collection('customers').update(customerId, { lead_status: status });
     } catch (err) {
         console.error('Failed to update lead status:', err);

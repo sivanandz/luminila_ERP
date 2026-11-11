@@ -2934,6 +2934,215 @@ async function warmCatalogStore(sessionData) {
     }
 }
 
+/**
+ * Catalog edit that bypasses wa-js's broken WPP.catalog.editProduct chain.
+ *
+ * wa-js 4.7.2's catalog.editProduct(productId, params) resolves the store model
+ * itself and then calls the whatsapp-functions editProduct POSITIONALLY with
+ * (productModel). But the module wa-js's export predicate currently resolves on
+ * WhatsApp Web takes an OPTIONS OBJECT ({product, width, height}) and forwards
+ * `options.product` into WAWebBizProductCatalogBridge.editProduct — so the model
+ * lands in the wrong slot, `options.product` reads undefined, and WhatsApp's own
+ * code throws "Cannot read properties of undefined (reading 'id')" at
+ * `product_id: e.id.toString()`. Verified live against the page bundle.
+ *
+ * This compat resolves the model the same way wa-js's assertGetProduct does
+ * (with an explicit LID-fallback wid) and calls the functions-namespace
+ * editProduct with the shape its arity implies, so no arg is dropped.
+ */
+async function editCatalogProductCompat(sessionData, productId, params) {
+    const page = sessionData?.client?.page;
+    if (!page || typeof page.evaluate !== 'function') return { supported: false };
+    return page.evaluate(async ({ productId, params }) => {
+        const wpp = window.WPP;
+        const wa = wpp && wpp.whatsapp;
+        if (!wpp || !wa || !wa.CatalogStore) {
+            return {
+                supported: false,
+                reason: {
+                    wpp: Boolean(wpp),
+                    whatsapp: Boolean(wa),
+                    catalogStore: Boolean(wa && wa.CatalogStore),
+                },
+            };
+        }
+        const prefs = wa.UserPrefs || {};
+        const catalogWid = (typeof prefs.getMaybeMePnUser === 'function' && prefs.getMaybeMePnUser())
+            || (typeof prefs.getMaybeMeLidUser === 'function' && prefs.getMaybeMeLidUser());
+        if (!catalogWid) {
+            return { supported: true, error: 'Unable to resolve the WhatsApp account id for the catalog store.' };
+        }
+
+        const store = wa.CatalogStore;
+        let probe;
+        let model = null;
+        try {
+            // Prefer the UI-path model (CatalogStore.get(wid).productCollection): it is
+            // built from the server's product response (mapProductResponseToModel) and
+            // carries the complete fields the edit mutation's GraphQL input needs.
+            const catalogModel = typeof store.get === 'function' ? store.get(catalogWid) : null;
+            const pc = catalogModel && catalogModel.productCollection;
+            if (pc && typeof pc.get === 'function') {
+                model = pc.get(productId);
+            } else if (pc && Array.isArray(pc.models)) {
+                model = pc.models.find((m) => String(m && m.id) === productId) || null;
+            }
+            if (!model) {
+                // Fallback: the message-index model (what wa-js's assertGetProduct uses).
+                const [collection] = await store.findProduct({ catalogWid, productId });
+                model = collection && collection.msgProductCollection && collection.msgProductCollection._index
+                    ? collection.msgProductCollection._index[productId]
+                    : null;
+            }
+            probe = { found: Boolean(model), source: model ? 'catalog-store' : 'none' };
+        } catch (e) {
+            probe = { error: String(e && e.message) };
+        }
+        if (!model) {
+            return {
+                supported: true,
+                error: `Product ${productId} is not present in the catalog store.`,
+                probe,
+            };
+        }
+
+        // The store model can miss the account binding that the catalog mutation
+        // reads as `.id`/`catalogWid` when it is built from chat product messages.
+        if (!model.id) {
+            try { model.id = productId; } catch (e) { /* read-only attr */ }
+        }
+        if (!model.catalogWid) {
+            try { model.catalogWid = catalogWid; } catch (e) { /* read-only attr */ }
+        }
+
+        // Same merge wa-js's editProduct performs: drop undefined params, assign
+        // the rest straight onto the live model.
+        for (const key of Object.keys(params || {})) {
+            if (params[key] !== undefined && params[key] !== null) {
+                try { model[key] = params[key]; } catch (e) { /* read-only attr */ }
+            }
+        }
+
+        const fnEdit = wa.functions && typeof wa.functions.editProduct === 'function'
+            ? wa.functions.editProduct
+            : null;
+        if (!fnEdit) {
+            return { supported: false, reason: { functionsEditMissing: true } };
+        }
+
+        // Capture the GraphQL response so server rejections surface their real
+        // reason (Meta returns the actionable text only in the response body —
+        // the page-side error it throws is a bare ServerStatusCodeError).
+        const graphQlErrors = [];
+        const origFetch = window.fetch;
+        try {
+            window.fetch = function () {
+                const p = origFetch.apply(this, arguments);
+                try {
+                    const a0 = arguments[0];
+                    const u = typeof a0 === 'string' ? a0 : (a0 && a0.url) || '';
+                    if (/graphql|bstore|catalog/i.test(u)) {
+                        p.then(async (res) => {
+                            let txt = '';
+                            try { txt = await res.clone().text(); } catch (e) { /* noop */ }
+                            if (txt && txt.indexOf('"errors"') !== -1) {
+                                try {
+                                    const parsed = JSON.parse(txt);
+                                    for (const er of ((parsed && parsed.errors) || []).slice(0, 2)) {
+                                        graphQlErrors.push({
+                                            code: er && er.code,
+                                            summary: er && er.summary,
+                                            description: er && er.description,
+                                        });
+                                    }
+                                } catch (e) { /* noop */ }
+                            }
+                        }).catch(() => null);
+                    }
+                } catch (e) { /* noop */ }
+                return p;
+            };
+        } catch (e) { /* leave fetch alone if the hook cannot install */ }
+
+        let editErr = null;
+        try {
+            if (fnEdit.length === 1) {
+                // Current WhatsApp Web builds: the resolved wrapper takes an options
+                // object and forwards (options.product, options.width, options.height).
+                await fnEdit({ product: model, width: 100, height: 100 });
+            } else {
+                // Older builds: plain positional (productModel, width, height).
+                await fnEdit(model, 100, 100);
+            }
+        } catch (e) {
+            editErr = e;
+        } finally {
+            try { window.fetch = origFetch; } catch (e) { /* noop */ }
+        }
+
+        // Give the in-flight fetch capture a moment to land.
+        if (editErr || graphQlErrors.length) {
+            await new Promise((r) => setTimeout(r, 1200));
+        }
+
+        if (!editErr) {
+            return { supported: true, ok: true, probe };
+        }
+
+        {
+            const e = editErr;
+            const rawStack = String((e && e.stack) || '');
+            const stack = rawStack.split('\n').slice(0, 4).join(' | ');
+            const modelDump = model ? {
+                id: model.id === undefined || model.id === null ? null : String(model.id),
+                hasCatalogWid: Boolean(model.catalogWid),
+                catalogWidSerialized: model.catalogWid && typeof model.catalogWid === 'object'
+                    ? String(model.catalogWid._serialized || model.catalogWid.id || '')
+                    : (model.catalogWid == null ? null : String(model.catalogWid)),
+                hasMedia: 'media' in model,
+                hasProductImageCollection: 'productImageCollection' in model,
+                productImageCollectionSize: model.productImageCollection && typeof model.productImageCollection === 'object'
+                    ? (typeof model.productImageCollection.length === 'number'
+                        ? model.productImageCollection.length
+                        : (Array.isArray(model.productImageCollection.models) ? model.productImageCollection.models.length : null))
+                    : null,
+                additionalImages: Array.isArray(model.additionalImageCdnUrl) ? model.additionalImageCdnUrl.length : null,
+                priceAmount1000: model.priceAmount1000,
+                fnEditLength: fnEdit.length,
+                keys: Object.keys(model).slice(0, 40),
+            } : null;
+            const errCtor = e && e.constructor ? e.constructor.name : typeof e;
+            const errText = e && e.message ? String(e.message) : String(e || '(no message)');
+            // Map Meta's server rejection to an operator-actionable message. The catalog
+            // edit endpoint has been observed rejecting this session with 2498049 (Bad
+            // Request "while getting catalog"), 2498050 (Unauthorised) and 2498055
+            // (Internal server error) — different codes, same verdict, across payload
+            // and identity variants. Treat all three as the linked-session edit gate.
+            const gql = graphQlErrors[0];
+            const GATE_CODES = [2498049, 2498050, 2498055];
+            let friendly = `Catalog edit rejected by WhatsApp (${errCtor}): ${errText}`;
+            if (gql && GATE_CODES.includes(Number(gql.code))) {
+                friendly = 'WhatsApp no longer allows editing catalog products from this linked session '
+                    + `(GraphQL code ${gql.code}: ${gql.summary || 'rejected'}). Catalog management for this `
+                    + 'account is restricted to the WhatsApp Business phone app or Meta Commerce Manager — '
+                    + 'relinking the WhatsApp session may also restore it.';
+            } else if (gql) {
+                friendly = `WhatsApp rejected the catalog edit (GraphQL code ${gql.code || 'n/a'})`;
+                if (gql.summary) friendly += `: ${gql.summary}`;
+            }
+            return {
+                supported: true,
+                error: friendly,
+                stack,
+                fullStack: rawStack,
+                modelDump,
+                probe,
+                graphQlErrors,
+            };
+        }
+    }, { productId, params });
+}
+
 // Get all products from catalog
 app.get('/api/:session/catalog/products', async (req, res) => {
     const { session } = req.params;
@@ -3048,11 +3257,60 @@ app.put('/api/:session/catalog/products/:productId', async (req, res) => {
         }
 
         let result;
-        try {
-            result = await sessionData.client.editProduct(productId, editOptions);
-        } catch (firstErr) {
-            await warmCatalogStore(sessionData);
-            result = await sessionData.client.editProduct(productId, editOptions);
+        let lastError = null;
+
+        // Preferred path: the page-side compat edit. It resolves the correct
+        // WhatsApp Web call shape itself (wa-js's own WPP.catalog.editProduct
+        // currently mis-routes the product into an options-object wrapper and
+        // dies with "Cannot read properties of undefined (reading 'id')").
+        const compat = await editCatalogProductCompat(sessionData, productId, editOptions)
+            .catch((compatErr) => ({ supported: false, error: compatErr && compatErr.message }));
+
+        if (compat && compat.ok) {
+            result = { ...editOptions, id: productId };
+        } else if (compat && Array.isArray(compat.graphQlErrors) && compat.graphQlErrors.length > 0) {
+            // The correctly-shaped request reached WhatsApp and the server itself
+            // rejected it — a legacy retry cannot change that verdict. Surface the
+            // captured reason directly.
+            console.warn('[Catalog] compat edit outcome:', JSON.stringify(compat));
+            lastError = new Error(compat.error || 'WhatsApp rejected the catalog edit');
+            lastError.catalogEdit = {
+                fullStack: compat.fullStack,
+                modelDump: compat.modelDump,
+                probe: compat.probe,
+                reason: compat.reason,
+                graphQlErrors: compat.graphQlErrors,
+            };
+            throw lastError;
+        } else {
+            if (compat && compat.error) console.warn('[Catalog] compat edit outcome:', JSON.stringify(compat));
+            // Legacy path: wa-js catalog.editProduct. Works on builds where the
+            // resolved module still takes (product, width, height) positionally;
+            // retried once after warming the catalog store.
+            try {
+                result = await sessionData.client.editProduct(productId, editOptions);
+            } catch (firstErr) {
+                lastError = firstErr;
+                await warmCatalogStore(sessionData);
+                try {
+                    result = await sessionData.client.editProduct(productId, editOptions);
+                } catch (retryErr) {
+                    lastError = retryErr;
+                    if (compat && compat.error) {
+                        lastError = new Error(compat.error);
+                    }
+                    if (compat && (compat.fullStack || compat.modelDump || compat.probe || compat.reason || compat.graphQlErrors)) {
+                        lastError.catalogEdit = {
+                            fullStack: compat.fullStack,
+                            modelDump: compat.modelDump,
+                            probe: compat.probe,
+                            reason: compat.reason,
+                            graphQlErrors: compat.graphQlErrors,
+                        };
+                    }
+                    throw lastError;
+                }
+            }
         }
 
         if (imagePayload && typeof sessionData.client.changeProductImage === 'function') {
@@ -3070,7 +3328,9 @@ app.put('/api/:session/catalog/products/:productId', async (req, res) => {
 
         res.json({ success: true, result: normalizeCatalogProduct(result) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        const payload = { success: false, error: error.message };
+        if (error && error.catalogEdit) payload.catalogEdit = error.catalogEdit;
+        res.status(500).json(payload);
     }
 });
 

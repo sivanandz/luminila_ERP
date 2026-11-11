@@ -148,8 +148,8 @@ export class MobileScanner {
         if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
             try {
                 // Dynamically access optional plugin if running in Tauri environment
-                const pluginModule = '@tauri-apps/plugin-barcode-scanner';
-                const tauriScanner: any = await (Function('m', 'return import(m)')(pluginModule)).catch(() => null);
+                const pluginModule: string = '@tauri-apps/plugin-barcode-scanner';
+                const tauriScanner: any = await import(/* webpackIgnore: true */ pluginModule).catch(() => null);
                 if (tauriScanner && typeof tauriScanner.scan === 'function') {
                     const res = await tauriScanner.scan({
                         windowed: false,

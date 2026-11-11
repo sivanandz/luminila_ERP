@@ -104,13 +104,23 @@ export function MessageActionMenu({
 }: MessageActionMenuProps) {
     const menuRef = useRef<HTMLDivElement>(null);
     const [copied, setCopied] = React.useState(false);
-    const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const { isDesktop } = useViewport();
 
-    // CMP-11: never leave a state update queued against an unmounted menu.
-    useEffect(() => () => {
-        if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-    }, []);
+    // Auto-reset copied state and close menu after 500ms
+    useEffect(() => {
+        if (!copied) return;
+        const timer = setTimeout(() => {
+            setCopied(false);
+            onClose();
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [copied, onClose]);
+
+    const handleCopy = () => {
+        const text = messageBody ?? window.getSelection()?.toString() ?? '';
+        if (text) navigator.clipboard?.writeText(text);
+        setCopied(true);
+    };
 
     // Dismiss on outside click / Escape (both surfaces)
     useEffect(() => {
@@ -222,49 +232,50 @@ export function MessageActionMenu({
         ? [...vendorActions, ...customerActions]
         : [...customerActions, ...(onAddExistingInventory ? [vendorActions[0]] : [])];
 
-    const commonActions: MessageAction[] = [
-        onQuoteReply && {
+    const commonActions: MessageAction[] = [];
+    if (onQuoteReply) {
+        commonActions.push({
             key: 'quote-reply',
             label: 'Quote & Reply',
             icon: <Quote size={15} />,
             accent: 'text-muted-foreground',
             handler: onQuoteReply,
-        },
-        onStar && {
+        });
+    }
+    if (onStar) {
+        commonActions.push({
             key: 'star',
             label: isStarred ? 'Unstar Message' : 'Star Message',
             icon: <Star size={15} className={isStarred ? 'text-amber-400 fill-amber-400' : undefined} />,
             accent: 'text-amber-500',
             handler: onStar,
-        },
-        onForward && {
+        });
+    }
+    if (onForward) {
+        commonActions.push({
             key: 'forward',
             label: 'Forward Message',
             icon: <Forward size={15} />,
             accent: 'text-sky-500',
             handler: onForward,
-        },
-        onDelete && canDelete && {
+        });
+    }
+    if (onDelete && canDelete) {
+        commonActions.push({
             key: 'delete',
             label: 'Delete Message',
             icon: <Trash2 size={15} />,
             accent: 'text-red-500',
             handler: onDelete,
-        },
-        {
-            key: 'copy',
-            label: copied ? 'Copied!' : 'Copy Text',
-            icon: copied ? <Check size={15} className="text-emerald-500" /> : <Copy size={15} />,
-            accent: 'text-muted-foreground',
-            handler: () => {
-                const text = messageBody ?? window.getSelection()?.toString() ?? '';
-                if (text) navigator.clipboard?.writeText(text);
-                setCopied(true);
-                if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-                copyTimerRef.current = setTimeout(() => { setCopied(false); onClose(); }, 500);
-            },
-        },
-    ].filter(Boolean) as MessageAction[];
+        });
+    }
+    commonActions.push({
+        key: 'copy',
+        label: copied ? 'Copied!' : 'Copy Text',
+        icon: copied ? <Check size={15} className="text-emerald-500" /> : <Copy size={15} />,
+        accent: 'text-muted-foreground',
+        handler: handleCopy,
+    });
 
     const renderButton = (action: MessageAction) => (
         <button
