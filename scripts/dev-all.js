@@ -85,8 +85,14 @@ function probeSidecarAuth(timeoutMs = 2000) {
 }
 
 function isPocketBaseHealthy(port, timeoutMs = 1500) {
+    // The port can come from PB_PORT in the environment; normalise it to a real
+    // TCP port BEFORE it is interpolated into the probe URL (SSRF/CWE-918).
+    const safePort = Number.parseInt(String(port), 10);
+    if (!Number.isInteger(safePort) || safePort <= 0 || safePort > 65535) {
+        return Promise.resolve(false);
+    }
     return new Promise((resolve) => {
-        const req = http.get(`http://127.0.0.1:${port}/api/health`, { timeout: timeoutMs }, (res) => {
+        const req = http.get(`http://127.0.0.1:${safePort}/api/health`, { timeout: timeoutMs }, (res) => {
             resolve(res.statusCode === 200);
         });
         req.on('error', () => resolve(false));

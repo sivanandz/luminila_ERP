@@ -6,7 +6,7 @@
  * 3. WhatsApp WPPConnect Sidecar (:21465)
  */
 
-const { spawn, execSync, exec } = require('child_process');
+const { spawn, execSync, execFile } = require('child_process');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -71,10 +71,16 @@ function probeHttp(url, timeoutMs = 1200) {
     });
 }
 
-// Determine PocketBase active port (deterministic 8090 unless configured)
+// Determine PocketBase active port (deterministic 8090 unless configured).
+// PB_PORT comes from the environment, so it is validated into a real TCP port
+// before it is ever interpolated into a request URL.
 async function resolvePbPort() {
     if (process.env.PB_PORT) {
-        return parseInt(process.env.PB_PORT, 10);
+        const fromEnv = parseInt(process.env.PB_PORT, 10);
+        if (Number.isInteger(fromEnv) && fromEnv > 0 && fromEnv <= 65535) {
+            return fromEnv;
+        }
+        console.warn(`${YELLOW}Ignoring invalid PB_PORT="${process.env.PB_PORT}"; using 8090.${RESET}`);
     }
     const explicitPort = getCustomPort('--pb-port', null);
     if (explicitPort) return explicitPort;
@@ -86,8 +92,13 @@ const tunnels = [];
 function killProc(proc) {
     if (!proc || !proc.pid) return;
     if (process.platform === 'win32') {
+        const pid = Number(proc.pid);
+        // Shell-free: the pid is passed as an argv element, so nothing in it
+        // can be interpreted as a command (CWE-78). A non-integer pid is
+        // refused rather than interpolated into a command line.
+        if (!Number.isInteger(pid) || pid <= 0) return;
         try {
-            exec(`taskkill /pid ${proc.pid} /T /F`, () => {});
+            execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => {});
         } catch { /* ignore */ }
     } else {
         try {

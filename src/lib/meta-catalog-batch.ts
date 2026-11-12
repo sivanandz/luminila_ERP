@@ -354,6 +354,13 @@ export async function sendMetaCatalogBatch(
     if (!catalogId) {
         return { success: false, errors: [{ code: 400, message: 'Missing Meta Catalog ID' }] };
     }
+    // Both values are interpolated into the request URL path. Restrict them to
+    // the shapes Meta actually issues (numeric catalog id, vNN.N version) so a
+    // tampered env value cannot break out of the path (CWE-918/22).
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(catalogId)) {
+        return { success: false, errors: [{ code: 400, message: 'Invalid Meta Catalog ID' }] };
+    }
+    const safeApiVersion = /^v\d+\.\d+$/.test(apiVersion) ? apiVersion : 'v21.0';
     if (!accessToken) {
         return { 
             success: false, 
@@ -374,7 +381,7 @@ export async function sendMetaCatalogBatch(
         requests,
     };
 
-    const endpoint = `https://graph.facebook.com/${apiVersion}/${catalogId}/items_batch`;
+    const endpoint = `https://graph.facebook.com/${safeApiVersion}/${catalogId}/items_batch`;
 
     try {
         const res = await fetch(endpoint, {
