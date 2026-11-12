@@ -3,7 +3,7 @@
  * Compiles to platform-specific binary and copies to Tauri binaries folder
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -52,7 +52,11 @@ try {
     const outputName = `wppconnect-server${target.ext}`;
     const outputPath = path.join(DIST_DIR, outputName);
 
-    execSync(`npx pkg . --targets ${target.pkg} --output "${outputPath}"`, {
+    // Shell-free: every argv element is a literal from the TARGETS table or
+    // __dirname, so nothing here can be interpreted as a shell command
+    // (CWE-78). npx is a .cmd shim on Windows.
+    const npxBinary = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    execFileSync(npxBinary, ['pkg', '.', '--targets', target.pkg, '--output', outputPath], {
         stdio: 'inherit',
         cwd: __dirname
     });
