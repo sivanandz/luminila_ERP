@@ -85,10 +85,14 @@ export async function openShift(
     terminalId?: string,
     notes?: string
 ): Promise<CashRegisterShift | null> {
-    // Check for existing open shift
+    // Check for existing open or paused shift
     const existingShift = await getCurrentShift(userId);
     if (existingShift) {
         throw new Error('You already have an open shift. Please close it before opening a new one.');
+    }
+    const pausedShift = await getSuspendedShift(userId);
+    if (pausedShift) {
+        throw new Error('You have a paused shift. Please resume or close it before opening a new one.');
     }
 
     try {
@@ -223,10 +227,30 @@ export async function closeShift(
 }
 
 /**
+ * Get a paused/suspended shift for a user
+ */
+export async function getSuspendedShift(userId: string): Promise<CashRegisterShift | null> {
+    try {
+        const record = await pb.collection('cash_register_shifts').getFirstListItem<CashRegisterShift>(
+            `user="${sanitizeFilter(userId)}" && status="suspended"${tenantClause()}`,
+            {
+                sort: '-created',
+                expand: 'user'
+            }
+        );
+        return record;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Suspend a shift (pause without closing)
  */
 export async function suspendShift(shiftId: string): Promise<boolean> {
     try {
+        const shift = await getShift(shiftId);
+        if (!shift || shift.status !== 'open') return false;
         await pb.collection('cash_register_shifts').update(shiftId, {
             status: 'suspended'
         });
@@ -242,7 +266,8 @@ export async function suspendShift(shiftId: string): Promise<boolean> {
  */
 export async function resumeShift(shiftId: string): Promise<boolean> {
     try {
-        // Need to verify it was suspended first? not strictly necessary if ID matches
+        const shift = await getShift(shiftId);
+        if (!shift || shift.status !== 'suspended') return false;
         await pb.collection('cash_register_shifts').update(shiftId, {
             status: 'open'
         });
@@ -529,6 +554,50 @@ export async function getShiftSummary(shiftId: string): Promise<ShiftSummary | n
 
     } catch {
         return null;
+    }
+}
+
+const PARKED_CARTS_KEY = 'pos_parked_carts';
+
+/** Load tenant-scoped parked/held POS carts from PocketBase store_settings. */
+export async function loadParkedCartsCloud<T = unknown>(): Promise<T[] | null> {
+    const tenant = accountScopeEmail();
+    if (!tenant) return null;
+    try {
+        const record = await pb.collection('store_settings').getFirstListItem<{ value?: unknown }>(
+            `key="${PARKED_CARTS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
+        );
+        const val = record?.value;
+        const parsed = typeof val === 'string' ? JSON.parse(val) : val;
+        return Array.isArray(parsed) ? (parsed as T[]) : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Persist tenant-scoped parked/held POS carts to PocketBase store_settings. */
+export async function saveParkedCartsCloud<T = unknown>(carts: T[]): Promise<void> {
+    const tenant = accountScopeEmail();
+    if (!tenant) return;
+    try {
+        const existing = await pb
+            .collection('store_settings')
+            .getFirstListItem<{ id: string }>(
+                `key="${PARKED_CARTS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
+            )
+            .catch(() => null);
+        if (existing) {
+            await pb.collection('store_settings').update(existing.id, { value: carts });
+        } else {
+            await pb.collection('store_settings').create({
+                key: PARKED_CARTS_KEY,
+                value: carts,
+                category: 'pos',
+                account_email: tenant,
+            });
+        }
+    } catch (err) {
+        console.warn('[register] Could not sync parked carts to cloud:', err);
     }
 }
 

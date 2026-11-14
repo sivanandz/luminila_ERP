@@ -8,7 +8,7 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Printer, Download, Truck, PackageCheck, AlertCircle } from "lucide-react";
+import { Printer } from "lucide-react";
 import { CourierCarrier } from "@/lib/logistics-engine";
 import { escapeHtml } from "@/lib/utils";
 import DOMPurify from "dompurify";

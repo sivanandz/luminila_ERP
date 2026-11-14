@@ -32,9 +32,10 @@ import {
     Smartphone,
     Globe,
     Sparkles,
+    LayoutDashboard,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { cn } from "@/lib/utils";
+import { cn, getInitials } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
@@ -51,6 +52,7 @@ const navSections = [
     {
         title: "Sales & POS",
         items: [
+            { href: "/", label: "Dashboard", icon: LayoutDashboard },
             { href: "/pos", label: "Point of Sale", icon: ShoppingCart },
             { href: "/orders", label: "Orders & Estimates", icon: Tags },
             { href: "/invoices", label: "GST Invoices", icon: FileText },
@@ -203,7 +205,7 @@ export function MobileDrawer({
                                 <Avatar className="size-8 border border-border">
                                     <AvatarImage src={user.avatar || ""} />
                                     <AvatarFallback className="text-[10px] bg-primary/10 text-primary font-bold">
-                                        {(user.name || user.email || "U").slice(0, 2).toUpperCase()}
+                                        {getInitials(user.name, user.email)}
                                     </AvatarFallback>
                                 </Avatar>
                                 <div className="min-w-0">

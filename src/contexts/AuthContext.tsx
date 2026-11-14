@@ -120,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return () => {
             unsubscribe();
         };
-    }, []);
+    }, [checkUserIsAdmin, updateAuthState]);
 
     const login = async (email: string, password: string) => {
         setIsLoading(true);
@@ -163,7 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     await pb.collection("users").update(authData.record.id, {
                         last_login: new Date().toISOString()
                     });
-                } catch (err) {
+                } catch {
                     // non-fatal
                 }
             }

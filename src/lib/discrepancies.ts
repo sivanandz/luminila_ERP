@@ -220,7 +220,7 @@ export async function resolveStockDiscrepancy(
         const remainingQty = Math.max(0, fresh.quantity - claimQty);
         const isFullyResolved = remainingQty === 0;
 
-        const updatePayload: Record<string, any> = {
+        const updatePayload: Record<string, unknown> = {
             resolved_by: resolution.resolved_by || 'Staff',
             resolution_note: resolution.resolution_note || '',
         };

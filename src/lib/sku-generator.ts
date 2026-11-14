@@ -292,7 +292,8 @@ function dedupeList<T>(list: T[] | undefined, defaultList: T[], keyProp: string 
     const seen = new Set<string>();
     const result: T[] = [];
     for (const item of list) {
-        const val = ((item as any)[keyProp] || "").toUpperCase().trim();
+        const raw = (item as Record<string, unknown>)[keyProp];
+        const val = (typeof raw === "string" ? raw : "").toUpperCase().trim();
         if (val && !seen.has(val)) {
             seen.add(val);
             result.push(item);
@@ -532,26 +533,31 @@ export async function saveSKUTaxonomies(taxonomies: SKUTaxonomies): Promise<void
 /**
  * Add a custom taxonomy option
  */
+function readTaxonomyCode(item: unknown, codeKey: 'code' | 'suffix'): string {
+    const val = (item as Record<string, unknown>)[codeKey];
+    return (typeof val === 'string' ? val : '').toUpperCase().trim();
+}
+
 export async function addTaxonomyOption<K extends keyof SKUTaxonomies>(
     taxonomyKey: K,
     option: SKUTaxonomies[K][number]
 ): Promise<SKUTaxonomies> {
     ensureTenantScope();
     const updated = { ...currentTaxonomies };
-    const list = [...(updated[taxonomyKey] as any[])];
+    const list = [...(updated[taxonomyKey] as SKUTaxonomies[K][number][])];
 
     // Clean code / suffix
     const codeKey = taxonomyKey === 'packagingTiers' ? 'suffix' : 'code';
-    const codeVal = ((option as any)[codeKey] || '').toUpperCase().trim();
+    const codeVal = readTaxonomyCode(option, codeKey);
     if (!codeVal) throw new Error("Code / Suffix cannot be empty");
 
     // Check duplicate
-    const existingIndex = list.findIndex(item => (item[codeKey] || '').toUpperCase() === codeVal);
+    const existingIndex = list.findIndex(item => readTaxonomyCode(item, codeKey) === codeVal);
     const enriched = {
         ...option,
         [codeKey]: codeVal,
         isCustom: true,
-    };
+    } as SKUTaxonomies[K][number];
 
     if (existingIndex >= 0) {
         list[existingIndex] = enriched;
@@ -559,7 +565,7 @@ export async function addTaxonomyOption<K extends keyof SKUTaxonomies>(
         list.push(enriched);
     }
 
-    updated[taxonomyKey] = list as any;
+    updated[taxonomyKey] = list as SKUTaxonomies[K];
     await saveSKUTaxonomies(updated);
     return { ...currentTaxonomies };
 }
@@ -576,11 +582,11 @@ export async function removeTaxonomyOption<K extends keyof SKUTaxonomies>(
     const codeKey = taxonomyKey === 'packagingTiers' ? 'suffix' : 'code';
     const cleanTarget = codeOrSuffix.toUpperCase().trim();
 
-    const filtered = (updated[taxonomyKey] as any[]).filter(
-        item => (item[codeKey] || '').toUpperCase() !== cleanTarget
+    const filtered = (updated[taxonomyKey] as SKUTaxonomies[K][number][]).filter(
+        item => readTaxonomyCode(item, codeKey) !== cleanTarget
     );
 
-    updated[taxonomyKey] = filtered as any;
+    updated[taxonomyKey] = filtered as SKUTaxonomies[K];
     await saveSKUTaxonomies(updated);
     return { ...currentTaxonomies };
 }
@@ -595,20 +601,20 @@ export async function updateTaxonomyOption<K extends keyof SKUTaxonomies>(
 ): Promise<SKUTaxonomies> {
     ensureTenantScope();
     const updated = { ...currentTaxonomies };
-    const list = [...(updated[taxonomyKey] as any[])];
+    const list = [...(updated[taxonomyKey] as SKUTaxonomies[K][number][])];
     const codeKey = taxonomyKey === 'packagingTiers' ? 'suffix' : 'code';
     const oldCodeClean = oldCodeOrSuffix.toUpperCase().trim();
-    const newCodeClean = ((updatedOption as any)[codeKey] || '').toUpperCase().trim();
+    const newCodeClean = readTaxonomyCode(updatedOption, codeKey);
 
     if (!newCodeClean) throw new Error("Code / Suffix cannot be empty");
 
-    const index = list.findIndex(item => (item[codeKey] || '').toUpperCase() === oldCodeClean);
+    const index = list.findIndex(item => readTaxonomyCode(item, codeKey) === oldCodeClean);
     if (index === -1) {
         throw new Error(`Taxonomy item [${oldCodeOrSuffix}] not found in ${taxonomyKey}`);
     }
 
     if (newCodeClean !== oldCodeClean) {
-        const conflict = list.some((item, idx) => idx !== index && (item[codeKey] || '').toUpperCase() === newCodeClean);
+        const conflict = list.some((item, idx) => idx !== index && readTaxonomyCode(item, codeKey) === newCodeClean);
         if (conflict) {
             throw new Error(`A ${taxonomyKey} item with code [${newCodeClean}] already exists`);
         }
@@ -619,9 +625,9 @@ export async function updateTaxonomyOption<K extends keyof SKUTaxonomies>(
         ...updatedOption,
         [codeKey]: newCodeClean,
         isCustom: true,
-    };
+    } as SKUTaxonomies[K][number];
 
-    updated[taxonomyKey] = list as any;
+    updated[taxonomyKey] = list as SKUTaxonomies[K];
     await saveSKUTaxonomies(updated);
     return { ...currentTaxonomies };
 }

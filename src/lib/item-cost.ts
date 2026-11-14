@@ -35,7 +35,7 @@ export interface CostRef {
 /** Minimal shape of a PB-like client (works for pb and tenant clients). */
 type Db = {
     collection: (name: string) => {
-        getFullList: (opts: Record<string, unknown>) => Promise<Array<Record<string, any>>>;
+        getFullList: (opts: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
     };
 };
 
@@ -87,7 +87,7 @@ export async function resolveUnitCosts(
     const receiptsByVariant = new Map<string, Array<{ quantity: number; landedUnitCost: number }>>();
     try {
         // Which POs received these variants? (chunked filter to stay under URL limits)
-        const poItemRows: Array<Record<string, any>> = [];
+        const poItemRows: Array<Record<string, unknown>> = [];
         for (const ids of chunk(variantIds, CHUNK)) {
             if (ids.length === 0) continue;
             const filter = `account_email="${tenant}" && (${ids.map((id) => `variant="${sanitizeFilter(id)}"`).join(' || ')})`;
@@ -96,7 +96,7 @@ export async function resolveUnitCosts(
         }
 
         const poIds = [...new Set(poItemRows.map((r) => String(r.purchase_order || '')))].filter(Boolean);
-        const receivedPos: Array<Record<string, any>> = [];
+        const receivedPos: Array<Record<string, unknown>> = [];
         for (const ids of chunk(poIds, CHUNK)) {
             if (ids.length === 0) continue;
             const filter = `account_email="${tenant}" && (status="received" || status="partial") && (${ids
@@ -109,7 +109,7 @@ export async function resolveUnitCosts(
         if (receivedById.size > 0) {
             // All lines of each received PO — overhead allocation must see the
             // whole PO, not just our variants, or it over-charges them.
-            const allLinesByPo = new Map<string, Array<Record<string, any>>>();
+            const allLinesByPo = new Map<string, Array<Record<string, unknown>>>();
             for (const ids of chunk([...receivedById.keys()], CHUNK)) {
                 const filter = `account_email="${tenant}" && (${ids.map((id) => `purchase_order="${sanitizeFilter(id)}"`).join(' || ')})`;
                 const rows = await db.collection('purchase_order_items').getFullList({ filter }).catch(() => []);

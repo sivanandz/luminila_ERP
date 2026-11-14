@@ -116,10 +116,11 @@ export async function POST(req: Request) {
         }
 
         return NextResponse.json({ success: false, error: "Invalid payment action" }, { status: 400 });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error("[POS Payment API Error]:", err);
+        const message = err instanceof Error ? err.message : "Internal server payment error";
         return NextResponse.json(
-            { success: false, error: err.message || "Internal server payment error" },
+            { success: false, error: message },
             { status: 500 }
         );
     }

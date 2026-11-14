@@ -455,7 +455,7 @@ export function scheduleAutoBackup(
 
     let dailyInterval: NodeJS.Timeout;
 
-    const persist = (backup: BackupData) => {
+    const persist = (_backup: BackupData) => {
         if (typeof window === "undefined") return;
         try {
             const keys = getBackupStorageKeys();
@@ -498,7 +498,6 @@ export function getLastBackupInfo(): { date: string | null; available: boolean }
 
     const keys = getBackupStorageKeys();
     const lastBackup = localStorage.getItem(keys.lastBackup);
-    const backupData = localStorage.getItem(keys.autoBackup);
 
     return {
         date: lastBackup,

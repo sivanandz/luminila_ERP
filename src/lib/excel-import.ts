@@ -326,7 +326,7 @@ export async function persistDefaultTemplateToDatabase(pbClient = pb): Promise<v
     };
 
     const valStr = JSON.stringify(payload);
-    const userEmail = getCurrentTenantEmail() || (pbClient.authStore.model as any)?.email?.trim().toLowerCase() || '';
+    const userEmail = getCurrentTenantEmail() || (pbClient.authStore.model as { email?: string } | null)?.email?.trim().toLowerCase() || '';
     const filter = userEmail ? `key="${TEMPLATE_SETTING_KEY}" && account_email="${userEmail}"` : `key="${TEMPLATE_SETTING_KEY}"`;
 
     const existing = await pbClient
@@ -354,7 +354,7 @@ export async function persistDefaultTemplateToDatabase(pbClient = pb): Promise<v
  */
 export async function getTemplateBufferFromDatabase(pbClient = pb): Promise<Buffer> {
     try {
-        const userEmail = (pbClient.authStore.model as any)?.email?.trim().toLowerCase() || '';
+        const userEmail = (pbClient.authStore.model as { email?: string } | null)?.email?.trim().toLowerCase() || '';
         const filter = userEmail ? `key="${TEMPLATE_SETTING_KEY}" && account_email="${userEmail}"` : `key="${TEMPLATE_SETTING_KEY}"`;
 
         const record = await pbClient
@@ -451,7 +451,7 @@ export async function parseInventoryImportFile(
         } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(fileBuffer)) {
             text = fileBuffer.toString('utf-8');
         } else {
-            text = new TextDecoder('utf-8').decode(new Uint8Array(fileBuffer as any));
+            text = new TextDecoder('utf-8').decode(new Uint8Array(fileBuffer as unknown as ArrayBuffer));
         }
 
         const sheet = workbook.addWorksheet('Products');
@@ -460,8 +460,8 @@ export async function parseInventoryImportFile(
             sheet.addRow(row);
         }
     } else {
-        const buf = fileBuffer instanceof ArrayBuffer ? fileBuffer : (fileBuffer as any).buffer || fileBuffer;
-        await workbook.xlsx.load(buf as any);
+        const buf = fileBuffer instanceof ArrayBuffer ? fileBuffer : (fileBuffer as { buffer?: ArrayBuffer }).buffer || fileBuffer;
+        await workbook.xlsx.load(buf as Parameters<typeof workbook.xlsx.load>[0]);
     }
 
     const sheet = workbook.getWorksheet('Products') || workbook.worksheets[0];
@@ -475,7 +475,7 @@ export async function parseInventoryImportFile(
 
     sheet.eachRow((row, rowNumber) => {
         if (headers.length > 0) return; // already found
-        const rowValues = (row.values as any[]) || [];
+        const rowValues = (row.values as unknown[]) || [];
         const hasProductName = rowValues.some(v => {
             const s = String(v || '').toLowerCase();
             return s.includes('product') || s.includes('name') || s.includes('sku');
@@ -542,13 +542,13 @@ export async function parseInventoryImportFile(
         const row = sheet.getRow(r);
         if (!row || !row.hasValues) continue;
 
-        const getVal = (colIdx: number | undefined): any => {
+        const getVal = (colIdx: number | undefined): unknown => {
             if (!colIdx) return undefined;
             const cell = row.getCell(colIdx);
             const val = cell.value;
             if (val === null || val === undefined) return undefined;
-            if (typeof val === 'object' && 'result' in val) return (val as any).result; // Excel formula result
-            if (typeof val === 'object' && 'text' in val) return (val as any).text; // Rich text
+            if (typeof val === 'object' && 'result' in val) return (val as { result?: unknown }).result; // Excel formula result
+            if (typeof val === 'object' && 'text' in val) return (val as { text?: unknown }).text; // Rich text
             return val;
         };
 
@@ -693,14 +693,17 @@ export async function commitBulkInventoryImport(
         }
     }
 
-    const accountEmail = getCurrentTenantEmail() || (pbClient.authStore.model as any)?.email || '';
+    const accountEmail = getCurrentTenantEmail() || (pbClient.authStore.model as { email?: string } | null)?.email || '';
     const importedProducts: { id: string; name: string; sku: string; stock: number; cost_price?: number }[] = [];
     const errors: { rowNumber: number; error: string }[] = [];
 
     // Cache existing categories to avoid redundant queries
     const existingCats = await pbClient.collection('categories').getFullList().catch(() => []);
     const catMap = new Map<string, string>();
-    existingCats.forEach((c: any) => catMap.set(c.name.toLowerCase().trim(), c.id));
+    existingCats.forEach((c) => {
+        const cat = c as unknown as { id: string; name: string };
+        catMap.set(cat.name.toLowerCase().trim(), cat.id);
+    });
 
     // 0. Pre-resolve any Purchase Orders referenced across rows or via defaultPoReference
     const allPoRefs = new Set<string>();
@@ -709,7 +712,7 @@ export async function commitBulkInventoryImport(
         if (r.po_reference?.trim()) allPoRefs.add(r.po_reference.trim());
     });
 
-    const poRecordMap = new Map<string, any>();
+    const poRecordMap = new Map<string, { record: Record<string, unknown>; meta: { absorb_overhead?: boolean; gst_paid_overhead?: number; shipping_overhead?: number } }>();
     const poScope = accountEmail ? ` && account_email="${sanitizeFilter(accountEmail)}"` : '';
     for (const poRef of allPoRefs) {
         try {
@@ -719,7 +722,7 @@ export async function commitBulkInventoryImport(
             }
             // The id fallback bypasses the tenant predicate, so never absorb
             // overhead or reconcile against another store's PO (PUR-7).
-            const poOwner = String((po as any)?.account_email || '').trim().toLowerCase();
+            const poOwner = String((po as { account_email?: string } | null)?.account_email || '').trim().toLowerCase();
             if (po && accountEmail && poOwner && poOwner !== accountEmail.trim().toLowerCase()) {
                 console.warn(`Ignoring PO ${poRef}: it belongs to another store.`);
                 po = null;
@@ -859,7 +862,7 @@ export async function commitBulkInventoryImport(
                 cost_price: finalCost,
             });
             successCount++;
-        } catch (err: any) {
+        } catch (err: unknown) {
             failureCount++;
             const msg = err instanceof Error ? err.message : String(err);
             errors.push({

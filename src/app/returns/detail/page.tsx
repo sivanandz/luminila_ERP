@@ -56,7 +56,6 @@ import {
 } from "@/components/ui/select";
 import { listVariantsWithProduct } from "@/lib/products";
 import { toast } from "sonner";
-import type { ProductVariant } from "@/lib/products";
 
 import {
     getCreditNote,
@@ -99,6 +98,9 @@ function CreditNoteDetailContent() {
     const [quarantineType, setQuarantineType] = useState<"damaged" | "vendor_replacement">("damaged");
     const [qcGrade, setQcGrade] = useState<QcDispositionGrade>("restock_grade_a");
     const [approvalNotes, setApprovalNotes] = useState("");
+    const [karigarName, setKarigarName] = useState("");
+    const [reverseShippingFee, setReverseShippingFee] = useState("");
+    const [restockingFeePercent, setRestockingFeePercent] = useState("");
 
     // Exchange & Replacement state
     const [showExchangeDialog, setShowExchangeDialog] = useState(false);
@@ -188,11 +190,16 @@ function CreditNoteDetailContent() {
         if (!id) return;
         setProcessing(true);
         try {
+            const parsedReverseFee = Math.max(0, Number(reverseShippingFee) || 0);
+            const parsedRestockPct = Math.min(50, Math.max(0, Number(restockingFeePercent) || 0));
             await approveCreditNote(id, {
                 routeDefectiveToQuarantine: routeToQuarantine,
                 discrepancyType: quarantineType,
                 qcGrade,
                 notes: approvalNotes,
+                karigarName: qcGrade === "karigar_repair" ? (karigarName.trim() || undefined) : undefined,
+                reverseShippingFeeDeduction: parsedReverseFee > 0 ? parsedReverseFee : undefined,
+                restockingFeePercent: parsedRestockPct > 0 ? parsedRestockPct : undefined,
             });
             toast.success(
                 routeToQuarantine
@@ -262,7 +269,7 @@ function CreditNoteDetailContent() {
                 notes: exchangeNotes,
             });
             toast.success(
-                `Replacement exchange completed! Stock updated and financial balance of ₹${formatINR(Math.abs(res.balanceDue))} recorded.`
+                `Replacement exchange completed! Stock updated and financial balance of ${formatINR(Math.abs(res.balanceDue))} recorded.`
             );
             setShowExchangeDialog(false);
             setExchangeItems([]);
@@ -629,7 +636,7 @@ function CreditNoteDetailContent() {
                         <div className="p-3 bg-muted/30 rounded-lg space-y-1">
                             <p className="font-bold text-sm text-foreground">Return #{creditNote.credit_note_number}</p>
                             <p className="text-muted-foreground">Customer: <span className="text-foreground font-semibold">{creditNote.buyer_name}</span></p>
-                            <p className="text-muted-foreground">Credit Value: <span className="text-foreground font-bold font-mono">₹{formatINR(creditNote.grand_total)}</span></p>
+                            <p className="text-muted-foreground">Credit Value: <span className="text-foreground font-bold font-mono">{formatINR(creditNote.grand_total)}</span></p>
                             <p className="text-muted-foreground">Reported Reason: <span className="text-amber-400 font-semibold uppercase">{creditNote.return_reason}</span></p>
                         </div>
 
@@ -671,6 +678,46 @@ function CreditNoteDetailContent() {
                                     </SelectContent>
                                 </Select>
                             </div>
+                        )}
+
+                        {qcGrade === "karigar_repair" && (
+                            <div className="space-y-1">
+                                <Label>Karigar / Workshop Name</Label>
+                                <Input
+                                    placeholder="e.g. Ganesh Kundan Workshop"
+                                    value={karigarName}
+                                    onChange={(e) => setKarigarName(e.target.value)}
+                                />
+                            </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <Label>Reverse Shipping Deduction (₹)</Label>
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    placeholder="0"
+                                    value={reverseShippingFee}
+                                    onChange={(e) => setReverseShippingFee(e.target.value)}
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label>Restocking Fee (%)</Label>
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    max="50"
+                                    placeholder="0"
+                                    value={restockingFeePercent}
+                                    onChange={(e) => setRestockingFeePercent(e.target.value)}
+                                />
+                            </div>
+                        </div>
+                        {(creditNote.return_reason === "defective" || creditNote.return_reason === "quality_issue") && (
+                            <p className="text-[11px] text-amber-300/90">
+                                Note: Deductions are automatically waived for defective or quality-issue returns.
+                            </p>
                         )}
 
                         <div className="space-y-1">
@@ -794,13 +841,13 @@ function CreditNoteDetailContent() {
                                     <div>
                                         <p className="text-muted-foreground text-[11px]">Return Credit Available</p>
                                         <p className="text-lg font-bold font-mono text-emerald-400">
-                                            ₹{formatINR(creditNote.grand_total)}
+                                            {formatINR(creditNote.grand_total)}
                                         </p>
                                     </div>
                                     <div>
                                         <p className="text-muted-foreground text-[11px]">Replacement Items Total</p>
                                         <p className="text-lg font-bold font-mono text-purple-300">
-                                            ₹{formatINR(replacementTotal)}
+                                            {formatINR(replacementTotal)}
                                         </p>
                                     </div>
                                     <div className="border-l border-purple-800/40 pl-3">
@@ -808,14 +855,14 @@ function CreditNoteDetailContent() {
                                         {balanceDue > 0 ? (
                                             <div>
                                                 <p className="text-lg font-bold font-mono text-amber-400">
-                                                    +₹{formatINR(balanceDue)}
+                                                    +{formatINR(balanceDue)}
                                                 </p>
                                                 <p className="text-[10px] text-amber-300 font-semibold">Collect from Customer</p>
                                             </div>
                                         ) : balanceDue < 0 ? (
                                             <div>
                                                 <p className="text-lg font-bold font-mono text-rose-400">
-                                                    -₹{formatINR(Math.abs(balanceDue))}
+                                                    -{formatINR(Math.abs(balanceDue))}
                                                 </p>
                                                 <p className="text-[10px] text-rose-300 font-semibold">Refund Difference</p>
                                             </div>
@@ -842,7 +889,7 @@ function CreditNoteDetailContent() {
                                         <SelectContent className="max-h-60">
                                             {availableVariants.map((v) => (
                                                 <SelectItem key={v.id} value={v.id}>
-                                                    {v.name} — ₹{formatINR(v.price)} ({v.stock} in stock)
+                                                    {v.name} — {formatINR(v.price)} ({v.stock} in stock)
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
@@ -892,9 +939,9 @@ function CreditNoteDetailContent() {
                                             <TableRow key={idx}>
                                                 <TableCell className="font-medium">{item.description}</TableCell>
                                                 <TableCell className="text-center font-mono">{item.quantity}</TableCell>
-                                                <TableCell className="text-right font-mono">₹{formatINR(item.unit_price)}</TableCell>
+                                                <TableCell className="text-right font-mono">{formatINR(item.unit_price)}</TableCell>
                                                 <TableCell className="text-right font-mono font-bold">
-                                                    ₹{formatINR(item.unit_price * item.quantity)}
+                                                    {formatINR(item.unit_price * item.quantity)}
                                                 </TableCell>
                                                 <TableCell>
                                                     <Button

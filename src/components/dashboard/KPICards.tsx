@@ -3,6 +3,7 @@
 import { TrendingUp, TrendingDown, Package, ShoppingCart, DollarSign, AlertTriangle, Percent, PiggyBank } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatINR } from "@/lib/gst";
+import { pluralize } from "@/lib/utils";
 
 interface KPICardProps {
     title: string;
@@ -14,24 +15,25 @@ interface KPICardProps {
 }
 
 function KPICard({ title, value, subtitle, change, icon, iconColor = "text-primary" }: KPICardProps) {
+    const validChange = change !== undefined && Number.isFinite(change);
     return (
         <Card className="bg-card border-border hover:bg-card/80 transition-colors">
             <CardContent className="pt-6">
-                <div className="flex items-start justify-between">
-                    <div className="space-y-2">
-                        <p className="text-sm text-muted-foreground">{title}</p>
-                        <p className="text-2xl font-semibold tracking-tight">{value}</p>
+                <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-2 min-w-0 flex-1">
+                        <p className="text-sm text-muted-foreground truncate">{title}</p>
+                        <p className="text-lg sm:text-2xl font-semibold tracking-tight tabular-nums break-words">{value}</p>
                         {subtitle && (
-                            <p className="text-xs text-muted-foreground">{subtitle}</p>
+                            <p className="text-xs text-muted-foreground break-words">{subtitle}</p>
                         )}
-                        {change !== undefined && (
-                            <div className={`flex items-center gap-1 text-xs ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {change >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                                <span>{Math.abs(change)}% vs last period</span>
+                        {validChange && (
+                            <div className={`flex items-center gap-1 text-xs tabular-nums ${change! >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {change! >= 0 ? <TrendingUp className="w-3 h-3 shrink-0" /> : <TrendingDown className="w-3 h-3 shrink-0" />}
+                                <span>{Math.round(Math.abs(change!) * 10) / 10}% vs last period</span>
                             </div>
                         )}
                     </div>
-                    <div className={`p-3 rounded-lg bg-muted/20 ${iconColor}`}>
+                    <div className={`p-2.5 sm:p-3 rounded-lg bg-muted/20 shrink-0 ${iconColor}`}>
                         {icon}
                     </div>
                 </div>
@@ -92,7 +94,7 @@ export function KPICards({ stats }: KPICardsProps) {
             <KPICard
                 title="Products"
                 value={stats.totalProducts.toLocaleString()}
-                subtitle={`${stats.pendingOrders} pending orders`}
+                subtitle={pluralize(stats.pendingOrders, "pending order")}
                 icon={<Package className="w-5 h-5" />}
                 iconColor="text-primary"
             />

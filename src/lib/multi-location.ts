@@ -4,8 +4,6 @@
  */
 
 import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
-import { ClientResponseError } from "pocketbase";
-import { toast } from "sonner";
 import { generateId } from "./utils";
 
 // ============================================

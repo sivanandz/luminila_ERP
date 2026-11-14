@@ -99,8 +99,8 @@ _If you did not request this, please ignore this message._`;
 
         try {
             waDelivered = await sendMessage(tenantSession, waNumber, otpMessage);
-        } catch (err: any) {
-            deliveryError = err?.message || String(err);
+        } catch (err: unknown) {
+            deliveryError = err instanceof Error ? err.message : String(err);
             console.warn(`[Send OTP] WhatsApp delivery via session ${tenantSession} failed:`, deliveryError);
         }
 
@@ -130,10 +130,11 @@ _If you did not request this, please ignore this message._`;
             },
             { status: 200, headers: CORS_HEADERS }
         );
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error("[Send OTP API Error]:", err);
+        const message = err instanceof Error ? err.message : "Internal server error";
         return NextResponse.json(
-            { success: false, error: err?.message || "Internal server error" },
+            { success: false, error: message },
             { status: 500, headers: CORS_HEADERS }
         );
     }

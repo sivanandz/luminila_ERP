@@ -17,18 +17,11 @@ import { Badge } from "@/components/ui/badge";
 import {
     Flame,
     Clock,
-    Sparkles,
-    Send,
-    Plus,
     X,
     Loader2,
-    Eye,
     Search,
     Package,
-    CheckCircle2,
     RadioTower,
-    Users,
-    ShieldAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { whatsappManager, type WPPChat } from "@/lib/whatsapp";
@@ -56,7 +49,7 @@ export function FlashDropModal({
 }: FlashDropModalProps) {
     const [activeTab, setActiveTab] = useState<'create' | 'active'>('create');
     const [title, setTitle] = useState("🔥 VIP Midnight Drop — Handcrafted Kundan Collection");
-    const [description, setDescription] = useState("Exclusive 4-hour drop with guaranteed 10-min reservation hold.");
+    const [description] = useState("Exclusive 4-hour drop with guaranteed 10-min reservation hold.");
     const [durationHours, setDurationHours] = useState(4);
 
     // Selected products
@@ -87,9 +80,7 @@ export function FlashDropModal({
             setAvailableChannels(channels);
             setAvailableGroups(groups);
             // Default select first channel if available
-            if (channels.length > 0 && targetChannels.length === 0) {
-                setTargetChannels([channels[0].id]);
-            }
+            setTargetChannels((prev) => (prev.length === 0 && channels.length > 0 ? [channels[0].id] : prev));
         }).catch((err: unknown) => {
             console.warn('Failed to load chats:', err);
         }).finally(() => setLoadingChats(false));
@@ -165,17 +156,34 @@ export function FlashDropModal({
         setSelectedItems(prev => prev.filter(i => i.variantId !== variantId));
     };
 
-    const handleUpdatePrice = (variantId: string, dropPrice: number) => {
-        setSelectedItems(prev => prev.map(i => i.variantId === variantId ? { ...i, dropPrice } : i));
+    const handleUpdatePrice = (variantId: string, rawDropPrice: number) => {
+        setSelectedItems(prev => prev.map(i => {
+            if (i.variantId !== variantId) return i;
+            if (!Number.isFinite(rawDropPrice)) return i;
+            const maxAllowed = i.originalPrice > 0 ? i.originalPrice : Number.MAX_SAFE_INTEGER;
+            const clamped = Math.max(1, Math.min(maxAllowed, Math.round(rawDropPrice)));
+            return { ...i, dropPrice: clamped };
+        }));
     };
 
-    const handleUpdateStock = (variantId: string, allocatedStock: number) => {
-        setSelectedItems(prev => prev.map(i => i.variantId === variantId ? { ...i, allocatedStock } : i));
+    const handleUpdateStock = (variantId: string, rawStock: number) => {
+        setSelectedItems(prev => prev.map(i => {
+            if (i.variantId !== variantId) return i;
+            if (!Number.isFinite(rawStock)) return i;
+            return { ...i, allocatedStock: Math.max(1, Math.floor(rawStock)) };
+        }));
     };
 
     const handleLaunchDrop = async () => {
         if (selectedItems.length === 0) {
             toast.error("Please add at least one product item to the flash drop");
+            return;
+        }
+        const invalidItem = selectedItems.find(
+            (i) => !Number.isFinite(i.dropPrice) || i.dropPrice <= 0 || (i.originalPrice > 0 && i.dropPrice > i.originalPrice) || !Number.isFinite(i.allocatedStock) || i.allocatedStock < 1
+        );
+        if (invalidItem) {
+            toast.error(`Invalid drop price or quantity for ${invalidItem.name}`);
             return;
         }
         if (targetChannels.length === 0) {
@@ -330,7 +338,7 @@ export function FlashDropModal({
                                         <div key={item.variantId} className="flex items-center justify-between gap-3 p-2 rounded-lg bg-card border border-border">
                                             <div className="flex items-center gap-2.5 flex-1 min-w-0">
                                                 {item.imageUrl ? (
-                                                    <Image src={item.imageUrl} alt={item.name} width={36} height={36} className="rounded object-cover" />
+                                                    <Image src={item.imageUrl} alt={item.name} width={36} height={36} unoptimized className="rounded object-cover shrink-0" />
                                                 ) : (
                                                     <div className="w-9 h-9 rounded bg-muted flex items-center justify-center font-bold text-muted-foreground">💎</div>
                                                 )}
@@ -340,23 +348,26 @@ export function FlashDropModal({
                                                 </div>
                                             </div>
 
-                                            <div className="flex items-center gap-3">
+                                            <div className="flex items-center gap-3 shrink-0">
                                                 <div>
                                                     <span className="text-[10px] text-muted-foreground block">Drop Price (₹)</span>
                                                     <input
                                                         type="number"
+                                                        min={1}
+                                                        max={item.originalPrice > 0 ? item.originalPrice : undefined}
                                                         value={item.dropPrice}
                                                         onChange={(e) => handleUpdatePrice(item.variantId, Number(e.target.value))}
-                                                        className="w-20 h-7 rounded border border-border bg-muted/40 text-center font-mono font-bold text-emerald-400 text-xs"
+                                                        className="w-20 h-7 rounded border border-border bg-muted/40 text-center font-mono font-bold text-emerald-400 text-xs tabular-nums"
                                                     />
                                                 </div>
                                                 <div>
                                                     <span className="text-[10px] text-muted-foreground block">Allocated Qty</span>
                                                     <input
                                                         type="number"
+                                                        min={1}
                                                         value={item.allocatedStock}
                                                         onChange={(e) => handleUpdateStock(item.variantId, Number(e.target.value))}
-                                                        className="w-16 h-7 rounded border border-border bg-muted/40 text-center font-mono font-bold text-foreground text-xs"
+                                                        className="w-16 h-7 rounded border border-border bg-muted/40 text-center font-mono font-bold text-foreground text-xs tabular-nums"
                                                     />
                                                 </div>
                                                 <button
@@ -414,7 +425,11 @@ export function FlashDropModal({
                                     </label>
                                 ))}
                             </div>
-                            {availableChannels.length === 0 && availableGroups.length === 0 && (
+                            {loadingChats ? (
+                                <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                                    <Loader2 size={12} className="animate-spin" /> Loading WhatsApp channels &amp; groups...
+                                </p>
+                            ) : availableChannels.length === 0 && availableGroups.length === 0 && (
                                 <p className="text-[11px] text-amber-400/80">
                                     No WhatsApp channels or groups found. Connect WhatsApp session in Settings to dispatch.
                                 </p>

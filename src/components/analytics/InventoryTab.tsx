@@ -25,28 +25,36 @@ type ProductRow = TurnoverAnalytics["byProduct"][number];
 
 export function InventoryTab() {
     const range = useAnalyticsRange((s) => s.range);
-    const [data, setData] = useState<TurnoverAnalytics | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const rangeKey = JSON.stringify(range);
+    const [state, setState] = useState<{
+        key: string;
+        data: TurnoverAnalytics | null;
+        error: string | null;
+    } | null>(null);
 
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
-        setError(null);
         getTurnoverAnalytics(range)
             .then((d) => {
-                if (!cancelled) setData(d);
+                if (!cancelled) setState({ key: rangeKey, data: d, error: null });
             })
             .catch((e) => {
-                if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load turnover analytics');
-            })
-            .finally(() => {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) {
+                    setState({
+                        key: rangeKey,
+                        data: null,
+                        error: e instanceof Error ? e.message : "Failed to load turnover analytics",
+                    });
+                }
             });
         return () => {
             cancelled = true;
         };
-    }, [range]);
+    }, [range, rangeKey]);
+
+    const loading = state?.key !== rangeKey;
+    const error = state?.key === rangeKey ? state.error : null;
+    const data = state?.key === rangeKey ? state.data : null;
 
     if (loading) return <LoadingBlock />;
     if (error) return <EmptyState title="Inventory analytics unavailable" hint={error} />;

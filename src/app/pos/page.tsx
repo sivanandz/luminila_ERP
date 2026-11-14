@@ -8,7 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Header } from "@/components/layout";
 import { Receipt } from "@/components/pos/Receipt";
 import { PhonePePayment } from "@/components/pos/PhonePePayment";
-import { formatPrice, generateId } from "@/lib/utils";
+import { formatPrice, generateId, pluralize } from "@/lib/utils";
 import {
     Camera,
     Plus,
@@ -34,11 +34,16 @@ import {
     Tag,
     Store,
     Building2,
+    Pause,
+    Play,
+    FileText,
+    MessageSquare,
 } from "lucide-react";
 import { getPOSLocations, type InventoryLocation } from "@/lib/multi-location";
 import {
     Dialog,
     DialogContent,
+    DialogDescription,
     DialogHeader,
     DialogTitle,
     DialogFooter,
@@ -60,10 +65,25 @@ import {
     openShift,
     closeShift,
     getCurrentShift,
+    getSuspendedShift,
+    suspendShift,
+    resumeShift,
+    getShift,
+    getShiftHistory,
+    getShiftOperations,
+    addCashToDrawer,
+    removeCashFromDrawer,
+    getShiftSummary,
+    loadParkedCartsCloud,
+    saveParkedCartsCloud,
     calculateChange,
-
     type CashRegisterShift,
+    type DrawerOperation,
+    type ShiftSummary,
 } from "@/lib/register";
+import { MobilePrinter } from "@/lib/mobile-printer";
+import { MobileWhatsApp } from "@/lib/mobile-whatsapp";
+import { validateDiscount, recordDiscountUsage, type Discount } from "@/lib/discounts";
 import {
     earnPoints,
     calculatePointsToEarn,
@@ -192,6 +212,9 @@ export default function POSPage() {
     const [scannerEnabled, setScannerEnabled] = useState(false);
     const [discount, setDiscount] = useState(0);
     const [discountMode, setDiscountMode] = useState<'percent' | 'fixed'>('percent');
+    const [couponInput, setCouponInput] = useState("");
+    const [appliedCoupon, setAppliedCoupon] = useState<{ discount: Discount; amount: number } | null>(null);
+    const [validatingCoupon, setValidatingCoupon] = useState(false);
     const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
     const [upiDiscountEnabled, setUpiDiscountState] = useState<boolean>(() => isUpiDiscountEnabled());
     const [isProcessing, setIsProcessing] = useState(false);
@@ -249,6 +272,7 @@ export default function POSPage() {
         paymentMethod: string;
         cashTendered?: number;
         changeGiven?: number;
+        couponCode?: string;
     } | null>(null);
     const [showReceipt, setShowReceipt] = useState(false);
     const [showPhonePeModal, setShowPhonePeModal] = useState(false);
@@ -330,8 +354,17 @@ export default function POSPage() {
     // Cart Hold & Resume State (F8)
     const [heldCarts, setHeldCarts] = useState<HeldCart[]>([]);
     const [showHeldCartsModal, setShowHeldCartsModal] = useState(false);
+    const cloudHeldHydrated = useRef(false);
 
-    // Restore active cart and held carts on mount (BUG-POS-07)
+    // Cash Drawer Pay-In / Pay-Out & Live Shift Summary Modal
+    const [showDrawerModal, setShowDrawerModal] = useState(false);
+    const [drawerOpType, setDrawerOpType] = useState<"add" | "remove">("add");
+    const [drawerAmount, setDrawerAmount] = useState("");
+    const [drawerReason, setDrawerReason] = useState("");
+    const [drawerLoading, setDrawerLoading] = useState(false);
+    const [shiftSummary, setShiftSummary] = useState<ShiftSummary | null>(null);
+
+    // Restore active cart and held carts on mount (BUG-POS-07 + Cloud Sync)
     useEffect(() => {
         if (typeof window === "undefined") return;
         const tenant = getCurrentTenantEmail()?.trim().toLowerCase() || "default";
@@ -353,7 +386,32 @@ export default function POSPage() {
         } catch (e) {
             console.warn("Failed to restore cart state:", e);
         }
+
+        void loadParkedCartsCloud<HeldCart>().then((cloudCarts) => {
+            if (cloudCarts && cloudCarts.length > 0) {
+                setHeldCarts((prev) => {
+                    if (prev.length === 0) return cloudCarts;
+                    const merged = [...prev];
+                    const existingIds = new Set(prev.map((h) => h.id));
+                    for (const item of cloudCarts) {
+                        if (item?.id && !existingIds.has(item.id)) {
+                            merged.push(item);
+                        }
+                    }
+                    return merged;
+                });
+            }
+            cloudHeldHydrated.current = true;
+        });
     }, []);
+
+    useEffect(() => {
+        if (!cloudHeldHydrated.current) return;
+        const timer = setTimeout(() => {
+            void saveParkedCartsCloud(heldCarts);
+        }, 600);
+        return () => clearTimeout(timer);
+    }, [heldCarts]);
 
     // Persist active cart across page refreshes
     useEffect(() => {
@@ -391,6 +449,14 @@ export default function POSPage() {
     const [currentShift, setCurrentShift] = useState<CashRegisterShift | null>(null);
     const [showOpenShiftDialog, setShowOpenShiftDialog] = useState(false);
     const [showCloseShiftDialog, setShowCloseShiftDialog] = useState(false);
+    const [showZReportsModal, setShowZReportsModal] = useState(false);
+    const [shiftHistory, setShiftHistory] = useState<CashRegisterShift[]>([]);
+    const [shiftHistoryLoading, setShiftHistoryLoading] = useState(false);
+    const [selectedHistoryShift, setSelectedHistoryShift] = useState<CashRegisterShift | null>(null);
+    const [selectedHistoryOps, setSelectedHistoryOps] = useState<DrawerOperation[]>([]);
+    const [receiptWaPhone, setReceiptWaPhone] = useState("");
+    const [receiptCustomerName, setReceiptCustomerName] = useState<string | undefined>(undefined);
+    const [sendingMobileWa, setSendingMobileWa] = useState(false);
     const [openingBalance, setOpeningBalance] = useState("");
     const [closingBalance, setClosingBalance] = useState("");
     const [varianceNotes, setVarianceNotes] = useState("");
@@ -435,13 +501,14 @@ export default function POSPage() {
     // Auth & User State
     const { user } = useAuth();
 
-    // Load current shift on mount
+    // Load current (or suspended) shift on mount
     useEffect(() => {
         const loadUserAndShift = async () => {
             if (user) {
                 setUserId(user.id);
                 try {
-                    const shift = await getCurrentShift(user.id);
+                    const active = await getCurrentShift(user.id);
+                    const shift = active || (await getSuspendedShift(user.id));
                     setCurrentShift(shift);
                     if (!shift) {
                         setShowOpenShiftDialog(true);
@@ -508,6 +575,223 @@ export default function POSPage() {
             alert("Failed to close shift");
         } finally {
             setShiftLoading(false);
+        }
+    };
+
+    const refreshShiftAndSummary = async (shiftId: string) => {
+        const [freshShift, summary] = await Promise.all([
+            getShift(shiftId).catch(() => null),
+            getShiftSummary(shiftId).catch(() => null),
+        ]);
+        if (freshShift) setCurrentShift(freshShift);
+        setShiftSummary(summary);
+    };
+
+    const handleOpenDrawerModal = async () => {
+        if (!currentShift) return;
+        setShowDrawerModal(true);
+        await refreshShiftAndSummary(currentShift.id);
+    };
+
+    const handleSuspendShift = async () => {
+        if (!currentShift) return;
+        setShiftLoading(true);
+        try {
+            const ok = await suspendShift(currentShift.id);
+            if (!ok) {
+                toast.error("Failed to pause shift");
+                return;
+            }
+            const updated = await getShift(currentShift.id);
+            setCurrentShift(updated ?? { ...currentShift, status: "suspended" });
+            toast.info("Shift paused. Resume shift before taking new sales.");
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to pause shift");
+        } finally {
+            setShiftLoading(false);
+        }
+    };
+
+    const handleResumeShift = async () => {
+        if (!currentShift) return;
+        setShiftLoading(true);
+        try {
+            const ok = await resumeShift(currentShift.id);
+            if (!ok) {
+                toast.error("Failed to resume shift");
+                return;
+            }
+            const updated = await getShift(currentShift.id);
+            setCurrentShift(updated ?? { ...currentShift, status: "open" });
+            toast.success("Shift resumed");
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to resume shift");
+        } finally {
+            setShiftLoading(false);
+        }
+    };
+
+    const handleSelectHistoryShift = async (shift: CashRegisterShift) => {
+        setSelectedHistoryShift(shift);
+        const ops = await getShiftOperations(shift.id);
+        setSelectedHistoryOps(ops);
+    };
+
+    const handleOpenZReports = async () => {
+        setShowZReportsModal(true);
+        setShiftHistoryLoading(true);
+        try {
+            const list = await getShiftHistory({ limit: 30 });
+            setShiftHistory(list);
+            if (list.length > 0) {
+                await handleSelectHistoryShift(list[0]);
+            } else {
+                setSelectedHistoryShift(null);
+                setSelectedHistoryOps([]);
+            }
+        } catch (err) {
+            console.error("Failed loading Z-Reports:", err);
+        } finally {
+            setShiftHistoryLoading(false);
+        }
+    };
+
+    const handlePrintZReport = (shift: CashRegisterShift) => {
+        const expected =
+            shift.expected_balance ??
+            (shift.opening_balance +
+                shift.total_cash_sales +
+                shift.cash_added -
+                shift.cash_removed -
+                shift.total_cash_refunds);
+        const html = `
+            <div style="font-family: monospace; font-size: 12px; width: 100%;">
+                <div style="text-align:center; border-bottom:1px dashed #000; padding-bottom:6px; margin-bottom:6px;">
+                    <strong>${storeSettingsData?.store_name || "LUMINILA"}</strong><br/>
+                    <span>Z-REPORT / SHIFT CLOSE</span>
+                </div>
+                <div>Shift ID: ${shift.id.slice(0, 8)}</div>
+                <div>Status: ${shift.status.toUpperCase()}</div>
+                <div>Opened: ${new Date(shift.opened_at).toLocaleString("en-IN")}</div>
+                <div>Closed: ${shift.closed_at ? new Date(shift.closed_at).toLocaleString("en-IN") : "Active"}</div>
+                <hr style="border:none;border-top:1px dashed #000;margin:6px 0;" />
+                <div style="display:flex;justify-content:space-between;"><span>Opening Float:</span><span>${formatPrice(shift.opening_balance)}</span></div>
+                <div style="display:flex;justify-content:space-between;"><span>Cash Sales:</span><span>${formatPrice(shift.total_cash_sales)}</span></div>
+                <div style="display:flex;justify-content:space-between;"><span>Card Sales:</span><span>${formatPrice(shift.total_card_sales)}</span></div>
+                <div style="display:flex;justify-content:space-between;"><span>UPI Sales:</span><span>${formatPrice(shift.total_upi_sales)}</span></div>
+                <div style="display:flex;justify-content:space-between;"><span>Cash Refunds:</span><span>-${formatPrice(shift.total_cash_refunds)}</span></div>
+                <div style="display:flex;justify-content:space-between;"><span>Cash In / Out:</span><span>+${formatPrice(shift.cash_added)} / -${formatPrice(shift.cash_removed)}</span></div>
+                <hr style="border:none;border-top:1px dashed #000;margin:6px 0;" />
+                <div style="display:flex;justify-content:space-between;font-weight:bold;"><span>Expected Drawer:</span><span>${formatPrice(expected)}</span></div>
+                ${shift.closing_balance !== undefined ? `<div style="display:flex;justify-content:space-between;"><span>Counted Close:</span><span>${formatPrice(shift.closing_balance)}</span></div>` : ""}
+                ${shift.variance !== undefined ? `<div style="display:flex;justify-content:space-between;"><span>Variance:</span><span>${formatPrice(shift.variance)}</span></div>` : ""}
+                ${shift.variance_notes ? `<div style="margin-top:6px;">Notes: ${shift.variance_notes}</div>` : ""}
+            </div>
+        `;
+        MobilePrinter.printViaSystemSpooler(html);
+    };
+
+    const handlePrint80mmThermal = () => {
+        if (!lastTransaction) return;
+        const taxHalf = lastTransaction.gstIncluded
+            ? Number((lastTransaction.gstIncluded / 2).toFixed(2))
+            : 0;
+        const addressParts = [
+            storeSettingsData?.store_address,
+            storeSettingsData?.store_city,
+            storeSettingsData?.store_state,
+            storeSettingsData?.store_pincode,
+        ].filter(Boolean);
+        const html = MobilePrinter.generate80mmReceiptHtml({
+            storeName: storeSettingsData?.store_name || "LUMINILA",
+            storeAddress: addressParts.join(", ") || undefined,
+            storeGstin: storeSettingsData?.store_gstin,
+            storePhone: storeSettingsData?.store_phone,
+            invoiceNo: lastTransaction.invoiceNumber || lastTransaction.id.slice(0, 8),
+            date: new Date().toLocaleString("en-IN"),
+            customerName: receiptCustomerName,
+            customerPhone: receiptWaPhone || undefined,
+            items: lastTransaction.items.map((item) => ({
+                name: `${item.name}${item.variant ? ` (${item.variant})` : ""}`,
+                quantity: item.quantity,
+                unitPrice: item.price,
+                total: item.price * item.quantity,
+                sku: item.sku,
+            })),
+            subtotal: lastTransaction.subtotal,
+            discountTotal: lastTransaction.discount,
+            cgst: taxHalf,
+            sgst: taxHalf,
+            grandTotal: lastTransaction.total,
+            paymentMethod: lastTransaction.paymentMethod,
+        });
+        MobilePrinter.printViaSystemSpooler(html);
+    };
+
+    const handleMobileWhatsAppReceipt = async () => {
+        if (!lastTransaction) return;
+        const cleanPhone = receiptWaPhone.trim();
+        if (!cleanPhone) {
+            toast.error("Enter a customer phone number first");
+            return;
+        }
+        setSendingMobileWa(true);
+        try {
+            const res = await MobileWhatsApp.sendReceipt({
+                customerPhone: cleanPhone,
+                customerName: receiptCustomerName,
+                storeName: storeSettingsData?.store_name || "Luminila",
+                invoiceNo: lastTransaction.invoiceNumber || lastTransaction.id.slice(0, 8),
+                date: new Date().toLocaleDateString("en-IN"),
+                items: lastTransaction.items.map((item) => ({
+                    name: item.name,
+                    quantity: item.quantity,
+                    total: item.price * item.quantity,
+                })),
+                grandTotal: lastTransaction.total,
+                paymentMethod: lastTransaction.paymentMethod,
+            });
+            toast.success(
+                res.method === "sidecar"
+                    ? "WhatsApp receipt sent via sidecar"
+                    : "Opened WhatsApp receipt intent"
+            );
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to send WhatsApp receipt");
+        } finally {
+            setSendingMobileWa(false);
+        }
+    };
+
+    const handleDrawerOperation = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!currentShift) return;
+        const amt = parseFloat(drawerAmount);
+        if (!Number.isFinite(amt) || amt <= 0) {
+            toast.error("Enter a valid amount greater than ₹0");
+            return;
+        }
+        if (!drawerReason.trim()) {
+            toast.error("Please provide a reason for this drawer movement");
+            return;
+        }
+        setDrawerLoading(true);
+        try {
+            const actor = user?.name || user?.email || userId || "Cashier";
+            if (drawerOpType === "add") {
+                await addCashToDrawer(currentShift.id, amt, drawerReason.trim(), actor);
+                toast.success(`Added ${formatPrice(amt)} to cash drawer`);
+            } else {
+                await removeCashFromDrawer(currentShift.id, amt, drawerReason.trim(), actor);
+                toast.success(`Removed ${formatPrice(amt)} from cash drawer`);
+            }
+            setDrawerAmount("");
+            setDrawerReason("");
+            await refreshShiftAndSummary(currentShift.id);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Cash drawer update failed");
+        } finally {
+            setDrawerLoading(false);
         }
     };
 
@@ -809,6 +1093,8 @@ export default function POSPage() {
         // Reset loyalty redemption so it can never carry into the next sale
         setPointsToRedeem(0);
         setRedemptionValue(0);
+        setCouponInput("");
+        setAppliedCoupon(null);
     };
 
     // Remote "Add to POS Cart" from WhatsApp surfaces (spec §8.3)
@@ -864,12 +1150,53 @@ export default function POSPage() {
             .then((settings) => {
                 if (!cancelled) {
                     setGstRegistered(settings.isGstRegistered !== false);
-                    setStoreSettingsData(settings as any);
+                    setStoreSettingsData(settings as typeof storeSettingsData);
                 }
             })
             .catch(() => {});
         return () => { cancelled = true; };
     }, []);
+
+    const handleApplyCoupon = async () => {
+        const cleanCode = couponInput.trim().toUpperCase();
+        if (!cleanCode) {
+            toast.error("Enter a promo code first");
+            return;
+        }
+        if (cart.length === 0) {
+            toast.error("Add items to cart before applying a promo code");
+            return;
+        }
+        setValidatingCoupon(true);
+        try {
+            const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
+            const validation = await validateDiscount(
+                cleanCode,
+                subtotal,
+                totalQty,
+                selectedCustomer?.id || selectedCustomerId || undefined,
+                selectedCustomer?.customer_type
+            );
+            if (!validation.valid || !validation.discount) {
+                toast.error(validation.error || "Invalid promo code");
+                return;
+            }
+            setAppliedCoupon({ discount: validation.discount, amount: validation.discountAmount });
+            setDiscountMode('fixed');
+            setDiscount(validation.discountAmount);
+            toast.success(`Applied ${validation.discount.code} (-${formatPrice(validation.discountAmount)})`);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Could not validate promo code");
+        } finally {
+            setValidatingCoupon(false);
+        }
+    };
+
+    const handleClearCoupon = () => {
+        setAppliedCoupon(null);
+        setCouponInput("");
+        setDiscount(0);
+    };
 
     // Calculate totals in paise. The bill discount is entered either as a
     // percentage of the subtotal or as a flat rupee amount; both are clamped so
@@ -886,6 +1213,29 @@ export default function POSPage() {
         : 0;
     const loyaltyDiscount = Math.max(0, Math.round((Number(redemptionValue) || 0) * 100) / 100);  // Points redemption value
     const total = Math.max(0, Math.round((subtotal - discountAmount - loyaltyDiscount) * 100) / 100);
+
+    // Keep percentage promo codes in sync when cart items change
+    useEffect(() => {
+        if (!appliedCoupon) return;
+        const { discount: promo } = appliedCoupon;
+        if (cart.length === 0 || (promo.min_purchase > 0 && subtotal < promo.min_purchase)) {
+            setAppliedCoupon(null);
+            setDiscount(0);
+            return;
+        }
+        if (promo.discount_type === "percentage") {
+            let nextAmt = (subtotal * promo.value) / 100;
+            if (promo.max_discount && nextAmt > promo.max_discount) {
+                nextAmt = promo.max_discount;
+            }
+            const rounded = Math.round(nextAmt * 100) / 100;
+            if (Math.abs(rounded - appliedCoupon.amount) > 0.005) {
+                setAppliedCoupon({ discount: promo, amount: rounded });
+                setDiscountMode('fixed');
+                setDiscount(rounded);
+            }
+        }
+    }, [subtotal, cart.length, appliedCoupon]);
 
     // Lowest price this channel can take without losing money: zero margin over
     // cost, keeping the channel's gateway gross-up. Operator-only guidance; it
@@ -1044,7 +1394,7 @@ export default function POSPage() {
         clearCart();
         setSelectedCustomer(null);
         setSelectedCustomerId(null);
-        toast.success(`Parked cart for ${newHeld.name} (${newHeld.items.length} items)`);
+        toast.success(`Parked cart for ${newHeld.name} (${pluralize(newHeld.items.length, "item")})`);
     };
 
     const handleResumeCart = (heldId: string) => {
@@ -1105,7 +1455,7 @@ export default function POSPage() {
         }
         setCart(prev => prev.map(c => c.id === overrideItem.id ? { ...c, price: finalPrice, isPriceOverridden: true } : c));
         setShowPriceOverrideModal(false);
-        toast.success(`Updated rate for ${overrideItem.name} to ₹${formatPrice(finalPrice)}`);
+        toast.success(`Updated rate for ${overrideItem.name} to ${formatPrice(finalPrice)}`);
     };
 
     // Keyboard Shortcuts Listener (BillWiz feature)
@@ -1267,6 +1617,13 @@ export default function POSPage() {
             // Loyalty updates run AFTER the sale is committed — a failure here
             // must not be reported as a failed sale (retrying would double-sell).
             try {
+                if (appliedCoupon?.discount?.id) {
+                    await recordDiscountUsage(appliedCoupon.discount.id, discountAmount, subtotal, {
+                        customerId: selectedCustomer?.id || selectedCustomerId || undefined,
+                        saleId: result.saleId,
+                        invoiceId: result.invoiceId,
+                    });
+                }
                 if (selectedCustomerId && pointsToRedeem > 0) {
                     await redeemPoints(selectedCustomerId, pointsToRedeem, 'pos_sale', result.saleId, Math.max(0, subtotal - discountAmount));
                 }
@@ -1274,8 +1631,8 @@ export default function POSPage() {
                     await earnPoints(selectedCustomerId, total, 'pos_sale', result.saleId);
                 }
             } catch (loyaltyError) {
-                console.error('Loyalty update failed after sale was committed:', loyaltyError);
-                toast.warning('Sale completed, but updating loyalty points failed.');
+                console.error('Loyalty/promo update failed after sale was committed:', loyaltyError);
+                toast.warning('Sale completed, but updating loyalty points or promo usage failed.');
             }
 
             // Save transaction for receipt
@@ -1292,12 +1649,15 @@ export default function POSPage() {
                 paymentMethod,
                 cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) || 0 : undefined,
                 changeGiven: paymentMethod === 'cash' ? changeAmount : undefined,
+                couponCode: appliedCoupon?.discount.code,
             });
 
             // Reload shift to get updated totals
             const updatedShift = await getCurrentShift(userId);
             setCurrentShift(updatedShift);
 
+            setReceiptWaPhone(selectedCustomer?.phone || "");
+            setReceiptCustomerName(selectedCustomer?.name || undefined);
             setShowReceipt(true);
             clearCart();
             // The checkout succeeded; the next sale gets a fresh id.
@@ -1325,6 +1685,10 @@ export default function POSPage() {
     const processSale = async () => {
         if (isProcessingRef.current) return;
         if (!paymentMethod || cart.length === 0 || !currentShift || !userId) return;
+        if (currentShift.status === "suspended") {
+            toast.warning("Shift is paused. Resume your shift before completing sales.");
+            return;
+        }
 
         isProcessingRef.current = true;
         setIsProcessing(true);
@@ -1398,6 +1762,13 @@ export default function POSPage() {
             // Loyalty updates run AFTER the sale is committed — a failure here
             // must not be reported as a failed sale (the payment was received).
             try {
+                if (appliedCoupon?.discount?.id) {
+                    await recordDiscountUsage(appliedCoupon.discount.id, discountAmount, subtotal, {
+                        customerId: selectedCustomer?.id || selectedCustomerId || undefined,
+                        saleId: result.saleId,
+                        invoiceId: result.invoiceId,
+                    });
+                }
                 if (selectedCustomerId && pointsToRedeem > 0) {
                     await redeemPoints(selectedCustomerId, pointsToRedeem, 'pos_sale', result.saleId, Math.max(0, subtotal - discountAmount));
                 }
@@ -1405,8 +1776,8 @@ export default function POSPage() {
                     await earnPoints(selectedCustomerId, total, 'pos_sale', result.saleId);
                 }
             } catch (loyaltyError) {
-                console.error('Loyalty update failed after sale was committed:', loyaltyError);
-                toast.warning('Sale completed, but updating loyalty points failed.');
+                console.error('Loyalty/promo update failed after sale was committed:', loyaltyError);
+                toast.warning('Sale completed, but updating loyalty points or promo usage failed.');
             }
 
             setLastTransaction({
@@ -1419,12 +1790,15 @@ export default function POSPage() {
                 // PG-4: snapshot before clearCart() empties the cart.
                 gstIncluded,
                 paymentMethod: 'phonepe',
+                couponCode: appliedCoupon?.discount.code,
             });
 
             // Reload shift to get updated totals
             const updatedShift = await getCurrentShift(userId);
             setCurrentShift(updatedShift);
 
+            setReceiptWaPhone(selectedCustomer?.phone || "");
+            setReceiptCustomerName(selectedCustomer?.name || undefined);
             setShowReceipt(true);
             clearCart();
             checkoutTxnIdRef.current = null;
@@ -1463,8 +1837,17 @@ export default function POSPage() {
                 {currentShift ? (
                     <div className="flex items-center gap-4 flex-wrap">
                         <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                            <span className="text-sm text-moonstone">Shift Active</span>
+                            {currentShift.status === "suspended" ? (
+                                <>
+                                    <div className="w-2 h-2 bg-amber-400 rounded-full" />
+                                    <span className="text-sm font-medium text-amber-300">Shift Paused</span>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                                    <span className="text-sm text-moonstone">Shift Active</span>
+                                </>
+                            )}
                         </div>
                         <span className="text-xs text-white font-medium">
                             {user?.name || user?.email || 'Unknown User'}
@@ -1555,25 +1938,71 @@ export default function POSPage() {
                         )}
                     </div>
 
-                    {currentShift ? (
+                    <div className="flex items-center gap-1.5 flex-wrap">
                         <Button
-                            variant="ghost"
+                            variant="outline"
                             size="sm"
-                            onClick={() => setShowCloseShiftDialog(true)}
-                            className="text-moonstone hover:text-red-400"
+                            onClick={() => void handleOpenZReports()}
+                            className="h-8 text-xs border-surface-hover text-moonstone hover:text-white hover:bg-surface-hover/50"
                         >
-                            <LogOut className="w-4 h-4 mr-2" />
-                            End Shift
+                            <History className="w-3.5 h-3.5 mr-1.5" />
+                            Z-Reports
                         </Button>
-                    ) : (
-                        <Button
-                            size="sm"
-                            onClick={() => setShowOpenShiftDialog(true)}
-                        >
-                            <Clock className="w-4 h-4 mr-2" />
-                            Start Shift
-                        </Button>
-                    )}
+                        {currentShift ? (
+                            <>
+                                {currentShift.status === "suspended" ? (
+                                    <Button
+                                        size="sm"
+                                        disabled={shiftLoading}
+                                        onClick={() => void handleResumeShift()}
+                                        className="h-8 text-xs bg-amber-500 hover:bg-amber-400 text-navy-dark font-semibold"
+                                    >
+                                        <Play className="w-3.5 h-3.5 mr-1.5" />
+                                        Resume Shift
+                                    </Button>
+                                ) : (
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={shiftLoading}
+                                        onClick={() => void handleSuspendShift()}
+                                        className="h-8 text-xs border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
+                                    >
+                                        <Pause className="w-3.5 h-3.5 mr-1.5" />
+                                        Pause
+                                    </Button>
+                                )}
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => void handleOpenDrawerModal()}
+                                    className="h-8 text-xs border-surface-hover text-white hover:bg-surface-hover/50"
+                                >
+                                    Drawer &amp; Summary
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                        void refreshShiftAndSummary(currentShift.id);
+                                        setShowCloseShiftDialog(true);
+                                    }}
+                                    className="text-moonstone hover:text-red-400"
+                                >
+                                    <LogOut className="w-4 h-4 mr-2" />
+                                    End Shift
+                                </Button>
+                            </>
+                        ) : (
+                            <Button
+                                size="sm"
+                                onClick={() => setShowOpenShiftDialog(true)}
+                            >
+                                <Clock className="w-4 h-4 mr-2" />
+                                Start Shift
+                            </Button>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -1701,13 +2130,13 @@ export default function POSPage() {
                                                             : 'hover:bg-surface-hover'
                                                     }`}
                                                 >
-                                                    <div>
-                                                        <p className="font-bold text-white text-sm">{product.name}</p>
-                                                        <div className="flex items-center gap-2 mt-0.5">
-                                                            <span className="text-xs text-moonstone">
+                                                    <div className="min-w-0 flex-1 pr-3">
+                                                        <p className="font-bold text-white text-sm truncate">{product.name}</p>
+                                                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                                            <span className="text-xs text-moonstone truncate">
                                                                 {product.sku} • {product.variant}
                                                             </span>
-                                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
                                                                 isOutOfStock
                                                                     ? 'bg-red-500/20 text-red-400 border border-red-500/30'
                                                                     : isMaxInCart
@@ -1718,7 +2147,7 @@ export default function POSPage() {
                                                             </span>
                                                         </div>
                                                     </div>
-                                                    <p className="font-bold text-primary">
+                                                    <p className="font-bold text-primary shrink-0 font-mono tabular-nums">
                                                         {formatPrice(product.price)}
                                                     </p>
                                                 </button>
@@ -1751,9 +2180,9 @@ export default function POSPage() {
                         </div>
 
                         {/* Quick Add Buttons */}
-                        <div className="mt-4 grid grid-cols-4 gap-3">
+                        <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
                             {quickAddProducts.length === 0 ? (
-                                <p className="col-span-4 text-center text-moonstone text-sm py-4">
+                                <p className="col-span-2 sm:col-span-4 text-center text-moonstone text-sm py-4">
                                     No products found. Add products in Inventory.
                                 </p>
                             ) : (
@@ -1769,17 +2198,17 @@ export default function POSPage() {
                                             key={product.id}
                                             onClick={() => !isDisabled && addToCart(product)}
                                             disabled={isDisabled}
-                                            className={`p-3 bg-bg-navy border rounded-lg transition-all text-left group relative ${
+                                            className={`p-3 bg-bg-navy border rounded-lg transition-all text-left group relative min-w-0 ${
                                                 isDisabled
                                                     ? 'opacity-50 cursor-not-allowed border-surface-hover bg-bg-navy/40'
                                                     : 'border-surface-hover hover:border-primary/50 hover:bg-bg-navy/80'
                                             }`}
                                         >
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-[10px] text-moonstone truncate font-mono">
+                                            <div className="flex items-center justify-between gap-1.5">
+                                                <p className="text-[10px] text-moonstone truncate font-mono min-w-0">
                                                     {product.sku}
                                                 </p>
-                                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
+                                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
                                                     isOutOfStock
                                                         ? 'bg-red-500/20 text-red-400'
                                                         : isMaxInCart
@@ -1790,7 +2219,7 @@ export default function POSPage() {
                                                 </span>
                                             </div>
                                             <p className="font-bold text-white text-sm truncate mt-0.5 group-hover:text-primary transition-colors">{product.name}</p>
-                                            <p className="text-xs text-white mt-1">
+                                            <p className="text-xs text-white mt-1 tabular-nums">
                                                 {formatPrice(product.price)}
                                             </p>
                                         </button>
@@ -1913,6 +2342,7 @@ export default function POSPage() {
                                             alt={antiFraudAuditItem.name}
                                             width={80}
                                             height={80}
+                                            unoptimized
                                             className="w-full h-full object-cover"
                                         />
                                     ) : (
@@ -1970,7 +2400,7 @@ export default function POSPage() {
                                     <div className="flex items-center gap-3">
                                         {item.image && (
                                             <div className="size-10 rounded-md overflow-hidden border border-surface-hover shrink-0 bg-black/40">
-                                                <Image src={item.image} alt={item.name} width={40} height={40} className="w-full h-full object-cover" />
+                                                <Image src={item.image} alt={item.name} width={40} height={40} unoptimized className="w-full h-full object-cover" />
                                             </div>
                                         )}
                                         <div className="flex-1 min-w-0">
@@ -1980,7 +2410,7 @@ export default function POSPage() {
                                                     {item.variant} • {formatPrice(item.price)}
                                                 </span>
                                                 {item.channelPrices && item.channelPrices[selectedChannel] !== undefined && (
-                                                    <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-primary/20 text-primary border border-primary/30" title={`Channel rate: ₹${formatPrice(item.price)}`}>
+                                                    <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-primary/20 text-primary border border-primary/30" title={`Channel rate: ${formatPrice(item.price)}`}>
                                                         {availableChannels.find(c => c.id === selectedChannel)?.name || selectedChannel}
                                                     </span>
                                                 )}
@@ -2010,7 +2440,7 @@ export default function POSPage() {
                                             >
                                                 <Minus size={14} />
                                             </button>
-                                            <span className="w-6 text-center font-bold text-white text-sm">
+                                            <span className="w-6 text-center font-bold text-white text-sm tabular-nums">
                                                 {item.quantity}
                                             </span>
                                             <button
@@ -2057,7 +2487,7 @@ export default function POSPage() {
                                             <button
                                                 key={mode}
                                                 type="button"
-                                                onClick={() => { setDiscountMode(mode); setDiscount(0); }}
+                                                onClick={() => { setDiscountMode(mode); setDiscount(0); setAppliedCoupon(null); }}
                                                 title={mode === 'percent' ? 'Percentage discount' : 'Fixed rupee discount'}
                                                 className={`px-2 py-0.5 text-[10px] font-bold transition-colors ${discountMode === mode
                                                     ? 'bg-primary text-primary-foreground'
@@ -2077,6 +2507,7 @@ export default function POSPage() {
                                     value={discount}
                                     onChange={(e) => {
                                         const raw = Number(e.target.value) || 0;
+                                        setAppliedCoupon(null);
                                         setDiscount(discountMode === 'percent'
                                             ? Math.min(100, Math.max(0, raw))
                                             : Math.min(subtotal, Math.max(0, raw)));
@@ -2084,6 +2515,43 @@ export default function POSPage() {
                                     className="bg-bg-navy border border-surface-hover text-white text-sm rounded px-2 py-1 w-20 text-center focus:ring-1 focus:ring-primary focus:border-primary"
                                 />
                             </div>
+                            {/* Promo / Coupon Code input */}
+                            <div className="flex items-center gap-1.5">
+                                <input
+                                    type="text"
+                                    value={couponInput}
+                                    onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleApplyCoupon(); } }}
+                                    placeholder="Promo code (e.g. BDAY1000)"
+                                    disabled={Boolean(appliedCoupon) || validatingCoupon}
+                                    maxLength={32}
+                                    className="flex-1 min-w-0 h-8 bg-bg-navy border border-surface-hover text-white text-xs font-mono uppercase rounded px-2.5 focus:ring-1 focus:ring-primary focus:border-primary placeholder-moonstone/50 disabled:opacity-60"
+                                />
+                                {appliedCoupon ? (
+                                    <button
+                                        type="button"
+                                        onClick={handleClearCoupon}
+                                        className="h-8 px-2.5 text-xs font-semibold rounded bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 shrink-0"
+                                    >
+                                        Clear
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleApplyCoupon()}
+                                        disabled={validatingCoupon || !couponInput.trim()}
+                                        className="h-8 px-2.5 text-xs font-semibold rounded bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 disabled:opacity-50 shrink-0"
+                                    >
+                                        {validatingCoupon ? "..." : "Apply"}
+                                    </button>
+                                )}
+                            </div>
+                            {appliedCoupon && (
+                                <div className="flex items-center justify-between text-[11px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-2 py-1">
+                                    <span className="font-mono font-bold truncate">Coupon: {appliedCoupon.discount.code}</span>
+                                    <span className="shrink-0 tabular-nums">-{formatPrice(appliedCoupon.amount)}</span>
+                                </div>
+                            )}
                             {floorKnown && (
                                 <div className={`flex items-center justify-between text-[11px] ${belowFloor ? 'text-red-400 font-semibold' : 'text-amber-300/80'}`}>
                                     <span>Lowest safe price · {activeChannel?.shortLabel || activeChannel?.name || selectedChannel}</span>
@@ -2094,7 +2562,7 @@ export default function POSPage() {
                     )}
 
                     {/* Totals */}
-                    <div className="mt-4 pt-4 border-t border-surface-hover space-y-2">
+                    <div className="mt-4 pt-4 border-t border-surface-hover space-y-2 tabular-nums">
                         <div className="flex justify-between text-sm">
                             <span className="text-moonstone">Subtotal</span>
                             <span className="text-white font-medium">{formatPrice(subtotal)}</span>
@@ -2255,7 +2723,7 @@ export default function POSPage() {
                                 </div>
                                 <div className="bg-surface-hover rounded-lg flex items-center justify-center">
                                     <span className="text-moonstone text-sm">Change: </span>
-                                    <span className="text-primary font-bold ml-1 text-lg">{formatPrice(changeAmount)}</span>
+                                    <span className="text-primary font-bold ml-1 text-lg tabular-nums">{formatPrice(changeAmount)}</span>
                                 </div>
                             </div>
                             {/* Quick tender buttons */}
@@ -2285,7 +2753,7 @@ export default function POSPage() {
                     {/* Checkout Button */}
                     <button
                         onClick={processSale}
-                        disabled={cart.length === 0 || !paymentMethod || isProcessing}
+                        disabled={cart.length === 0 || !paymentMethod || isProcessing || currentShift?.status === "suspended"}
                         className="w-full mt-4 py-3 rounded-lg font-bold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_4px_15px_rgba(196,166,97,0.3)]"
                     >
                         {isProcessing ? (
@@ -2293,6 +2761,8 @@ export default function POSPage() {
                                 <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-bg-navy"></span>
                                 Processing...
                             </span>
+                        ) : currentShift?.status === "suspended" ? (
+                            <>Shift Paused — Resume to Sell</>
                         ) : (
                             <>
                                 Complete Sale • {formatPrice(total)}
@@ -2345,11 +2815,14 @@ export default function POSPage() {
                                     total={lastTransaction.total}
                                     paymentMethod={lastTransaction.paymentMethod}
                                     gstIncluded={lastTransaction.gstIncluded ?? 0}
+                                    cashTendered={lastTransaction.cashTendered}
+                                    changeGiven={lastTransaction.changeGiven}
+                                    couponCode={lastTransaction.couponCode}
                                 />
                             </div>
 
                             {/* Actions */}
-                            <div className="flex gap-3">
+                            <div className="flex flex-wrap gap-2">
                                 <Button
                                     onClick={printReceipt}
                                     className="flex-1"
@@ -2358,11 +2831,41 @@ export default function POSPage() {
                                     Print
                                 </Button>
                                 <Button
+                                    variant="secondary"
+                                    onClick={handlePrint80mmThermal}
+                                    className="flex-1"
+                                    title="80mm ESC/POS Thermal Layout"
+                                >
+                                    <FileText size={16} className="mr-1.5" />
+                                    80mm Thermal
+                                </Button>
+                                <Button
                                     variant="outline"
                                     onClick={() => setShowReceipt(false)}
                                     className="flex-1"
                                 >
                                     New Sale
+                                </Button>
+                            </div>
+
+                            {/* 1-Tap Mobile WhatsApp Receipt Dispatch */}
+                            <div className="mt-3 flex gap-2">
+                                <Input
+                                    type="tel"
+                                    value={receiptWaPhone}
+                                    onChange={(e) => setReceiptWaPhone(e.target.value)}
+                                    placeholder="Customer WhatsApp phone (10 digits)"
+                                    className="h-9 bg-surface-elevated border-surface-hover text-white text-xs flex-1"
+                                />
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={sendingMobileWa || !receiptWaPhone.trim()}
+                                    onClick={() => void handleMobileWhatsAppReceipt()}
+                                    className="h-9 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 shrink-0"
+                                >
+                                    <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
+                                    {sendingMobileWa ? "Sending..." : "WhatsApp"}
                                 </Button>
                             </div>
 
@@ -2553,13 +3056,13 @@ export default function POSPage() {
                                         <div
                                             key={cust.id}
                                             onClick={() => handleSelectCustomer(cust)}
-                                            className="flex items-center justify-between p-3 rounded-lg border border-surface-hover hover:border-gold/50 hover:bg-surface-hover/30 cursor-pointer transition-colors"
+                                            className="flex items-center justify-between gap-2 p-3 rounded-lg border border-surface-hover hover:border-gold/50 hover:bg-surface-hover/30 cursor-pointer transition-colors"
                                         >
-                                            <div>
-                                                <p className="text-sm font-medium text-white">{cust.name}</p>
-                                                <p className="text-xs text-moonstone">{cust.phone || "No phone"} {cust.email ? `• ${cust.email}` : ""}</p>
+                                            <div className="min-w-0 flex-1 pr-2">
+                                                <p className="text-sm font-medium text-white truncate">{cust.name}</p>
+                                                <p className="text-xs text-moonstone break-all">{cust.phone || "No phone"} {cust.email ? `• ${cust.email}` : ""}</p>
                                             </div>
-                                            <div className="flex items-center gap-2">
+                                            <div className="flex items-center gap-2 shrink-0">
                                                 {tierPct > 0 ? (
                                                     <Badge className="bg-gold/20 text-gold border-gold/40 text-xs">
                                                         {cust.tier?.toUpperCase() || cust.customer_type?.toUpperCase()} ({tierPct}% OFF)
@@ -2581,6 +3084,108 @@ export default function POSPage() {
                             Cancel
                         </Button>
                     </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Cash Drawer Pay-In / Pay-Out & Live Shift Summary Modal */}
+            <Dialog open={showDrawerModal} onOpenChange={setShowDrawerModal}>
+                <DialogContent className="bg-surface-navy border-surface-hover text-white max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Cash Drawer &amp; Live Shift Summary</DialogTitle>
+                    </DialogHeader>
+                    {currentShift && (
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                                <div className="rounded-lg bg-bg-navy/70 border border-surface-hover p-2.5">
+                                    <p className="text-moonstone">Bills</p>
+                                    <p className="font-bold text-white tabular-nums mt-0.5">
+                                        {shiftSummary ? shiftSummary.totalTransactions : "—"}
+                                    </p>
+                                </div>
+                                <div className="rounded-lg bg-bg-navy/70 border border-surface-hover p-2.5">
+                                    <p className="text-moonstone">Cash Sales</p>
+                                    <p className="font-bold text-emerald-400 tabular-nums mt-0.5">
+                                        {formatPrice(shiftSummary?.cashSales ?? currentShift.total_cash_sales)}
+                                    </p>
+                                </div>
+                                <div className="rounded-lg bg-bg-navy/70 border border-surface-hover p-2.5">
+                                    <p className="text-moonstone">UPI / Card</p>
+                                    <p className="font-bold text-primary tabular-nums mt-0.5">
+                                        {formatPrice((shiftSummary?.upiSales ?? currentShift.total_upi_sales) + (shiftSummary?.cardSales ?? currentShift.total_card_sales))}
+                                    </p>
+                                </div>
+                                <div className="rounded-lg bg-bg-navy/70 border border-primary/40 p-2.5">
+                                    <p className="text-moonstone">Expected Cash</p>
+                                    <p className="font-bold text-primary tabular-nums mt-0.5">
+                                        {formatPrice(
+                                            shiftSummary?.expectedBalance ??
+                                            (Number(currentShift.opening_balance || 0) +
+                                                Number(currentShift.total_cash_sales || 0) -
+                                                Number(currentShift.total_cash_refunds || 0) +
+                                                Number(currentShift.cash_added || 0) -
+                                                Number(currentShift.cash_removed || 0))
+                                        )}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-moonstone border-y border-surface-hover py-2">
+                                <span className="tabular-nums">Opening: {formatPrice(currentShift.opening_balance)}</span>
+                                <span className="tabular-nums text-emerald-400">Pay-In: +{formatPrice(currentShift.cash_added || 0)}</span>
+                                <span className="tabular-nums text-amber-400">Pay-Out: -{formatPrice(currentShift.cash_removed || 0)}</span>
+                                <span className="tabular-nums text-red-400">Refunds: -{formatPrice(currentShift.total_cash_refunds || 0)}</span>
+                            </div>
+
+                            <form onSubmit={handleDrawerOperation} className="space-y-3">
+                                <div className="grid grid-cols-2 gap-2">
+                                    <Button
+                                        type="button"
+                                        variant={drawerOpType === "add" ? "default" : "outline"}
+                                        onClick={() => setDrawerOpType("add")}
+                                        className="h-9 text-xs"
+                                    >
+                                        + Pay In (Add Float)
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={drawerOpType === "remove" ? "destructive" : "outline"}
+                                        onClick={() => setDrawerOpType("remove")}
+                                        className="h-9 text-xs"
+                                    >
+                                        - Pay Out (Petty Cash / Drop)
+                                    </Button>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                    <Input
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        required
+                                        placeholder="Amount (₹)"
+                                        value={drawerAmount}
+                                        onChange={(e) => setDrawerAmount(e.target.value)}
+                                        className="bg-bg-navy border-surface-hover font-mono text-sm"
+                                    />
+                                    <Input
+                                        required
+                                        maxLength={120}
+                                        placeholder="Reason (e.g. Tea, Loose Change)"
+                                        value={drawerReason}
+                                        onChange={(e) => setDrawerReason(e.target.value)}
+                                        className="sm:col-span-2 bg-bg-navy border-surface-hover text-sm"
+                                    />
+                                </div>
+                                <DialogFooter>
+                                    <Button type="button" variant="outline" onClick={() => setShowDrawerModal(false)}>
+                                        Close
+                                    </Button>
+                                    <Button type="submit" disabled={drawerLoading}>
+                                        {drawerLoading ? "Saving..." : drawerOpType === "add" ? "Record Pay-In" : "Record Pay-Out"}
+                                    </Button>
+                                </DialogFooter>
+                            </form>
+                        </div>
+                    )}
                 </DialogContent>
             </Dialog>
 
@@ -2606,15 +3211,15 @@ export default function POSPage() {
                                 return (
                                     <div
                                         key={h.id}
-                                        className="p-3.5 rounded-lg border border-surface-hover bg-bg-navy/60 flex items-center justify-between"
+                                        className="p-3.5 rounded-lg border border-surface-hover bg-bg-navy/60 flex items-center justify-between gap-3"
                                     >
-                                        <div>
-                                            <p className="text-sm font-semibold text-white">{h.name}</p>
-                                            <p className="text-xs text-moonstone mt-0.5">
-                                                {h.items.length} items • ₹{formatPrice(cartTotal)} • {new Date(h.timestamp).toLocaleTimeString()}
+                                        <div className="min-w-0 flex-1 pr-3">
+                                            <p className="text-sm font-semibold text-white truncate">{h.name}</p>
+                                            <p className="text-xs text-moonstone mt-0.5 tabular-nums">
+                                                {pluralize(h.items.length, "item")} • {formatPrice(cartTotal)} • {new Date(h.timestamp).toLocaleTimeString()}
                                             </p>
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 shrink-0">
                                             <Button
                                                 size="sm"
                                                 onClick={() => handleResumeCart(h.id)}
@@ -2638,7 +3243,7 @@ export default function POSPage() {
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setShowHeldCartsModal(false)}>
-                            Close
+                            Done
                         </Button>
                     </DialogFooter>
                 </DialogContent>
@@ -2657,7 +3262,7 @@ export default function POSPage() {
                         <div className="space-y-4 py-2">
                             <div className="p-3 rounded-lg bg-surface-hover/30 border border-surface-hover">
                                 <p className="text-sm font-semibold text-white">{overrideItem.name}</p>
-                                <p className="text-xs text-moonstone">SKU: {overrideItem.sku} • Original: ₹{formatPrice(overrideItem.price)}</p>
+                                <p className="text-xs text-moonstone">SKU: {overrideItem.sku} • Original: {formatPrice(overrideItem.price)}</p>
                             </div>
 
                             <div className="space-y-2">
@@ -2688,7 +3293,7 @@ export default function POSPage() {
                             <div className="p-3 rounded-lg bg-gold/10 border border-gold/30 flex justify-between items-center text-sm">
                                 <span className="text-moonstone">Calculated Final Rate:</span>
                                 <span className="font-bold text-gold text-base">
-                                    ₹{formatPrice(
+                                    {formatPrice(
                                         Math.max(0, (parseFloat(overridePriceInput) || 0) * (1 - (parseFloat(overrideDiscountInput) || 0) / 100))
                                     )}
                                 </span>
@@ -2706,6 +3311,189 @@ export default function POSPage() {
                             Apply Override
                         </Button>
                     </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Historical Z-Report & Shift Operations Archive Dialog */}
+            <Dialog open={showZReportsModal} onOpenChange={setShowZReportsModal}>
+                <DialogContent className="bg-surface-navy border-surface-hover text-white max-w-3xl max-h-[85vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle className="text-white flex items-center gap-2">
+                            <History className="w-5 h-5 text-primary" />
+                            Historical Z-Reports &amp; Drawer Audit
+                        </DialogTitle>
+                        <DialogDescription className="text-moonstone">
+                            Inspect closed or paused cash register shifts, variance notes, and drawer drops.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {shiftHistoryLoading ? (
+                        <div className="py-10 text-center text-sm text-moonstone">
+                            Loading shift archive...
+                        </div>
+                    ) : shiftHistory.length === 0 ? (
+                        <div className="py-10 text-center text-sm text-moonstone">
+                            No shifts recorded yet for this store.
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                            <div className="md:col-span-2 space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                                {shiftHistory.map((shift) => {
+                                    const active = selectedHistoryShift?.id === shift.id;
+                                    return (
+                                        <button
+                                            key={shift.id}
+                                            type="button"
+                                            onClick={() => void handleSelectHistoryShift(shift)}
+                                            className={`w-full text-left rounded-lg border p-2.5 transition-colors ${
+                                                active
+                                                    ? "border-primary bg-primary/10"
+                                                    : "border-surface-hover bg-bg-navy/50 hover:border-surface-hover/80"
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className="text-xs font-mono text-white">
+                                                    #{shift.id.slice(0, 8)}
+                                                </span>
+                                                <Badge
+                                                    variant="outline"
+                                                    className={`text-[10px] uppercase ${
+                                                        shift.status === "open"
+                                                            ? "border-emerald-500/40 text-emerald-300"
+                                                            : shift.status === "suspended"
+                                                            ? "border-amber-500/40 text-amber-300"
+                                                            : "border-surface-hover text-moonstone"
+                                                    }`}
+                                                >
+                                                    {shift.status}
+                                                </Badge>
+                                            </div>
+                                            <div className="text-[11px] text-moonstone mt-1">
+                                                {new Date(shift.opened_at).toLocaleString("en-IN")}
+                                            </div>
+                                            <div className="flex items-center justify-between text-xs mt-1.5">
+                                                <span className="text-moonstone">Sales</span>
+                                                <span className="font-mono text-white">
+                                                    {formatPrice(
+                                                        shift.total_cash_sales +
+                                                            shift.total_card_sales +
+                                                            shift.total_upi_sales
+                                                    )}
+                                                </span>
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            <div className="md:col-span-3 rounded-lg border border-surface-hover bg-bg-navy/40 p-4 space-y-3">
+                                {selectedHistoryShift ? (
+                                    <>
+                                        <div className="flex items-center justify-between gap-2 pb-2 border-b border-surface-hover">
+                                            <div>
+                                                <div className="text-sm font-semibold text-white">
+                                                    Shift #{selectedHistoryShift.id.slice(0, 8)}
+                                                </div>
+                                                <div className="text-xs text-moonstone">
+                                                    Opened {new Date(selectedHistoryShift.opened_at).toLocaleString("en-IN")}
+                                                    {selectedHistoryShift.closed_at
+                                                        ? ` • Closed ${new Date(selectedHistoryShift.closed_at).toLocaleString("en-IN")}`
+                                                        : ""}
+                                                </div>
+                                            </div>
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => handlePrintZReport(selectedHistoryShift)}
+                                                className="h-8 text-xs border-surface-hover text-white"
+                                            >
+                                                <Printer className="w-3.5 h-3.5 mr-1.5" />
+                                                Print Z-Report
+                                            </Button>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                            <div className="rounded bg-surface-navy p-2">
+                                                <div className="text-moonstone">Opening Float</div>
+                                                <div className="font-mono text-white mt-0.5">
+                                                    {formatPrice(selectedHistoryShift.opening_balance)}
+                                                </div>
+                                            </div>
+                                            <div className="rounded bg-surface-navy p-2">
+                                                <div className="text-moonstone">Cash Sales</div>
+                                                <div className="font-mono text-emerald-300 mt-0.5">
+                                                    {formatPrice(selectedHistoryShift.total_cash_sales)}
+                                                </div>
+                                            </div>
+                                            <div className="rounded bg-surface-navy p-2">
+                                                <div className="text-moonstone">Card / UPI Sales</div>
+                                                <div className="font-mono text-white mt-0.5">
+                                                    {formatPrice(
+                                                        selectedHistoryShift.total_card_sales +
+                                                            selectedHistoryShift.total_upi_sales
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <div className="rounded bg-surface-navy p-2">
+                                                <div className="text-moonstone">Drawer Variance</div>
+                                                <div
+                                                    className={`font-mono mt-0.5 ${
+                                                        (selectedHistoryShift.variance ?? 0) < 0
+                                                            ? "text-red-400"
+                                                            : (selectedHistoryShift.variance ?? 0) > 0
+                                                            ? "text-amber-300"
+                                                            : "text-emerald-300"
+                                                    }`}
+                                                >
+                                                    {selectedHistoryShift.variance !== undefined
+                                                        ? formatPrice(selectedHistoryShift.variance)
+                                                        : "—"}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {selectedHistoryShift.variance_notes && (
+                                            <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+                                                Variance Note: {selectedHistoryShift.variance_notes}
+                                            </div>
+                                        )}
+
+                                        <div>
+                                            <div className="text-xs font-medium text-moonstone uppercase tracking-wider mb-1.5">
+                                                Drawer Log ({selectedHistoryOps.length})
+                                            </div>
+                                            <div className="space-y-1 max-h-44 overflow-y-auto">
+                                                {selectedHistoryOps.length === 0 ? (
+                                                    <div className="text-xs text-moonstone/70 py-2">
+                                                        No cash drawer operations logged.
+                                                    </div>
+                                                ) : (
+                                                    selectedHistoryOps.map((op) => (
+                                                        <div
+                                                            key={op.id}
+                                                            className="flex items-center justify-between text-xs py-1 border-b border-surface-hover/50 last:border-0"
+                                                        >
+                                                            <div>
+                                                                <span className="uppercase font-mono text-[10px] text-primary mr-2">
+                                                                    {op.operation_type}
+                                                                </span>
+                                                                <span className="text-white/90">
+                                                                    {op.reason || "Drawer adjustment"}
+                                                                </span>
+                                                            </div>
+                                                            <span className="font-mono text-white">
+                                                                {formatPrice(op.amount)}
+                                                            </span>
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : null}
+                            </div>
+                        </div>
+                    )}
                 </DialogContent>
             </Dialog>
         </div>

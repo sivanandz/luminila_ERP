@@ -8,12 +8,7 @@ import { toast } from "sonner";
 import {
     ScanBarcode,
     Truck,
-    PackageCheck,
-    CheckCircle2,
-    RefreshCw,
     Loader2,
-    AlertCircle,
-    ArrowRight,
 } from "lucide-react";
 import {
     type QueueOrder,
@@ -26,8 +21,7 @@ import { createShipmentForOrder } from "@/lib/shipments";
 import { dispatchOrderMilestoneWhatsApp } from "@/lib/order-milestones";
 import { getCurrentTenantEmail, pb } from "@/lib/pocketbase";
 import { soundEffects } from "@/lib/sound-effects";
-import { CourierCarrier, fetchStCourierLiveTracking } from "@/lib/logistics-engine";
-import { MobileScanner } from "@/lib/mobile-scanner";
+import { CourierCarrier } from "@/lib/logistics-engine";
 
 interface RapidManifestPanelProps {
     queue: PackingQueue;

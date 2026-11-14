@@ -21,17 +21,12 @@ import {
     PlusCircle,
     ArrowRightLeft,
     Loader2,
-    RefreshCw,
-    MapPin,
-    Package,
-    ShieldAlert,
     Camera,
 } from "lucide-react";
 import {
     computeTrayAuditDiff,
     commitTrayAudit,
     type TrayAuditDiff,
-    type TrayAuditLineItem,
 } from "@/lib/cycle-count";
 import { STORAGE_LOCATIONS } from "@/lib/products";
 import { loadTrayLocationOptions, trayChoices, trayChoiceLabel, type TrayLocationOption } from "@/lib/tray-locations";

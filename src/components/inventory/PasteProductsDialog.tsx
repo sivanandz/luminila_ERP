@@ -97,7 +97,6 @@ export function PasteProductsDialog({
     const [text, setText] = useState("");
     const [saving, setSaving] = useState(false);
     const [progress, setProgress] = useState({ done: 0, total: 0 });
-    const [failures, setFailures] = useState(0);
     const [shopRule, setShopRule] = useState<ChannelPricingRule | undefined>();
 
     useEffect(() => {
@@ -133,7 +132,6 @@ export function PasteProductsDialog({
     const close = () => {
         if (saving) return;
         setText("");
-        setFailures(0);
         setProgress({ done: 0, total: 0 });
         onOpenChange(false);
     };
@@ -141,7 +139,6 @@ export function PasteProductsDialog({
     const commit = async () => {
         if (validRows.length === 0) return;
         setSaving(true);
-        setFailures(0);
         setProgress({ done: 0, total: validRows.length });
 
         const knownSkus = [...existingSkus];
@@ -169,7 +166,6 @@ export function PasteProductsDialog({
                 console.error("Paste import row failed:", row.name, error);
                 failed += 1;
             }
-            setFailures(failed);
             setProgress({ done: index + 1, total: validRows.length });
         }
 

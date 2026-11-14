@@ -240,8 +240,10 @@ export function VendorIngestionModal({
 
     const suggestedRetail = useMemo(() => {
         const cost = parseFloat(costPrice) || 0;
-        const margin = parseFloat(marginPercent) || 0;
-        return Math.ceil(cost * (1 + margin / 100));
+        const rawMargin = parseFloat(marginPercent) || 0;
+        const margin = Math.max(-99, Math.min(1000, rawMargin));
+        const val = Math.ceil(cost * (1 + margin / 100));
+        return Number.isFinite(val) && val > 0 ? val : 0;
     }, [costPrice, marginPercent]);
 
     // Deterministic Parent and Child SKU Preview
@@ -271,8 +273,8 @@ export function VendorIngestionModal({
             toast.error('You do not have permission to create inventory.');
             return;
         }
-        if (!name.trim() || !(parseFloat(costPrice) > 0)) {
-            toast.error('Product name and a cost price above zero are required');
+        if (!name.trim() || !(parseFloat(costPrice) > 0) || !Number.isFinite(suggestedRetail) || suggestedRetail <= 0) {
+            toast.error('Product name, cost price, and valid retail price above zero are required');
             return;
         }
         setSubmitting(true);
@@ -464,6 +466,7 @@ export function VendorIngestionModal({
                                     <div className="flex items-center gap-2">
                                         <Input
                                             value={customSku || effectiveSku}
+                                            maxLength={64}
                                             onChange={(e) => setCustomSku(e.target.value.toUpperCase())}
                                             placeholder="e.g. GEN-00001 or VENDOR-101"
                                             className="h-8 font-mono text-xs font-bold text-amber-300 bg-background border-border"
@@ -715,7 +718,7 @@ export function VendorIngestionModal({
                         {/* 6. Product Name */}
                         <div className="grid gap-1">
                             <Label htmlFor="vi-name" className="text-xs">Product Name</Label>
-                            <Input id="vi-name" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs font-medium" />
+                            <Input id="vi-name" maxLength={150} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs font-medium" />
                         </div>
 
                         {/* 7. Commercials & Weights */}

@@ -9,10 +9,9 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { findProductBySkuOrBarcode, findVariantBySuffixOrBarcode } from "@/lib/products";
 import { MobileScanner } from "@/lib/mobile-scanner";
-import { ScanBarcode, Camera, Search, Loader2, CheckCircle2, Volume2 } from "lucide-react";
+import { ScanBarcode, Camera, Loader2, CheckCircle2, Volume2 } from "lucide-react";
 import dynamic from "next/dynamic";
 
 const CameraScanner = dynamic(
@@ -90,12 +89,14 @@ export function QuickBarcodeScanModal({
         }
     }, [open]);
 
+    const handleResolveRef = useRef<(code: string) => Promise<void>>(async () => {});
+
     // High-priority hardware scanner listener: captures scans into this modal and prevents background leaks
     useEffect(() => {
         if (!open) return;
         const unregister = MobileScanner.registerContext("active_modal", (result) => {
             setScannedCode(result.barcode);
-            handleResolve(result.barcode);
+            void handleResolveRef.current(result.barcode);
             return true; // Stop propagation
         }, 90);
         return () => unregister();
@@ -170,6 +171,10 @@ export function QuickBarcodeScanModal({
             setResolving(false);
         }
     };
+
+    useEffect(() => {
+        handleResolveRef.current = handleResolve;
+    });
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === "Enter") {

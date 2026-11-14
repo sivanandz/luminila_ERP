@@ -14,7 +14,6 @@ import {
     SelectContent,
     SelectItem,
     SelectTrigger,
-    SelectValue,
 } from "@/components/ui/select";
 import {
     Globe,
@@ -23,9 +22,7 @@ import {
     Save,
     RotateCcw,
     ExternalLink,
-    Megaphone,
     Image as ImageIcon,
-    Tag,
     Share2,
     CheckCircle2,
     Sliders,
@@ -38,17 +35,10 @@ import {
     Layers,
     Link as LinkIcon,
     Star,
-    Smartphone,
-    HelpCircle,
-    BookOpen,
     ShieldCheck,
-    Pin,
-    Flame,
-    Clock,
     Palette,
     Type,
     ArrowRight,
-    Pencil,
     UserCheck,
     Server,
 } from "lucide-react";
@@ -723,7 +713,6 @@ export default function StorefrontControlPage() {
     const [mounted, setMounted] = useState(false);
     const [content, setContent] = useState<StorefrontContentState>(DEFAULT_STATE);
     const [selectedSlideIndex, setSelectedSlideIndex] = useState(0);
-    const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [activeTab, setActiveTab] = useState<CmsTab>("niththigal");
 
@@ -817,8 +806,6 @@ export default function StorefrontControlPage() {
         } catch (err) {
             console.error("Failed to load storefront content:", err);
             toast.error("Could not load current content, using defaults");
-        } finally {
-            setIsLoading(false);
         }
     };
 
@@ -878,8 +865,8 @@ export default function StorefrontControlPage() {
             } else {
                 throw new Error("Failed to save");
             }
-        } catch (err: any) {
-            toast.error(err.message || "Failed to update storefront content");
+        } catch (err: unknown) {
+            toast.error(err instanceof Error ? err.message : "Failed to update storefront content");
         } finally {
             setIsSaving(false);
         }
@@ -1138,6 +1125,7 @@ export default function StorefrontControlPage() {
                         </div>
                         <div className="overflow-hidden rounded-xl border border-white/70 bg-[#e9eed4]">
                             {content.niththigal.hero.imageUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element -- arbitrary CMS uploads/data URIs
                                 <img
                                     src={assetUrl(content.niththigal.hero.imageUrl)}
                                     alt={content.niththigal.hero.imageAlt}
@@ -2532,6 +2520,7 @@ export default function StorefrontControlPage() {
                                 {(content.instagramFeed?.posts || DEFAULT_STATE.instagramFeed.posts).slice(0, 3).map((post, idx) => (
                                     <div key={post.id || idx} className="border rounded-lg p-3 bg-muted/20 space-y-3">
                                         <div className="relative aspect-square w-full rounded overflow-hidden bg-neutral-900 border">
+                                            {/* eslint-disable-next-line @next/next/no-img-element -- dynamic user-entered Instagram image path */}
                                             <img
                                                 src={post.imageUrl}
                                                 alt={post.caption}
@@ -2672,6 +2661,7 @@ export default function StorefrontControlPage() {
                                 {/* Logo render */}
                                 <div>
                                     {content.branding?.logoType === "image" && content.branding?.imageLogo?.url ? (
+                                        // eslint-disable-next-line @next/next/no-img-element -- dynamic brand logo URL/data URI with custom desktopHeight
                                         <img
                                             src={content.branding.imageLogo.url}
                                             alt={content.branding.imageLogo.alt || "Logo"}
@@ -3335,7 +3325,7 @@ export default function StorefrontControlPage() {
                                     { key: "surface", label: "Surface (Cards & Tint)" },
                                     { key: "border", label: "Borders" },
                                 ].map((item) => {
-                                    const colorVal = (content.theme?.colors as any)?.[item.key] || "#000000";
+                                    const colorVal = (content.theme?.colors as Record<string, string> | undefined)?.[item.key] || "#000000";
                                     return (
                                         <div key={item.key} className="space-y-1.5 p-3 border rounded-lg bg-card">
                                             <Label className="text-[11px] font-medium leading-tight block h-7">

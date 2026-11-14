@@ -14,21 +14,12 @@ import {
     Unlink,
     Trash2,
     ExternalLink,
-    Eye,
     EyeOff,
     Save,
     Plus,
-    ArrowRight,
     Zap,
     Box,
     Sparkles,
-    Check,
-    Layers,
-    Tag,
-    DollarSign,
-    Info,
-    HelpCircle,
-    ArrowUpRight,
     Image as ImageIcon
 } from "lucide-react";
 import { toast } from "sonner";
@@ -91,7 +82,7 @@ export interface CatalogItemWithInventory {
     totalStock?: number;
 }
 
-function normalizePrice(val: any): number {
+function normalizePrice(val: unknown): number {
     if (val === undefined || val === null) return 0;
     const num = Number(val);
     if (isNaN(num)) return 0;
@@ -164,6 +155,56 @@ export function WhatsAppCatalogEditorModal({
         return () => window.removeEventListener("whatsapp:stealth-sync-status", onStatus);
     }, [isOpen]);
 
+    const loadCatalogAndInventory = useCallback(async () => {
+        setLoading(true);
+        try {
+            const tenantEmail = getCurrentTenantEmail();
+
+            // 1. Fetch live catalog from WPPConnect + tenant-scoped inventory
+            const [waProducts, inventory] = await Promise.all([
+                getCatalogProducts(sessionId).catch((err) => {
+                    console.error("Failed to fetch WhatsApp catalog products:", err);
+                    return [] as CatalogProduct[];
+                }),
+                getWhatsAppCatalogInventory(tenantEmail || undefined),
+            ]);
+            const rawPbProducts = inventory.products as unknown as Array<Product & { whatsapp_catalog_id?: string; whatsapp_last_synced?: string; account_email?: string; image_data?: string }>;
+            const rawPbVariants = inventory.variants as unknown as Array<ProductVariant & { account_email?: string }>;
+
+            // Layer 2 in-memory tenant ownership guard
+            const pbProducts = tenantEmail
+                ? rawPbProducts.filter((p) => !p.account_email || p.account_email.toLowerCase() === tenantEmail.toLowerCase())
+                : rawPbProducts;
+            const pbVariants = tenantEmail
+                ? rawPbVariants.filter((v) => !v.account_email || v.account_email.toLowerCase() === tenantEmail.toLowerCase())
+                : rawPbVariants;
+
+            // Build stock map for quick stock lookup per product
+            const stocks: Record<string, number> = {};
+            for (const v of pbVariants) {
+                if (v.product) {
+                    stocks[v.product] = (stocks[v.product] || 0) + (v.stock_level || 0);
+                }
+            }
+
+            setRawCatalog(waProducts);
+            setInventoryProducts(pbProducts);
+            setStockMap(stocks);
+
+            // Select first product if none selected
+            if (waProducts.length > 0) {
+                const firstId = typeof waProducts[0].id === "object"
+                    ? ((waProducts[0].id as { _serialized?: string })?._serialized ?? "")
+                    : String(waProducts[0].id);
+                setSelectedId((prev) => prev || firstId);
+            }
+        } catch (err) {
+            toast.error("Failed to load catalog or inventory: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            setLoading(false);
+        }
+    }, [sessionId]);
+
     // Adopt direction / gated session: the catalog price flows INTO inventory via
     // PocketBase writes — no WhatsApp mutation involved, so the edit gate can't block it.
     const adoptActive = syncMode === "catalog_master" || editGate;
@@ -219,66 +260,31 @@ export function WhatsAppCatalogEditorModal({
     // Initial fetch when opened
     useEffect(() => {
         if (isOpen) {
-            loadCatalogAndInventory();
+            void loadCatalogAndInventory();
         }
-    }, [isOpen, sessionId]);
-
-    const loadCatalogAndInventory = async () => {
-        setLoading(true);
-        try {
-            const tenantEmail = getCurrentTenantEmail();
-
-            // 1. Fetch live catalog from WPPConnect + tenant-scoped inventory
-            const [waProducts, inventory] = await Promise.all([
-                getCatalogProducts(sessionId).catch((err) => {
-                    console.error("Failed to fetch WhatsApp catalog products:", err);
-                    return [] as CatalogProduct[];
-                }),
-                getWhatsAppCatalogInventory(tenantEmail || undefined),
-            ]);
-            const rawPbProducts = inventory.products as unknown as Array<Product & { whatsapp_catalog_id?: string; whatsapp_last_synced?: string; account_email?: string; image_data?: string }>;
-            const rawPbVariants = inventory.variants as unknown as Array<ProductVariant & { account_email?: string }>;
-
-            // Layer 2 in-memory tenant ownership guard
-            const pbProducts = tenantEmail
-                ? rawPbProducts.filter((p) => !p.account_email || p.account_email.toLowerCase() === tenantEmail.toLowerCase())
-                : rawPbProducts;
-            const pbVariants = tenantEmail
-                ? rawPbVariants.filter((v) => !v.account_email || v.account_email.toLowerCase() === tenantEmail.toLowerCase())
-                : rawPbVariants;
-
-            // Build stock map for quick stock lookup per product
-            const stocks: Record<string, number> = {};
-            for (const v of pbVariants) {
-                if (v.product) {
-                    stocks[v.product] = (stocks[v.product] || 0) + (v.stock_level || 0);
-                }
-            }
-
-            setRawCatalog(waProducts);
-            setInventoryProducts(pbProducts);
-            setStockMap(stocks);
-
-            // Select first product if none selected
-            if (waProducts.length > 0 && !selectedId) {
-                const firstId = typeof waProducts[0].id === "object" ? (waProducts[0].id as any)?._serialized : String(waProducts[0].id);
-                setSelectedId(firstId);
-            }
-        } catch (err) {
-            toast.error("Failed to load catalog or inventory: " + (err instanceof Error ? err.message : String(err)));
-        } finally {
-            setLoading(false);
-        }
-    };
+    }, [isOpen, loadCatalogAndInventory]);
 
     // Combine WhatsApp Catalog items with linked PocketBase records
     const catalogItems: CatalogItemWithInventory[] = useMemo(() => {
+        type LegacyCatalogExtras = {
+            retailerId?: string;
+            retailer_id?: string;
+            reviewStatus?: string;
+            review_status?: string;
+            imageCdnUrl?: string;
+            image?: string;
+            images?: Array<{ mediaUrl?: string }>;
+            availability?: string;
+        };
         return rawCatalog.map((item) => {
-            const rawId = typeof item.id === "object" ? (item.id as any)?._serialized : String(item.id);
+            const legacy = item as unknown as LegacyCatalogExtras;
+            const rawId = typeof item.id === "object" && item.id !== null
+                ? ((item.id as { _serialized?: string })._serialized || "")
+                : String(item.id);
             const waPrice = normalizePrice(item.price);
-            const retailerId = (item as any).retailerId || (item as any).retailer_id;
-            const reviewStatus = (item as any).reviewStatus || (item as any).review_status;
-            const imageUrl = item.imageUrl || (item as any).imageCdnUrl || (item as any).image || ((item as any).images?.[0]?.mediaUrl) || "";
+            const retailerId = legacy.retailerId || legacy.retailer_id;
+            const reviewStatus = legacy.reviewStatus || legacy.review_status;
+            const imageUrl = item.imageUrl || legacy.imageCdnUrl || legacy.image || legacy.images?.[0]?.mediaUrl || "";
 
             // Match against inventory
             // 1. By stored whatsapp_catalog_id
@@ -308,7 +314,7 @@ export function WhatsAppCatalogEditorModal({
                 isHidden: !!item.isHidden,
                 retailerId,
                 reviewStatus,
-                availability: (item as any).availability,
+                availability: legacy.availability,
                 linkedProduct: matched,
                 inventoryPrice: invPrice,
                 isPriceMismatch,
@@ -823,6 +829,7 @@ export function WhatsAppCatalogEditorModal({
                                         <div key={p.id} className="p-4 flex items-center justify-between gap-4 hover:bg-muted/40 transition-colors">
                                             <div className="flex items-center gap-3 min-w-0">
                                                 {p.image_url ? (
+                                                    // eslint-disable-next-line @next/next/no-img-element -- dynamic PocketBase data URI / arbitrary URL
                                                     <img src={p.image_url} alt={p.name} className="w-12 h-12 rounded-lg object-cover border border-border" />
                                                 ) : (
                                                     <div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center text-muted-foreground">
@@ -940,6 +947,7 @@ export function WhatsAppCatalogEditorModal({
                                                 {/* Thumbnail */}
                                                 <div className="w-12 h-12 rounded-lg bg-muted border border-border shrink-0 overflow-hidden relative">
                                                     {item.imageUrl ? (
+                                                        // eslint-disable-next-line @next/next/no-img-element -- dynamic WhatsApp CDN / data URI thumbnail
                                                         <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" />
                                                     ) : (
                                                         <div className="w-full h-full flex items-center justify-center text-muted-foreground">
@@ -1025,6 +1033,7 @@ export function WhatsAppCatalogEditorModal({
                                         <div className="flex items-center gap-4">
                                             <div className="w-16 h-16 rounded-xl bg-muted border border-border overflow-hidden relative shrink-0">
                                                 {selectedItem.imageUrl ? (
+                                                    // eslint-disable-next-line @next/next/no-img-element -- dynamic WhatsApp CDN / data URI thumbnail
                                                     <img src={selectedItem.imageUrl} alt={selectedItem.name} className="w-full h-full object-cover" />
                                                 ) : (
                                                     <div className="w-full h-full flex items-center justify-center text-muted-foreground">

@@ -120,9 +120,12 @@ export async function POST(req: NextRequest) {
         const client = await createTenantClient(tenantEmail);
 
         // 3. Fetch products with Dual-Layer Tenant Isolation (DB Clause + In-Memory Guard)
-        let products: any[] = [];
+        type BatchProductRow = Parameters<typeof buildMetaBatchRequests>[0][number] & {
+            account_email?: string;
+        };
+        let products: BatchProductRow[] = [];
         if (all) {
-            products = await client.collection('products').getFullList({
+            products = await client.collection('products').getFullList<BatchProductRow>({
                 filter: `is_active = true && account_email = "${safeTenantEmail}"`,
                 sort: '-created'
             });
@@ -134,7 +137,7 @@ export async function POST(req: NextRequest) {
             if (!idClauses) {
                 return NextResponse.json({ error: 'Invalid productIds array' }, { status: 400 });
             }
-            products = await client.collection('products').getFullList({
+            products = await client.collection('products').getFullList<BatchProductRow>({
                 filter: `(${idClauses}) && is_active = true && account_email = "${safeTenantEmail}"`
             });
         } else {
@@ -157,8 +160,11 @@ export async function POST(req: NextRequest) {
         }
 
         // 4. Fetch variants with relational active guard + tenant filter
+        type BatchVariantRow = Parameters<typeof buildMetaBatchRequests>[1][number] & {
+            account_email?: string;
+        };
         const productPids = products.map(p => `product = "${sanitizeFilter(p.id)}"`).join(' || ');
-        const rawVariants = await client.collection('product_variants').getFullList({
+        const rawVariants = await client.collection('product_variants').getFullList<BatchVariantRow>({
             filter: `(${productPids}) && product.is_active = true && account_email = "${safeTenantEmail}"`
         });
 
@@ -179,8 +185,8 @@ export async function POST(req: NextRequest) {
 
         // 7. Build batch requests
         const batchRequests = buildMetaBatchRequests(
-            products as any[],
-            variants as any[],
+            products,
+            variants,
             origin,
             phone,
             action,

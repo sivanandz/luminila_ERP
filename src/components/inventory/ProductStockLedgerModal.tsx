@@ -9,7 +9,6 @@ import {
     DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Loader2, History, ArrowDownRight, ArrowUpRight, MapPin } from "lucide-react";
 import { getProductStockLedger, type StockLedgerEntry } from "@/lib/stock-ledger";
 

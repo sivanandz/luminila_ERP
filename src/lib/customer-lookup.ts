@@ -311,11 +311,11 @@ export async function logCustomerInteraction(
     }
 }
 
-function canActOnCustomerRecord(record?: { account_email?: string } | Record<string, any> | null): boolean {
+function canActOnCustomerRecord(record?: { account_email?: string } | Record<string, unknown> | null): boolean {
     if (!record) return false;
     const scope = accountScopeEmail();
     if (!scope) return true;
-    const recEmail = (record as Record<string, any>).account_email;
+    const recEmail = (record as Record<string, unknown>).account_email;
     if (!recEmail) return true;
     return String(recEmail).trim().toLowerCase() === scope.trim().toLowerCase();
 }

@@ -47,6 +47,7 @@ import {
     type Invoice,
 } from "@/lib/invoice";
 import { formatINR } from "@/lib/gst";
+import { safeFormatDate, pluralize } from "@/lib/utils";
 
 // Quote a value for CSV output when it contains separators, quotes or newlines,
 // and neutralize spreadsheet formula characters (=, +, -, @, |, tab, CR)
@@ -71,6 +72,8 @@ export default function InvoicesPage() {
     const [activeTab, setActiveTab] = useState<"active" | "trash">("active");
     const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
     const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 50;
     const fetchSeq = useRef(0);
 
     // Debounce the search box so typing does not fire a request per keystroke.
@@ -78,6 +81,10 @@ export default function InvoicesPage() {
         const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
         return () => clearTimeout(timer);
     }, [searchQuery]);
+
+    useEffect(() => {
+        setPage(1);
+    }, [activeTab, typeFilter, paidFilter, debouncedSearch]);
 
     const fetchInvoices = useCallback(async () => {
         const seq = ++fetchSeq.current;
@@ -194,6 +201,9 @@ export default function InvoicesPage() {
     const paidAmount = invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0);
     const pendingAmount = Math.max(0, totalRevenue - paidAmount);
     const invoiceCount = invoices.length;
+    const totalPages = Math.max(1, Math.ceil(invoiceCount / PAGE_SIZE));
+    const safePage = Math.min(page, totalPages);
+    const paginatedInvoices = invoices.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
     const getStatusBadge = (invoice: Invoice) => {
         if (invoice.is_paid || (invoice.balance_due !== undefined && invoice.balance_due === 0)) {
@@ -300,7 +310,7 @@ export default function InvoicesPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header
                 title="Invoices"
-                subtitle={`${invoiceCount} ${activeTab === 'trash' ? 'trashed invoices' : 'GST invoices'}`}
+                subtitle={activeTab === 'trash' ? pluralize(invoiceCount, 'trashed invoice') : pluralize(invoiceCount, 'GST invoice')}
             />
 
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
@@ -316,7 +326,7 @@ export default function InvoicesPage() {
                                 </div>
                                 <p className="min-w-0 text-sm text-muted-foreground break-words">{activeTab === "trash" ? "Trashed Count" : "Total Invoices"}</p>
                             </div>
-                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono break-words">{invoiceCount}</p>
+                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono tabular-nums break-words">{invoiceCount}</p>
                         </CardContent>
                     </Card>
 
@@ -328,7 +338,7 @@ export default function InvoicesPage() {
                                 </div>
                                 <p className="min-w-0 text-sm text-muted-foreground break-words">Total Value</p>
                             </div>
-                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono break-words">{formatINR(totalRevenue)}</p>
+                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono tabular-nums break-words">{formatINR(totalRevenue)}</p>
                         </CardContent>
                     </Card>
 
@@ -340,7 +350,7 @@ export default function InvoicesPage() {
                                 </div>
                                 <p className="min-w-0 text-sm text-muted-foreground break-words">Paid Amount</p>
                             </div>
-                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono break-words">{formatINR(paidAmount)}</p>
+                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono tabular-nums break-words">{formatINR(paidAmount)}</p>
                         </CardContent>
                     </Card>
 
@@ -352,7 +362,7 @@ export default function InvoicesPage() {
                                 </div>
                                 <p className="min-w-0 text-sm text-muted-foreground break-words">Balance Due</p>
                             </div>
-                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono break-words">{formatINR(pendingAmount)}</p>
+                            <p className="mt-2 text-xl lg:text-2xl font-bold font-mono tabular-nums break-words">{formatINR(pendingAmount)}</p>
                         </CardContent>
                     </Card>
                 </div>
@@ -491,7 +501,7 @@ export default function InvoicesPage() {
                             <>
                                 {/* Phones: stacked cards — the nine-column table cannot fit 360px without sideways scrolling */}
                                 <div className="space-y-2 p-3 md:hidden">
-                                    {invoices.map((invoice) => (
+                                    {paginatedInvoices.map((invoice) => (
                                         <div
                                             key={invoice.id}
                                             className="rounded-lg border border-border p-3 cursor-pointer active:bg-muted/50"
@@ -505,12 +515,12 @@ export default function InvoicesPage() {
                                             </div>
                                             <div className="mt-2 flex items-start justify-between gap-3">
                                                 <div className="min-w-0">
-                                                    <p className="truncate text-sm font-medium">{invoice.buyer_name || "Walk-in"}</p>
+                                                    <p className="line-clamp-2 break-words text-sm font-medium">{invoice.buyer_name || "Walk-in"}</p>
                                                     <p className="truncate text-xs text-muted-foreground">
-                                                        {invoice.invoice_date ? format(new Date(invoice.invoice_date), "dd MMM yyyy") : "-"} · {invoiceTypeLabel(invoice.invoice_type)}
+                                                        {safeFormatDate(invoice.invoice_date, (d) => format(d, "dd MMM yyyy"), "-")} · {invoiceTypeLabel(invoice.invoice_type)}
                                                     </p>
                                                 </div>
-                                                <p className="shrink-0 font-mono text-sm font-bold">{formatINR(invoice.grand_total)}</p>
+                                                <p className="shrink-0 font-mono tabular-nums text-sm font-bold">{formatINR(invoice.grand_total)}</p>
                                             </div>
                                             <div className="mt-1 flex items-center justify-end gap-1 [&_button]:min-h-9 [&_button]:min-w-9">
                                                 {renderRowActions(invoice)}
@@ -519,7 +529,7 @@ export default function InvoicesPage() {
                                     ))}
                                 </div>
 
-                                <div className="hidden md:block">
+                                <div className="hidden md:block overflow-x-auto">
                                     <Table>
                                         <TableHeader>
                                             <TableRow className="border-border hover:bg-transparent">
@@ -535,34 +545,34 @@ export default function InvoicesPage() {
                                             </TableRow>
                                         </TableHeader>
                                         <TableBody>
-                                            {invoices.map((invoice) => (
+                                            {paginatedInvoices.map((invoice) => (
                                                 <TableRow
                                                     key={invoice.id}
                                                     className="border-border hover:bg-muted/50 cursor-pointer"
                                                     onClick={() => router.push(`/invoices/detail?id=${invoice.id}`)}
                                                 >
-                                                    <TableCell className="font-mono text-primary font-semibold">
+                                                    <TableCell className="font-mono text-primary font-semibold whitespace-nowrap">
                                                         {invoice.invoice_number}
                                                     </TableCell>
-                                                    <TableCell>
-                                                        {invoice.invoice_date ? format(new Date(invoice.invoice_date), "dd MMM yyyy") : "-"}
+                                                    <TableCell className="whitespace-nowrap">
+                                                        {safeFormatDate(invoice.invoice_date, (d) => format(d, "dd MMM yyyy"), "-")}
                                                     </TableCell>
-                                                    <TableCell>
+                                                    <TableCell className="max-w-[220px]">
                                                         <div>
-                                                            <p className="font-medium">{invoice.buyer_name || "Walk-in"}</p>
+                                                            <p className="font-medium line-clamp-2 break-words">{invoice.buyer_name || "Walk-in"}</p>
                                                             {invoice.buyer_gstin && (
-                                                                <p className="text-xs text-muted-foreground">{invoice.buyer_gstin}</p>
+                                                                <p className="text-xs text-muted-foreground truncate">{invoice.buyer_gstin}</p>
                                                             )}
                                                         </div>
                                                     </TableCell>
                                                     <TableCell>{getTypeBadge(invoice.invoice_type)}</TableCell>
-                                                    <TableCell className="text-right font-mono">
+                                                    <TableCell className="text-right font-mono tabular-nums whitespace-nowrap">
                                                         {formatINR(invoice.taxable_value)}
                                                     </TableCell>
-                                                    <TableCell className="text-right font-mono text-muted-foreground">
+                                                    <TableCell className="text-right font-mono tabular-nums whitespace-nowrap text-muted-foreground">
                                                         {formatINR(invoice.total_tax)}
                                                     </TableCell>
-                                                    <TableCell className="text-right font-mono font-bold">
+                                                    <TableCell className="text-right font-mono tabular-nums whitespace-nowrap font-bold">
                                                         {formatINR(invoice.grand_total)}
                                                     </TableCell>
                                                     <TableCell>{getStatusBadge(invoice)}</TableCell>
@@ -576,6 +586,37 @@ export default function InvoicesPage() {
                                         </TableBody>
                                     </Table>
                                 </div>
+
+                                {invoiceCount > PAGE_SIZE && (
+                                    <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-border text-xs text-muted-foreground">
+                                        <span className="tabular-nums">
+                                            Showing {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, invoiceCount)} of {invoiceCount}
+                                        </span>
+                                        <div className="flex items-center gap-2">
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={safePage <= 1}
+                                                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                                className="h-7 px-2.5 text-xs"
+                                            >
+                                                Previous
+                                            </Button>
+                                            <span className="tabular-nums font-medium text-foreground">
+                                                Page {safePage} of {totalPages}
+                                            </span>
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={safePage >= totalPages}
+                                                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                                className="h-7 px-2.5 text-xs"
+                                            >
+                                                Next
+                                            </Button>
+                                        </div>
+                                    </div>
+                                )}
                             </>
                         )}
                     </CardContent>

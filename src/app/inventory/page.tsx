@@ -108,6 +108,7 @@ import { Label } from "@/components/ui/label";
 import {
     Dialog,
     DialogContent,
+    DialogDescription,
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog";
@@ -136,10 +137,34 @@ import {
     deleteProductCascade,
     STORAGE_LOCATIONS,
     getProductDisplayImage,
+    loadProductGalleryMap,
+    saveProductGalleryAngles,
+    mergeProductAngle,
+    isDeadStockProduct,
     type Product as PbProduct,
+    type ProductGalleryAngles,
+    type ProductAngleSlot,
 } from "@/lib/products";
+import type { ProductVariant } from "@/lib/products";
+import {
+    loadChannelBufferConfigs,
+    saveChannelBufferConfigs,
+    DEFAULT_CHANNEL_CONFIGS,
+    type ChannelBufferConfig,
+} from "@/lib/omnichannel-buffer-engine";
 import { loadTrayLocationOptions, trayChoices, trayChoiceLabel, type TrayLocationOption } from "@/lib/tray-locations";
 import { toast } from "sonner";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Archive, MoreVertical, RotateCcw, ShieldCheck } from "lucide-react";
 import { pb } from "@/lib/pocketbase";
 import { usePermissions } from "@/hooks/usePermissions";
 
@@ -157,6 +182,7 @@ interface Product {
     stock: number;
     pending_po_quantity?: number;
     image: string | null;
+    gallery_angles?: ProductGalleryAngles;
     hsn_code?: string;
     barcode?: string;
     location?: string;
@@ -168,6 +194,8 @@ interface Product {
     variant_id?: string;
     is_bundle?: boolean;
     bundle_items?: BundleComponent[];
+    created?: string;
+    updated?: string;
 }
 
 // PocketBase product row as returned by getProducts(), which queries with
@@ -209,7 +237,12 @@ function InventoryContent() {
     const [showQuickAdd, setShowQuickAdd] = useState(false);
     const [cloneSeed, setCloneSeed] = useState<Product | null>(null);
     const [showPasteList, setShowPasteList] = useState(false);
-    const [statusFilter, setStatusFilter] = useState<"all" | "published" | "draft">("all");
+    const [statusFilter, setStatusFilter] = useState<"all" | "published" | "draft" | "dead_stock">("all");
+    const [showBufferModal, setShowBufferModal] = useState(false);
+    const [bufferConfigs, setBufferConfigs] = useState<ChannelBufferConfig[]>(DEFAULT_CHANNEL_CONFIGS);
+    const [bufferSaving, setBufferSaving] = useState(false);
+    const [page, setPage] = useState(1);
+    const INVENTORY_PAGE_SIZE = 48;
     const [salesChannels, setSalesChannels] = useState<SalesChannelDef[]>(() => getConfiguredChannels());
     const [formLoading, setFormLoading] = useState(false);
     const [categories, setCategories] = useState<Category[]>([]);
@@ -220,6 +253,21 @@ function InventoryContent() {
     // Edit mode
     const [isEditMode, setIsEditMode] = useState(false);
     const [editingProductId, setEditingProductId] = useState<string | null>(null);
+    const [editingVariants, setEditingVariants] = useState<
+        Array<{
+            id: string;
+            variant_name: string;
+            stock_level: number;
+            original_stock: number;
+            price_adjustment: number;
+            original_price_adjustment: number;
+        }>
+    >([]);
+    const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+    const [pendingDemoCleanup, setPendingDemoCleanup] = useState<{
+        createdName: string;
+        demoIds: string[];
+    } | null>(null);
 
     // Scan State
     const [showScanDialog, setShowScanDialog] = useState(false);
@@ -268,6 +316,7 @@ function InventoryContent() {
         stock: "",
         hsn_code: "71179010",
         image_url: "",
+        gallery_angles: {} as ProductGalleryAngles,
         location: "Showcase Tray A",
         craft: "",
         plating: "",
@@ -519,31 +568,18 @@ function InventoryContent() {
             setLoading(true);
             setError(null);
 
-            const fetchedProducts: ProductRecordWithCategory[] = await getProducts({ activeOnly: false });
-
-            // Map PB data to UI Product interface
-            // We need to fetch variants to get stock levels. 
-            // Or assume stock is aggregated or stored on product (not recommended for variants but OK for simple fallback)
-            // Ideally we query variants. 
-            // For listing, doing N+1 queries is bad.
-            // PB 'products' list response includes expanded 'category'.
-            // Stock is in 'product_variants'. 
-            // We can try to expand variants? expands: 'product_variants(product)' is reverse. 
-            // PB supports reverse expand: expand: 'product_variants_via_product' if relation is set up?
-            // PocketBase > 0.13 supports reverse relation expand if we use the correct syntax.
-            // Assuming 'product_variants' has 'product' relation.
-            // expand: 'product_variants(product)' might not work directly.
-
-            // WORKAROUND: Fetch all variants (if < 1000 items OK) or fetch stock separately.
-            // Or better: store total stock on Product record as a cached field.
-            // For now, let's fetch all variants and map them. It's safe for < 200 products.
+            const [fetchedProducts, variantSummary, galleryMap] = await Promise.all([
+                getProducts({ activeOnly: false }) as Promise<ProductRecordWithCategory[]>,
+                getVariantStockSummary(),
+                loadProductGalleryMap().catch(() => ({} as Record<string, ProductGalleryAngles>)),
+            ]);
 
             const {
                 stockByProduct: variantMap,
                 materialByProduct: variantMaterialMap,
                 productByVariant: variantToProduct,
                 primaryVariantByProduct,
-            } = await getVariantStockSummary();
+            } = variantSummary;
 
             // Calculate pending stock from active Purchase Orders
             const productPendingMap = new Map<string, number>();
@@ -566,6 +602,8 @@ function InventoryContent() {
 
             const mappedProducts: Product[] = fetchedProducts.map((p) => {
                 const catName = p.expand?.category?.name || "Uncategorized";
+                const primaryImage = getProductDisplayImage(p);
+                const angles = galleryMap[p.id] || (primaryImage ? { HERO: primaryImage } : {});
                 return {
                     id: p.id,
                     sku: p.sku,
@@ -585,7 +623,8 @@ function InventoryContent() {
                     stock: variantMap.get(p.id) || 0,
                     pending_po_quantity: productPendingMap.get(p.id) || 0,
                     material: variantMaterialMap.get(p.id),
-                    image: getProductDisplayImage(p),
+                    image: primaryImage,
+                    gallery_angles: angles,
                     hsn_code: p.hsn_code,
                     barcode: p.barcode,
                     location: p.location || "Showcase Tray A",
@@ -595,8 +634,10 @@ function InventoryContent() {
                     base_metal: p.base_metal || "",
                     is_active: p.is_active !== false,
                     variant_id: primaryVariantByProduct.get(p.id) || '',
-                    is_bundle: Boolean((p as any).is_bundle),
-                    bundle_items: Array.isArray((p as any).bundle_items) ? (p as any).bundle_items : [],
+                    is_bundle: Boolean(p.is_bundle),
+                    bundle_items: Array.isArray(p.bundle_items) ? (p.bundle_items as unknown as BundleComponent[]) : [],
+                    created: p.created,
+                    updated: p.updated,
                 };
             });
 
@@ -698,7 +739,7 @@ function InventoryContent() {
                 channel_prices: newProduct.channel_prices || {},
                 hsn_code: newProduct.hsn_code,
                 image_url: newProduct.image_url && newProduct.image_url.startsWith('http') ? newProduct.image_url : '',
-                image_data: newProduct.image_url || '',
+                image_data: newProduct.gallery_angles?.HERO || newProduct.image_url || '',
                 location: newProduct.location || "Showcase Tray A",
                 craft: newProduct.craft || '',
                 plating: newProduct.plating || '',
@@ -708,10 +749,11 @@ function InventoryContent() {
                     ? products.find((product) => product.id === editingProductId)?.is_active !== false
                     : false,
                 is_bundle: Boolean(newProduct.is_bundle),
-                bundle_items: (newProduct.is_bundle ? newProduct.bundle_items : []) as any,
+                bundle_items: (newProduct.is_bundle ? newProduct.bundle_items : []) as unknown as PbProduct["bundle_items"],
             };
 
             let targetVariantId = "";
+            let savedProductId = editingProductId || "";
             // Quantity actually added to stock by this save. In edit mode this is
             // the delta, not the cumulative total the dialog shows (INV-05).
             let intakeQuantity = parsedStock;
@@ -719,6 +761,32 @@ function InventoryContent() {
             if (isEditMode && editingProductId) {
                 // Update
                 await updateProduct(editingProductId, productPayload);
+
+                // Persist per-variant stock & price adjustments edited in the Variant Matrix
+                if (editingVariants.length > 1) {
+                    for (const ev of editingVariants) {
+                        const stockDelta = ev.stock_level - ev.original_stock;
+                        const priceChanged = ev.price_adjustment !== ev.original_price_adjustment;
+                        if (stockDelta !== 0 || priceChanged) {
+                            await updateVariant(ev.id, {
+                                ...(stockDelta !== 0 ? { stock_level: ev.stock_level } : {}),
+                                ...(priceChanged ? { price_adjustment: ev.price_adjustment } : {}),
+                            });
+                        }
+                        if (stockDelta !== 0) {
+                            await recordManualIntakeMovement({
+                                variantId: ev.id,
+                                quantity: stockDelta,
+                                referenceId: editingProductId,
+                                notes: `Variant ${ev.variant_name} adjustment (${ev.original_stock} → ${ev.stock_level})`,
+                            }).catch(err => console.warn('Could not log variant movement:', err));
+                        }
+                    }
+                } else if (editingVariants.length === 1 && editingVariants[0].price_adjustment !== editingVariants[0].original_price_adjustment) {
+                    await updateVariant(editingVariants[0].id, {
+                        price_adjustment: editingVariants[0].price_adjustment,
+                    });
+                }
 
                 // I3: apply the aggregate delta only when there is exactly one
                 // variant. A multi-variant product must be edited per variant —
@@ -770,6 +838,7 @@ function InventoryContent() {
             } else {
                 // Create
                 const product = await createProduct(productPayload);
+                savedProductId = product.id;
 
                 // Create default variant
                 const v = await createVariant({
@@ -820,8 +889,18 @@ function InventoryContent() {
                 }
             }
 
+            if (savedProductId) {
+                const anglesToSave =
+                    Object.keys(newProduct.gallery_angles || {}).length > 0
+                        ? newProduct.gallery_angles
+                        : newProduct.image_url
+                        ? { HERO: newProduct.image_url }
+                        : {};
+                await saveProductGalleryAngles(savedProductId, anglesToSave);
+            }
+
             setShowAddDialog(false);
-            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', location: trayOptions[0]?.code ?? 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '', is_bundle: false, bundle_items: [] });
+            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', gallery_angles: {} as ProductGalleryAngles, location: trayOptions[0]?.code ?? 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '', is_bundle: false, bundle_items: [] });
             fetchProducts();
         } catch (err) {
             console.error('Error saving product:', err);
@@ -876,24 +955,85 @@ function InventoryContent() {
         if (demos.length === 0) return;
 
         demoPromptHandled.current = true;
-        const shouldRemove = window.confirm(
-            `Your first real piece (${created.name}) is in. Remove the ${demos.length} demo products and their stock variants from inventory?`
-        );
-        if (!shouldRemove) return;
+        setPendingDemoCleanup({
+            createdName: created.name,
+            demoIds: demos.map((d) => d.id),
+        });
+    };
 
-        for (const demo of demos) {
-            await deleteProductCascade(demo.id).catch(() => {});
+    const confirmDemoCleanup = async () => {
+        if (!pendingDemoCleanup) return;
+        const { demoIds } = pendingDemoCleanup;
+        setPendingDemoCleanup(null);
+        for (const demoId of demoIds) {
+            await deleteProductCascade(demoId).catch(() => {});
         }
         toast.success("Demo products removed.");
         await fetchProducts();
     };
 
-    const handleDeleteProduct = async (id: string) => {
+    const handleArchiveToggle = async (product: Product) => {
+        const nextActive = product.is_active === false;
+        try {
+            await updateProduct(product.id, { is_active: nextActive });
+            toast.success(nextActive ? `${product.name} restored to catalog` : `${product.name} archived as draft`);
+            await fetchProducts();
+        } catch (err) {
+            console.error("Archive toggle failed:", err);
+            toast.error(err instanceof Error ? err.message : "Could not update product status");
+        }
+    };
+
+    const openEditProduct = (product: Product) => {
+        setNewProduct({
+            name: product.name,
+            sku: product.sku,
+            category: product.categoryId ? (categories.find(c => c.id === product.categoryId)?.name || product.category || "Uncategorized") : (product.category || "Uncategorized"),
+            base_price: String(product.price),
+            cost_price: String(product.cost_price || ""),
+            po_reference: "",
+            channel_prices: product.channel_prices || {},
+            stock: String(product.stock),
+            hsn_code: product.hsn_code || "7117",
+            image_url: product.image || "",
+            gallery_angles: product.gallery_angles || (product.image ? { HERO: product.image } : {}),
+            location: product.location || "Showcase Tray A",
+            craft: product.craft || "",
+            plating: product.plating || "",
+            occasion: product.occasion || "",
+            base_metal: product.base_metal || "",
+            is_bundle: Boolean(product.is_bundle),
+            bundle_items: product.bundle_items || [],
+        });
+        setEditingVariants([]);
+        setIsEditMode(true);
+        setEditingProductId(product.id);
+        setShowAddDialog(true);
+        getProductVariants(product.id)
+            .then((vars: ProductVariant[]) => {
+                setEditingVariants(
+                    vars.map((v) => ({
+                        id: v.id,
+                        variant_name: v.variant_name || product.sku,
+                        stock_level: Number(v.stock_level) || 0,
+                        original_stock: Number(v.stock_level) || 0,
+                        price_adjustment: Number(v.price_adjustment) || 0,
+                        original_price_adjustment: Number(v.price_adjustment) || 0,
+                    }))
+                );
+            })
+            .catch(() => setEditingVariants([]));
+    };
+
+    const handleDeleteProduct = (id: string) => {
         if (!canDeleteProducts()) {
             toast.error("You do not have permission to delete products.");
             return;
         }
-        if (!confirm("Delete this product permanently? This cannot be undone.")) return;
+        setPendingDeleteId(id);
+    };
+
+    const executeDeleteProduct = async (id: string) => {
         try {
             // A product with sales or order history must stay readable for invoices and
             // order details, so it is refused rather than orphaned.
@@ -946,6 +1086,29 @@ function InventoryContent() {
         }
     };
 
+    const handleOpenBufferModal = async () => {
+        setShowBufferModal(true);
+        try {
+            const configs = await loadChannelBufferConfigs();
+            setBufferConfigs(configs);
+        } catch {
+            setBufferConfigs(DEFAULT_CHANNEL_CONFIGS);
+        }
+    };
+
+    const handleSaveBufferConfigs = async () => {
+        setBufferSaving(true);
+        try {
+            await saveChannelBufferConfigs(bufferConfigs);
+            toast.success("Omnichannel safety buffers updated");
+            setShowBufferModal(false);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed saving safety buffers");
+        } finally {
+            setBufferSaving(false);
+        }
+    };
+
     const filteredProducts = products.filter(product => {
         const matchesCategory = selectedCategory === "All" || product.category === selectedCategory || product.categoryId === selectedCategory;
         const matchesLocation = selectedLocation === "All" || (product.location || "Showcase Tray A") === selectedLocation;
@@ -953,6 +1116,8 @@ function InventoryContent() {
             statusFilter === "all" ||
             (statusFilter === "draft"
                 ? product.is_active === false
+                : statusFilter === "dead_stock"
+                ? isDeadStockProduct(product)
                 : product.is_active !== false);
         const q = scanQuery.trim().toLowerCase();
         const matchesSearch = !q || product.name.toLowerCase().includes(q) || product.sku.toLowerCase().includes(q);
@@ -961,6 +1126,18 @@ function InventoryContent() {
 
     const publishedCount = products.filter((product) => product.is_active !== false).length;
     const draftCount = products.length - publishedCount;
+    const deadStockCount = products.filter((product) => isDeadStockProduct(product)).length;
+
+    const totalPages = Math.max(1, Math.ceil(filteredProducts.length / INVENTORY_PAGE_SIZE));
+    const currentPage = Math.min(page, totalPages);
+    const paginatedProducts = filteredProducts.slice(
+        (currentPage - 1) * INVENTORY_PAGE_SIZE,
+        currentPage * INVENTORY_PAGE_SIZE
+    );
+
+    useEffect(() => {
+        setPage(1);
+    }, [selectedCategory, selectedLocation, statusFilter, scanQuery]);
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
@@ -1143,11 +1320,13 @@ function InventoryContent() {
                                             ? "All statuses"
                                             : statusFilter === "published"
                                               ? "Published"
-                                              : "Drafts"}
+                                              : statusFilter === "dead_stock"
+                                                ? "Dead Stock (90d+)"
+                                                : "Drafts"}
                                     </span>
                                     <ChevronDown size={14} />
                                 </DropdownMenuTrigger>
-                                <DropdownMenuContent align="start" className="w-44">
+                                <DropdownMenuContent align="start" className="w-48">
                                     <DropdownMenuItem onClick={() => setStatusFilter("all")}>
                                         <span className="flex-1">All</span>
                                         <span className="text-[10px] text-moonstone">{products.length}</span>
@@ -1160,8 +1339,28 @@ function InventoryContent() {
                                         <span className="flex-1">Drafts</span>
                                         <span className="text-[10px] text-moonstone">{draftCount}</span>
                                     </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => setStatusFilter("dead_stock")}>
+                                        <span className="flex-1 text-rose-300">Dead Stock (90d+)</span>
+                                        <span className="text-[10px] text-rose-300">{deadStockCount}</span>
+                                    </DropdownMenuItem>
                                 </DropdownMenuContent>
                             </DropdownMenu>
+
+                            <button
+                                type="button"
+                                onClick={() => setStatusFilter(statusFilter === "dead_stock" ? "all" : "dead_stock")}
+                                className={`flex h-10 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors ${
+                                    statusFilter === "dead_stock"
+                                        ? "bg-rose-500 text-white border-rose-500 shadow-sm"
+                                        : deadStockCount > 0
+                                        ? "bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20"
+                                        : "bg-card text-muted-foreground border-border hover:text-foreground hover:bg-muted/40"
+                                }`}
+                                title="Filter in-stock items unchanged for 90+ days"
+                            >
+                                <AlertTriangle size={13} />
+                                <span>90d+ Dead Stock ({deadStockCount})</span>
+                            </button>
 
                             <DropdownMenu>
                                 <DropdownMenuTrigger
@@ -1194,6 +1393,10 @@ function InventoryContent() {
                                     <DropdownMenuItem onClick={() => setShowTransferModal(true)}>
                                         <ArrowRightLeft size={14} />
                                         Transfer stock
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => void handleOpenBufferModal()}>
+                                        <ShieldCheck size={14} className="text-emerald-400" />
+                                        Omnichannel safety buffers
                                     </DropdownMenuItem>
                                     <DropdownMenuItem
                                         onClick={() => {
@@ -1248,6 +1451,7 @@ function InventoryContent() {
                     {loading ? (
                         <div className="flex justify-center p-12"><Loader2 className="animate-spin text-primary" size={40} /></div>
                     ) : (
+                        <>
                         <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
                             {filteredProducts.length === 0 ? (
                                 <div className="col-span-full rounded-xl border border-dashed border-surface-hover/80 bg-surface-navy/40 px-6 py-12 text-center">
@@ -1276,7 +1480,7 @@ function InventoryContent() {
                                     </div>
                                 </div>
                             ) : (
-                                filteredProducts.map((product) => {
+                                paginatedProducts.map((product) => {
                                 const isSelected = selectedProductIds.includes(product.id);
                                 const pricingShape = {
                                     base_price: product.price,
@@ -1302,6 +1506,79 @@ function InventoryContent() {
                                                 className="size-4 rounded border-surface-hover accent-emerald-500 cursor-pointer shadow bg-bg-navy/80"
                                                 title="Select for WhatsApp broadcast or bulk actions"
                                             />
+                                        </div>
+
+                                        {/* Touch-friendly 3-dot quick actions menu (for mobile / tablet without hover) */}
+                                        <div className="absolute top-2 right-2 z-20">
+                                            <DropdownMenu>
+                                                <DropdownMenuTrigger
+                                                    type="button"
+                                                    aria-label={`Actions for ${product.name}`}
+                                                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-surface-hover/80 bg-bg-navy/90 text-moonstone shadow hover:border-primary/60 hover:text-white transition-colors"
+                                                >
+                                                    <MoreVertical size={14} />
+                                                </DropdownMenuTrigger>
+                                                <DropdownMenuContent align="end" className="w-52 bg-surface-navy border-surface-hover text-white">
+                                                    <DropdownMenuLabel className="text-[11px] text-moonstone truncate">{product.name}</DropdownMenuLabel>
+                                                    <DropdownMenuSeparator />
+                                                    <DropdownMenuItem onClick={() => openEditProduct(product)}>
+                                                        <Edit size={14} className="mr-2 text-primary" /> Edit & Variants
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={() => {
+                                                        setCloneSeed(product);
+                                                        setShowQuickAdd(true);
+                                                    }}>
+                                                        <Copy size={14} className="mr-2" /> Clone Piece
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={() => {
+                                                        setBroadcastProductsList([product]);
+                                                        setShowBroadcastModal(true);
+                                                    }}>
+                                                        <Share2 size={14} className="mr-2 text-emerald-400" /> WhatsApp Broadcast
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={() => {
+                                                        setSelectedDiscrepancyProduct({
+                                                            id: product.id,
+                                                            name: product.name,
+                                                            sku: product.sku,
+                                                            stock: product.stock,
+                                                        });
+                                                        setShowDiscrepancyModal(true);
+                                                    }}>
+                                                        <AlertTriangle size={14} className="mr-2 text-amber-400" /> Flag Discrepancy
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={() => {
+                                                        setSelectedPOProduct(product);
+                                                        setShowPOHistoryModal(true);
+                                                    }}>
+                                                        <Truck size={14} className="mr-2 text-indigo-400" /> PO History
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={() => {
+                                                        setSelectedLedgerProduct(product);
+                                                        setShowLedgerModal(true);
+                                                    }}>
+                                                        <History size={14} className="mr-2 text-cyan-400" /> Stock Ledger
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuSeparator />
+                                                    <DropdownMenuItem onClick={() => void handleArchiveToggle(product)}>
+                                                        {product.is_active === false ? (
+                                                            <>
+                                                                <RotateCcw size={14} className="mr-2 text-emerald-400" /> Restore to Catalog
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <Archive size={14} className="mr-2 text-amber-300" /> Archive as Draft
+                                                            </>
+                                                        )}
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem
+                                                        onClick={() => handleDeleteProduct(product.id)}
+                                                        className="text-red-400 focus:text-red-300"
+                                                    >
+                                                        <Trash2 size={14} className="mr-2" /> Delete Permanently
+                                                    </DropdownMenuItem>
+                                                </DropdownMenuContent>
+                                            </DropdownMenu>
                                         </div>
 
                                         <div className="aspect-square bg-bg-navy rounded-lg mb-4 flex items-center justify-center relative overflow-hidden group-hover:shadow-inner border border-surface-hover/50">
@@ -1356,30 +1633,7 @@ function InventoryContent() {
                                                 >
                                                     <History size={18} />
                                                 </button>
-                                                <button onClick={() => {
-                                                    setNewProduct({
-                                                        name: product.name,
-                                                        sku: product.sku,
-                                                        category: product.categoryId ? (categories.find(c => c.id === product.categoryId)?.name || product.category || "Uncategorized") : (product.category || "Uncategorized"),
-                                                        base_price: String(product.price),
-                                                        cost_price: String(product.cost_price || ""),
-                                                        po_reference: "",
-                                                        channel_prices: product.channel_prices || {},
-                                                        stock: String(product.stock),
-                                                        hsn_code: product.hsn_code || "7117",
-                                                        image_url: product.image || "",
-                                                        location: product.location || "Showcase Tray A",
-                                                        craft: product.craft || "",
-                                                        plating: product.plating || "",
-                                                        occasion: product.occasion || "",
-                                                        base_metal: product.base_metal || "",
-                                                        is_bundle: Boolean(product.is_bundle),
-                                                        bundle_items: product.bundle_items || [],
-                                                    });
-                                                    setIsEditMode(true);
-                                                    setEditingProductId(product.id);
-                                                    setShowAddDialog(true);
-                                                }} className="bg-primary text-primary-foreground p-2 rounded-lg hover:scale-110"><Edit size={18} /></button>
+                                                <button onClick={() => openEditProduct(product)} className="bg-primary text-primary-foreground p-2 rounded-lg hover:scale-110" title="Edit product & variants"><Edit size={18} /></button>
                                                 <button
                                                     type="button"
                                                     onClick={() => {
@@ -1391,7 +1645,15 @@ function InventoryContent() {
                                                 >
                                                     <Copy size={16} />
                                                 </button>
-                                                <button onClick={() => handleDeleteProduct(product.id)} className="bg-red-500 text-white p-2 rounded-lg hover:scale-110"><Trash2 size={18} /></button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleArchiveToggle(product)}
+                                                    className="bg-amber-600/90 text-white p-2 rounded-lg hover:scale-110"
+                                                    title={product.is_active === false ? "Restore to live catalog" : "Archive as draft"}
+                                                >
+                                                    {product.is_active === false ? <RotateCcw size={16} /> : <Archive size={16} />}
+                                                </button>
+                                                <button onClick={() => handleDeleteProduct(product.id)} className="bg-red-500 text-white p-2 rounded-lg hover:scale-110" title="Delete product"><Trash2 size={18} /></button>
                                             </div>
                                         </div>
                                         <div>
@@ -1406,6 +1668,16 @@ function InventoryContent() {
                                                     {product.is_bundle && (
                                                         <span className="shrink-0 rounded border border-purple-500/30 bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-purple-300">
                                                             Bundle ({product.bundle_items?.length || 0})
+                                                        </span>
+                                                    )}
+                                                    {isDeadStockProduct(product) && (
+                                                        <span className="shrink-0 rounded border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-300">
+                                                            90d+ Slow Mover
+                                                        </span>
+                                                    )}
+                                                    {Object.keys(product.gallery_angles || {}).length > 1 && (
+                                                        <span className="shrink-0 rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-cyan-300">
+                                                            {Object.keys(product.gallery_angles || {}).length} Angles
                                                         </span>
                                                     )}
                                                 </div>
@@ -1467,6 +1739,39 @@ function InventoryContent() {
                                 })
                             )}
                         </div>
+                        {filteredProducts.length > INVENTORY_PAGE_SIZE && (
+                            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-hover/70 bg-surface-navy/70 px-4 py-3 text-xs text-moonstone">
+                                <span className="tabular-nums">
+                                    Showing {(currentPage - 1) * INVENTORY_PAGE_SIZE + 1}–{Math.min(currentPage * INVENTORY_PAGE_SIZE, filteredProducts.length)} of {filteredProducts.length} products
+                                </span>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={currentPage <= 1}
+                                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                        className="h-8 border-surface-hover text-xs"
+                                    >
+                                        Prev
+                                    </Button>
+                                    <span className="tabular-nums font-semibold text-white">
+                                        Page {currentPage} / {totalPages}
+                                    </span>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={currentPage >= totalPages}
+                                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                        className="h-8 border-surface-hover text-xs"
+                                    >
+                                        Next
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
+                        </>
                     )}
                 </div>
             </div>
@@ -1592,6 +1897,69 @@ function InventoryContent() {
                                         </div>
                                     </button>
                                 )}
+
+                                {/* Multi-Angle Gallery Slots (HERO / MACR / REVR / SCAL) */}
+                                <div className="grid grid-cols-4 gap-2 pt-1">
+                                    {(["HERO", "MACR", "REVR", "SCAL"] as ProductAngleSlot[]).map((slot) => {
+                                        const slotImg = newProduct.gallery_angles?.[slot];
+                                        const labels: Record<ProductAngleSlot, string> = {
+                                            HERO: "Hero",
+                                            MACR: "Macro",
+                                            REVR: "Reverse",
+                                            SCAL: "Scale",
+                                        };
+                                        return (
+                                            <div
+                                                key={slot}
+                                                className="rounded-lg border border-surface-hover/70 bg-bg-navy/50 p-1.5 flex flex-col items-center gap-1"
+                                            >
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setProductShotType(slot);
+                                                        setShowPhotoModal(true);
+                                                    }}
+                                                    className="w-full aspect-square rounded border border-dashed border-surface-hover hover:border-primary/60 overflow-hidden flex items-center justify-center bg-black/30"
+                                                    title={`Upload/capture ${labels[slot]} (${slot}) angle`}
+                                                >
+                                                    {slotImg ? (
+                                                        // eslint-disable-next-line @next/next/no-img-element -- preview data URL
+                                                        <img src={slotImg} alt={slot} className="w-full h-full object-cover" />
+                                                    ) : (
+                                                        <Camera size={14} className="text-moonstone/60" />
+                                                    )}
+                                                </button>
+                                                <div className="w-full flex items-center justify-between text-[9px] px-0.5">
+                                                    <span className="font-mono text-moonstone">{slot}</span>
+                                                    {slotImg && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setNewProduct((prev) => {
+                                                                    const nextAngles = mergeProductAngle(prev.gallery_angles, slot, "");
+                                                                    return {
+                                                                        ...prev,
+                                                                        gallery_angles: nextAngles,
+                                                                        image_url:
+                                                                            nextAngles.HERO ||
+                                                                            nextAngles.MACR ||
+                                                                            nextAngles.REVR ||
+                                                                            nextAngles.SCAL ||
+                                                                            "",
+                                                                    };
+                                                                });
+                                                            }}
+                                                            className="text-rose-400 hover:text-rose-300"
+                                                            title={`Clear ${slot}`}
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             </div>
 
                             {/* 2. Master Jewelry SKU Architecture Engine */}
@@ -1997,10 +2365,14 @@ function InventoryContent() {
                                     <Input
                                         type="number"
                                         value={newProduct.stock}
+                                        disabled={isEditMode && editingVariants.length > 1}
                                         onChange={e => setNewProduct({ ...newProduct, stock: e.target.value })}
                                         placeholder="10"
-                                        className="bg-bg-navy border-surface-hover text-sm h-9 font-mono mt-1"
+                                        className="bg-bg-navy border-surface-hover text-sm h-9 font-mono mt-1 disabled:opacity-60"
                                     />
+                                    {isEditMode && editingVariants.length > 1 && (
+                                        <p className="mt-1 text-[10px] text-moonstone">Managed per variant below</p>
+                                    )}
                                 </div>
                                 <div>
                                     <Label className="flex items-center gap-1.5 text-xs"><MapPin size={13} className="text-gold" /> Storage Location</Label>
@@ -2014,6 +2386,55 @@ function InventoryContent() {
                                     </Select>
                                 </div>
                             </div>
+
+                            {isEditMode && editingVariants.length > 0 && (
+                                <div className="rounded-lg border border-surface-hover/80 bg-bg-navy/50 p-3 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <Label className="text-xs font-semibold text-white">Variant Stock &amp; Price Adjustment</Label>
+                                        <span className="text-[10px] text-moonstone">{editingVariants.length} variant{editingVariants.length === 1 ? "" : "s"}</span>
+                                    </div>
+                                    <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                                        {editingVariants.map((variant, idx) => (
+                                            <div key={variant.id} className="grid grid-cols-12 items-center gap-2 text-xs">
+                                                <span className="col-span-5 truncate font-mono text-white" title={variant.variant_name}>
+                                                    {variant.variant_name}
+                                                </span>
+                                                <div className="col-span-3">
+                                                    <Input
+                                                        type="number"
+                                                        min={0}
+                                                        aria-label={`Stock for ${variant.variant_name}`}
+                                                        value={variant.stock_level}
+                                                        onChange={(e) => {
+                                                            const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                                            setEditingVariants((prev) =>
+                                                                prev.map((row, i) => (i === idx ? { ...row, stock_level: val } : row))
+                                                            );
+                                                        }}
+                                                        className="h-8 bg-bg-navy border-surface-hover font-mono text-xs tabular-nums"
+                                                    />
+                                                </div>
+                                                <div className="col-span-4">
+                                                    <Input
+                                                        type="number"
+                                                        step="1"
+                                                        aria-label={`Price adjustment for ${variant.variant_name}`}
+                                                        placeholder="₹ Adj"
+                                                        value={variant.price_adjustment}
+                                                        onChange={(e) => {
+                                                            const val = parseFloat(e.target.value) || 0;
+                                                            setEditingVariants((prev) =>
+                                                                prev.map((row, i) => (i === idx ? { ...row, price_adjustment: val } : row))
+                                                            );
+                                                        }}
+                                                        className="h-8 bg-bg-navy border-surface-hover font-mono text-xs tabular-nums"
+                                                    />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Primary Action Button */}
                             <Button
@@ -2096,12 +2517,104 @@ function InventoryContent() {
                 productSku={newProduct.sku}
                 productName={newProduct.name}
                 onPhotoSelected={(imageData, shotType) => {
-                    setNewProduct(prev => ({ ...prev, image_url: imageData }));
+                    setNewProduct(prev => {
+                        const nextAngles = mergeProductAngle(prev.gallery_angles, shotType, imageData);
+                        return {
+                            ...prev,
+                            gallery_angles: nextAngles,
+                            image_url: nextAngles.HERO || imageData,
+                        };
+                    });
                     setProductShotType(shotType);
                     setShowPhotoModal(false);
                     toast.success(`Photo tagged as [${shotType}] shot successfully!`);
                 }}
             />
+
+            {/* Omnichannel Safety Buffer Configuration Modal */}
+            <Dialog open={showBufferModal} onOpenChange={setShowBufferModal}>
+                <DialogContent className="bg-surface-navy border-surface-hover text-white max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-white">
+                            <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                            Omnichannel Safety Stock Buffers
+                        </DialogTitle>
+                        <DialogDescription className="text-moonstone">
+                            Reserve safety units for in-store POS and WhatsApp before exposing inventory to external online storefronts.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3 py-2 max-h-[55vh] overflow-y-auto">
+                        {bufferConfigs.map((cfg) => (
+                            <div
+                                key={cfg.channel}
+                                className="flex items-center justify-between gap-3 rounded-lg border border-surface-hover bg-bg-navy/50 p-3"
+                            >
+                                <div>
+                                    <div className="text-sm font-semibold text-white uppercase tracking-wide">
+                                        {cfg.channel}
+                                    </div>
+                                    <div className="text-[11px] text-moonstone">
+                                        Priority #{cfg.priorityOrder}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <div className="flex items-center gap-1.5">
+                                        <Label className="text-xs text-moonstone whitespace-nowrap">Buffer</Label>
+                                        <Input
+                                            type="number"
+                                            min={0}
+                                            value={cfg.safetyBuffer}
+                                            onChange={(e) => {
+                                                const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                                setBufferConfigs((prev) =>
+                                                    prev.map((c) =>
+                                                        c.channel === cfg.channel ? { ...c, safetyBuffer: val } : c
+                                                    )
+                                                );
+                                            }}
+                                            className="w-16 h-8 bg-surface-navy border-surface-hover text-white text-xs text-center font-mono"
+                                        />
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() =>
+                                            setBufferConfigs((prev) =>
+                                                prev.map((c) =>
+                                                    c.channel === cfg.channel ? { ...c, isFrozen: !c.isFrozen } : c
+                                                )
+                                            )
+                                        }
+                                        className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors ${
+                                            cfg.isFrozen
+                                                ? "border-rose-500/40 bg-rose-500/15 text-rose-300"
+                                                : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                                        }`}
+                                    >
+                                        {cfg.isFrozen ? "Frozen" : "Live"}
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setShowBufferModal(false)}
+                            className="border-surface-hover text-moonstone"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            disabled={bufferSaving}
+                            onClick={() => void handleSaveBufferConfigs()}
+                        >
+                            {bufferSaving ? "Saving..." : "Save Buffers"}
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
 
             {/* Stock Discrepancies, Quarantine & Vendor Replacements Modal */}
             <DiscrepancyModal
@@ -2172,6 +2685,52 @@ function InventoryContent() {
                 open={showReplenishmentModal}
                 onOpenChange={setShowReplenishmentModal}
             />
+
+            {/* Delete Product Confirmation */}
+            <AlertDialog open={Boolean(pendingDeleteId)} onOpenChange={(open) => { if (!open) setPendingDeleteId(null); }}>
+                <AlertDialogContent className="bg-surface-navy border-surface-hover text-white">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete Product Permanently?</AlertDialogTitle>
+                        <AlertDialogDescription className="text-moonstone">
+                            This action cannot be undone. Products with sales or invoice history are protected and should be archived instead.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel className="bg-bg-navy border-surface-hover text-white">Keep Product</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                const targetId = pendingDeleteId;
+                                setPendingDeleteId(null);
+                                if (targetId) void executeDeleteProduct(targetId);
+                            }}
+                            className="bg-red-600 hover:bg-red-700 text-white"
+                        >
+                            Delete Permanently
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Demo Cleanup Confirmation */}
+            <AlertDialog open={Boolean(pendingDemoCleanup)} onOpenChange={(open) => { if (!open) setPendingDemoCleanup(null); }}>
+                <AlertDialogContent className="bg-surface-navy border-surface-hover text-white">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Remove Sample Demo Products?</AlertDialogTitle>
+                        <AlertDialogDescription className="text-moonstone">
+                            Your first real piece ({pendingDemoCleanup?.createdName}) is in. Remove the {pendingDemoCleanup?.demoIds.length || 0} demo products and their stock variants from inventory?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel className="bg-bg-navy border-surface-hover text-white">Keep Samples</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => void confirmDemoCleanup()}
+                            className="bg-primary text-primary-foreground"
+                        >
+                            Remove Demo Products
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 }

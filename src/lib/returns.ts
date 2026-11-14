@@ -8,7 +8,7 @@ import { applyPurchaseReversal } from './channel-orders';
 import { adjustPoints } from './loyalty';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
-import { calculateGST, GST_RATES } from './gst';
+import { GST_RATES } from './gst';
 import { createInvoice, getStoreSettings, type Invoice, type InvoiceItem } from './invoice';
 import { getCurrentShift, recordCashRefund } from './register';
 import { validateReturnQuantities } from './returns-policy';

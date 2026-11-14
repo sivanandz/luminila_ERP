@@ -374,18 +374,49 @@ export function setCatalogSyncMode(mode: CatalogSyncMode): void {
  */
 const EDIT_GATE_ERROR_PATTERN = /no longer allows editing catalog products/i;
 
+function getEditGateSessionKey(): string {
+    return `whatsapp_edit_gate${getTenantStorageSuffix()}`;
+}
+
+function isEditGateToastShown(): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+        return sessionStorage.getItem(getEditGateSessionKey()) === '1';
+    } catch {
+        return false;
+    }
+}
+
 function noteEditFailure(error?: string | null): void {
     if (error && EDIT_GATE_ERROR_PATTERN.test(error) && !editGateDetected) {
         editGateDetected = true;
         emitTelemetry({ editGate: true, workerState: 'gated' });
-        toast.warning('WhatsApp is rejecting catalog edits from this session', {
-            description: 'Relink the WhatsApp session to restore push sync, or switch to "Catalog → Inventory" mode to keep prices in sync automatically.',
-            duration: 12000,
-        });
+        const alreadyWarned = isEditGateToastShown();
+        if (typeof window !== 'undefined') {
+            try {
+                sessionStorage.setItem(getEditGateSessionKey(), '1');
+            } catch {
+                // Ignore storage quota errors
+            }
+        }
+        if (!alreadyWarned) {
+            toast.warning('WhatsApp is rejecting catalog edits from this session', {
+                id: 'wa-edit-gate-warning',
+                description: 'Relink the WhatsApp session to restore push sync, or switch to "Catalog → Inventory" mode to keep prices in sync automatically.',
+                duration: 5000,
+            });
+        }
     }
 }
 
 function clearEditGateOnSuccess(): void {
+    if (typeof window !== 'undefined') {
+        try {
+            sessionStorage.removeItem(getEditGateSessionKey());
+        } catch {
+            // Ignore
+        }
+    }
     if (editGateDetected) {
         editGateDetected = false;
         emitTelemetry({ editGate: false, workerState: 'idle' });
@@ -1118,6 +1149,9 @@ export function initWhatsAppEventSync(): () => void {
     }
 
     isSubscribed = true;
+    if (isEditGateToastShown()) {
+        editGateDetected = true;
+    }
     restorePersistedQueue();
     if (taskQueue.length > 0 && isAutoSyncEnabled()) {
         scheduleNextWorkerTick(humanDelayMs(3000, 7000), 'pacing');

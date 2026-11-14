@@ -59,7 +59,6 @@ export default function BackupPage() {
         setAutoEnabled(enabled);
         if (enabled) startAuto();
         return () => stopAutoRef.current?.();
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- startAuto only touches refs/state setters
     }, [permissionsLoading, isAdmin, hasPermission]);
 
     const handleExport = async () => {

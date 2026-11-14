@@ -44,6 +44,7 @@ import {
 
 import { VendorForm } from "@/components/vendor/VendorForm";
 import { getVendors, deleteVendor, type Vendor } from "@/lib/vendors";
+import { getInitials, pluralize } from "@/lib/utils";
 import { usePermissions } from "@/hooks/usePermissions";
 import { toast } from "sonner";
 
@@ -118,7 +119,7 @@ export default function VendorsPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header
                 title="Vendors"
-                subtitle={`${vendors.length} suppliers`}
+                subtitle={pluralize(vendors.length, "supplier")}
                 action={
                     <Button
                         onClick={() => setShowForm(true)}
@@ -133,7 +134,7 @@ export default function VendorsPage() {
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-8 scroll-smooth">
                 {/* Actions Bar */}
                 <div className="flex items-center justify-between gap-4 mb-6">
-                    <div className="relative w-80">
+                    <div className="relative w-full sm:w-80">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                         <Input
                             placeholder="Search vendors..."
@@ -172,17 +173,17 @@ export default function VendorsPage() {
                                 onClick={() => router.push(`/vendors/detail?id=${vendor.id}`)}
                             >
                                 <CardContent className="pt-6">
-                                    <div className="flex items-start justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
+                                    <div className="flex items-start justify-between gap-2">
+                                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                                            <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
                                                 <span className="text-primary font-semibold">
-                                                    {vendor.name.charAt(0).toUpperCase()}
+                                                    {getInitials(vendor.name)}
                                                 </span>
                                             </div>
-                                            <div>
-                                                <h3 className="font-semibold">{vendor.name}</h3>
+                                            <div className="min-w-0 flex-1">
+                                                <h3 className="font-semibold truncate">{vendor.name}</h3>
                                                 {vendor.contact_name && (
-                                                    <p className="text-sm text-muted-foreground">
+                                                    <p className="text-sm text-muted-foreground truncate">
                                                         {vendor.contact_name}
                                                     </p>
                                                 )}
@@ -190,7 +191,7 @@ export default function VendorsPage() {
                                         </div>
 
                                         <DropdownMenu>
-                                            <DropdownMenuTrigger onClick={(e) => e.stopPropagation()}>
+                                            <DropdownMenuTrigger className="shrink-0" onClick={(e) => e.stopPropagation()}>
                                                 <div className="h-9 w-9 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground">
                                                     <MoreVertical className="w-4 h-4" />
                                                 </div>
@@ -222,14 +223,14 @@ export default function VendorsPage() {
 
                                     <div className="mt-4 space-y-2 text-sm">
                                         {vendor.phone && (
-                                            <div className="flex items-center gap-2 text-muted-foreground">
-                                                <Phone className="w-4 h-4" />
-                                                <span>{vendor.phone}</span>
+                                            <div className="flex items-center gap-2 text-muted-foreground min-w-0">
+                                                <Phone className="w-4 h-4 shrink-0" />
+                                                <span className="truncate">{vendor.phone}</span>
                                             </div>
                                         )}
                                         {vendor.email && (
-                                            <div className="flex items-center gap-2 text-muted-foreground">
-                                                <Mail className="w-4 h-4" />
+                                            <div className="flex items-center gap-2 text-muted-foreground min-w-0">
+                                                <Mail className="w-4 h-4 shrink-0" />
                                                 <span className="truncate">{vendor.email}</span>
                                             </div>
                                         )}

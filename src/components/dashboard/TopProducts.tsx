@@ -35,28 +35,28 @@ export function TopProducts({ products, title = "Top Selling Products" }: TopPro
                     ) : (
                         products.map((product, index) => (
                             <div key={product.id} className="space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
-                                        <span className="text-sm font-mono text-muted-foreground w-5">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                                        <span className="text-sm font-mono text-muted-foreground w-5 shrink-0 tabular-nums">
                                             {index + 1}.
                                         </span>
-                                        <div>
-                                            <p className="font-medium text-sm truncate max-w-[180px]">
+                                        <div className="min-w-0 flex-1">
+                                            <p className="font-medium text-sm truncate" title={product.name}>
                                                 {product.name}
                                             </p>
-                                            <p className="text-xs text-muted-foreground">
+                                            <p className="text-xs text-muted-foreground truncate">
                                                 {product.sku} · {product.totalSold} sold
                                             </p>
                                         </div>
                                     </div>
-                                    <p className="text-sm font-mono font-semibold">
+                                    <p className="text-sm font-mono font-semibold shrink-0 tabular-nums">
                                         {formatINR(product.revenue)}
                                     </p>
                                 </div>
                                 <div className="h-1.5 bg-muted/30 rounded-full overflow-hidden">
                                     <div
                                         className="h-full bg-gradient-to-r from-champagne/50 to-champagne rounded-full transition-all duration-500"
-                                        style={{ width: `${(product.revenue / maxRevenue) * 100}%` }}
+                                        style={{ width: `${Math.max(0, Math.min(100, (product.revenue / maxRevenue) * 100))}%` }}
                                     />
                                 </div>
                             </div>

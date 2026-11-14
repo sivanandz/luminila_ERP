@@ -426,6 +426,10 @@ function LabelsContent() {
     // reused by starting at the 2nd or 3rd tag instead of feeding a fresh row.
     const [startSlot, setStartSlot] = useState<0 | 1 | 2>(0);
     const [selectedChannel, setSelectedChannel] = useState<string>("pos");
+    const selectedChannelRef = useRef(selectedChannel);
+    useEffect(() => {
+        selectedChannelRef.current = selectedChannel;
+    }, [selectedChannel]);
     const [availableChannels, setAvailableChannels] = useState<SalesChannelDef[]>(getConfiguredChannels());
 
     useEffect(() => {
@@ -505,7 +509,7 @@ function LabelsContent() {
                         base_price: p.base_price,
                         cost_price: p.cost_price,
                         channel_prices: p.channel_prices,
-                        price: getChannelPrice(p, selectedChannel),
+                        price: getChannelPrice(p, selectedChannelRef.current),
                         category: p.category || '',
                         hsn_code: p.hsn_code || '71179010',
                         craft: p.craft || '',
@@ -518,12 +522,13 @@ function LabelsContent() {
                 }
                 const stored = localStorage.getItem(getTenantStorageKey('luminila_products'));
                 if (stored) {
-                    const products = JSON.parse(stored);
-                    setAvailableProducts(products.map((p: any) => ({
+                    const products = JSON.parse(stored) as Array<Partial<DBProduct> & { id: string; name: string; sku: string; price?: number }>;
+                    setAvailableProducts(products.map((p) => ({
                         ...p,
-                        base_price: p.base_price ?? p.price,
+                        category: p.category || '',
+                        base_price: p.base_price ?? p.price ?? 0,
                         cost_price: p.cost_price,
-                        price: getChannelPrice({ base_price: p.base_price ?? p.price, cost_price: p.cost_price, channel_prices: p.channel_prices }, selectedChannel),
+                        price: getChannelPrice({ base_price: p.base_price ?? p.price ?? 0, cost_price: p.cost_price, channel_prices: p.channel_prices }, selectedChannelRef.current),
                     })));
                 }
             } catch (e) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -24,8 +24,8 @@ import { createOrder, OrderType, OrderStatus, OrderItemInput } from "@/lib/order
 import { searchCustomers, Customer } from "@/lib/customers";
 import { resolveBarcodeProduct, searchProductsForDocuments } from "@/lib/products";
 import { resolveVariantForProduct } from "@/lib/channel-orders";
+import { calculateWholesalePrice } from "@/lib/imitation-jewelry-engine";
 import { pb } from "@/lib/pocketbase";
-import { type Product, type ProductVariant } from "@/lib/products";
 
 // Product search dropdown result: Product/ProductVariant records narrowed
 // to the fields this page reads.
@@ -53,7 +53,6 @@ export default function CreateOrderPage() {
     const [orderType, setOrderType] = useState<OrderType>('estimate');
     const [orderDate, setOrderDate] = useState(new Date().toISOString().split('T')[0]);
     const [validUntil, setValidUntil] = useState<string>('');
-    const [status] = useState<OrderStatus>('draft');
 
     // Customer State
     const [searchQuery, setSearchQuery] = useState("");
@@ -209,6 +208,11 @@ export default function CreateOrderPage() {
         toast.success(`Scanned & added: ${payload.product.name}`);
     };
 
+    const handleScannedItemRef = useRef(handleScannedItem);
+    useEffect(() => {
+        handleScannedItemRef.current = handleScannedItem;
+    });
+
     // Scoped scanner listener: directly adds scanned items to this sales order
     useEffect(() => {
         const unregister = MobileScanner.registerContext("orders_entry", async (result) => {
@@ -216,7 +220,7 @@ export default function CreateOrderPage() {
                 const resolved = await resolveBarcodeProduct(result.barcode);
                 if (resolved) {
                     const { product: prod, variant: v } = resolved;
-                    handleScannedItem({
+                    handleScannedItemRef.current({
                         barcode: result.barcode,
                         product: {
                             id: prod.id,
@@ -240,7 +244,7 @@ export default function CreateOrderPage() {
             return true; // Stop propagation
         }, 60);
         return () => unregister();
-    }, [items]);
+    }, []);
 
     const updateItem = (index: number, field: keyof OrderItemInput, value: number) => {
         const newItems = [...items];
@@ -538,7 +542,18 @@ export default function CreateOrderPage() {
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-surface-hover">
-                                            {items.map((item, index) => (
+                                            {items.map((item, index) => {
+                                                const wholesaleTier =
+                                                    item.quantity >= 10 && item.unit_price > 0
+                                                        ? calculateWholesalePrice(item.unit_price, item.quantity)
+                                                        : null;
+                                                const suggestedDiscount = wholesaleTier
+                                                    ? Math.round(((item.quantity * item.unit_price * wholesaleTier.discountPercentApplied) / 100) * 100) / 100
+                                                    : 0;
+                                                const isTierApplied =
+                                                    wholesaleTier !== null &&
+                                                    Math.abs((item.discount_amount || 0) - suggestedDiscount) < 0.05;
+                                                return (
                                                 <tr key={index} className="hover:bg-bg-navy/30">
                                                     <td className="py-3 px-4">
                                                         <p className="text-white text-sm font-medium">{item.description}</p>
@@ -551,6 +566,20 @@ export default function CreateOrderPage() {
                                                             onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
                                                             className="w-full bg-bg-navy border border-surface-hover rounded px-2 py-1 text-center text-white text-sm"
                                                         />
+                                                        {wholesaleTier && wholesaleTier.discountPercentApplied > 0 && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => updateItem(index, 'discount_amount', suggestedDiscount)}
+                                                                className={`mt-1 w-full rounded px-1.5 py-0.5 text-[10px] font-semibold transition-colors ${
+                                                                    isTierApplied
+                                                                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                                                        : "bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25"
+                                                                }`}
+                                                                title={`Apply ${wholesaleTier.discountPercentApplied}% wholesale slab (-${formatPrice(suggestedDiscount)})`}
+                                                            >
+                                                                B2B Tier: {wholesaleTier.discountPercentApplied}% off
+                                                            </button>
+                                                        )}
                                                     </td>
                                                     <td className="py-3 px-2">
                                                         <input
@@ -576,7 +605,7 @@ export default function CreateOrderPage() {
                                                             className="w-full bg-bg-navy border border-surface-hover rounded px-2 py-1 text-right text-white text-sm"
                                                         />
                                                     </td>
-                                                    <td className="py-3 px-4 text-right font-bold text-white text-sm">
+                                                    <td className="py-3 px-4 text-right font-bold text-white text-sm tabular-nums">
                                                         {formatPrice(item.total)}
                                                     </td>
                                                     <td className="py-3 px-2 text-center">
@@ -588,7 +617,8 @@ export default function CreateOrderPage() {
                                                         </button>
                                                     </td>
                                                 </tr>
-                                            ))}
+                                                );
+                                            })}
                                         </tbody>
                                         <tfoot className="border-t border-surface-hover bg-bg-navy/30">
                                             <tr>

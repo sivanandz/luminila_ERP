@@ -306,8 +306,8 @@ export async function buildCustomerSplit(tenant: string, win: { current: DateWin
         ` && (${['confirmed', 'shipped', 'delivered', 'invoiced'].map((s) => `status="${s}"`).join(' || ')})`;
 
     const [histSales, histOrders] = await Promise.all([
-        pb.collection('sales').getFullList({ filter: historyFilterSales, fields: 'id,customer_phone,customer_name' }).catch(() => [] as Array<Record<string, any>>),
-        pb.collection('sales_orders').getFullList({ filter: historyFilterOrders, fields: 'id,customer_phone,customer_email,customer_name' }).catch(() => [] as Array<Record<string, any>>),
+        pb.collection('sales').getFullList({ filter: historyFilterSales, fields: 'id,customer_phone,customer_name' }).catch(() => [] as Array<Record<string, unknown>>),
+        pb.collection('sales_orders').getFullList({ filter: historyFilterOrders, fields: 'id,customer_phone,customer_email,customer_name' }).catch(() => [] as Array<Record<string, unknown>>),
     ]);
 
     const known = new Set<string>();

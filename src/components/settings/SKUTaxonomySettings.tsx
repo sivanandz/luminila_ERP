@@ -13,15 +13,7 @@ import {
     generateChildSKU,
     generateWholesaleSKU,
     type SKUTaxonomies,
-    type GenreOption,
-    type CategoryOption,
-    type SubcategoryOption,
-    type BaseMetalOption,
-    type PlatingOption,
-    type StoneOption,
-    type ColorOption,
     type SizeOption,
-    type PackagingTierOption,
 } from "@/lib/sku-generator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,6 +52,17 @@ import {
 
 type TaxonomyKey = keyof SKUTaxonomies;
 
+type TaxonomyEntry = SKUTaxonomies[TaxonomyKey][number] & {
+    code?: string;
+    suffix?: string;
+    label: string;
+    description?: string;
+    multiplier?: number;
+    categoryCode?: string;
+    category?: SizeOption["category"];
+    isCustom?: boolean;
+};
+
 interface TabMeta {
     key: TaxonomyKey;
     label: string;
@@ -87,7 +90,7 @@ export function SKUTaxonomySettings() {
     const [activeTab, setActiveTab] = useState<TaxonomyKey>("genres");
     const [searchQuery, setSearchQuery] = useState("");
     const [isAddOpen, setIsAddOpen] = useState(false);
-    const [editingItem, setEditingItem] = useState<any | null>(null);
+    const [editingItem, setEditingItem] = useState<TaxonomyEntry | null>(null);
     const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -122,7 +125,7 @@ export function SKUTaxonomySettings() {
         setIsAddOpen(true);
     };
 
-    const handleOpenEdit = (item: any) => {
+    const handleOpenEdit = (item: TaxonomyEntry) => {
         setEditingItem(item);
         const codeKey = currentTabMeta.codeName;
         setNewCode(item[codeKey] || "");
@@ -148,9 +151,9 @@ export function SKUTaxonomySettings() {
         setIsSubmitting(true);
         try {
             const isEditing = Boolean(editingItem);
-            const oldCode = isEditing ? editingItem[currentTabMeta.codeName] : cleanCode;
+            const oldCode = (isEditing && editingItem ? editingItem[currentTabMeta.codeName] : cleanCode) || cleanCode;
 
-            let itemPayload: any;
+            let itemPayload: SKUTaxonomies[TaxonomyKey][number] | undefined;
             if (activeTab === "genres") {
                 itemPayload = {
                     code: cleanCode.slice(0, 3),
@@ -213,6 +216,8 @@ export function SKUTaxonomySettings() {
                 };
             }
 
+            if (!itemPayload) return;
+
             if (isEditing) {
                 await updateTaxonomyOption(activeTab, oldCode, itemPayload);
                 toast.success(`Updated ${currentTabMeta.singular}: [${cleanCode}] ${newLabel.trim()}`);
@@ -223,8 +228,8 @@ export function SKUTaxonomySettings() {
 
             setIsAddOpen(false);
             resetForm();
-        } catch (err: any) {
-            toast.error(err.message || "Failed to save taxonomy option");
+        } catch (err: unknown) {
+            toast.error(err instanceof Error ? err.message : "Failed to save taxonomy option");
         } finally {
             setIsSubmitting(false);
         }
@@ -238,8 +243,8 @@ export function SKUTaxonomySettings() {
         try {
             await removeTaxonomyOption(activeTab, codeOrSuffix);
             toast.success(`Removed ${codeOrSuffix} from ${currentTabMeta.label}`);
-        } catch (err: any) {
-            toast.error(err.message || "Failed to remove option");
+        } catch (err: unknown) {
+            toast.error(err instanceof Error ? err.message : "Failed to remove option");
         }
     };
 
@@ -248,13 +253,13 @@ export function SKUTaxonomySettings() {
             await resetSKUTaxonomies();
             toast.success("All SKU taxonomies reset to enterprise defaults!");
             setIsResetConfirmOpen(false);
-        } catch (err: any) {
-            toast.error(err.message || "Failed to reset taxonomies");
+        } catch (err: unknown) {
+            toast.error(err instanceof Error ? err.message : "Failed to reset taxonomies");
         }
     };
 
     // Filter items in active tab
-    const items = (taxonomies[activeTab] as any[]) || [];
+    const items = (taxonomies[activeTab] as TaxonomyEntry[]) || [];
     const filteredItems = items.filter((item) => {
         const codeVal = item[currentTabMeta.codeName] || "";
         const labelVal = item.label || "";
@@ -338,7 +343,7 @@ export function SKUTaxonomySettings() {
             {/* Sub-nav Tabs for 9 Taxonomy Categories */}
             <div className="flex overflow-x-auto gap-1 p-1 bg-surface-navy/60 rounded-xl border border-surface-hover/60">
                 {TABS.map((tab) => {
-                    const count = (taxonomies[tab.key] as any[])?.length || 0;
+                    const count = (taxonomies[tab.key] as TaxonomyEntry[])?.length || 0;
                     const isActive = activeTab === tab.key;
                     return (
                         <button
@@ -455,7 +460,7 @@ export function SKUTaxonomySettings() {
                                     <Button
                                         variant="ghost"
                                         size="sm"
-                                        onClick={() => handleDeleteItem(code, item.label)}
+                                        onClick={() => handleDeleteItem(code || "", item.label)}
                                         className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                                     >
                                         <Trash2 size={12} className="mr-1" />

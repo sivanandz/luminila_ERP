@@ -31,7 +31,6 @@ import {
     Package,
     ScanBarcode,
     Trash2,
-    ExternalLink,
 } from "lucide-react";
 import { getProductVariants, resolvePOSBarcodeVariant } from "@/lib/products";
 

@@ -13,7 +13,12 @@ import {
  * remains on stored prices until rules are configured.
  */
 export async function loadTenantChannelDefinitions(
-    client: any,
+    client: {
+        filter?: (raw: string, params?: Record<string, unknown>) => string;
+        collection: (name: string) => {
+            getFirstListItem: (filter: string) => Promise<Record<string, unknown>>;
+        };
+    },
     email: string
 ): Promise<SalesChannelDefinition[]> {
     try {

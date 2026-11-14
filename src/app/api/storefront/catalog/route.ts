@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveStorefrontTenant } from "@/lib/storefront-tenant";
 import { getChannelPriceFromList } from "@/lib/pricing-rules";
 import { loadTenantChannelDefinitions } from "@/lib/server-pricing";
+import {
+    calculateChannelStock,
+    DEFAULT_CHANNEL_CONFIGS,
+    globalCartReservationManager,
+    type ChannelBufferConfig,
+} from "@/lib/omnichannel-buffer-engine";
+import type { ProductGalleryAngles } from "@/lib/products";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -24,6 +31,8 @@ interface CatalogProduct {
     website_price: number;
     mrp: number;
     image_url?: string;
+    angle_images?: ProductGalleryAngles;
+    gallery_images?: string[];
     total_stock: number;
     stock_status: "in_stock" | "low_stock" | "out_of_stock";
     variants: { id: string; label: string; stock_level: number }[];
@@ -61,6 +70,36 @@ export async function GET(req: NextRequest) {
             await resolveStorefrontTenant(hintEmail);
 
         const channels = await loadTenantChannelDefinitions(client, boundAdminEmail);
+
+        const settingsRecords = await client
+            .collection("store_settings")
+            .getFullList<{ key?: string; value?: unknown }>({
+                filter: client.filter(
+                    'account_email = {:tenant} && (key = "product_gallery_angles" || key = "omnichannel_buffer_configs")',
+                    { tenant: boundAdminEmail }
+                ),
+            })
+            .catch(() => []);
+
+        let galleryMap: Record<string, ProductGalleryAngles> = {};
+        let bufferConfigs: ChannelBufferConfig[] = DEFAULT_CHANNEL_CONFIGS;
+        for (const row of settingsRecords) {
+            const parsed =
+                typeof row.value === "string"
+                    ? (() => {
+                          try {
+                              return JSON.parse(row.value);
+                          } catch {
+                              return null;
+                          }
+                      })()
+                    : row.value;
+            if (row.key === "product_gallery_angles" && parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                galleryMap = parsed as Record<string, ProductGalleryAngles>;
+            } else if (row.key === "omnichannel_buffer_configs" && Array.isArray(parsed) && parsed.length > 0) {
+                bufferConfigs = parsed as ChannelBufferConfig[];
+            }
+        }
 
         const products = await client.collection("products").getFullList<{
             id: string;
@@ -115,10 +154,27 @@ export async function GET(req: NextRequest) {
 
         const catalogue: CatalogProduct[] = products.map((rec) => {
             const own = variants.filter((v) => v.product === rec.id);
+            const bufferedVariants = own.map((v) => {
+                const physical = Number(v.stock_level) || 0;
+                const activeRes = globalCartReservationManager.getActiveReservationCount(v.id);
+                const alloc = calculateChannelStock(physical, activeRes, bufferConfigs, v.id);
+                const websiteAlloc = alloc.channelAllocations.shopify ?? alloc.channelAllocations.woocommerce;
+                return {
+                    id: v.id,
+                    label: v.variant_name || "Standard",
+                    stock_level: websiteAlloc ? websiteAlloc.allocatedStock : Math.max(0, physical - activeRes),
+                };
+            });
             const totalStock =
-                own.reduce((sum, v) => sum + (Number(v.stock_level) || 0), 0) ||
-                Number(rec.total_stock) ||
-                0;
+                bufferedVariants.length > 0
+                    ? bufferedVariants.reduce((sum, v) => sum + v.stock_level, 0)
+                    : (() => {
+                          const physical = Number(rec.total_stock) || 0;
+                          const activeRes = globalCartReservationManager.getActiveReservationCount(rec.id);
+                          const alloc = calculateChannelStock(physical, activeRes, bufferConfigs, rec.id);
+                          const websiteAlloc = alloc.channelAllocations.shopify ?? alloc.channelAllocations.woocommerce;
+                          return websiteAlloc ? websiteAlloc.allocatedStock : Math.max(0, physical - activeRes);
+                      })();
 
             const channelPrices = rec.channel_prices || {};
             const websitePrice = getChannelPriceFromList(
@@ -143,6 +199,15 @@ export async function GET(req: NextRequest) {
                       ? rec.image_url
                       : "";
 
+            const angles = galleryMap[rec.id];
+            const orderedGallery = Array.from(
+                new Set(
+                    [angles?.HERO || firstImage, angles?.MACR, angles?.REVR, angles?.SCAL].filter(
+                        (u): u is string => Boolean(u)
+                    )
+                )
+            );
+
             return {
                 id: rec.id,
                 sku: rec.sku,
@@ -156,14 +221,12 @@ export async function GET(req: NextRequest) {
                 // invent a markup. The card only shows a strikethrough when a
                 // real MRP exceeds the selling price.
                 mrp: websitePrice,
-                image_url: firstImage,
+                image_url: angles?.HERO || firstImage,
+                angle_images: angles,
+                gallery_images: orderedGallery,
                 total_stock: totalStock,
                 stock_status: stockStatus,
-                variants: own.map((v) => ({
-                    id: v.id,
-                    label: v.variant_name || "Standard",
-                    stock_level: Number(v.stock_level) || 0,
-                })),
+                variants: bufferedVariants,
                 base_metal: rec.base_metal || "",
                 plating_type: rec.plating_type || rec.plating || "",
                 stone_type: rec.stone_type || "",

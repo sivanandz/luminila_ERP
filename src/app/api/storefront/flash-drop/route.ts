@@ -33,11 +33,6 @@ import {
     canonicalPhone,
     type ChannelTaxLine,
 } from "@/lib/channel-orders";
-import {
-    applyChannelStock,
-    InsufficientStockError,
-    toStockDb,
-} from "@/lib/channel-stock";
 import { settleCapturedOrder } from "@/lib/razorpay-webhook-handler";
 import {
     gatewayConfigured,

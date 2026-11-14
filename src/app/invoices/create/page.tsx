@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import {
@@ -57,6 +57,7 @@ import {
 import { getSellableVariants, resolveBarcodeProduct } from "@/lib/products";
 import { pb, getCurrentTenantEmail } from "@/lib/pocketbase";
 import { applyChannelStock, toStockDb } from "@/lib/channel-stock";
+import { calculateWholesalePrice } from "@/lib/imitation-jewelry-engine";
 
 interface ProductVariant {
     id: string;
@@ -71,25 +72,6 @@ interface ProductVariant {
         sku: string;
         base_price: number;
         category?: string;
-    };
-}
-
-// Raw product_variants PocketBase record as fetched with expand=product
-interface ProductVariantRecord {
-    id: string;
-    variant_name: string;
-    sku_suffix: string;
-    material?: string;
-    stock_level: number;
-    price_adjustment?: number;
-    expand?: {
-        product?: {
-            id: string;
-            name: string;
-            sku: string;
-            base_price: number;
-            category?: string;
-        };
     };
 }
 
@@ -322,6 +304,11 @@ export default function CreateInvoicePage() {
         }
     };
 
+    const handleScannedItemRef = useRef(handleScannedItem);
+    useEffect(() => {
+        handleScannedItemRef.current = handleScannedItem;
+    });
+
     // Scoped scanner listener: directly adds scanned items to this invoice
     useEffect(() => {
         const unregister = MobileScanner.registerContext("invoice_entry", async (result) => {
@@ -329,7 +316,7 @@ export default function CreateInvoicePage() {
                 const resolved = await resolveBarcodeProduct(result.barcode);
                 if (resolved) {
                     const { product: prod, variant: v } = resolved;
-                    handleScannedItem({
+                    handleScannedItemRef.current({
                         barcode: result.barcode,
                         product: {
                             id: prod.id,
@@ -354,7 +341,7 @@ export default function CreateInvoicePage() {
             return true; // Stop propagation
         }, 60);
         return () => unregister();
-    }, [items, products]);
+    }, []);
 
     // Add blank item
     const addBlankItem = () => {
@@ -846,7 +833,16 @@ export default function CreateInvoicePage() {
                                             </TableCell>
                                         </TableRow>
                                     ) : (
-                                        items.map((item, index) => (
+                                        items.map((item, index) => {
+                                            const wholesaleTier =
+                                                item.quantity >= 10 && item.unit_price > 0
+                                                    ? calculateWholesalePrice(item.unit_price, item.quantity)
+                                                    : null;
+                                            const isTierApplied =
+                                                wholesaleTier !== null &&
+                                                wholesaleTier.discountPercentApplied > 0 &&
+                                                Math.abs((Number(item.discount_percent) || 0) - wholesaleTier.discountPercentApplied) < 0.01;
+                                            return (
                                             <TableRow key={index} className="border-border">
                                                 <TableCell>{index + 1}</TableCell>
                                                 <TableCell>
@@ -878,6 +874,20 @@ export default function CreateInvoicePage() {
                                                             Max: {item.stock_level}
                                                         </span>
                                                     )}
+                                                    {wholesaleTier && wholesaleTier.discountPercentApplied > 0 && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => updateItem(index, "discount_percent", wholesaleTier.discountPercentApplied)}
+                                                            className={`mt-1 w-full rounded px-1.5 py-0.5 text-[10px] font-semibold transition-colors ${
+                                                                isTierApplied
+                                                                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                                                    : "bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25"
+                                                            }`}
+                                                            title={`Apply ${wholesaleTier.discountPercentApplied}% B2B wholesale slab`}
+                                                        >
+                                                            B2B Tier: {wholesaleTier.discountPercentApplied}% off
+                                                        </button>
+                                                    )}
                                                 </TableCell>
                                                 <TableCell>
                                                     <Input
@@ -899,7 +909,7 @@ export default function CreateInvoicePage() {
                                                         className="h-8"
                                                     />
                                                 </TableCell>
-                                                <TableCell className="text-right font-mono">
+                                                <TableCell className="text-right font-mono tabular-nums">
                                                     {formatINR(item.total_amount)}
                                                 </TableCell>
                                                 <TableCell>
@@ -913,7 +923,8 @@ export default function CreateInvoicePage() {
                                                     </Button>
                                                 </TableCell>
                                             </TableRow>
-                                        ))
+                                            );
+                                        })
                                     )}
                                 </TableBody>
                             </Table>

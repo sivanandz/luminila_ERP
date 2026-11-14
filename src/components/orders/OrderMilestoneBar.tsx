@@ -3,7 +3,6 @@
 import React, { useState } from "react";
 import Image from "next/image";
 import {
-    CheckCircle2,
     Package,
     Truck,
     ShieldCheck,
@@ -11,9 +10,7 @@ import {
     Camera,
     Loader2,
     MessageCircle,
-    ExternalLink,
     Upload,
-    Sparkles,
     ScanBarcode,
 } from "lucide-react";
 import { toast } from "sonner";

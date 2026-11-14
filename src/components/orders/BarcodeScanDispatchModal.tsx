@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useTransition } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
     Dialog,
     DialogContent,
@@ -20,17 +20,14 @@ import { CourierCarrier, fetchStCourierLiveTracking } from "@/lib/logistics-engi
 import { MobileScanner } from "@/lib/mobile-scanner";
 import {
     ScanBarcode,
-    Truck,
     Send,
     CheckCircle2,
     Search,
     Loader2,
-    Package,
     User,
     Phone,
     MapPin,
     ExternalLink,
-    AlertCircle,
     Volume2,
 } from "lucide-react";
 
@@ -109,11 +106,13 @@ export function BarcodeScanDispatchModal({
         }
     }, [open]);
 
+    const handleBarcodeChangeRef = useRef<(val: string) => void>(() => {});
+
     // High-priority hardware scanner listener: strictly intercepts courier AWBs when dispatch modal is active
     useEffect(() => {
         if (!open) return;
         const unregister = MobileScanner.registerContext("shipping_awb", (result) => {
-            handleBarcodeChange(result.barcode);
+            handleBarcodeChangeRef.current(result.barcode);
             playSuccessTone();
             return true; // Stop propagation: prevent billing or catalog interference
         }, 100);
@@ -172,6 +171,10 @@ export function BarcodeScanDispatchModal({
             setTrackingPreview(null);
         }
     };
+
+    useEffect(() => {
+        handleBarcodeChangeRef.current = handleBarcodeChange;
+    });
 
     const fetchStCourierPreview = async (awb: string) => {
         setCheckingTracking(true);

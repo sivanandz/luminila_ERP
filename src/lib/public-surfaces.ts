@@ -10,8 +10,18 @@
 /** Public app paths (no session required, ERP chrome hidden). */
 export const PUBLIC_PATH_PREFIXES = ["/login", "/tracking", "/checkout"] as const;
 
-/** Paths the public storefront host may serve. Mirrors PUBLIC minus ERP-only routes. */
-export const STOREFRONT_PATH_PREFIXES = ["/checkout", "/tracking", "/api/storefront", "/api/tracking"] as const;
+/**
+ * Paths the public storefront host may serve. Mirrors PUBLIC minus ERP-only routes.
+ * Includes Razorpay webhooks (authenticated strictly via HMAC signature header)
+ * so online storefront payments on `STOREFRONT_HOSTS` can settle orders.
+ */
+export const STOREFRONT_PATH_PREFIXES = [
+    "/checkout",
+    "/tracking",
+    "/api/storefront",
+    "/api/tracking",
+    "/api/webhooks/razorpay",
+] as const;
 
 function underAny(pathname: string, prefixes: readonly string[]): boolean {
     return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

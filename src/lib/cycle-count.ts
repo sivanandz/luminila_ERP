@@ -9,7 +9,7 @@
  * 4. Misplaced: piece belongs to a different location but was scanned on this tray (1-click move).
  */
 
-import { pb, accountScopeEmail, sanitizeFilter } from "./pocketbase";
+import { pb, accountScopeEmail } from "./pocketbase";
 import { markStockDiscrepancy } from "./discrepancies";
 
 export interface TrayAuditLineItem {

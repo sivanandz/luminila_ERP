@@ -39,7 +39,7 @@ export const MIRROR_CHANNEL = 'storefront';
 /** Minimal PB-like client shape so server routes can pass their own session client. */
 export interface AnalyticsDb {
     collection: (name: string) => {
-        getFullList: (opts: Record<string, unknown>) => Promise<Array<Record<string, any>>>;
+        getFullList: (opts: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
     };
 }
 
@@ -221,7 +221,7 @@ export interface UnifiedLine {
     makingCharges: number;
 }
 
-interface ItemRowWithExpand extends Record<string, any> {
+interface ItemRowWithExpand extends Record<string, unknown> {
     sale?: string;
     order?: string;
     product?: string;

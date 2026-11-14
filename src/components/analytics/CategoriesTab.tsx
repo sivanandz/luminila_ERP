@@ -20,32 +20,41 @@ const MIX_COLORS = ["#eab308", "#f97316", "#22c55e", "#38bdf8", "#a78bfa", "#f43
 
 export function CategoriesTab() {
     const range = useAnalyticsRange((s) => s.range);
-    const [turnover, setTurnover] = useState<TurnoverAnalytics | null>(null);
-    const [deep, setDeep] = useState<CategoryDeepDive | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const rangeKey = JSON.stringify(range);
+    const [state, setState] = useState<{
+        key: string;
+        turnover: TurnoverAnalytics | null;
+        deep: CategoryDeepDive | null;
+        error: string | null;
+    } | null>(null);
 
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
-        setError(null);
         Promise.all([getTurnoverAnalytics(range), getCategoryDeepDive(range)])
             .then(([t, d]) => {
                 if (!cancelled) {
-                    setTurnover(t);
-                    setDeep(d);
+                    setState({ key: rangeKey, turnover: t, deep: d, error: null });
                 }
             })
             .catch((e) => {
-                if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load category analytics');
-            })
-            .finally(() => {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) {
+                    setState({
+                        key: rangeKey,
+                        turnover: null,
+                        deep: null,
+                        error: e instanceof Error ? e.message : "Failed to load category analytics",
+                    });
+                }
             });
         return () => {
             cancelled = true;
         };
-    }, [range]);
+    }, [range, rangeKey]);
+
+    const loading = state?.key !== rangeKey;
+    const error = state?.key === rangeKey ? state.error : null;
+    const turnover = state?.key === rangeKey ? state.turnover : null;
+    const deep = state?.key === rangeKey ? state.deep : null;
 
     if (loading) return <LoadingBlock />;
     if (error) return <EmptyState title="Category analytics unavailable" hint={error} />;

@@ -75,7 +75,6 @@ export default function SalesReportPage() {
     }, [startDate, endDate]);
 
     useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- setLoading(true) must run synchronously before the async fetch so the Loading UI appears when the date range changes; the remaining setStates happen after awaits
         loadReport();
     }, [loadReport]);
 

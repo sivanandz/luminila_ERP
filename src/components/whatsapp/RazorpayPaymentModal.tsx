@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { CreditCard, X, ExternalLink, Copy, Check, Send, Loader2, Sparkles, ShieldCheck, Percent } from "lucide-react";
+import { CreditCard, X, ExternalLink, Copy, Check, Send, Loader2, Sparkles, ShieldCheck } from "lucide-react";
 import { createPaymentLink } from "@/lib/razorpay";
 import { createPaymentLinkLedger } from "@/lib/payment-links";
 import {

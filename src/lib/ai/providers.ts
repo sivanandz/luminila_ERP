@@ -411,7 +411,7 @@ export async function deleteProvider(
         if (promoted) {
             try {
                 await adminClient.collection(PROVIDERS_COLLECTION).update(promoted.id, { is_default: true });
-            } catch (error) {
+            } catch {
                 throw new AiConfigError(
                     'The provider was deleted, but the next default provider could not be promoted. Open AI settings and choose a default.',
                     'default_promotion_failed'

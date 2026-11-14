@@ -10,7 +10,6 @@ import {
     Image as ImageIcon,
     Layers,
     LayoutTemplate,
-    Megaphone,
     Palette,
     Plus,
     RotateCcw,
@@ -381,6 +380,7 @@ function ImageField({
             <div className="flex flex-col gap-3 sm:flex-row">
                 <div className="grid h-24 w-full shrink-0 place-items-center overflow-hidden rounded-lg border bg-muted sm:w-32">
                     {value ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- arbitrary CMS uploads/data URIs without fixed domain dimensions
                         <img
                             src={assetUrl(value)}
                             alt=""
@@ -442,6 +442,7 @@ function ImageField({
                         }`}
                         title={preset.label}
                     >
+                        {/* eslint-disable-next-line @next/next/no-img-element -- preset storefront media thumbnails */}
                         <img
                             src={assetUrl(preset.value)}
                             alt={preset.label}
@@ -701,6 +702,7 @@ function LogoUploadField({
                 }}
             >
                 {value ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- user-uploaded SVG/PNG brand wordmark preview
                     <img
                         src={value}
                         alt=""

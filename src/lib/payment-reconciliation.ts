@@ -115,14 +115,6 @@ async function hasInvoicePayment(invoiceId: string, reference: string): Promise<
     return !!existing;
 }
 
-/** True if loyalty points were already awarded for this order (retry guard). */
-async function hasLoyaltyEarnForOrder(orderId: string): Promise<boolean> {
-    const existing = await pb.collection('loyalty_transactions').getFirstListItem(
-        `type="earn" && reference_type="sales_order" && reference_id="${sanitizeFilter(orderId)}"${tenantClause()}`
-    ).catch(() => null);
-    return !!existing;
-}
-
 /** Record double-entry clearing deposit in banking ledger (spec §7). Idempotent per link. */
 async function recordClearingDeposit(
     link: PaymentLinkRecord,

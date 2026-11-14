@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -30,8 +30,6 @@ import { searchCustomers, type Customer } from "@/lib/customers";
 import {
     resolveBarcodeProduct,
     searchProductsForDocuments,
-    type Product,
-    type ProductVariant,
 } from "@/lib/products";
 import { toast } from "sonner";
 
@@ -209,6 +207,11 @@ export default function CreateChallanPage() {
         toast.success(`Scanned & added: ${payload.product.name}`);
     };
 
+    const handleScannedItemRef = useRef(handleScannedItem);
+    useEffect(() => {
+        handleScannedItemRef.current = handleScannedItem;
+    });
+
     // Scoped scanner listener: directly adds scanned items to this delivery challan
     useEffect(() => {
         const unregister = MobileScanner.registerContext("challan_entry", async (result) => {
@@ -216,7 +219,7 @@ export default function CreateChallanPage() {
                 const resolved = await resolveBarcodeProduct(result.barcode);
                 if (resolved) {
                     const { product: prod, variant: v } = resolved;
-                    handleScannedItem({
+                    handleScannedItemRef.current({
                         barcode: result.barcode,
                         product: {
                             id: prod.id,
@@ -240,7 +243,7 @@ export default function CreateChallanPage() {
             return true; // Stop propagation
         }, 60);
         return () => unregister();
-    }, [items]);
+    }, []);
 
     const updateItem = (index: number, field: keyof ChallanItem, value: number) => {
         const newItems = [...items];

@@ -23,19 +23,22 @@ export function getBottomDockInset(gap = 8): number {
 }
 
 export function formatPrice(price: number): string {
+  if (typeof price !== "number" || !Number.isFinite(price)) return "₹0";
+  const rounded = Math.round((price + Number.EPSILON) * 100) / 100;
+  const hasPaise = Math.abs(rounded - Math.trunc(rounded)) > 0.001;
   return new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(price)
+    minimumFractionDigits: hasPaise ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(rounded);
 }
 
 export function formatDate(date?: string | Date | null): string {
   if (!date) return '-';
   try {
     const d = typeof date === 'string' ? new Date(date) : date;
-    if (!d || isNaN(d.getTime())) return '-';
+    if (!d || isNaN(d.getTime()) || d.getFullYear() <= 1971) return '-';
     return d.toLocaleDateString('en-IN', {
       day: '2-digit',
       month: 'short',
@@ -43,6 +46,57 @@ export function formatDate(date?: string | Date | null): string {
     });
   } catch {
     return '-';
+  }
+}
+
+export function safeFormatDate(
+  date: string | Date | null | undefined,
+  formatter: (d: Date) => string,
+  fallback = "—"
+): string {
+  if (!date) return fallback;
+  try {
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (!d || isNaN(d.getTime()) || d.getFullYear() <= 1971) return fallback;
+    return formatter(d);
+  } catch {
+    return fallback;
+  }
+}
+
+export function getInitials(name?: string | null, fallbackEmail?: string | null): string {
+  const words = String(name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    const first = Array.from(words[0])[0] ?? "";
+    const last = Array.from(words[words.length - 1])[0] ?? "";
+    return (first + last).toUpperCase();
+  }
+  if (words.length === 1) {
+    return Array.from(words[0]).slice(0, 2).join("").toUpperCase();
+  }
+  const emailClean = String(fallbackEmail ?? "").trim();
+  if (emailClean) {
+    return (Array.from(emailClean)[0] ?? "U").toUpperCase();
+  }
+  return "U";
+}
+
+export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  const safeCount = Number.isFinite(count) ? count : 0;
+  return `${safeCount.toLocaleString("en-IN")} ${safeCount === 1 ? singular : plural}`;
+}
+
+export function sanitizeExternalUrl(url?: string | null): string | null {
+  const trimmed = String(url ?? "").trim();
+  if (!trimmed) return null;
+  if (/^(javascript|data|vbscript):/i.test(trimmed)) return null;
+  try {
+    const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
   }
 }
 

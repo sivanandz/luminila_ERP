@@ -2,7 +2,16 @@
 
 import { Header } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { formatPrice, formatDate } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { formatDate, formatPrice, safeFormatDate, sanitizeExternalUrl } from "@/lib/utils";
 import {
     ArrowLeft,
     Printer,
@@ -15,6 +24,7 @@ import {
     MapPin,
     Truck,
     PackageCheck,
+    GitBranch,
 } from "lucide-react";
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -25,12 +35,13 @@ import {
     generateInvoiceFromOrder,
     cancelSalesOrder,
     canCancelSalesOrder,
+    splitOrderForBackorder,
     type OrderDetail,
 } from "@/lib/orders";
 import { getStoreSettings, type StoreSettings } from "@/lib/settings";
 import { toast } from "sonner";
 import { OrderMilestoneBar } from "@/components/orders/OrderMilestoneBar";
-import { ShippingLabelPrintModal, type ShippingLabelData } from "@/components/shipping/ShippingLabelPrintModal";
+import { ShippingLabelPrintModal } from "@/components/shipping/ShippingLabelPrintModal";
 import { pb, getCurrentTenantEmail } from "@/lib/pocketbase";
 import {
     listShipmentsForOrder,
@@ -53,6 +64,16 @@ function OrderDetailContent() {
     const [showShippingLabel, setShowShippingLabel] = useState(false);
     const [shipments, setShipments] = useState<ShipmentRow[]>([]);
     const [expectedDelivery, setEtaDraft] = useState("");
+    const [showShipmentDialog, setShowShipmentDialog] = useState(false);
+    const [shipmentForm, setShipmentForm] = useState({ carrier: "", awbNumber: "", trackingUrl: "" });
+    const [showCodDialog, setShowCodDialog] = useState(false);
+    const [codReference, setCodReference] = useState("");
+    const [showCancelDialog, setShowCancelDialog] = useState(false);
+    const [cancelReason, setCancelReason] = useState("");
+    const [cancelRefundRef, setCancelRefundRef] = useState("");
+    const [showSplitDialog, setShowSplitDialog] = useState(false);
+    const [splitQuantities, setSplitQuantities] = useState<Record<string, number>>({});
+    const [splitReason, setSplitReason] = useState("");
 
     useEffect(() => {
         getStoreSettings().then(setSettings).catch(() => {});
@@ -78,9 +99,7 @@ function OrderDetailContent() {
 
     useEffect(() => {
         if (id) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchOrder flips `loading` synchronously before its first await so the spinner shows on every refetch, including those triggered by the Convert/Invoice handlers; deferring it past the await would change which screen renders
             fetchOrder();
-            // eslint-disable-next-line react-hooks/set-state-in-effect -- same synchronous-refresh rationale as fetchOrder
             fetchShipments();
         }
     }, [id, fetchOrder, fetchShipments]);
@@ -131,19 +150,32 @@ function OrderDetailContent() {
         setActionLoading(false);
     };
 
-    const handleCreateShipment = async () => {
+    const handleCreateShipment = () => {
         if (!order) return;
-        const carrier = window.prompt("Courier / carrier name (e.g. ST Courier, Delhivery):");
-        if (!carrier?.trim()) return;
-        const awbNumber = window.prompt("AWB / tracking number:");
-        if (!awbNumber?.trim()) return;
-        const trackingUrl = window.prompt("Tracking URL (optional):") || "";
+        setShipmentForm({ carrier: "", awbNumber: "", trackingUrl: "" });
+        setShowShipmentDialog(true);
+    };
+
+    const submitCreateShipment = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!order) return;
+        if (!shipmentForm.carrier.trim() || !shipmentForm.awbNumber.trim()) {
+            toast.error("Carrier name and AWB / tracking number are required.");
+            return;
+        }
+        const safeUrl = shipmentForm.trackingUrl.trim()
+            ? sanitizeExternalUrl(shipmentForm.trackingUrl.trim())
+            : "";
+        if (shipmentForm.trackingUrl.trim() && !safeUrl) {
+            toast.error("Enter a valid http(s) tracking URL.");
+            return;
+        }
         setActionLoading(true);
         const result = await createShipmentForOrder(pb, getCurrentTenantEmail(), {
             orderId: order.id,
-            carrier: carrier.trim(),
-            awbNumber: awbNumber.trim(),
-            trackingUrl: trackingUrl.trim(),
+            carrier: shipmentForm.carrier.trim(),
+            awbNumber: shipmentForm.awbNumber.trim(),
+            trackingUrl: safeUrl || "",
             expectedDeliveryDate: expectedDelivery || undefined,
             codAmount:
                 String((order as { payment_method?: string }).payment_method || "").toLowerCase() === "cod"
@@ -152,6 +184,7 @@ function OrderDetailContent() {
         });
         if (result.success) {
             toast.success("Shipment recorded and customer notified");
+            setShowShipmentDialog(false);
             fetchOrder();
             fetchShipments();
         } else {
@@ -171,20 +204,27 @@ function OrderDetailContent() {
         }
     };
 
-    const handleCodCollected = async () => {
+    const handleCodCollected = () => {
         if (!order) return;
-        const reference = window.prompt("COD collection reference (cash receipt / UTR):");
-        if (!reference?.trim()) {
+        setCodReference("");
+        setShowCodDialog(true);
+    };
+
+    const submitCodCollected = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!order) return;
+        if (!codReference.trim()) {
             toast.error("A collection reference is required to settle COD.");
             return;
         }
         setActionLoading(true);
         const result = await settleCodOrder(pb, getCurrentTenantEmail(), order.id, {
-            reference: reference.trim(),
+            reference: codReference.trim(),
             collectedBy: getCurrentTenantEmail(),
         });
         if (result.success) {
             toast.success("COD settled — order marked PAID and delivered");
+            setShowCodDialog(false);
             fetchOrder();
         } else {
             toast.error(result.error || "Could not settle the COD order");
@@ -192,29 +232,74 @@ function OrderDetailContent() {
         setActionLoading(false);
     };
 
-    const handleCancel = async () => {
+    const canSplitOrder =
+        !!order &&
+        order.order_type !== "estimate" &&
+        ["draft", "sent", "confirmed"].includes(order.status) &&
+        ((order.items?.length ?? 0) > 1 || (order.items?.some((item) => item.quantity > 1) ?? false));
+
+    const handleOpenSplitDialog = () => {
+        if (!order?.items) return;
+        const init: Record<string, number> = {};
+        for (const item of order.items) {
+            init[item.id] = 0;
+        }
+        setSplitQuantities(init);
+        setSplitReason("");
+        setShowSplitDialog(true);
+    };
+
+    const handleSplitOrder = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!order?.items) return;
+        const payload = order.items
+            .map((item) => ({
+                orderItemId: item.id,
+                splitQuantity: splitQuantities[item.id] || 0,
+            }))
+            .filter((entry) => entry.splitQuantity > 0);
+        if (payload.length === 0) {
+            toast.error("Select at least 1 quantity to move into a backorder.");
+            return;
+        }
+        setActionLoading(true);
+        try {
+            const res = await splitOrderForBackorder(order.id, payload, splitReason.trim() || undefined);
+            toast.success(`Backorder #${res.backorderNumber} created`);
+            setShowSplitDialog(false);
+            await fetchOrder();
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to split order");
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
+    const handleCancel = () => {
+        if (!order) return;
+        setCancelReason("");
+        setCancelRefundRef("");
+        setShowCancelDialog(true);
+    };
+
+    const submitCancelOrder = async (e: React.FormEvent) => {
+        e.preventDefault();
         if (!order) return;
         // CO-15: a paid order can only be cancelled together with a refund
         // reference; otherwise stock would be restored while the CRM still
         // reports paid revenue for a cancelled order.
         const isPaid = String((order as { payment_status?: string }).payment_status || '').toUpperCase() === 'PAID';
-        const confirmed = window.confirm(
-            `Cancel ${order.order_type === 'estimate' ? 'estimate' : 'order'} #${order.order_number}? Any stock deducted by this order will be restored.${isPaid ? ' This order is PAID — the refund reference is required.' : ''}`
-        );
-        if (!confirmed) return;
-        const reason = window.prompt("Reason (optional):") || undefined;
-        let refundReference: string | undefined;
-        if (isPaid) {
-            const supplied = window.prompt("Refund reference (Razorpay refund id / UTR). Required for a paid order:");
-            if (!supplied || !supplied.trim()) {
-                toast.error("Cancellation aborted: a refund reference is required for a paid order.");
-                return;
-            }
-            refundReference = supplied.trim();
+        const refundReference = isPaid ? cancelRefundRef.trim() : undefined;
+        if (isPaid && !refundReference) {
+            toast.error("A refund reference (Razorpay refund ID / UTR) is required for a PAID order.");
+            return;
         }
         setActionLoading(true);
         try {
-            const result = await cancelSalesOrder(order.id, { reason, refundReference });
+            const result = await cancelSalesOrder(order.id, {
+                reason: cancelReason.trim() || undefined,
+                refundReference,
+            });
             if (result.alreadyCancelled) {
                 toast.info("This order is already cancelled");
             } else if (result.restored > 0) {
@@ -222,6 +307,7 @@ function OrderDetailContent() {
             } else {
                 toast.success("Order cancelled");
             }
+            setShowCancelDialog(false);
             fetchOrder();
         } catch (error) {
             toast.error(error instanceof Error ? error.message : "Could not cancel this order");
@@ -237,14 +323,19 @@ function OrderDetailContent() {
     if (!order) return null;
 
     const isEstimate = order.order_type === 'estimate';
+    const hasDispatchedShipment = shipments.some(
+        (s) => s.shipping_status === "in_transit" || s.shipping_status === "delivered"
+    );
+    const isPaidOrder = String((order as { payment_status?: string }).payment_status || "").toUpperCase() === "PAID";
+    const shippingCharges = Number((order as { shipping_charges?: number }).shipping_charges) || 0;
 
     return (
         <div className="flex flex-col h-full overflow-hidden bg-bg-navy">
             <Header
                 title={`${isEstimate ? 'Estimate' : 'Order'} #${order.order_number}`}
-                subtitle={`Created on ${formatDate(order.created || order.created_at)}`}
+                subtitle={`Created on ${safeFormatDate(order.created || order.created_at, formatDate)}`}
                 action={
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                         <Button
                             variant="outline"
                             onClick={() => router.back()}
@@ -314,7 +405,20 @@ function OrderDetailContent() {
                             </Button>
                         )}
 
-                        {canCancelSalesOrder(order.status) && (
+                        {canSplitOrder && (
+                            <Button
+                                variant="outline"
+                                onClick={handleOpenSplitDialog}
+                                disabled={actionLoading}
+                                className="border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
+                                title="Split out-of-stock or delayed items into a linked backorder"
+                            >
+                                <GitBranch size={17} className="mr-2" />
+                                Split / Backorder
+                            </Button>
+                        )}
+
+                        {canCancelSalesOrder(order.status) && !(order.status === 'invoiced' && hasDispatchedShipment) && (
                             <Button
                                 variant="outline"
                                 onClick={handleCancel}
@@ -352,41 +456,53 @@ function OrderDetailContent() {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-surface-hover">
-                                        {order.items?.map((item) => (
+                                        {order.items?.map((item) => {
+                                            const variantObj =
+                                                (item as { expand?: { variant?: typeof item.variant } }).expand?.variant ??
+                                                (item.variant && typeof item.variant === "object" ? item.variant : undefined);
+                                            const variantMeta = variantObj
+                                                ? [variantObj.size, variantObj.color, variantObj.material].filter(Boolean).join(" · ")
+                                                : "";
+                                            return (
                                             <tr key={item.id} className="hover:bg-bg-navy/30">
                                                 <td className="py-4 px-6">
-                                                    <p className="font-bold text-white text-sm">{item.description}</p>
-                                                    {item.variant && (
-                                                        <p className="text-xs text-moonstone mt-0.5">
-                                                            {item.variant.size} {item.variant.color} {item.variant.material}
-                                                        </p>
+                                                    <p className="font-bold text-white text-sm break-words">{item.description}</p>
+                                                    {variantMeta && (
+                                                        <p className="text-xs text-moonstone mt-0.5">{variantMeta}</p>
                                                     )}
                                                 </td>
-                                                <td className="py-4 px-6 text-right text-white font-mono">{item.quantity}</td>
-                                                <td className="py-4 px-6 text-right text-white font-mono">{formatPrice(item.unit_price)}</td>
-                                                <td className="py-4 px-6 text-right text-moonstone text-xs">
+                                                <td className="py-4 px-6 text-right text-white font-mono tabular-nums">{item.quantity}</td>
+                                                <td className="py-4 px-6 text-right text-white font-mono tabular-nums">{formatPrice(item.unit_price)}</td>
+                                                <td className="py-4 px-6 text-right text-moonstone text-xs tabular-nums">
                                                     {item.tax_rate}%
                                                 </td>
-                                                <td className="py-4 px-6 text-right font-bold text-primary font-mono">{formatPrice(item.total)}</td>
+                                                <td className="py-4 px-6 text-right font-bold text-primary font-mono tabular-nums">{formatPrice(item.total)}</td>
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                     <tfoot className="bg-bg-navy/50 border-t border-surface-hover">
                                         <tr>
                                             <td colSpan={4} className="py-3 px-6 text-right text-sm font-medium text-moonstone">Subtotal</td>
-                                            <td className="py-3 px-6 text-right text-sm font-medium text-white">{formatPrice(order.subtotal)}</td>
+                                            <td className="py-3 px-6 text-right text-sm font-medium text-white tabular-nums">{formatPrice(order.subtotal)}</td>
                                         </tr>
                                         <tr>
                                             <td colSpan={4} className="py-3 px-6 text-right text-sm font-medium text-moonstone">Tax</td>
-                                            <td className="py-3 px-6 text-right text-sm font-medium text-green-400">+{formatPrice(order.tax_total)}</td>
+                                            <td className="py-3 px-6 text-right text-sm font-medium text-green-400 tabular-nums">+{formatPrice(order.tax_total)}</td>
                                         </tr>
                                         <tr>
                                             <td colSpan={4} className="py-3 px-6 text-right text-sm font-medium text-moonstone">Discount</td>
-                                            <td className="py-3 px-6 text-right text-sm font-medium text-red-400">-{formatPrice(order.discount_total)}</td>
+                                            <td className="py-3 px-6 text-right text-sm font-medium text-red-400 tabular-nums">-{formatPrice(order.discount_total)}</td>
                                         </tr>
+                                        {shippingCharges > 0 && (
+                                            <tr>
+                                                <td colSpan={4} className="py-3 px-6 text-right text-sm font-medium text-moonstone">Shipping</td>
+                                                <td className="py-3 px-6 text-right text-sm font-medium text-white tabular-nums">+{formatPrice(shippingCharges)}</td>
+                                            </tr>
+                                        )}
                                         <tr className="border-t border-surface-hover bg-primary/5">
                                             <td colSpan={4} className="py-4 px-6 text-right text-lg font-bold text-primary">Grand Total</td>
-                                            <td className="py-4 px-6 text-right text-lg font-bold text-primary">{formatPrice(order.total)}</td>
+                                            <td className="py-4 px-6 text-right text-lg font-bold text-primary tabular-nums">{formatPrice(order.total)}</td>
                                         </tr>
                                     </tfoot>
                                 </table>
@@ -421,7 +537,7 @@ function OrderDetailContent() {
                                     <Calendar className="text-primary w-4 h-4" />
                                     <div>
                                         <p className="text-moonstone text-xs">Order Date</p>
-                                        <p className="text-white font-medium">{formatDate(order.order_date)}</p>
+                                        <p className="text-white font-medium">{safeFormatDate(order.order_date, formatDate)}</p>
                                     </div>
                                 </div>
                                 {order.valid_until && (
@@ -429,7 +545,7 @@ function OrderDetailContent() {
                                         <Calendar className="text-orange-400 w-4 h-4" />
                                         <div>
                                             <p className="text-moonstone text-xs">Valid Until</p>
-                                            <p className="text-white font-medium">{formatDate(order.valid_until)}</p>
+                                            <p className="text-white font-medium">{safeFormatDate(order.valid_until, formatDate)}</p>
                                         </div>
                                     </div>
                                 )}
@@ -457,20 +573,22 @@ function OrderDetailContent() {
                                 {shipments.length === 0 && (
                                     <p className="text-moonstone text-xs">No shipment recorded yet.</p>
                                 )}
-                                {shipments.map((shipment) => (
+                                {shipments.map((shipment) => {
+                                    const safeTrackingUrl = sanitizeExternalUrl(shipment.tracking_url);
+                                    return (
                                     <div key={shipment.id} className="text-xs border-t border-surface-hover pt-2 space-y-1">
-                                        <p className="text-white font-medium">
+                                        <p className="text-white font-medium break-words">
                                             {shipment.carrier || "Carrier"} · {shipment.awb_number || "no AWB"}
                                         </p>
                                         <p className="text-moonstone uppercase tracking-wide">
                                             {shipment.shipping_status || "unknown"}
                                         </p>
-                                        {shipment.tracking_url && (
+                                        {safeTrackingUrl && (
                                             <a
-                                                href={shipment.tracking_url}
+                                                href={safeTrackingUrl}
                                                 target="_blank"
-                                                rel="noreferrer"
-                                                className="text-primary underline"
+                                                rel="noopener noreferrer"
+                                                className="text-primary underline break-all"
                                             >
                                                 Tracking link
                                             </a>
@@ -479,13 +597,14 @@ function OrderDetailContent() {
                                             <button
                                                 type="button"
                                                 onClick={() => handleMarkDelivered(shipment.id)}
-                                                className="text-emerald-400 underline"
+                                                className="text-emerald-400 underline block"
                                             >
                                                 Mark delivered
                                             </button>
                                         )}
                                     </div>
-                                ))}
+                                    );
+                                })}
                                 <div className="flex flex-wrap gap-2 pt-2">
                                     <Button variant="outline" onClick={handleCreateShipment} disabled={actionLoading}>
                                         <Truck size={16} className="mr-1.5" />
@@ -506,7 +625,7 @@ function OrderDetailContent() {
                                 </div>
                                 {Boolean((order as { cod_settled_at?: string }).cod_settled_at) && (
                                     <p className="text-xs text-emerald-400">
-                                        COD settled {formatDate((order as { cod_settled_at?: string }).cod_settled_at || "")}
+                                        COD settled {safeFormatDate((order as { cod_settled_at?: string }).cod_settled_at || "", formatDate)}
                                         {Boolean((order as { cod_reference?: string }).cod_reference) &&
                                             ` · ref ${(order as { cod_reference?: string }).cod_reference}`}
                                     </p>
@@ -575,36 +694,247 @@ function OrderDetailContent() {
             </div>
 
             {/* 4x6 Thermal Shipping Parcel Label Modal */}
-            <ShippingLabelPrintModal
-                open={showShippingLabel}
-                onOpenChange={setShowShippingLabel}
-                labelData={{
-                    orderNumber: order.order_number || order.id,
-                    carrier: 'st_courier',
-                    awbNumber: shipments[0]?.awb_number || (order as any).tracking_id || (order as any).awb_number || '',
-                    isCod: order.payment_method === 'cod',
-                    codAmount: order.payment_method === 'cod' ? order.total : 0,
-                    weightGrams: 250,
-                    orderDate: order.order_date,
-                    sender: {
-                        companyName: settings?.storeName || (settings as any)?.store_name || "Store",
-                        address: settings?.address || (settings as any)?.store_address || "",
-                        city: settings?.city || (settings as any)?.store_city || "",
-                        state: settings?.state || (settings as any)?.store_state || "",
-                        pincode: settings?.pincode || (settings as any)?.store_pincode || "",
-                        phone: settings?.whatsappPhone || settings?.phone || (settings as any)?.store_phone || "",
-                    },
-                    consignee: {
-                        name: order.customer_name || "Valued Customer",
-                        address: order.shipping_address || order.billing_address || "Delivery Address On Record",
-                        city: (order as any).shipping_city || (order as any).city || "",
-                        state: (order as any).shipping_state || (order as any).state || "",
-                        pincode: (order as any).shipping_pincode || (order as any).pincode || "",
-                        phone: order.customer_phone || "",
-                    },
-                    routingCode: "",
-                }}
-            />
+            {(() => {
+                const legacyOrder = order as unknown as {
+                    tracking_id?: string;
+                    awb_number?: string;
+                    shipping_city?: string;
+                    city?: string;
+                    shipping_state?: string;
+                    state?: string;
+                    shipping_pincode?: string;
+                    pincode?: string;
+                };
+                const legacySettings = settings as unknown as {
+                    store_name?: string;
+                    store_address?: string;
+                    store_city?: string;
+                    store_state?: string;
+                    store_pincode?: string;
+                    store_phone?: string;
+                } | null;
+                return (
+                    <ShippingLabelPrintModal
+                        open={showShippingLabel}
+                        onOpenChange={setShowShippingLabel}
+                        labelData={{
+                            orderNumber: order.order_number || order.id,
+                            carrier: 'st_courier',
+                            awbNumber: shipments[0]?.awb_number || legacyOrder.tracking_id || legacyOrder.awb_number || '',
+                            isCod: order.payment_method === 'cod',
+                            codAmount: order.payment_method === 'cod' ? order.total : 0,
+                            weightGrams: 250,
+                            orderDate: order.order_date,
+                            sender: {
+                                companyName: settings?.storeName || legacySettings?.store_name || "Store",
+                                address: settings?.address || legacySettings?.store_address || "",
+                                city: settings?.city || legacySettings?.store_city || "",
+                                state: settings?.state || legacySettings?.store_state || "",
+                                pincode: settings?.pincode || legacySettings?.store_pincode || "",
+                                phone: settings?.whatsappPhone || settings?.phone || legacySettings?.store_phone || "",
+                            },
+                            consignee: {
+                                name: order.customer_name || "Valued Customer",
+                                address: order.shipping_address || order.billing_address || "Delivery Address On Record",
+                                city: legacyOrder.shipping_city || legacyOrder.city || "",
+                                state: legacyOrder.shipping_state || legacyOrder.state || "",
+                                pincode: legacyOrder.shipping_pincode || legacyOrder.pincode || "",
+                                phone: order.customer_phone || "",
+                            },
+                            routingCode: "",
+                        }}
+                    />
+                );
+            })()}
+
+            {/* Record Dispatch / Shipment Dialog */}
+            <Dialog open={showShipmentDialog} onOpenChange={setShowShipmentDialog}>
+                <DialogContent className="bg-surface-navy border-surface-hover text-white max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Record Dispatch &amp; Tracking</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={submitCreateShipment} className="space-y-4">
+                        <div className="space-y-1.5">
+                            <Label>Courier / Carrier Name *</Label>
+                            <Input
+                                required
+                                placeholder="e.g. ST Courier, Delhivery, BlueDart"
+                                value={shipmentForm.carrier}
+                                onChange={(e) => setShipmentForm((p) => ({ ...p, carrier: e.target.value }))}
+                                className="bg-bg-navy border-surface-hover"
+                            />
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label>AWB / Tracking Number *</Label>
+                            <Input
+                                required
+                                placeholder="e.g. DLV84729104"
+                                value={shipmentForm.awbNumber}
+                                onChange={(e) => setShipmentForm((p) => ({ ...p, awbNumber: e.target.value }))}
+                                className="bg-bg-navy border-surface-hover font-mono"
+                            />
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label>Tracking URL (optional)</Label>
+                            <Input
+                                type="url"
+                                placeholder="https://..."
+                                value={shipmentForm.trackingUrl}
+                                onChange={(e) => setShipmentForm((p) => ({ ...p, trackingUrl: e.target.value }))}
+                                className="bg-bg-navy border-surface-hover"
+                            />
+                        </div>
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setShowShipmentDialog(false)}>Cancel</Button>
+                            <Button type="submit" disabled={actionLoading}>Save Shipment</Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Settle COD Dialog */}
+            <Dialog open={showCodDialog} onOpenChange={setShowCodDialog}>
+                <DialogContent className="bg-surface-navy border-surface-hover text-white max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Mark COD Collected</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={submitCodCollected} className="space-y-4">
+                        <div className="space-y-1.5">
+                            <Label>Collection Reference (Cash Receipt / Courier UTR) *</Label>
+                            <Input
+                                required
+                                placeholder="e.g. UTR-491827 or Courier Remittance #12"
+                                value={codReference}
+                                onChange={(e) => setCodReference(e.target.value)}
+                                className="bg-bg-navy border-surface-hover font-mono"
+                            />
+                        </div>
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setShowCodDialog(false)}>Cancel</Button>
+                            <Button type="submit" disabled={actionLoading} className="bg-emerald-600 hover:bg-emerald-500 text-white">
+                                Settle COD ({formatPrice(order.total)})
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Cancel Order Dialog */}
+            <Dialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>
+                <DialogContent className="bg-surface-navy border-surface-hover text-white max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>
+                            Cancel {isEstimate ? "Estimate" : "Order"} #{order.order_number}?
+                        </DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={submitCancelOrder} className="space-y-4">
+                        <p className="text-xs text-moonstone leading-relaxed">
+                            Any stock deducted by this order will be restored to inventory.
+                            {order.status === "invoiced" && " Linked pre-dispatch invoices and packing sessions will also be voided."}
+                            {isPaidOrder && " Because this order is PAID, a refund reference is required."}
+                        </p>
+                        <div className="space-y-1.5">
+                            <Label>Cancellation Reason (optional)</Label>
+                            <Input
+                                placeholder="e.g. Customer requested cancellation"
+                                value={cancelReason}
+                                onChange={(e) => setCancelReason(e.target.value)}
+                                className="bg-bg-navy border-surface-hover"
+                            />
+                        </div>
+                        {isPaidOrder && (
+                            <div className="space-y-1.5">
+                                <Label>Refund Reference (Razorpay Refund ID / UTR) *</Label>
+                                <Input
+                                    required
+                                    placeholder="e.g. rfnd_Pq81... or UTR..."
+                                    value={cancelRefundRef}
+                                    onChange={(e) => setCancelRefundRef(e.target.value)}
+                                    className="bg-bg-navy border-surface-hover font-mono"
+                                />
+                            </div>
+                        )}
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setShowCancelDialog(false)}>Keep Order</Button>
+                            <Button type="submit" disabled={actionLoading} className="bg-red-600 hover:bg-red-700 text-white">
+                                {actionLoading ? "Cancelling..." : "Confirm Cancellation"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Split / Backorder Dialog */}
+            <Dialog open={showSplitDialog} onOpenChange={setShowSplitDialog}>
+                <DialogContent className="bg-surface-navy border-surface-hover text-white max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-white">
+                            <GitBranch className="w-5 h-5 text-amber-300" />
+                            Split Order into Backorder
+                        </DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={handleSplitOrder} className="space-y-4">
+                        <p className="text-xs text-moonstone">
+                            Choose quantities to defer to a separate backorder ({order.order_number}-BO). Remaining quantities stay on this order for immediate dispatch.
+                        </p>
+                        <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                            {order.items?.map((item) => {
+                                const cur = splitQuantities[item.id] || 0;
+                                return (
+                                    <div
+                                        key={item.id}
+                                        className="flex items-center justify-between gap-3 rounded-lg border border-surface-hover bg-bg-navy/50 p-2.5"
+                                    >
+                                        <div className="min-w-0 flex-1">
+                                            <div className="text-sm font-medium text-white truncate">
+                                                {item.description}
+                                            </div>
+                                            <div className="text-[11px] text-moonstone font-mono">
+                                                Ordered: {item.quantity} × {formatPrice(item.unit_price)}
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <Label className="text-xs text-moonstone">Move qty</Label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                max={item.quantity}
+                                                value={cur}
+                                                onChange={(e) => {
+                                                    const val = Math.max(0, Math.min(item.quantity, parseInt(e.target.value, 10) || 0));
+                                                    setSplitQuantities((prev) => ({ ...prev, [item.id]: val }));
+                                                }}
+                                                className="w-20 h-8 bg-surface-navy border-surface-hover text-white text-center font-mono text-xs"
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label className="text-xs text-moonstone">Backorder Reason (optional)</Label>
+                            <Input
+                                placeholder="e.g. Awaiting vendor restock on temple bangles"
+                                value={splitReason}
+                                onChange={(e) => setSplitReason(e.target.value)}
+                                className="bg-bg-navy border-surface-hover text-white"
+                            />
+                        </div>
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setShowSplitDialog(false)}>
+                                Cancel
+                            </Button>
+                            <Button
+                                type="submit"
+                                disabled={actionLoading}
+                                className="bg-amber-500 hover:bg-amber-400 text-navy-dark font-semibold"
+                            >
+                                {actionLoading ? "Splitting..." : "Create Backorder"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

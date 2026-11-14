@@ -44,16 +44,18 @@ The resulting URLs (put them in `/etc/luminila/env` **before building**):
 1. Install Tailscale and sign in to the same tailnet.
 2. Open `https://<machine>.<tailnet>.ts.net/` — the ERP login.
 3. Nothing here resolves from the public internet; the public side only knows
-   `shop.<domain>` through Cloudflare.
+   `niththigal.com` (and `api.niththigal.com`) through Cloudflare.
 
-## Firewall
+## Firewall (Hostinger VPS UFW + Tailscale SSH Lock-Down)
 
 ```bash
 sudo ufw default deny incoming
 sudo ufw allow in on tailscale0
-sudo ufw allow 22/tcp        # or restrict to tailnet only:
-# sudo ufw delete allow 22/tcp
-# sudo ufw allow in on tailscale0 to any port 22 proto tcp
+# Restrict SSH strictly to Tailscale once verified:
+sudo ufw allow in on tailscale0 to any port 22 proto tcp
+# Remove public SSH after confirming `ssh root@<machine>.<tailnet>.ts.net` works
+# (keep Hostinger hPanel VNC as your emergency recovery console):
+sudo ufw delete allow 22/tcp || true
 sudo ufw enable
 ```
 

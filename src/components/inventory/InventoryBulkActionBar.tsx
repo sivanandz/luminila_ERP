@@ -9,7 +9,6 @@ import {
     DropdownMenuTrigger,
     DropdownMenuContent,
     DropdownMenuItem,
-    DropdownMenuSeparator,
     DropdownMenuLabel,
     DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
@@ -23,14 +22,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-    Tag,
     Printer,
     MapPin,
     Percent,
     Share2,
     X,
     Loader2,
-    CheckCircle2,
     Eye,
     EyeOff,
 } from "lucide-react";

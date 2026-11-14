@@ -132,7 +132,7 @@ export default function BankingPage() {
                 title="Banking & Ledger"
                 subtitle="Manage bank accounts and transactions"
             >
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                     <Button
                         onClick={() => router.push('/banking/transactions')}
                         variant="outline"
@@ -155,24 +155,24 @@ export default function BankingPage() {
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-6">
                         <div className="bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 rounded-xl p-6">
                             <div className="flex items-center gap-4 mb-4">
-                                <div className="p-3 bg-primary/20 rounded-lg text-primary">
+                                <div className="p-3 bg-primary/20 rounded-lg text-primary shrink-0">
                                     <Wallet size={24} />
                                 </div>
-                                <div>
+                                <div className="min-w-0">
                                     <p className="text-moonstone text-sm font-medium">Total Balance</p>
-                                    <h3 className="text-2xl font-bold text-white">{formatPrice(stats.totalBalance)}</h3>
+                                    <h3 className="text-2xl font-bold text-white tabular-nums break-words">{formatPrice(stats.totalBalance)}</h3>
                                 </div>
                             </div>
                         </div>
 
                         <div className="bg-surface-navy border border-surface-hover rounded-xl p-6">
                             <div className="flex items-center gap-4 mb-4">
-                                <div className="p-3 bg-blue-500/20 rounded-lg text-blue-400">
+                                <div className="p-3 bg-blue-500/20 rounded-lg text-blue-400 shrink-0">
                                     <Landmark size={24} />
                                 </div>
-                                <div>
+                                <div className="min-w-0">
                                     <p className="text-moonstone text-sm font-medium">Active Accounts</p>
-                                    <h3 className="text-2xl font-bold text-white">{stats.totalAccounts}</h3>
+                                    <h3 className="text-2xl font-bold text-white tabular-nums">{stats.totalAccounts}</h3>
                                 </div>
                             </div>
                         </div>
@@ -192,28 +192,28 @@ export default function BankingPage() {
                             {accounts.map(acc => (
                                 <div
                                     key={acc.id}
-                                    className="bg-surface-navy border border-surface-hover rounded-xl p-6 hover:border-primary/50 transition-colors group cursor-pointer"
+                                    className="bg-surface-navy border border-surface-hover rounded-xl p-6 hover:border-primary/50 transition-colors group cursor-pointer min-w-0"
                                     onClick={() => router.push(`/banking/transactions?accountId=${acc.id}`)}
                                 >
-                                    <div className="flex justify-between items-start mb-6">
-                                        <div className="p-3 bg-bg-navy rounded-lg text-white group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                                    <div className="flex justify-between items-start gap-2 mb-6">
+                                        <div className="p-3 bg-bg-navy rounded-lg text-white group-hover:bg-primary group-hover:text-primary-foreground transition-colors shrink-0">
                                             <Landmark size={24} />
                                         </div>
-                                        <span className={`px-2 py-1 rounded text-xs font-bold ${acc.is_active ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
+                                        <span className={`px-2 py-1 rounded text-xs font-bold shrink-0 ${acc.is_active ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
                                             }`}>
                                             {acc.is_active ? 'ACTIVE' : 'INACTIVE'}
                                         </span>
                                     </div>
 
-                                    <h3 className="text-lg font-bold text-white mb-1">{acc.account_name}</h3>
-                                    <p className="text-sm text-moonstone mb-4">{acc.bank_name} • {acc.account_number}</p>
+                                    <h3 className="text-lg font-bold text-white mb-1 truncate">{acc.account_name}</h3>
+                                    <p className="text-sm text-moonstone mb-4 truncate">{acc.bank_name} • {acc.account_number}</p>
 
-                                    <div className="pt-4 border-t border-surface-hover flex justify-between items-end">
-                                        <div>
+                                    <div className="pt-4 border-t border-surface-hover flex justify-between items-end gap-2">
+                                        <div className="min-w-0">
                                             <p className="text-xs text-moonstone uppercase tracking-wider mb-1">Available Balance</p>
-                                            <p className="text-xl font-bold text-primary">{formatPrice(acc.current_balance)}</p>
+                                            <p className="text-xl font-bold text-primary tabular-nums break-words">{formatPrice(acc.current_balance)}</p>
                                         </div>
-                                        <Button variant="ghost" size="sm" className="text-moonstone hover:text-white">
+                                        <Button variant="ghost" size="sm" className="text-moonstone hover:text-white shrink-0">
                                             View <ArrowUpRight size={16} className="ml-1" />
                                         </Button>
                                     </div>

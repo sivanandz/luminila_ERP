@@ -274,6 +274,61 @@ export async function toggleDiscountActive(id: string, isActive: boolean): Promi
 // DISCOUNT VALIDATION
 // ===========================================
 
+export const BUILTIN_PROMO_CODES: Record<string, Discount> = {
+    BDAY1000: {
+        code: 'BDAY1000',
+        name: 'Birthday Gift Voucher',
+        description: 'Built-in ₹1,000 flat off on orders of ₹3,000 or more',
+        discount_type: 'fixed',
+        value: 1000,
+        min_purchase: 3000,
+        min_items: 0,
+        applies_to: 'all',
+        per_customer_limit: 0,
+        used_count: 0,
+        is_active: true,
+    },
+    ANNIV7: {
+        code: 'ANNIV7',
+        name: 'Anniversary Privilege 7%',
+        description: 'Built-in 7% off on anniversary celebration purchases',
+        discount_type: 'percentage',
+        value: 7,
+        min_purchase: 0,
+        min_items: 0,
+        applies_to: 'all',
+        per_customer_limit: 0,
+        used_count: 0,
+        is_active: true,
+    },
+    VIPRENEW: {
+        code: 'VIPRENEW',
+        name: 'VIP Loyalty Renewal 10%',
+        description: 'Built-in 10% VIP winback privilege',
+        discount_type: 'percentage',
+        value: 10,
+        min_purchase: 0,
+        min_items: 0,
+        applies_to: 'all',
+        per_customer_limit: 0,
+        used_count: 0,
+        is_active: true,
+    },
+    CARE50: {
+        code: 'CARE50',
+        name: 'After-Care Complimentary ₹500',
+        description: 'Built-in ₹500 off post-delivery repeat purchase privilege',
+        discount_type: 'fixed',
+        value: 500,
+        min_purchase: 0,
+        min_items: 0,
+        applies_to: 'all',
+        per_customer_limit: 0,
+        used_count: 0,
+        is_active: true,
+    },
+};
+
 export async function validateDiscount(
     code: string,
     orderValue: number,
@@ -281,7 +336,8 @@ export async function validateDiscount(
     customerId?: string,
     customerType?: string
 ): Promise<DiscountValidation> {
-    const discount = await getDiscountByCode(code);
+    const normalizedCode = code.trim().toUpperCase();
+    const discount = (await getDiscountByCode(normalizedCode)) || BUILTIN_PROMO_CODES[normalizedCode] || null;
 
     if (!discount) {
         return { valid: false, error: 'Invalid discount code', discountAmount: 0 };
@@ -306,8 +362,8 @@ export async function validateDiscount(
         return { valid: false, error: 'This discount has reached its usage limit', discountAmount: 0 };
     }
 
-    // Check per-customer limit
-    if (customerId && discount.per_customer_limit > 0) {
+    // Check per-customer limit (only for persisted DB coupons with an id)
+    if (discount.id && customerId && discount.per_customer_limit > 0) {
         try {
             const usages = await pb.collection('discount_usage').getFullList({
                 filter: `discount="${sanitizeFilter(discount.id || '')}" && customer="${sanitizeFilter(customerId || '')}"${tenantClause()}`,
@@ -394,6 +450,9 @@ export async function recordDiscountUsage(
         orderId?: string;
     }
 ): Promise<void> {
+    if (!discountId || discountId.startsWith('builtin:')) {
+        return;
+    }
     const discount = await pb.collection('discounts').getOne<DiscountRecord>(discountId);
     const tenant = accountScopeEmail();
     // Fail closed: an unresolved tenant must not redeem (or stamp) a coupon.

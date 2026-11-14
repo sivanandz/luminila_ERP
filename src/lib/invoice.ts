@@ -429,7 +429,6 @@ export async function getStoreSettings(db: typeof pb = pb): Promise<StoreSetting
 // NUMBER GENERATION (PocketBase sequence)
 // ===========================================
 export async function generateInvoiceNumber(db: typeof pb = pb): Promise<string> {
-    const pb = db;
     const today = new Date();
     const month = today.getMonth() + 1;
     const year = today.getFullYear();

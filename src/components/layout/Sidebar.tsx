@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 // import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
+import { cn, getInitials } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
@@ -36,12 +36,10 @@ import {
     FileText,
     PackageCheck,
     TrendingUp,
-    Headphones,
     UserCog,
     Landmark,
     CreditCard,
     LogOut,
-    LogIn,
     ChevronsDown,
     ChevronsUp,
     Globe,
@@ -187,7 +185,7 @@ function CollapsibleGroup({
             <div
                 className={cn(
                     "overflow-hidden transition-all duration-200 ease-in-out",
-                    isOpen ? "max-h-96 opacity-100" : "max-h-0 opacity-0"
+                    isOpen ? "max-h-[640px] opacity-100" : "max-h-0 opacity-0"
                 )}
             >
                 <div className="pl-4 border-l border-border/50 ml-3 space-y-0.5 py-1">
@@ -242,18 +240,6 @@ export function Sidebar() {
     const handleLogout = () => {
         logout();
         router.push("/login");
-    };
-
-    // Get user initials
-    const getInitials = (name?: string, email?: string) => {
-        if (name) {
-            const parts = name.split(" ");
-            return parts.map(p => p[0]).slice(0, 2).join("").toUpperCase();
-        }
-        if (email) {
-            return email.slice(0, 2).toUpperCase();
-        }
-        return "??";
     };
 
     if (pathname === "/login" || pathname === "/setup" || pathname?.startsWith("/login/") || pathname?.startsWith("/setup/")) {

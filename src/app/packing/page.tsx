@@ -20,7 +20,6 @@ import {
     Minus,
     Layers,
     AlertTriangle,
-    MapPin,
     Printer,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -56,7 +55,6 @@ import {
     resolveScannedCode,
     saveSessionProgress,
     PACKAGING_PRESETS,
-    type PackagingPreset,
     type PackingLine,
     type PackingQueue,
     type PackingSession,
@@ -796,21 +794,48 @@ function PackingStation() {
                                     Pick an order from the queue, scan its packing slip, or scan any item tag to jump to its
                                     order. Hardware scanners work anywhere on this page.
                                 </p>
-                                <div className="lg:hidden w-full max-w-md mt-4 space-y-2">
-                                    {queue.toPack.slice(0, 10).map((order) => (
-                                        <button
-                                            key={order.id}
-                                            type="button"
-                                            onClick={() => void openOrder(order)}
-                                            className="w-full text-left rounded-lg border border-surface-hover bg-surface-navy px-3 py-2.5 hover:bg-bg-navy"
-                                        >
-                                            <span className="text-xs font-mono font-bold text-primary">{order.order_number}</span>
-                                            <span className="text-[11px] text-white ml-2">{order.customer_name}</span>
-                                            <span className="text-[10px] text-moonstone float-right">{order.item_count} pcs</span>
-                                        </button>
-                                    ))}
-                                    {queue.toPack.length === 0 && !queueLoading && (
-                                        <p className="text-xs text-moonstone text-center py-4">Queue is empty.</p>
+                                <div className="lg:hidden w-full max-w-md mt-4 space-y-3 text-left">
+                                    <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                                        {queue.toPack.map((order) => (
+                                            <button
+                                                key={order.id}
+                                                type="button"
+                                                onClick={() => void openOrder(order)}
+                                                className="w-full text-left rounded-lg border border-surface-hover bg-surface-navy px-3 py-2.5 hover:bg-bg-navy flex items-center justify-between gap-2"
+                                            >
+                                                <div className="min-w-0 flex-1 flex items-center gap-2">
+                                                    <span className="text-xs font-mono font-bold text-primary shrink-0">{order.order_number}</span>
+                                                    <span className="text-[11px] text-white truncate">{order.customer_name}</span>
+                                                </div>
+                                                <span className="text-[10px] text-moonstone shrink-0 tabular-nums">{order.item_count} pcs</span>
+                                            </button>
+                                        ))}
+                                        {queue.toPack.length === 0 && !queueLoading && (
+                                            <p className="text-xs text-moonstone text-center py-4">Queue is empty.</p>
+                                        )}
+                                    </div>
+                                    {queue.packedAwaitingDispatch.length > 0 && (
+                                        <div className="pt-2 border-t border-surface-hover/60 space-y-2">
+                                            <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                                                Packed · awaiting dispatch ({queue.packedAwaitingDispatch.length})
+                                            </p>
+                                            <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                                                {queue.packedAwaitingDispatch.map((order) => (
+                                                    <button
+                                                        key={order.id}
+                                                        type="button"
+                                                        onClick={() => void openOrder(order)}
+                                                        className="w-full text-left rounded-lg border border-emerald-500/30 bg-surface-navy px-3 py-2 hover:bg-bg-navy flex items-center justify-between gap-2"
+                                                    >
+                                                        <div className="min-w-0 flex-1 flex items-center gap-2">
+                                                            <span className="text-xs font-mono font-bold text-emerald-400 shrink-0">{order.order_number}</span>
+                                                            <span className="text-[11px] text-moonstone truncate">{order.customer_name}</span>
+                                                        </div>
+                                                        <span className="text-[10px] text-emerald-300 shrink-0">Reopen</span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
                             </div>
@@ -822,9 +847,9 @@ function PackingStation() {
                             <div className="flex flex-col gap-4 max-w-3xl w-full mx-auto">
                                 {/* Order header */}
                                 <div className="rounded-xl border border-surface-hover bg-surface-navy p-4 flex items-start justify-between gap-3">
-                                    <div>
-                                        <p className="text-sm font-mono font-bold text-primary">{session.order_number}</p>
-                                        <p className="text-sm text-white mt-0.5">{activeOrder.customer_name || session.customer_name}</p>
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-sm font-mono font-bold text-primary truncate">{session.order_number}</p>
+                                        <p className="text-sm text-white mt-0.5 truncate">{activeOrder.customer_name || session.customer_name}</p>
                                         <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                                             {activeOrderMeta && channelBadge(activeOrderMeta) && (
                                                 <Badge variant="outline" className="text-[10px] border-surface-hover text-moonstone">
@@ -837,12 +862,12 @@ function PackingStation() {
                                                     {paymentBadge(activeOrderMeta)!.label}
                                                 </Badge>
                                             )}
-                                            <span className="text-[10px] text-moonstone">
+                                            <span className="text-[10px] text-moonstone tabular-nums">
                                                 ₹{(activeOrder.total || 0).toLocaleString("en-IN")}
                                             </span>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 shrink-0">
                                         <PackingSlipButton data={slipData} />
                                         <Button variant="ghost" size="icon" onClick={closeOrder} className="text-moonstone hover:text-white" title="Close without completing">
                                             <X size={16} />
@@ -1035,7 +1060,7 @@ function PackingStation() {
                                 {scanFeed.length > 0 && (
                                     <div className="rounded-lg border border-surface-hover/60 bg-bg-navy/50 px-3 py-2">
                                         {scanFeed.slice(0, 5).map((entry) => (
-                                            <p key={entry.id} className={`text-[10px] font-mono leading-relaxed ${FEED_TONES[entry.tone]}`}>
+                                            <p key={entry.id} className={`text-[10px] font-mono leading-relaxed break-all ${FEED_TONES[entry.tone]}`}>
                                                 <span className="text-moonstone/60">{entry.at}</span> {entry.text}
                                             </p>
                                         ))}

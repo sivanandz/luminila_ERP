@@ -26,10 +26,9 @@ export function Cart({ items, onUpdateQuantity, onRemoveItem, onClear }: CartPro
     // P15: a null cart must not crash the sidebar, and lines are keyed by their
     // cart-line id (variant ids collide when the same variant is added twice).
     const lines = items ?? [];
-    const subtotal = lines.reduce(
-        (sum, item) => sum + item.unit_price * item.quantity,
-        0
-    );
+    const subtotal = Math.round(
+        lines.reduce((sum, item) => sum + item.unit_price * item.quantity, 0) * 100
+    ) / 100;
 
     if (lines.length === 0) {
         return (
@@ -86,19 +85,20 @@ export function Cart({ items, onUpdateQuantity, onRemoveItem, onClear }: CartPro
                         </div>
 
                         {/* Quantity Controls */}
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
                             <button
                                 onClick={() => onUpdateQuantity(lineId, -1)}
                                 className="w-7 h-7 rounded bg-white flex items-center justify-center hover:bg-navy hover:text-white transition-colors"
                             >
                                 <Minus size={14} />
                             </button>
-                            <span className="w-8 text-center font-bold text-sm">
+                            <span className="w-8 text-center font-bold text-sm tabular-nums">
                                 {item.quantity}
                             </span>
                             <button
                                 onClick={() => onUpdateQuantity(lineId, 1)}
-                                className="w-7 h-7 rounded bg-white flex items-center justify-center hover:bg-navy hover:text-white transition-colors"
+                                disabled={item.quantity >= (item.variant?.stock_level ?? Infinity)}
+                                className="w-7 h-7 rounded bg-white flex items-center justify-center hover:bg-navy hover:text-white transition-colors disabled:opacity-40 disabled:pointer-events-none"
                             >
                                 <Plus size={14} />
                             </button>
@@ -107,7 +107,7 @@ export function Cart({ items, onUpdateQuantity, onRemoveItem, onClear }: CartPro
                         {/* Remove Button */}
                         <button
                             onClick={() => onRemoveItem(lineId)}
-                            className="p-1.5 text-error hover:bg-error/10 rounded transition-colors"
+                            className="p-1.5 text-error hover:bg-error/10 rounded transition-colors shrink-0"
                         >
                             <Trash2 size={16} />
                         </button>
@@ -120,7 +120,7 @@ export function Cart({ items, onUpdateQuantity, onRemoveItem, onClear }: CartPro
             <div className="mt-3 pt-3 border-t border-border">
                 <div className="flex justify-between text-sm">
                     <span className="text-foreground-muted">Subtotal</span>
-                    <span className="font-semibold">{formatPrice(subtotal)}</span>
+                    <span className="font-semibold tabular-nums">{formatPrice(subtotal)}</span>
                 </div>
             </div>
         </div>

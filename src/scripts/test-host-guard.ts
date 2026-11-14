@@ -61,13 +61,14 @@ test('admin, storefront, loopback and unknown hosts classify correctly', () => {
     assert.equal(classifyHost('anything', disabled), 'admin');
 });
 
-test('storefront host may serve checkout, tracking and storefront APIs', () => {
+test('storefront host may serve checkout, tracking, storefront APIs and Razorpay webhooks', () => {
     assert.equal(isPathAllowed('storefront', '/checkout'), true);
     assert.equal(isPathAllowed('storefront', '/checkout/whatsapp'), true);
     assert.equal(isPathAllowed('storefront', '/tracking/ABC123'), true);
     assert.equal(isPathAllowed('storefront', '/api/storefront/order'), true);
     assert.equal(isPathAllowed('storefront', '/api/storefront/auth/send-otp'), true);
     assert.equal(isPathAllowed('storefront', '/api/tracking/st-courier'), true);
+    assert.equal(isPathAllowed('storefront', '/api/webhooks/razorpay'), true);
 });
 
 test('storefront host gets static assets, which public pages need', () => {
@@ -78,7 +79,7 @@ test('storefront host gets static assets, which public pages need', () => {
 });
 
 test('storefront host cannot reach ERP pages or admin APIs', () => {
-    for (const path of ['/', '/inventory', '/pos', '/settings', '/login', '/api/system/tenant-db', '/api/pos/payment', '/backup', '/storefront-control']) {
+    for (const path of ['/', '/inventory', '/pos', '/settings', '/login', '/api/system/tenant-db', '/api/pos/payment', '/api/webhooks', '/api/webhooks/other', '/backup', '/storefront-control']) {
         assert.equal(isPathAllowed('storefront', path), false, `expected ${path} to be blocked`);
     }
 });

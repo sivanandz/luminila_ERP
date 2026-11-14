@@ -24,7 +24,7 @@ import { formatINR } from "@/lib/gst";
 import { useAnalyticsRange } from "@/lib/analytics-v2/range-store";
 import { getSalesAnalytics, WEEKDAYS, type SalesAnalytics } from "@/lib/analytics-v2/sales-metrics";
 import { getProfitabilityAnalytics } from "@/lib/analytics-v2/profitability";
-import { KpiStrip, EmptyState, DeltaBadge, type KpiItem } from "./shared";
+import { KpiStrip, EmptyState, type KpiItem } from "./shared";
 
 const CHART_AXIS = { fontSize: 11, fill: "hsl(var(--muted-foreground))" };
 
@@ -161,7 +161,7 @@ export function SalesTab() {
                                     <div key={p.method} className="flex items-center justify-between gap-3">
                                         <span className="text-sm capitalize">{p.method}</span>
                                         <div className="flex items-center gap-2">
-                                            <span className="text-xs text-muted-foreground">{p.count} txns</span>
+                                            <span className="text-xs text-muted-foreground tabular-nums">{p.count} {p.count === 1 ? 'txn' : 'txns'}</span>
                                             <span className="text-sm font-medium tabular-nums">{formatINR(p.amount)}</span>
                                             <span className="text-xs text-muted-foreground w-12 text-right">{p.percentage}%</span>
                                         </div>

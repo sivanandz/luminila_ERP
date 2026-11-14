@@ -26,8 +26,6 @@ import {
     Plus,
     ExternalLink,
     Loader2,
-    Calendar,
-    User,
     CheckCircle2,
     AlertCircle,
     ArrowUpRight,
@@ -66,9 +64,10 @@ export function ProductPurchaseHistoryModal({
         if (!isOpen || !product?.id) return;
 
         let cancelled = false;
-        setLoading(true);
-
-        getProductPurchaseHistory(product.id)
+        void Promise.resolve().then(() => {
+            if (!cancelled) setLoading(true);
+            return getProductPurchaseHistory(product.id);
+        })
             .then((data) => {
                 if (!cancelled) {
                     setHistory(data);

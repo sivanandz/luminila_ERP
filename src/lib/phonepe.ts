@@ -194,11 +194,11 @@ export async function initiatePayment(request: PaymentRequest): Promise<PaymentR
                 body: JSON.stringify({ action: 'phonepe_initiate', payload: request, accountEmail: pb.authStore.record?.email || undefined }),
             });
             return await res.json();
-        } catch (err: any) {
+        } catch (err: unknown) {
             return {
                 success: false,
                 transactionId: '',
-                error: err.message || 'Payment initiation proxy failed',
+                error: err instanceof Error ? err.message : 'Payment initiation proxy failed',
             };
         }
     }
@@ -297,11 +297,11 @@ export async function checkPaymentStatus(
                 body: JSON.stringify({ action: 'phonepe_status', payload: { transactionId: merchantTransactionId }, accountEmail: pb.authStore.record?.email || undefined }),
             });
             return await res.json();
-        } catch (err: any) {
+        } catch (err: unknown) {
             return {
                 success: false,
                 code: 'NETWORK_ERROR',
-                message: err.message || 'Status check proxy failed',
+                message: err instanceof Error ? err.message : 'Status check proxy failed',
             };
         }
     }

@@ -26,6 +26,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { formatINR } from "@/lib/gst";
+import { pluralize } from "@/lib/utils";
 import { getBankAccounts, type BankAccount } from "@/lib/banking";
 import { usePermissions } from "@/hooks/usePermissions";
 import {
@@ -208,40 +209,40 @@ export default function ChequeRegisterPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="Cheque Register" subtitle="Post-dated cheques, deposit, clearing and bounce" />
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">In hand</p>
-                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.openInHandAmount)}</p>
-                            <p className="text-[11px] text-muted-foreground break-words">{summary.openInHandCount} cheques</p>
+                            <p className="text-lg font-semibold font-mono tabular-nums break-words">{formatINR(summary.openInHandAmount)}</p>
+                            <p className="text-[11px] text-muted-foreground break-words">{pluralize(summary.openInHandCount, "cheque")}</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">PDC due</p>
-                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.pdcAmount)}</p>
+                            <p className="text-lg font-semibold font-mono tabular-nums break-words">{formatINR(summary.pdcAmount)}</p>
                             <p className="text-[11px] text-muted-foreground break-words">{summary.pdcCount} post-dated</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">Pending clearing</p>
-                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.depositedPendingAmount)}</p>
+                            <p className="text-lg font-semibold font-mono tabular-nums break-words">{formatINR(summary.depositedPendingAmount)}</p>
                             <p className="text-[11px] text-muted-foreground break-words">{summary.depositedPendingCount} deposited</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">Bounced</p>
-                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.bouncedAmount)}</p>
+                            <p className="text-lg font-semibold font-mono tabular-nums break-words">{formatINR(summary.bouncedAmount)}</p>
                             <p className="text-[11px] text-muted-foreground break-words">{summary.bouncedCount} dishonoured</p>
                         </CardContent>
                     </Card>
                     <Card className="bg-card">
                         <CardContent className="pt-5">
                             <p className="text-xs text-muted-foreground">Stale (90d+)</p>
-                            <p className="text-lg font-semibold font-mono break-words">{formatINR(summary.staleAmount)}</p>
+                            <p className="text-lg font-semibold font-mono tabular-nums break-words">{formatINR(summary.staleAmount)}</p>
                             <p className="text-[11px] text-muted-foreground break-words">{summary.staleCount} past validity</p>
                         </CardContent>
                     </Card>
@@ -254,7 +255,7 @@ export default function ChequeRegisterPage() {
                         </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                             <div className="space-y-1">
                                 <Label>Cheque number</Label>
                                 <Input value={chequeNumber} onChange={(e) => setChequeNumber(e.target.value)} maxLength={6} placeholder="123456" className="font-mono" />
@@ -271,17 +272,17 @@ export default function ChequeRegisterPage() {
                             </div>
                             <div className="space-y-1">
                                 <Label>Party</Label>
-                                <Input value={partyName} onChange={(e) => setPartyName(e.target.value)} placeholder="Asha Traders" />
+                                <Input value={partyName} onChange={(e) => setPartyName(e.target.value)} maxLength={120} placeholder="Asha Traders" />
                             </div>
                             <div className="space-y-1">
                                 <Label>Bank</Label>
-                                <Input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="HDFC Bank" />
+                                <Input value={bankName} onChange={(e) => setBankName(e.target.value)} maxLength={120} placeholder="HDFC Bank" />
                             </div>
                         </div>
-                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                             <div className="space-y-1">
                                 <Label>Branch</Label>
-                                <Input value={branchName} onChange={(e) => setBranchName(e.target.value)} placeholder="Optional" />
+                                <Input value={branchName} onChange={(e) => setBranchName(e.target.value)} maxLength={120} placeholder="Optional" />
                             </div>
                             <div className="space-y-1">
                                 <Label>Cheque date</Label>
@@ -289,11 +290,11 @@ export default function ChequeRegisterPage() {
                             </div>
                             <div className="space-y-1">
                                 <Label>Amount</Label>
-                                <Input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                                <Input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
                             </div>
                             <div className="space-y-1">
                                 <Label>Notes</Label>
-                                <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+                                <Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={200} placeholder="Optional" />
                             </div>
                         </div>
                         <div className="flex justify-end gap-2">
@@ -307,15 +308,15 @@ export default function ChequeRegisterPage() {
                 </Card>
 
                 <Card className="bg-card">
-                    <CardHeader className="flex flex-row items-center justify-between gap-3">
+                    <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <CardTitle className="text-base">Register</CardTitle>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                             <span className="text-xs text-muted-foreground">Deposit to</span>
                             <Select
                                 value={depositAccountId}
                                 onValueChange={(value) => value && setDepositAccountId(value)}
                             >
-                                <SelectTrigger className="h-8 w-[190px]">
+                                <SelectTrigger className="h-8 w-full sm:w-[190px]">
                                     <SelectValue placeholder="Bank account" />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -334,6 +335,7 @@ export default function ChequeRegisterPage() {
                         ) : cheques.length === 0 ? (
                             <p className="text-sm text-muted-foreground">No cheques registered.</p>
                         ) : (
+                            <div className="overflow-x-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -352,29 +354,29 @@ export default function ChequeRegisterPage() {
                                         const maturity = maturityOf(cheque);
                                         return (
                                             <TableRow key={cheque.id}>
-                                                <TableCell className="font-mono text-xs">{cheque.chequeNumber}</TableCell>
-                                                <TableCell>
-                                                    <div>{cheque.partyName}</div>
+                                                <TableCell className="font-mono text-xs whitespace-nowrap">{cheque.chequeNumber}</TableCell>
+                                                <TableCell className="max-w-[180px]">
+                                                    <div className="truncate">{cheque.partyName}</div>
                                                     <div className="text-[11px] text-muted-foreground">{cheque.direction === "received" ? "received" : "issued"}</div>
                                                 </TableCell>
-                                                <TableCell className="text-xs">{cheque.bankName}</TableCell>
-                                                <TableCell className="font-mono text-xs">{cheque.chequeDate}</TableCell>
-                                                <TableCell className="text-right text-xs">
+                                                <TableCell className="text-xs max-w-[160px] truncate">{cheque.bankName}</TableCell>
+                                                <TableCell className="font-mono text-xs whitespace-nowrap">{cheque.chequeDate}</TableCell>
+                                                <TableCell className="text-right text-xs whitespace-nowrap">
                                                     <span className={maturity.isStale ? "text-red-400" : maturity.isMature ? "text-amber-400" : "text-muted-foreground"}>
                                                         {maturity.statusLabel}
                                                     </span>
                                                 </TableCell>
-                                                <TableCell className="text-right font-mono">{formatINR(cheque.amount)}</TableCell>
+                                                <TableCell className="text-right font-mono tabular-nums whitespace-nowrap">{formatINR(cheque.amount)}</TableCell>
                                                 <TableCell>
                                                     <Badge className={STATUS_STYLES[cheque.status] || STATUS_STYLES.cancelled}>
                                                         {cheque.status}
                                                     </Badge>
                                                     {cheque.bounceReason && (
-                                                        <div className="text-[10px] text-red-400 mt-1">{cheque.bounceReason}</div>
+                                                        <div className="text-[10px] text-red-400 mt-1 break-words max-w-[180px]">{cheque.bounceReason}</div>
                                                     )}
                                                 </TableCell>
                                                 <TableCell className="text-right">
-                                                    <div className="flex justify-end gap-1">
+                                                    <div className="flex justify-end gap-1 whitespace-nowrap">
                                                         {cheque.status === "open" && (
                                                             <Button variant="ghost" size="sm" onClick={() => handleDeposit(cheque)}>Deposit</Button>
                                                         )}
@@ -397,6 +399,7 @@ export default function ChequeRegisterPage() {
                                     })}
                                 </TableBody>
                             </Table>
+                            </div>
                         )}
                     </CardContent>
                 </Card>

@@ -10,7 +10,7 @@
  * Callers pass the per-tenant client (CO-08).
  */
 
-import { accountScopeEmail, pb, getCurrentTenantEmail, canActOnTenant } from './pocketbase';
+import { pb, getCurrentTenantEmail, canActOnTenant } from './pocketbase';
 import { sendShippingTracking } from './whatsapp-notifications';
 import { AGGREGATES_MARKER, aggregatesWereCounted, applyPurchaseAggregates } from './channel-orders';
 import { calculatePointsToEarn, earnPoints } from './loyalty';

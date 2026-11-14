@@ -76,15 +76,9 @@ export function executeInwardQcInspection(
     seqNumber: number = 1
 ): QcInspectionResult {
     let grossTotal = 0;
-    let taxableTotal = 0;
-    let taxTotal = 0;
 
     for (const itm of req.returnedItems) {
-        const lineTotal = itm.quantityReturned * itm.unitPrice;
-        grossTotal += lineTotal;
-        const taxVal = Math.round((lineTotal / (1 + itm.taxRate / 100)) * 100) / 100;
-        taxableTotal += taxVal;
-        taxTotal += Math.round((lineTotal - taxVal) * 100) / 100;
+        grossTotal += itm.quantityReturned * itm.unitPrice;
     }
 
     grossTotal = Math.round(grossTotal * 100) / 100;

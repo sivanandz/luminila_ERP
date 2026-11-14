@@ -1,11 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Trash2, Layers, Search, Sparkles } from "lucide-react";
+import { Trash2, Layers, Search } from "lucide-react";
 import { computeBundleAvailability, type BundleComponent } from "@/lib/bundles";
 
 interface BundleComposerSectionProps {

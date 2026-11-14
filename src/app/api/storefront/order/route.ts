@@ -127,9 +127,19 @@ function generateTxnId(): string {
     return `ORD-${dateStr}-${rand}`;
 }
 
-interface StoreTaxContext {
-    gstRegistered: boolean;
-    sellerStateCode: string;
+interface StorefrontProductRecord {
+    id: string;
+    name?: string;
+    sku?: string;
+    is_active?: boolean;
+    account_email?: string;
+    base_price?: number;
+    cost_price?: number;
+    channel_prices?: Record<string, number>;
+    gst_rate?: number;
+    tax_rate?: number;
+    hsn_code?: string;
+    category?: string;
 }
 
 /**
@@ -562,9 +572,9 @@ export async function POST(req: Request) {
                     );
                 }
 
-                let dbProd: any = null;
+                let dbProd: StorefrontProductRecord | null = null;
                 try {
-                    dbProd = await client.collection("products").getOne(item.productId);
+                    dbProd = await client.collection("products").getOne<StorefrontProductRecord>(item.productId);
                 } catch {
                     return NextResponse.json(
                         { success: false, error: `Product not found: ${item.name || item.productId}` },
@@ -586,7 +596,7 @@ export async function POST(req: Request) {
                     );
                 }
 
-                const channelPrices = (dbProd as any).channel_prices || {};
+                const channelPrices = dbProd.channel_prices || {};
                 // A variant can carry its own price adjustment; ignoring it let
                 // the buyer pay the bare product price (SF-15).
                 let variantAdjustment = 0;
@@ -706,7 +716,7 @@ export async function POST(req: Request) {
 
                     if (startsOk && endsOk && usageOk && minOk) {
                         const discVal = Number(discountRec.value) || 0;
-                        const discType = discountRec.discount_type || (discountRec as any).type || "percentage";
+                        const discType = discountRec.discount_type || (discountRec as { type?: string }).type || "percentage";
                         if (discType === "percentage") {
                             verifiedDiscount = Math.round((calculatedSubtotal * discVal) / 100);
                             if (discountRec.max_discount && verifiedDiscount > Number(discountRec.max_discount)) {
@@ -838,11 +848,16 @@ export async function POST(req: Request) {
                     }. Marketing consent: ${body.marketingConsent ? "yes" : "no"}. GST ${tax.blendedRate}% inclusive, taxable ₹${tax.taxableValue.toFixed(2)}. ${cartHashMarker(orderCartHash)}`,
                     notes: `Storefront Web Order ${txnId}`,
                 });
-            } catch (createErr: any) {
+            } catch (createErr: unknown) {
+                const errObj = createErr as {
+                    response?: { data?: { order_number?: { message?: string } } };
+                    originalError?: { message?: string };
+                    message?: string;
+                };
                 const msg = String(
-                    createErr?.response?.data?.order_number?.message ||
-                        createErr?.originalError?.message ||
-                        createErr?.message ||
+                    errObj?.response?.data?.order_number?.message ||
+                        errObj?.originalError?.message ||
+                        errObj?.message ||
                         ""
                 );
                 if (!/unique/i.test(msg)) throw createErr;
@@ -1121,10 +1136,11 @@ export async function POST(req: Request) {
             },
             { status: 200, headers: CORS_HEADERS }
         );
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error("[Storefront Order API] Internal Server Error:", err);
+        const message = err instanceof Error ? err.message : "Failed to process storefront order";
         return NextResponse.json(
-            { success: false, error: err.message || "Failed to process storefront order" },
+            { success: false, error: message },
             { status: 500, headers: CORS_HEADERS }
         );
     }

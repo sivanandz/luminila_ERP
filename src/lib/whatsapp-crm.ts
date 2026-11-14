@@ -26,7 +26,6 @@ import {
     generateParentSKU,
     generateChildSKU,
     computeNextSkuSequence,
-    deriveHSNCode,
 } from './sku-generator';
 
 // ===========================================
@@ -271,7 +270,7 @@ export async function resolveContact(
             return {
                 type: existing.contact_type as ContactType,
                 vendor: vendor || undefined,
-                customer: customer as any,
+                customer: (customer as unknown as Customer) || undefined,
                 labels: (existing.labels as string[]) || [],
             };
         }
@@ -351,7 +350,7 @@ export async function ensureChat(opts: {
                     try {
                         const updated = await pb.collection('whatsapp_chats').update(again.id, patch);
                         return updated as unknown as StoredChat;
-                    } catch (retryErr) {
+                    } catch {
                         // The chat is still usable with the row we already have;
                         // a failed metadata refresh must not break message load.
                         console.warn('[whatsapp-crm] ensureChat: update blocked, keeping existing row:', opts.chatId);
@@ -895,7 +894,6 @@ export async function ingestVendorProduct(input: {
         }
     }
 
-    const isDataUri = input.imageUrl && input.imageUrl.startsWith('data:');
     const isCleanHttp = input.imageUrl && input.imageUrl.startsWith('http') && !input.imageUrl.includes('whatsapp.net');
 
     const productPayload: Record<string, unknown> = {

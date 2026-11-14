@@ -3,8 +3,6 @@ import { createTenantClient } from "@/lib/pocketbase";
 import { SINGLE_ACCOUNT_EMAIL, isSingleAccountMode } from "@/lib/deployment-mode";
 import { DEFAULT_STOREFRONT_TENANT_EMAIL } from "@/lib/storefront";
 
-const STOREFRONT_CONTENT_KEY = "storefront_content";
-
 export interface StorefrontTenant {
     /** The tenant whose inventory is bound to the storefront content. */
     email: string;

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo, Suspense } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Image from "next/image";
 import {
@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatPrice } from "@/lib/utils";
+import { DEFAULT_CHANNEL_CONFIGS } from "@/lib/omnichannel-buffer-engine";
 import {
     getFlashDrop,
     reserveFlashDropStock,
@@ -159,9 +160,11 @@ function ExpressCheckoutContent() {
         ? drop.availableStock[item.variantId]
         : undefined;
 
+    const hasAutoReservedRef = useRef(false);
+
     // Reserve stock when customer enters their phone number. The server enforces
     // the hold and the tenant; the browser only carries the phone and variant.
-    const handleReserveHold = async (overridePhone?: string) => {
+    const handleReserveHold = useCallback(async (overridePhone?: string) => {
         if (!drop || !item) return;
         const targetPhone = (overridePhone || phone).trim().replace(/\D/g, "");
         if (targetPhone.length < 10) {
@@ -187,14 +190,16 @@ function ExpressCheckoutContent() {
         } finally {
             setReserving(false);
         }
-    };
+    }, [drop, item, phone, name, accountEmail]);
 
     // Auto-reserve if phone was pre-filled via WhatsApp URL
     useEffect(() => {
+        if (hasAutoReservedRef.current) return;
         if (drop && item && !reservation && initialPhone && initialPhone.replace(/\D/g, "").length >= 10) {
-            handleReserveHold(initialPhone);
+            hasAutoReservedRef.current = true;
+            void handleReserveHold(initialPhone);
         }
-    }, [drop, item]);
+    }, [drop, item, reservation, initialPhone, handleReserveHold]);
 
     // Calculate pricing and UPI < 2000 surcharge discount
     const itemTotal = item ? item.dropPrice : 0;
@@ -378,16 +383,16 @@ function ExpressCheckoutContent() {
                         </p>
                     </div>
                     <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-left space-y-1.5 text-xs font-mono">
-                        <div className="flex justify-between">
-                            <span className="text-slate-500">Order Ref:</span>
-                            <span className="text-amber-400 font-bold">{orderSuccess.orderNumber}</span>
+                        <div className="flex justify-between gap-2">
+                            <span className="text-slate-500 shrink-0">Order Ref:</span>
+                            <span className="text-amber-400 font-bold break-all text-right">{orderSuccess.orderNumber}</span>
                         </div>
-                        <div className="flex justify-between">
-                            <span className="text-slate-500">Amount Paid:</span>
-                            <span className="text-emerald-400 font-bold">{formatPrice(orderSuccess.amount)}</span>
+                        <div className="flex justify-between gap-2">
+                            <span className="text-slate-500 shrink-0">Amount Paid:</span>
+                            <span className="text-emerald-400 font-bold tabular-nums">{formatPrice(orderSuccess.amount)}</span>
                         </div>
-                        <div className="flex justify-between">
-                            <span className="text-slate-500">Delivery To:</span>
+                        <div className="flex justify-between gap-2">
+                            <span className="text-slate-500 shrink-0">Delivery To:</span>
                             <span className="text-slate-300 truncate max-w-[200px]">{city} ({pincode})</span>
                         </div>
                     </div>
@@ -479,7 +484,7 @@ function ExpressCheckoutContent() {
                 {/* Product Card */}
                 <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-2xl flex gap-3.5">
                     {item.imageUrl ? (
-                        <Image src={item.imageUrl} alt={item.name} width={72} height={72} className="rounded-xl object-cover shrink-0" />
+                        <Image src={item.imageUrl} alt={item.name} width={72} height={72} unoptimized className="rounded-xl object-cover shrink-0" />
                     ) : (
                         <div className="w-[72px] h-[72px] rounded-xl bg-slate-800 flex items-center justify-center text-2xl shrink-0">
                             💎
@@ -488,23 +493,33 @@ function ExpressCheckoutContent() {
                     <div className="flex-1 min-w-0 flex flex-col justify-between">
                         <div>
                             <h3 className="font-bold text-sm text-white truncate">{item.name}</h3>
-                            <p className="text-[11px] font-mono text-slate-400">SKU: {item.sku}</p>
+                            <p className="text-[11px] font-mono text-slate-400 truncate">SKU: {item.sku}</p>
                         </div>
-                        <div className="flex items-baseline gap-2">
-                            <span className="font-bold text-base text-emerald-400 font-mono">
+                        <div className="flex items-baseline gap-2 flex-wrap">
+                            <span className="font-bold text-base text-emerald-400 font-mono tabular-nums">
                                 {formatPrice(item.dropPrice)}
                             </span>
-                            <span className="text-xs text-slate-500 line-through font-mono">
-                                {formatPrice(item.originalPrice)}
-                            </span>
-                            <span className="text-[10px] font-bold text-amber-400 bg-amber-400/10 px-1 rounded">
-                                SAVE {item.originalPrice > 0 ? Math.round(((item.originalPrice - item.dropPrice) / item.originalPrice) * 100) : 0}%
-                            </span>
+                            {item.originalPrice > item.dropPrice && item.dropPrice > 0 && (
+                                <>
+                                    <span className="text-xs text-slate-500 line-through font-mono tabular-nums">
+                                        {formatPrice(item.originalPrice)}
+                                    </span>
+                                    <span className="text-[10px] font-bold text-amber-400 bg-amber-400/10 px-1 rounded">
+                                        SAVE {Math.round(((item.originalPrice - item.dropPrice) / item.originalPrice) * 100)}%
+                                    </span>
+                                </>
+                            )}
                         </div>
                         {availableStock !== undefined && (
-                            <span className={`text-[10px] font-semibold ${soldOut ? "text-rose-400" : "text-amber-400"}`}>
-                                {soldOut ? "All units claimed" : `${availableStock} unit${availableStock === 1 ? "" : "s"} left in this drop`}
-                            </span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`text-[10px] font-semibold ${soldOut ? "text-rose-400" : "text-amber-400"}`}>
+                                    {soldOut ? "All units claimed" : `${availableStock} unit${availableStock === 1 ? "" : "s"} left in this drop`}
+                                </span>
+                                <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 text-[9px] font-medium text-emerald-300">
+                                    <ShieldCheck size={10} />
+                                    {DEFAULT_CHANNEL_CONFIGS.find((c) => c.channel === "whatsapp")?.safetyBuffer ?? 1} unit store safety buffer + 15m hold
+                                </span>
+                            </div>
                         )}
                     </div>
                 </div>
@@ -515,11 +530,12 @@ function ExpressCheckoutContent() {
                         <Truck size={13} className="text-emerald-400" /> Delivery Address
                     </h4>
 
-                    <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                         <div className="space-y-1">
                             <label className="text-[10px] text-slate-400">Full Name</label>
                             <input
                                 type="text"
+                                maxLength={120}
                                 placeholder="Priya Sharma"
                                 value={name}
                                 onChange={(e) => setName(e.target.value)}
@@ -531,6 +547,7 @@ function ExpressCheckoutContent() {
                             <div className="relative">
                                 <input
                                     type="tel"
+                                    maxLength={15}
                                     placeholder="9876543210"
                                     value={phone}
                                     onChange={(e) => setPhone(e.target.value)}
@@ -546,6 +563,7 @@ function ExpressCheckoutContent() {
                         <label className="text-[10px] text-slate-400">Street Address / House No.</label>
                         <input
                             type="text"
+                            maxLength={400}
                             placeholder="Flat 402, Lotus Residency, MG Road"
                             value={address}
                             onChange={(e) => setAddress(e.target.value)}
@@ -553,11 +571,12 @@ function ExpressCheckoutContent() {
                         />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                         <div className="space-y-1">
                             <label className="text-[10px] text-slate-400">City</label>
                             <input
                                 type="text"
+                                maxLength={80}
                                 placeholder="Mumbai"
                                 value={city}
                                 onChange={(e) => setCity(e.target.value)}
@@ -568,6 +587,7 @@ function ExpressCheckoutContent() {
                             <label className="text-[10px] text-slate-400">State</label>
                             <input
                                 type="text"
+                                maxLength={80}
                                 placeholder="Maharashtra"
                                 value={stateName}
                                 onChange={(e) => setStateName(e.target.value)}
@@ -581,9 +601,10 @@ function ExpressCheckoutContent() {
                         <input
                             type="text"
                             inputMode="numeric"
+                            maxLength={6}
                             placeholder="400001"
                             value={pincode}
-                            onChange={(e) => setPincode(e.target.value)}
+                            onChange={(e) => setPincode(e.target.value.replace(/\D/g, "").slice(0, 6))}
                             className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white font-mono focus:outline-none focus:border-amber-500"
                         />
                     </div>

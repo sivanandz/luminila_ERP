@@ -285,7 +285,7 @@ export async function createOrder(data: OrderInput) {
                 customerPhone: data.customer_phone,
                 total: grandTotal,
                 promoCode: (data.notes || '').match(/([A-Z0-9]{4,15})/)?.[1],
-                created: (order as any).created || new Date().toISOString(),
+                created: (order as { created?: string }).created || new Date().toISOString(),
             });
         } catch {
             // Non-blocking attribution check
@@ -822,11 +822,13 @@ export async function markSalesOrderShipped(orderId: string): Promise<void> {
     await pb.collection('sales_orders').update(orderId, { status: 'shipped' });
 }
 /**
- * Orders that may still be cancelled. Once shipped or invoiced the reversal is a
- * return/credit-note flow, not a cancellation.
+ * Orders that may still be cancelled. Draft/sent/confirmed orders and pre-dispatch
+ * invoiced orders may be cancelled (invoiced cancellation voids linked invoices &
+ * packing rows once verified not in transit/delivered); shipped/delivered orders
+ * must go through the returns/credit-note flow.
  */
 export function canCancelSalesOrder(status: OrderStatus): boolean {
-    return status === 'draft' || status === 'sent' || status === 'confirmed';
+    return status === 'draft' || status === 'sent' || status === 'confirmed' || status === 'invoiced';
 }
 
 export interface CancelOrderResult {
@@ -879,8 +881,26 @@ export async function cancelSalesOrder(
     }
     if (order.status && !canCancelSalesOrder(order.status)) {
         throw new Error(
-            `Cannot cancel an order with status "${order.status}". Shipped or invoiced orders are reversed through returns.`
+            `Cannot cancel an order with status "${order.status}". Dispatched orders are reversed through returns.`
         );
+    }
+
+    if (order.status === 'invoiced') {
+        const activeShipments = await pb
+            .collection('shipments')
+            .getFullList<{ id: string; shipping_status?: string }>({
+                filter: pb.filter('order_id = {:order}', { order: orderId }),
+                requestKey: null,
+            })
+            .catch(() => []);
+        const dispatched = activeShipments.find(
+            (s) => s.shipping_status === 'in_transit' || s.shipping_status === 'delivered'
+        );
+        if (dispatched) {
+            throw new Error(
+                `Cannot cancel invoiced order #${order.order_number || orderId} because shipment is already ${dispatched.shipping_status}. Reversal must go through returns with a credit note.`
+            );
+        }
     }
 
     const paymentStatus = String(order.payment_status || '').toUpperCase();
@@ -953,6 +973,35 @@ export async function cancelSalesOrder(
         }
     }
 
+    // Void any linked non-cancelled invoices and packing sessions when pre-dispatch cancelling
+    if (order.status === 'invoiced') {
+        const linkedInvoices = await pb
+            .collection('invoices')
+            .getFullList<{ id: string; status?: string }>({
+                filter: `order="${sanitizeFilter(orderId)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
+                requestKey: null,
+            })
+            .catch(() => []);
+        for (const inv of linkedInvoices) {
+            if (inv.status !== 'cancelled') {
+                await pb.collection('invoices').update(inv.id, { status: 'cancelled' }).catch(() => {});
+            }
+        }
+    }
+
+    const packingSessions = await pb
+        .collection('order_packing')
+        .getFullList<{ id: string; status?: string }>({
+            filter: `order_id="${sanitizeFilter(orderId)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
+            requestKey: null,
+        })
+        .catch(() => []);
+    for (const pack of packingSessions) {
+        if (pack.status !== 'cancelled') {
+            await pb.collection('order_packing').update(pack.id, { status: 'cancelled' }).catch(() => {});
+        }
+    }
+
     const stamp = new Date().toISOString();
     const auditLine = `[cancelled ${stamp}${options.cancelledBy ? ` by ${options.cancelledBy}` : ''}${
         options.reason ? ` — ${options.reason}` : ''
@@ -973,4 +1022,232 @@ export async function cancelSalesOrder(
         alreadyCancelled: false,
         paymentReversed: Boolean(refundReference),
     };
+}
+
+/** Split selected quantities from an open sales order into a linked backorder record. */
+export async function splitOrderForBackorder(
+    orderId: string,
+    backorderItems: Array<{ orderItemId: string; splitQuantity: number }>,
+    reason?: string
+): Promise<{ parentOrderId: string; backorderId: string; backorderNumber: string }> {
+    const tenant = accountScopeEmail();
+    const order = await pb.collection('sales_orders').getOne<SalesOrderRecord>(orderId);
+    if (tenant && order.account_email && order.account_email !== tenant) {
+        throw new Error('Order does not belong to this store.');
+    }
+    if (!['draft', 'sent', 'confirmed'].includes(order.status)) {
+        throw new Error(`Cannot split order in "${order.status}" status.`);
+    }
+
+    const items = await pb.collection('sales_order_items').getFullList<
+        SalesOrderItemRecord & { id: string; account_email?: string; variant?: string }
+    >({
+        filter: `order="${sanitizeFilter(orderId)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
+    });
+    if (items.length === 0) {
+        throw new Error('Order has no line items to split.');
+    }
+
+    const requestedMap = new Map<string, number>();
+    for (const entry of backorderItems) {
+        const qty = Math.floor(Number(entry.splitQuantity) || 0);
+        if (qty > 0) {
+            requestedMap.set(entry.orderItemId, (requestedMap.get(entry.orderItemId) || 0) + qty);
+        }
+    }
+    if (requestedMap.size === 0) {
+        throw new Error('Select at least one item quantity to split into the backorder.');
+    }
+
+    let remainingTotalQty = 0;
+    const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+
+    type SplitPlan = {
+        row: SalesOrderItemRecord & { id: string; account_email?: string; variant?: string };
+        splitQty: number;
+        remainQty: number;
+        childDiscount: number;
+        remainDiscount: number;
+        childTotal: number;
+        remainTotal: number;
+        childTax: number;
+        remainTax: number;
+        childGross: number;
+        remainGross: number;
+    };
+
+    const plans: SplitPlan[] = items.map((row) => {
+        const splitQty = requestedMap.get(row.id) || 0;
+        if (splitQty < 0 || splitQty > row.quantity) {
+            throw new Error(`Invalid split quantity (${splitQty}) for "${row.description}".`);
+        }
+        const remainQty = row.quantity - splitQty;
+        remainingTotalQty += remainQty;
+        const unitPrice = Number(row.unit_price) || 0;
+        const taxRate = Math.max(0, Number(row.tax_rate) || 0);
+        const origDiscount = Math.max(0, Number(row.discount_amount) || 0);
+        const childGross = round2(splitQty * unitPrice);
+        const remainGross = round2(remainQty * unitPrice);
+        const childDiscount = row.quantity > 0 ? round2((origDiscount * splitQty) / row.quantity) : 0;
+        const remainDiscount = round2(Math.max(0, origDiscount - childDiscount));
+        const childTaxable = round2(Math.max(0, childGross - childDiscount));
+        const remainTaxable = round2(Math.max(0, remainGross - remainDiscount));
+        const childTax = round2((childTaxable * taxRate) / 100);
+        const remainTax = round2((remainTaxable * taxRate) / 100);
+        return {
+            row,
+            splitQty,
+            remainQty,
+            childDiscount,
+            remainDiscount,
+            childTotal: round2(childTaxable + childTax),
+            remainTotal: round2(remainTaxable + remainTax),
+            childTax,
+            remainTax,
+            childGross,
+            remainGross,
+        };
+    });
+
+    if (remainingTotalQty <= 0) {
+        throw new Error('At least one unit must remain on the parent order when creating a backorder.');
+    }
+
+    const childLines = plans.filter((p) => p.splitQty > 0);
+    const childSubtotal = round2(childLines.reduce((s, p) => s + p.childGross, 0));
+    const childTaxTotal = round2(childLines.reduce((s, p) => s + p.childTax, 0));
+    const childDiscountTotal = round2(childLines.reduce((s, p) => s + p.childDiscount, 0));
+    const childGrandTotal = round2(childSubtotal - childDiscountTotal + childTaxTotal);
+
+    const remainSubtotal = round2(plans.reduce((s, p) => s + p.remainGross, 0));
+    const remainTaxTotal = round2(plans.reduce((s, p) => s + p.remainTax, 0));
+    const remainDiscountTotal = round2(plans.reduce((s, p) => s + p.remainDiscount, 0));
+    const parentShipping = round2(Math.max(0, Number(order.shipping_charges) || 0));
+    const remainGrandTotal = round2(remainSubtotal - remainDiscountTotal + remainTaxTotal + parentShipping);
+
+    let seq = 1;
+    let allocatedBoNumber = '';
+    const backorderStatus: OrderStatus = order.status === 'confirmed' ? 'confirmed' : 'draft';
+    const childOrder = await createWithUniqueRetry(
+        () => Promise.resolve(`${order.order_number || order.id}-BO${seq++}`),
+        async (allocated) => {
+            allocatedBoNumber = allocated;
+            return pb.collection('sales_orders').create<SalesOrderRecord>({
+                account_email: tenant || order.account_email,
+                order_type: order.order_type || 'sales_order',
+                order_number: allocated,
+                customer: order.customer,
+                customer_name: order.customer_name,
+                customer_phone: order.customer_phone,
+                customer_email: order.customer_email,
+                billing_address: order.billing_address,
+                shipping_address: order.shipping_address,
+                order_date: new Date().toISOString(),
+                expected_delivery_date: order.expected_delivery_date,
+                status: backorderStatus,
+                notes: `Backorder split from #${order.order_number || order.id}${reason ? ` (${reason})` : ''}`,
+                internal_notes: `Split from parent order ${order.id}${reason ? `: ${reason}` : ''}`,
+                subtotal: childSubtotal,
+                tax_total: childTaxTotal,
+                discount_total: childDiscountTotal,
+                shipping_charges: 0,
+                total: childGrandTotal,
+            });
+        }
+    );
+
+    try {
+        for (const p of childLines) {
+            await pb.collection('sales_order_items').create({
+                order: childOrder.id,
+                account_email: tenant || order.account_email,
+                description: p.row.description,
+                quantity: p.splitQty,
+                unit_price: p.row.unit_price,
+                unit_cost: p.row.unit_cost ?? null,
+                tax_rate: p.row.tax_rate || 0,
+                discount_amount: p.childDiscount,
+                total: p.childTotal,
+                ...(p.row.product ? { product: p.row.product } : {}),
+                ...(p.row.variant ? { variant: p.row.variant } : {}),
+            });
+        }
+
+        // Update or remove parent order line items & rebalance stock_movements if confirmed
+        const movements = order.status === 'confirmed'
+            ? await pb
+                .collection('stock_movements')
+                .getFullList<{ id: string; variant?: string; quantity: number; source?: string; notes?: string }>({
+                    filter: `reference_id="${sanitizeFilter(orderId)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
+                })
+                .catch(() => [])
+            : [];
+
+        for (const p of childLines) {
+            if (p.remainQty <= 0) {
+                await pb.collection('sales_order_items').delete(p.row.id);
+            } else {
+                await pb.collection('sales_order_items').update(p.row.id, {
+                    quantity: p.remainQty,
+                    discount_amount: p.remainDiscount,
+                    total: p.remainTotal,
+                });
+            }
+
+            if (p.row.variant && movements.length > 0) {
+                const mv = movements.find((m) => m.variant === p.row.variant && Number(m.quantity) < 0);
+                if (mv) {
+                    const origSigned = Number(mv.quantity);
+                    const movedOut = -Math.min(p.splitQty, Math.abs(origSigned));
+                    const remainSigned = origSigned - movedOut;
+                    if (movedOut !== 0) {
+                        if (remainSigned === 0) {
+                            await pb.collection('stock_movements').update(mv.id, {
+                                reference_id: childOrder.id,
+                                notes: `Reassigned to backorder ${allocatedBoNumber}`,
+                            }).catch(() => {});
+                        } else {
+                            await pb.collection('stock_movements').update(mv.id, {
+                                quantity: remainSigned,
+                            }).catch(() => {});
+                            await pb.collection('stock_movements').create({
+                                variant: p.row.variant,
+                                movement_type: 'sale',
+                                quantity: movedOut,
+                                reference_id: childOrder.id,
+                                source: mv.source || 'pos',
+                                account_email: tenant || order.account_email || '',
+                                notes: `Split from order ${order.order_number || orderId} to backorder ${allocatedBoNumber}`,
+                            }).catch(() => {});
+                        }
+                    }
+                }
+            }
+        }
+
+        const parentNote = `[${new Date().toISOString()}] Split backorder #${allocatedBoNumber} (${childOrder.id})${reason ? ` — ${reason}` : ''}`;
+        await pb.collection('sales_orders').update(orderId, {
+            subtotal: remainSubtotal,
+            tax_total: remainTaxTotal,
+            discount_total: remainDiscountTotal,
+            total: remainGrandTotal,
+            internal_notes: [order.internal_notes, parentNote].filter(Boolean).join('\n'),
+        });
+
+        return {
+            parentOrderId: orderId,
+            backorderId: childOrder.id,
+            backorderNumber: allocatedBoNumber,
+        };
+    } catch (err) {
+        // Best-effort cleanup of incomplete child order if line writes fail
+        const childRows = await pb.collection('sales_order_items')
+            .getFullList<{ id: string }>({ filter: `order="${sanitizeFilter(childOrder.id)}"` })
+            .catch(() => []);
+        for (const r of childRows) {
+            await pb.collection('sales_order_items').delete(r.id).catch(() => {});
+        }
+        await pb.collection('sales_orders').delete(childOrder.id).catch(() => {});
+        throw err;
+    }
 }

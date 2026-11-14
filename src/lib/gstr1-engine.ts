@@ -365,7 +365,6 @@ export function compileGstr1Payload(
             const iamt = round2(itm.igst_amount || 0);
             const camt = round2(itm.cgst_amount || 0);
             const samt = round2(itm.sgst_amount || 0);
-            const csamt = 0;
 
             if (!rateGroups.has(rt)) {
                 rateGroups.set(rt, { rt, txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0 });

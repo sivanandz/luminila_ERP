@@ -14,7 +14,6 @@ import {
     containsClause,
     dayKey,
     escapeFilterValue,
-    idOrClause,
     listRecords,
     rollingWindow,
     findFirstRecord,

@@ -388,7 +388,7 @@ export function QuickAddProductDialog({
         setChannelPrices({});
         setShowCustomCategory(false);
         setShowImageUrl(false);
-    }, [resetPiece, categories]);
+    }, [resetPiece, categories, trayOptions]);
 
     const toggleExpanded = () => {
         setExpanded((value) => {

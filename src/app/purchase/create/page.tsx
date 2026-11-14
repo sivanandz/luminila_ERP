@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import {
     ArrowLeft,
-    Plus,
     Trash2,
     Search,
     Save,
@@ -19,7 +18,6 @@ import {
     Truck,
     Info,
     Coins,
-    Sliders,
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
@@ -366,7 +364,7 @@ export default function CreatePurchaseOrderPage() {
             const safeDiscount = clampDiscount(discountAmount);
             const safeTotals = calculatePOTotals(items as PurchaseOrderItem[], shippingCost, safeDiscount);
 
-            let poPayload: any;
+            let poPayload: Parameters<typeof createPurchaseOrder>[0];
             if (poType === 'blanket') {
                 const total = budgetAmount + gstPaidOverhead + shippingOverhead - safeDiscount;
                 poPayload = {

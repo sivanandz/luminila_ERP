@@ -46,7 +46,6 @@ import {
     Calculator,
     Percent,
     Layers,
-    RotateCcw,
 } from "lucide-react";
 
 export function SalesChannelsSettings() {
@@ -171,8 +170,8 @@ export function SalesChannelsSettings() {
                 toast.success(`Created sales channel "${formName.trim()}"`);
             }
             setIsModalOpen(false);
-        } catch (e: any) {
-            toast.error(e.message || "Failed to save channel");
+        } catch (e: unknown) {
+            toast.error(e instanceof Error ? e.message : "Failed to save channel");
         } finally {
             setIsSubmitting(false);
         }
@@ -183,8 +182,8 @@ export function SalesChannelsSettings() {
         try {
             await removeCustomChannel(id);
             toast.success(`Removed channel "${name}"`);
-        } catch (e: any) {
-            toast.error(e.message || "Failed to remove channel");
+        } catch (e: unknown) {
+            toast.error(e instanceof Error ? e.message : "Failed to remove channel");
         }
     };
 

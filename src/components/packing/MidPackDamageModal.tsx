@@ -21,7 +21,6 @@ import {
     Loader2,
     MessageCircle,
     PackageX,
-    Sparkles,
 } from "lucide-react";
 import {
     handleMidPackDamage,
@@ -89,7 +88,6 @@ export function MidPackDamageModal({
 
                 // Prepare pre-filled, fully editable WhatsApp customer message
                 const name = customerName || session.customer_name || "Valued Customer";
-                const phone = customerPhone || session.customer_phone || "";
                 const draft = `Hello ${name}, while carefully inspecting your jewellery parcel for Order #${session.order_number}, our packing team found that ${line.sku} (${line.description}) did not meet our quality standards (${cleanReason}).
 
 As this was the last handcrafted unit in this batch, we want to ensure you are taken care of right away:

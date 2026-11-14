@@ -746,6 +746,64 @@ export async function generateEwayBillFromInvoice(
     return result;
 }
 
+/**
+ * Record an E-Way Bill number obtained manually from the NIC ewaybillgst.gov.in portal
+ * after verifying tenant ownership on the invoice record.
+ */
+export async function recordManualEwayBill(
+    invoiceId: string,
+    ewayBillNo: string,
+    validUntil?: string,
+    vehicleNo?: string,
+    transporterId?: string
+): Promise<void> {
+    const cleanEwb = (ewayBillNo || '').trim();
+    if (!cleanEwb) {
+        throw new Error('E-Way Bill number is required');
+    }
+    const invoice = await pb.collection('invoices').getOne<Invoice & { account_email?: string; notes?: string }>(invoiceId);
+    if (!canActOnTenant(invoice.account_email)) {
+        throw new Error('Cannot update E-Way Bill: invoice not found for this account.');
+    }
+    const payload: Record<string, unknown> = {
+        eway_bill_no: cleanEwb,
+        eway_bill_date: new Date().toISOString(),
+        eway_bill_status: 'generated',
+    };
+    if (validUntil && validUntil.trim()) {
+        payload.eway_bill_valid_until = validUntil.trim();
+    }
+    if (vehicleNo && vehicleNo.trim()) {
+        payload.vehicle_number = vehicleNo.trim().toUpperCase();
+    }
+    if (transporterId && transporterId.trim()) {
+        const tag = `[Transporter ID: ${transporterId.trim().toUpperCase()}]`;
+        if (!String(invoice.notes || '').includes(tag)) {
+            payload.notes = [invoice.notes, tag].filter(Boolean).join('\n');
+        }
+    }
+    await pb.collection('invoices').update(invoiceId, payload);
+}
+
+/** Cancel an active EWB via NIC API and update the invoice status flag. */
+export async function cancelInvoiceEwayBill(
+    invoiceId: string,
+    ewbNo: string,
+    cancelReason: 1 | 2 | 3 | 4 = 4
+): Promise<boolean> {
+    const invoice = await pb.collection('invoices').getOne<Invoice & { account_email?: string }>(invoiceId);
+    if (!canActOnTenant(invoice.account_email)) {
+        throw new Error('Cannot cancel E-Way Bill: invoice not found for this account.');
+    }
+    const ok = await cancelEwayBill(ewbNo, cancelReason);
+    if (ok) {
+        await pb.collection('invoices').update(invoiceId, {
+            eway_bill_status: 'cancelled',
+        });
+    }
+    return ok;
+}
+
 // ============================================
 // CHECK IF E-WAY BILL REQUIRED
 // ============================================

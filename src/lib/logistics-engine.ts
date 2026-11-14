@@ -256,14 +256,14 @@ export async function fetchStCourierLiveTracking(awbNumber: string): Promise<StC
             summary,
             events,
         };
-    } catch (err: any) {
+    } catch (err: unknown) {
         return {
             awbNumber: cleanAwb,
             isValid: false,
             statusCode: 500,
             statusText: 'Tracking fetch failed',
             events: [],
-            error: err?.message || 'NETWORK_ERROR',
+            error: err instanceof Error ? err.message : 'NETWORK_ERROR',
         };
     }
 }

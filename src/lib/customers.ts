@@ -503,22 +503,40 @@ export async function getCustomerOrderHistory(
         pb.collection('sales_orders').getList(1, 25, { filter: ordersFilter, sort: '-created' }).catch(() => ({ items: [] })),
     ]);
 
+    interface CustomerSaleRow {
+        id: string;
+        channel_order_id?: string;
+        total?: number;
+        status?: string;
+        channel?: string;
+        created?: string;
+    }
+    interface CustomerOrderRow {
+        id: string;
+        order_number?: string;
+        total?: number;
+        status?: string;
+        order_type?: string;
+        order_date?: string;
+        created?: string;
+    }
+
     return [
-        ...salesRes.items.map((sale: any) => ({
+        ...salesRes.items.map((sale: CustomerSaleRow) => ({
             id: sale.id,
             order_number: sale.channel_order_id || `SALE-${sale.id.slice(0, 6).toUpperCase()}`,
             total: Number(sale.total) || 0,
             status: sale.status || 'confirmed',
             channel: sale.channel || 'pos',
-            date: sale.created,
+            date: sale.created || '',
         })),
-        ...ordersRes.items.map((order: any) => ({
+        ...ordersRes.items.map((order: CustomerOrderRow) => ({
             id: order.id,
             order_number: order.order_number || `ORD-${order.id.slice(0, 6).toUpperCase()}`,
             total: Number(order.total) || 0,
             status: order.status || 'draft',
             channel: order.order_type || 'sales_order',
-            date: order.order_date || order.created,
+            date: order.order_date || order.created || '',
         })),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }

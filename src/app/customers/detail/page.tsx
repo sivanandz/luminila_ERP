@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { format } from "date-fns";
+import { safeFormatDate } from "@/lib/utils";
 import {
     ArrowLeft,
     Phone,
@@ -13,12 +14,8 @@ import {
     Trash2,
     MessageCircle,
     Sparkles,
-    Calendar,
-    Package,
-    ArrowUpRight,
     Loader2,
-    ExternalLink,
-    Tag,
+    Crown,
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
@@ -51,6 +48,17 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { pb } from "@/lib/pocketbase";
+import { getConsentState, recordConsentEvent } from "@/lib/consent-ledger";
+import { toast } from "sonner";
+import {
+    getLoyaltyAccount,
+    getTransactionHistory,
+    adjustPoints,
+    type LoyaltyAccount,
+    type LoyaltyTransaction,
+} from "@/lib/loyalty";
 
 
 import {
@@ -79,6 +87,16 @@ interface CustomerOrderHistoryItem {
     date: string;
 }
 
+type CustomerTab = "orders" | "history" | "loyalty";
+
+interface CustomerJewelryFields {
+    ring_size?: string;
+    bangle_size?: string;
+    preferred_metal?: string;
+    birthday_date?: string;
+    anniversary_date?: string;
+}
+
 function CustomerDetailContent() {
     const searchParams = useSearchParams();
     const router = useRouter();
@@ -92,7 +110,13 @@ function CustomerDetailContent() {
     // Live Orders & Interactions
     const [orders, setOrders] = useState<CustomerOrderHistoryItem[]>([]);
     const [loadingOrders, setLoadingOrders] = useState(false);
-    const [activeCustomerTab, setActiveCustomerTab] = useState<"orders" | "history">("orders");
+    const [activeCustomerTab, setActiveCustomerTab] = useState<"orders" | "history" | "loyalty">("orders");
+    const [loyaltyAccount, setLoyaltyAccount] = useState<LoyaltyAccount | null>(null);
+    const [loyaltyTransactions, setLoyaltyTransactions] = useState<LoyaltyTransaction[]>([]);
+    const [loadingLoyalty, setLoadingLoyalty] = useState(false);
+    const [adjustDelta, setAdjustDelta] = useState("");
+    const [adjustReason, setAdjustReason] = useState("");
+    const [adjustingPoints, setAdjustingPoints] = useState(false);
 
     // Edit form state
     const [editForm, setEditForm] = useState({
@@ -108,14 +132,27 @@ function CustomerDetailContent() {
         preferred_metal: "Rose Gold",
         date_of_birth: "",
         anniversary: "",
+        opt_in_marketing: true,
     });
     const [saving, setSaving] = useState(false);
 
-    useEffect(() => {
-        loadCustomer();
-    }, [id]);
+    const refreshLoyalty = useCallback(async (customerId: string) => {
+        setLoadingLoyalty(true);
+        try {
+            const [acc, txs] = await Promise.all([
+                getLoyaltyAccount(customerId),
+                getTransactionHistory(customerId, { limit: 50 }),
+            ]);
+            setLoyaltyAccount(acc);
+            setLoyaltyTransactions(txs);
+        } catch (err) {
+            console.warn("Could not load loyalty ledger:", err);
+        } finally {
+            setLoadingLoyalty(false);
+        }
+    }, []);
 
-    const loadCustomer = async () => {
+    const loadCustomer = useCallback(async () => {
         // Without ?id= there is nothing to fetch — settle into the "not found" state
         // instead of leaving the page on a spinner forever.
         if (!id) {
@@ -128,6 +165,12 @@ function CustomerDetailContent() {
         setCustomer(data);
 
         if (data) {
+            const consentState = await getConsentState(pb, { customerId: data.id, phone: data.phone });
+            const effectiveMarketingOptIn =
+                consentState.marketing !== null
+                    ? consentState.marketing
+                    : (data as unknown as { opt_in_marketing?: boolean }).opt_in_marketing !== false;
+
             setEditForm({
                 name: data.name,
                 phone: data.phone || "",
@@ -136,11 +179,12 @@ function CustomerDetailContent() {
                 gstin: data.gstin || "",
                 address: data.billing_address || "",
                 shipping_address: data.shipping_address || "",
-                ring_size: (data as any).ring_size || "",
-                bangle_size: (data as any).bangle_size || "",
-                preferred_metal: (data as any).preferred_metal || "Rose Gold",
-                date_of_birth: data.date_of_birth || (data as any).birthday_date || "",
-                anniversary: data.anniversary || (data as any).anniversary_date || "",
+                ring_size: (data as unknown as CustomerJewelryFields).ring_size || "",
+                bangle_size: (data as unknown as CustomerJewelryFields).bangle_size || "",
+                preferred_metal: (data as unknown as CustomerJewelryFields).preferred_metal || "Rose Gold",
+                date_of_birth: data.date_of_birth || (data as unknown as CustomerJewelryFields).birthday_date || "",
+                anniversary: data.anniversary || (data as unknown as CustomerJewelryFields).anniversary_date || "",
+                opt_in_marketing: effectiveMarketingOptIn,
             });
 
             // Fetch live order history from sales and sales_orders
@@ -152,8 +196,42 @@ function CustomerDetailContent() {
             } finally {
                 setLoadingOrders(false);
             }
+
+            await refreshLoyalty(id);
         }
         setLoading(false);
+    }, [id, refreshLoyalty]);
+
+    useEffect(() => {
+        void loadCustomer();
+    }, [loadCustomer]);
+
+    const handleAdjustPoints = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!id) return;
+        const delta = Math.trunc(Number(adjustDelta));
+        if (!Number.isFinite(delta) || delta === 0) {
+            toast.error("Enter a non-zero points adjustment (+ or -)");
+            return;
+        }
+        if (!adjustReason.trim()) {
+            toast.error("Enter a reason for the points adjustment");
+            return;
+        }
+        setAdjustingPoints(true);
+        try {
+            await adjustPoints(id, delta, adjustReason.trim());
+            toast.success(`Adjusted loyalty balance by ${delta > 0 ? `+${delta}` : delta} pts`);
+            setAdjustDelta("");
+            setAdjustReason("");
+            await refreshLoyalty(id);
+            const refreshed = await getCustomer(id);
+            if (refreshed) setCustomer(refreshed);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to adjust loyalty points");
+        } finally {
+            setAdjustingPoints(false);
+        }
     };
 
     const handleUpdate = async () => {
@@ -176,7 +254,7 @@ function CustomerDetailContent() {
                 anniversary: editForm.anniversary || undefined,
             });
 
-            // Also patch jewelry CRM fields into the record
+            // Also patch jewelry CRM fields & DPDP WhatsApp marketing consent into the record
             try {
                 await updateCustomerJewelryProfile(id, {
                     ring_size: editForm.ring_size,
@@ -188,6 +266,15 @@ function CustomerDetailContent() {
             } catch {
                 // ignore
             }
+
+            await recordConsentEvent(pb, {
+                customerId: id,
+                phone: editForm.phone || customer?.phone || undefined,
+                channel: "pos",
+                purpose: "marketing",
+                granted: editForm.opt_in_marketing,
+                source: "customer_profile_edit",
+            });
 
             setShowEditDialog(false);
             loadCustomer();
@@ -233,7 +320,7 @@ function CustomerDetailContent() {
                 title={customer.name}
                 subtitle="Customer 360° Profile & Lifetime Value"
                 action={
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                         {customer.phone && (
                             <Button
                                 size="sm"
@@ -297,13 +384,26 @@ function CustomerDetailContent() {
                                             </div>
                                         )}
                                         {customer.email && (
-                                            <div className="flex items-center gap-3 text-xs">
-                                                <Mail className="w-4 h-4 text-muted-foreground" />
-                                                <a href={`mailto:${customer.email}`} className="hover:text-primary transition-colors">
+                                            <div className="flex items-center gap-3 text-xs min-w-0">
+                                                <Mail className="w-4 h-4 text-muted-foreground shrink-0" />
+                                                <a href={`mailto:${customer.email}`} className="hover:text-primary transition-colors min-w-0 break-all">
                                                     {customer.email}
                                                 </a>
                                             </div>
                                         )}
+                                        <div className="flex items-center justify-between gap-2 pt-1 text-xs">
+                                            <span className="text-muted-foreground">WhatsApp Offers</span>
+                                            <Badge
+                                                variant="outline"
+                                                className={
+                                                    editForm.opt_in_marketing
+                                                        ? "text-[10px] border-emerald-500/40 text-emerald-500"
+                                                        : "text-[10px] border-border text-muted-foreground"
+                                                }
+                                            >
+                                                {editForm.opt_in_marketing ? "Opted in" : "Opted out"}
+                                            </Badge>
+                                        </div>
                                     </div>
 
                                     {(customer.billing_address || customer.gstin) && (
@@ -335,26 +435,26 @@ function CustomerDetailContent() {
                                 <CardContent className="space-y-3 text-xs">
                                     <div className="flex justify-between items-center py-1 border-b border-border">
                                         <span className="text-muted-foreground">Ring Size</span>
-                                        <span className="font-bold text-foreground">{(customer as any).ring_size || "Not set"}</span>
+                                        <span className="font-bold text-foreground">{(customer as unknown as CustomerJewelryFields).ring_size || "Not set"}</span>
                                     </div>
                                     <div className="flex justify-between items-center py-1 border-b border-border">
                                         <span className="text-muted-foreground">Bangle Size</span>
-                                        <span className="font-bold text-foreground">{(customer as any).bangle_size || "Not set"}</span>
+                                        <span className="font-bold text-foreground">{(customer as unknown as CustomerJewelryFields).bangle_size || "Not set"}</span>
                                     </div>
                                     <div className="flex justify-between items-center py-1 border-b border-border">
                                         <span className="text-muted-foreground">Preferred Metal</span>
-                                        <span className="font-bold text-primary">{(customer as any).preferred_metal || "Rose Gold"}</span>
+                                        <span className="font-bold text-primary">{(customer as unknown as CustomerJewelryFields).preferred_metal || "Rose Gold"}</span>
                                     </div>
                                     <div className="flex justify-between items-center py-1 border-b border-border">
                                         <span className="text-muted-foreground">Date of Birth</span>
                                         <span className="font-semibold text-foreground">
-                                            {customer.date_of_birth || (customer as any).birthday_date || "—"}
+                                            {customer.date_of_birth || (customer as unknown as CustomerJewelryFields).birthday_date || "—"}
                                         </span>
                                     </div>
                                     <div className="flex justify-between items-center py-1">
                                         <span className="text-muted-foreground">Anniversary</span>
                                         <span className="font-semibold text-foreground">
-                                            {customer.anniversary || (customer as any).anniversary_date || "—"}
+                                            {customer.anniversary || (customer as unknown as CustomerJewelryFields).anniversary_date || "—"}
                                         </span>
                                     </div>
                                 </CardContent>
@@ -397,16 +497,21 @@ function CustomerDetailContent() {
 
                         {/* Main Interaction Area */}
                         <div className="lg:col-span-2 space-y-4">
-                            <Tabs value={activeCustomerTab} onValueChange={(v) => setActiveCustomerTab(v as any)}>
+                            <Tabs value={activeCustomerTab} onValueChange={(v) => setActiveCustomerTab(v as CustomerTab)}>
                                 {/* Mobile / Narrow Viewport: Dropdown */}
                                 <div className="block sm:hidden w-full mb-3">
-                                    <Select value={activeCustomerTab} onValueChange={(v) => v && setActiveCustomerTab(v as any)}>
+                                    <Select value={activeCustomerTab} onValueChange={(v) => v && setActiveCustomerTab(v as CustomerTab)}>
                                         <SelectTrigger className="w-full h-10 bg-card border-border text-xs font-semibold px-3 rounded-xl flex items-center justify-between shadow-xs">
                                             <div className="flex items-center gap-2">
                                                 {activeCustomerTab === "orders" ? (
                                                     <>
                                                         <ShoppingBag className="w-3.5 h-3.5 text-primary" />
                                                         <span className="font-semibold text-xs text-foreground">Purchase History ({orders.length})</span>
+                                                    </>
+                                                ) : activeCustomerTab === "loyalty" ? (
+                                                    <>
+                                                        <Crown className="w-3.5 h-3.5 text-amber-400" />
+                                                        <span className="font-semibold text-xs text-foreground">Loyalty Ledger ({loyaltyTransactions.length})</span>
                                                     </>
                                                 ) : (
                                                     <>
@@ -423,6 +528,12 @@ function CustomerDetailContent() {
                                                     <span>Purchase History ({orders.length})</span>
                                                 </div>
                                             </SelectItem>
+                                            <SelectItem value="loyalty" className="text-xs font-medium py-2">
+                                                <div className="flex items-center gap-2">
+                                                    <Crown className="w-3.5 h-3.5 text-amber-400" />
+                                                    <span>Loyalty Ledger ({loyaltyTransactions.length})</span>
+                                                </div>
+                                            </SelectItem>
                                             <SelectItem value="history" className="text-xs font-medium py-2">
                                                 <div className="flex items-center gap-2">
                                                     <History className="w-3.5 h-3.5 text-primary" />
@@ -437,6 +548,9 @@ function CustomerDetailContent() {
                                     <TabsList className="bg-card border border-border">
                                         <TabsTrigger value="orders" className="text-xs font-semibold gap-1.5">
                                             <ShoppingBag className="w-3.5 h-3.5" /> Purchase History ({orders.length})
+                                        </TabsTrigger>
+                                        <TabsTrigger value="loyalty" className="text-xs font-semibold gap-1.5">
+                                            <Crown className="w-3.5 h-3.5 text-amber-400" /> Loyalty Ledger ({loyaltyTransactions.length})
                                         </TabsTrigger>
                                         <TabsTrigger value="history" className="text-xs font-semibold gap-1.5">
                                             <History className="w-3.5 h-3.5" /> Notes &amp; Activity
@@ -480,15 +594,15 @@ function CustomerDetailContent() {
                                                                     <td className="py-2.5 px-3 font-mono font-bold text-foreground">
                                                                         {ord.order_number}
                                                                     </td>
-                                                                    <td className="py-2.5 px-3 text-muted-foreground">
-                                                                        {ord.date ? format(new Date(ord.date), "dd MMM yyyy") : "—"}
+                                                                    <td className="py-2.5 px-3 text-muted-foreground whitespace-nowrap">
+                                                                        {safeFormatDate(ord.date, (d) => format(d, "dd MMM yyyy"), "—")}
                                                                     </td>
                                                                     <td className="py-2.5 px-3">
                                                                         <Badge variant="outline" className="text-[10px] uppercase font-mono">
                                                                             {ord.channel}
                                                                         </Badge>
                                                                     </td>
-                                                                    <td className="py-2.5 px-3 font-bold text-foreground">
+                                                                    <td className="py-2.5 px-3 font-bold text-foreground tabular-nums whitespace-nowrap">
                                                                         {formatINR(ord.total)}
                                                                     </td>
                                                                     <td className="py-2.5 px-3 text-right">
@@ -519,6 +633,131 @@ function CustomerDetailContent() {
                                                     <p className="italic">No customer notes recorded yet.</p>
                                                 )}
                                             </div>
+                                        </CardContent>
+                                    </Card>
+                                </TabsContent>
+
+                                <TabsContent value="loyalty" className="mt-4 space-y-4">
+                                    <Card className="bg-card border-border shadow-sm">
+                                        <CardHeader className="pb-3">
+                                            <CardTitle className="text-sm font-bold flex items-center justify-between">
+                                                <span className="flex items-center gap-2">
+                                                    <Crown className="w-4 h-4 text-amber-400" />
+                                                    Loyalty Account Summary
+                                                </span>
+                                                {loyaltyAccount?.expand?.tier && (
+                                                    <Badge
+                                                        variant="outline"
+                                                        className="text-[11px]"
+                                                        style={{
+                                                            color: loyaltyAccount.expand.tier.color || undefined,
+                                                            borderColor: loyaltyAccount.expand.tier.color || undefined,
+                                                        }}
+                                                    >
+                                                        {loyaltyAccount.expand.tier.name} Tier ({loyaltyAccount.expand.tier.multiplier}x)
+                                                    </Badge>
+                                                )}
+                                            </CardTitle>
+                                        </CardHeader>
+                                        <CardContent className="space-y-4">
+                                            <div className="grid grid-cols-3 gap-3 text-xs">
+                                                <div className="rounded-lg border border-border p-3 bg-muted/20">
+                                                    <div className="text-muted-foreground">Current Balance</div>
+                                                    <div className="text-base font-bold font-mono text-amber-400 mt-0.5">
+                                                        {loyaltyAccount?.current_balance ?? customer.loyalty_points ?? 0} pts
+                                                    </div>
+                                                </div>
+                                                <div className="rounded-lg border border-border p-3 bg-muted/20">
+                                                    <div className="text-muted-foreground">Lifetime Earned</div>
+                                                    <div className="text-base font-bold font-mono mt-0.5">
+                                                        {loyaltyAccount?.total_points_earned ?? 0} pts
+                                                    </div>
+                                                </div>
+                                                <div className="rounded-lg border border-border p-3 bg-muted/20">
+                                                    <div className="text-muted-foreground">Redeemed</div>
+                                                    <div className="text-base font-bold font-mono mt-0.5">
+                                                        {loyaltyAccount?.total_points_redeemed ?? 0} pts
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <form onSubmit={handleAdjustPoints} className="grid grid-cols-1 sm:grid-cols-4 gap-2 pt-2 border-t border-border">
+                                                <Input
+                                                    type="number"
+                                                    placeholder="Points (+/-)"
+                                                    value={adjustDelta}
+                                                    onChange={(e) => setAdjustDelta(e.target.value)}
+                                                    className="h-9 text-xs font-mono"
+                                                />
+                                                <Input
+                                                    placeholder="Adjustment reason (e.g. Goodwill credit)"
+                                                    value={adjustReason}
+                                                    onChange={(e) => setAdjustReason(e.target.value)}
+                                                    className="h-9 text-xs sm:col-span-2"
+                                                />
+                                                <Button type="submit" size="sm" disabled={adjustingPoints} className="h-9 text-xs font-semibold">
+                                                    {adjustingPoints ? "Saving..." : "Adjust Points"}
+                                                </Button>
+                                            </form>
+                                        </CardContent>
+                                    </Card>
+
+                                    <Card className="bg-card border-border shadow-sm">
+                                        <CardHeader className="pb-3">
+                                            <CardTitle className="text-sm font-bold">Points Transaction Ledger</CardTitle>
+                                        </CardHeader>
+                                        <CardContent>
+                                            {loadingLoyalty ? (
+                                                <div className="py-6 text-center text-muted-foreground text-xs">
+                                                    <Loader2 className="w-4 h-4 animate-spin mx-auto mb-1 text-primary" />
+                                                    Loading points history...
+                                                </div>
+                                            ) : loyaltyTransactions.length === 0 ? (
+                                                <div className="text-center py-6 text-muted-foreground text-xs">
+                                                    No loyalty point transactions recorded yet.
+                                                </div>
+                                            ) : (
+                                                <div className="overflow-x-auto">
+                                                    <table className="w-full text-left text-xs">
+                                                        <thead className="bg-muted/40 text-muted-foreground uppercase text-[10px] border-b border-border">
+                                                            <tr>
+                                                                <th className="py-2 px-3">Date</th>
+                                                                <th className="py-2 px-3">Type</th>
+                                                                <th className="py-2 px-3">Description</th>
+                                                                <th className="py-2 px-3 text-right">Points</th>
+                                                                <th className="py-2 px-3 text-right">Balance</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-border">
+                                                            {loyaltyTransactions.map((tx) => (
+                                                                <tr key={tx.id}>
+                                                                    <td className="py-2 px-3 text-muted-foreground whitespace-nowrap">
+                                                                        {safeFormatDate(tx.created, (d) => format(d, "dd MMM yyyy"), "—")}
+                                                                    </td>
+                                                                    <td className="py-2 px-3">
+                                                                        <Badge variant="outline" className="text-[10px] uppercase font-mono">
+                                                                            {tx.type}
+                                                                        </Badge>
+                                                                    </td>
+                                                                    <td className="py-2 px-3 text-foreground">
+                                                                        {tx.description || tx.reference_type || "—"}
+                                                                    </td>
+                                                                    <td
+                                                                        className={`py-2 px-3 text-right font-mono font-bold ${
+                                                                            tx.points >= 0 ? "text-emerald-400" : "text-rose-400"
+                                                                        }`}
+                                                                    >
+                                                                        {tx.points >= 0 ? `+${tx.points}` : tx.points}
+                                                                    </td>
+                                                                    <td className="py-2 px-3 text-right font-mono">
+                                                                        {tx.balance_after}
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
                                         </CardContent>
                                     </Card>
                                 </TabsContent>
@@ -666,6 +905,19 @@ function CustomerDetailContent() {
                                     className="h-9 text-xs"
                                 />
                             </div>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3">
+                            <div className="min-w-0">
+                                <Label className="text-xs font-semibold">WhatsApp Marketing &amp; Milestone Offers</Label>
+                                <p className="text-[11px] text-muted-foreground">
+                                    DPDP opt-in for birthday wishes, VIP renewals, and festive drops
+                                </p>
+                            </div>
+                            <Switch
+                                checked={editForm.opt_in_marketing}
+                                onCheckedChange={(checked) => setEditForm({ ...editForm, opt_in_marketing: checked })}
+                            />
                         </div>
 
                         <div className="flex justify-end gap-2 pt-2 border-t border-border">

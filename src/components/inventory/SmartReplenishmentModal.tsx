@@ -11,25 +11,19 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import {
     Sparkles,
     ShoppingBag,
     MessageCircle,
     Loader2,
-    Truck,
-    AlertTriangle,
     Copy,
     ExternalLink,
-    ChevronRight,
-    Package,
 } from "lucide-react";
 import {
     loadReplenishmentQueue,
     formatVendorWhatsAppMessage,
     type VendorRestockGroup,
-    type RestockItem,
 } from "@/lib/replenishment";
 import { createPurchaseOrder } from "@/lib/purchase";
 

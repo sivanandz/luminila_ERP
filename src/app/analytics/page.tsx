@@ -15,7 +15,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { CalendarDays, RefreshCw, LayoutDashboard } from "lucide-react";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { Header } from "@/components/layout/Header";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,7 +87,14 @@ function AnalyticsPageInner() {
     }, [tabFromUrl]);
 
     const applyCustom = () => {
-        if (customStart && customEnd) setCustom(customStart, customEnd);
+        if (!customStart || !customEnd) return;
+        if (customStart > customEnd) {
+            setCustomStart(customEnd);
+            setCustomEnd(customStart);
+            setCustom(customEnd, customStart);
+            return;
+        }
+        setCustom(customStart, customEnd);
     };
 
     return (
@@ -101,7 +108,7 @@ function AnalyticsPageInner() {
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                             <div className="flex items-center gap-2 flex-wrap">
                                 <CalendarDays className="w-4 h-4 text-muted-foreground" />
-                                <div className="flex items-center rounded-lg border border-border overflow-hidden">
+                                <div className="flex flex-wrap items-center rounded-lg border border-border overflow-hidden max-w-full">
                                     {PRESETS.map((p) => (
                                         <button
                                             key={p.id}
@@ -147,10 +154,10 @@ function AnalyticsPageInner() {
                         </div>
 
                         {customOpen && (
-                            <div className="flex items-center gap-2 rounded-lg border border-border bg-card p-3">
-                                <Input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="w-40" />
+                            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3">
+                                <Input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="w-full sm:w-40" />
                                 <span className="text-muted-foreground text-sm">to</span>
-                                <Input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="w-40" />
+                                <Input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="w-full sm:w-40" />
                                 <Button size="sm" onClick={applyCustom} disabled={!customStart || !customEnd}>
                                     Apply
                                 </Button>

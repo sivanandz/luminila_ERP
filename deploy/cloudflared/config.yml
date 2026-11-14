@@ -1,12 +1,15 @@
-# Cloudflare Tunnel ingress for the PUBLIC storefront only.
+# Cloudflare Tunnel ingress for the PUBLIC storefront only (niththigal.com).
 #
-# There is deliberately no ingress entry for the ERP, PocketBase or the
-# WhatsApp sidecar. Those live on the tailnet (see deploy/tailscale.md).
+# There is deliberately NO ingress entry for ERP pages, PocketBase (:8090) or
+# the WPPConnect WhatsApp sidecar (:21465). Those stay exclusively on Tailscale
+# (see deploy/tailscale.md).
 #
 # Install:
 #   cloudflared tunnel login
 #   cloudflared tunnel create luminila
-#   cloudflared tunnel route dns luminila shop.<domain>
+#   cloudflared tunnel route dns luminila niththigal.com
+#   cloudflared tunnel route dns luminila www.niththigal.com
+#   cloudflared tunnel route dns luminila api.niththigal.com
 #   sudo cp deploy/cloudflared/config.yml /etc/cloudflared/config.yml
 #   sudo systemctl enable --now cloudflared
 
@@ -14,10 +17,41 @@ tunnel: REPLACE-TUNNEL-UUID
 credentials-file: /etc/cloudflared/REPLACE-TUNNEL-UUID.json
 
 ingress:
-  - hostname: shop.REPLACE-DOMAIN
+  # Public storefront JSON APIs & Razorpay webhook on apex/www -> ERP (:3000).
+  # Only paths allowed by src/lib/public-surfaces.ts are reachable; all admin
+  # routes return 404 via src/proxy.ts host-guard.
+  - hostname: niththigal.com
+    path: ^/(api/storefront|api/tracking|api/webhooks/razorpay)(/|$)
     service: http://127.0.0.1:3000
     originRequest:
-      # Realtime/SSE must not be buffered through the edge.
       disableChunkedEncoding: false
       connectTimeout: 30s
+  - hostname: www.niththigal.com
+    path: ^/(api/storefront|api/tracking|api/webhooks/razorpay)(/|$)
+    service: http://127.0.0.1:3000
+    originRequest:
+      disableChunkedEncoding: false
+      connectTimeout: 30s
+
+  # Main e-commerce web app (storefront/) -> standalone Next server (:3001).
+  - hostname: niththigal.com
+    service: http://127.0.0.1:3001
+    originRequest:
+      disableChunkedEncoding: false
+      connectTimeout: 30s
+  - hostname: www.niththigal.com
+    service: http://127.0.0.1:3001
+    originRequest:
+      disableChunkedEncoding: false
+      connectTimeout: 30s
+
+  # ERP public surfaces (/api/storefront/*, /tracking/*, /checkout/whatsapp)
+  # with isolated /_next/static chunks on :3000. Host-guard still returns 404
+  # for /, /pos, /inventory, /invoices, /settings, /setup, /login, etc.
+  - hostname: api.niththigal.com
+    service: http://127.0.0.1:3000
+    originRequest:
+      disableChunkedEncoding: false
+      connectTimeout: 30s
+
   - service: http_status:404

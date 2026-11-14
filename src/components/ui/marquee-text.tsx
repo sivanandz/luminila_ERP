@@ -37,15 +37,20 @@ export function MarqueeText({
     }, []);
 
     useEffect(() => {
-        calculateOverflow();
+        const raf = requestAnimationFrame(calculateOverflow);
+        let ro: ResizeObserver | undefined;
 
         if (typeof ResizeObserver !== "undefined" && containerRef.current) {
-            const ro = new ResizeObserver(() => {
+            ro = new ResizeObserver(() => {
                 calculateOverflow();
             });
             ro.observe(containerRef.current);
-            return () => ro.disconnect();
         }
+
+        return () => {
+            cancelAnimationFrame(raf);
+            ro?.disconnect();
+        };
     }, [text, calculateOverflow]);
 
     // Duration based on reading speed (between 2.5s and 7s)

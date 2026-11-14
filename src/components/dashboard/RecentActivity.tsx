@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatINR } from "@/lib/gst";
+import { safeFormatDate } from "@/lib/utils";
 
 interface Activity {
     id: string;
@@ -65,9 +66,9 @@ export function RecentActivity({ activities, title = "Recent Activity" }: Recent
                         activities.map((activity) => {
                             const config = typeConfig[activity.type];
                             const Icon = config.icon;
-                            const timeAgo = formatDistanceToNow(new Date(activity.timestamp), {
-                                addSuffix: true
-                            });
+                            const timeAgo = safeFormatDate(activity.timestamp, (d) =>
+                                formatDistanceToNow(d, { addSuffix: true })
+                            );
 
                             return (
                                 <div

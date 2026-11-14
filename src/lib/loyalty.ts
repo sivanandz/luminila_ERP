@@ -133,6 +133,100 @@ export async function getLoyaltySettings(db: PocketBase = pb): Promise<LoyaltySe
     }
 }
 
+/** Persist tenant-scoped loyalty earn/redemption rate configuration. */
+export async function saveLoyaltySettings(
+    settings: Partial<LoyaltySettings>,
+    db: PocketBase = pb
+): Promise<LoyaltySettings> {
+    const tenant = dbTenant(db);
+    const payload = {
+        points_per_rupee: Number(settings.points_per_rupee ?? DEFAULT_LOYALTY_SETTINGS.points_per_rupee),
+        redemption_value: Number(settings.redemption_value ?? DEFAULT_LOYALTY_SETTINGS.redemption_value),
+        min_redemption_points: Math.max(
+            0,
+            Math.floor(Number(settings.min_redemption_points ?? DEFAULT_LOYALTY_SETTINGS.min_redemption_points))
+        ),
+        max_redemption_percent: Math.min(
+            100,
+            Math.max(0, Number(settings.max_redemption_percent ?? DEFAULT_LOYALTY_SETTINGS.max_redemption_percent))
+        ),
+        points_validity_days: Math.max(
+            1,
+            Math.floor(Number(settings.points_validity_days ?? DEFAULT_LOYALTY_SETTINGS.points_validity_days))
+        ),
+        signup_bonus: Math.max(0, Math.floor(Number(settings.signup_bonus ?? DEFAULT_LOYALTY_SETTINGS.signup_bonus))),
+        birthday_bonus: Math.max(0, Math.floor(Number(settings.birthday_bonus ?? DEFAULT_LOYALTY_SETTINGS.birthday_bonus))),
+        referral_bonus: Math.max(0, Math.floor(Number(settings.referral_bonus ?? DEFAULT_LOYALTY_SETTINGS.referral_bonus))),
+        is_active: settings.is_active ?? true,
+        ...(tenant ? { account_email: tenant } : {}),
+    };
+
+    const existing = await db
+        .collection('loyalty_settings')
+        .getFirstListItem<LoyaltySettings>(`is_active=true${tenantClause(db)}`)
+        .catch(() => null);
+
+    if (existing && existing.id && existing.id !== 'default') {
+        return db.collection('loyalty_settings').update<LoyaltySettings>(existing.id, payload);
+    }
+    return db.collection('loyalty_settings').create<LoyaltySettings>(payload);
+}
+
+/** Seed default Bronze/Silver/Gold/Platinum loyalty tiers if the tenant has none. */
+export async function seedDefaultLoyaltyTiers(db: PocketBase = pb): Promise<LoyaltyTier[]> {
+    const existing = await getLoyaltyTiers(db);
+    if (existing.length > 0) return existing;
+
+    const tenant = dbTenant(db);
+    const defaults: Array<Omit<LoyaltyTier, 'id' | 'created'>> = [
+        {
+            name: 'Bronze',
+            min_points: 0,
+            max_points: 999,
+            multiplier: 1,
+            discount_percent: 0,
+            color: '#cd7f32',
+            benefits: ['Earn points on every purchase'],
+        },
+        {
+            name: 'Silver',
+            min_points: 1000,
+            max_points: 4999,
+            multiplier: 1.25,
+            discount_percent: 3,
+            color: '#94a3b8',
+            benefits: ['1.25x points multiplier', '3% member privilege'],
+        },
+        {
+            name: 'Gold',
+            min_points: 5000,
+            max_points: 14999,
+            multiplier: 1.5,
+            discount_percent: 5,
+            color: '#eab308',
+            benefits: ['1.5x points multiplier', '5% member privilege', 'Priority styling previews'],
+        },
+        {
+            name: 'Platinum',
+            min_points: 15000,
+            multiplier: 2,
+            discount_percent: 10,
+            color: '#38bdf8',
+            benefits: ['2x points multiplier', '10% VIP privilege', 'Free express shipping'],
+        },
+    ];
+
+    const created: LoyaltyTier[] = [];
+    for (const tier of defaults) {
+        const rec = await db.collection('loyalty_tiers').create<LoyaltyTier>({
+            ...tier,
+            ...(tenant ? { account_email: tenant } : {}),
+        });
+        created.push(rec);
+    }
+    return created;
+}
+
 // =============================================
 // Tiers
 // =============================================

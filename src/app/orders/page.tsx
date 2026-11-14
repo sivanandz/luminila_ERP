@@ -8,9 +8,9 @@ import {
     SelectContent,
     SelectItem,
     SelectTrigger,
-    SelectValue,
 } from "@/components/ui/select";
-import { formatPrice, formatDate } from "@/lib/utils";
+import { format } from "date-fns";
+import { formatPrice, safeFormatDate } from "@/lib/utils";
 import {
 
 
@@ -72,6 +72,8 @@ export default function OrdersPage() {
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState<OrderType | 'all'>('all');
     const [searchQuery, setSearchQuery] = useState("");
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 50;
 
     const [scanModalOpen, setScanModalOpen] = useState(false);
     const [selectedOrderForScan, setSelectedOrderForScan] = useState<OrderItemSummary | null>(null);
@@ -94,10 +96,17 @@ export default function OrdersPage() {
         }
     }
 
+    useEffect(() => {
+        setPage(1);
+    }, [activeTab, searchQuery]);
+
     const filteredOrders = orders.filter(order =>
         order.customer_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         order.order_number?.toLowerCase().includes(searchQuery.toLowerCase())
     );
+    const totalPages = Math.max(1, Math.ceil(filteredOrders.length / PAGE_SIZE));
+    const safePage = Math.min(page, totalPages);
+    const paginatedOrders = filteredOrders.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
@@ -134,7 +143,7 @@ export default function OrdersPage() {
                 <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6">
                     {/* Order Tabs: Dropdown on Mobile/Narrow, Pill Bar on Desktop */}
                     <div className="block sm:hidden w-full">
-                        <Select value={activeTab} onValueChange={(v) => v && setActiveTab(v as any)}>
+                        <Select value={activeTab} onValueChange={(v) => v && setActiveTab(v as OrderType | 'all')}>
                             <SelectTrigger className="w-full h-10 bg-card border-border text-xs font-semibold px-3 rounded-xl flex items-center justify-between shadow-xs">
                                 <span className="font-semibold text-xs text-foreground">
                                     {activeTab === 'all' ? 'All Orders & Estimates' : activeTab === 'sales_order' ? 'Confirmed Orders' : 'Estimates & Quotes'}
@@ -203,7 +212,7 @@ export default function OrdersPage() {
                         <>
                             {/* Mobile Card List View (< md) */}
                             <div className="md:hidden flex flex-col gap-3 p-3">
-                                {filteredOrders.map((order) => {
+                                {paginatedOrders.map((order) => {
                                     const statusBadge = getStatusBadge(order.status);
                                     const typeBadge = getTypeBadge(order.order_type);
                                     return (
@@ -212,14 +221,14 @@ export default function OrdersPage() {
                                             onClick={() => router.push(`/orders/detail?id=${order.id}`)}
                                             className="bg-bg-navy/80 border border-surface-hover hover:border-primary/50 rounded-xl p-3.5 transition-all shadow-sm active:scale-[0.99] cursor-pointer"
                                         >
-                                            <div className="flex items-center justify-between mb-2">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-mono font-bold text-sm text-white">#{order.order_number}</span>
-                                                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${typeBadge.bg} ${typeBadge.text} ${typeBadge.border}`}>
+                                            <div className="flex items-center justify-between gap-2 mb-2">
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <span className="font-mono font-bold text-sm text-white truncate">#{order.order_number}</span>
+                                                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border shrink-0 ${typeBadge.bg} ${typeBadge.text} ${typeBadge.border}`}>
                                                         {typeBadge.label}
                                                     </span>
                                                 </div>
-                                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${statusBadge.className}`}>
+                                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${statusBadge.className}`}>
                                                     {statusBadge.icon}
                                                     {statusBadge.label}
                                                 </span>
@@ -233,8 +242,8 @@ export default function OrdersPage() {
                                                     )}
                                                 </div>
                                                 <div className="text-right shrink-0">
-                                                    <p className="font-bold text-primary text-base font-mono">{formatPrice(order.total)}</p>
-                                                    <p className="text-[10px] text-moonstone">{formatDate(order.created || order.created_at)}</p>
+                                                    <p className="font-bold text-primary text-base font-mono tabular-nums">{formatPrice(order.total)}</p>
+                                                    <p className="text-[10px] text-moonstone">{safeFormatDate(order.created || order.created_at, (d) => format(d, "dd MMM yyyy"))}</p>
                                                 </div>
                                             </div>
 
@@ -290,43 +299,43 @@ export default function OrdersPage() {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-surface-hover">
-                                    {filteredOrders.map((order) => {
+                                    {paginatedOrders.map((order) => {
                                         const statusBadge = getStatusBadge(order.status);
                                         const typeBadge = getTypeBadge(order.order_type);
                                         return (
                                             <tr key={order.id} className="hover:bg-bg-navy/30 transition-colors group">
                                                 <td className="py-4 px-6">
                                                     <div className="flex items-center gap-2">
-                                                        <div className="p-2 rounded bg-bg-navy border border-surface-hover text-moonstone">
+                                                        <div className="p-2 rounded bg-bg-navy border border-surface-hover text-moonstone shrink-0">
                                                             <ShoppingBag size={16} />
                                                         </div>
-                                                        <span className="font-mono font-bold text-sm text-white">{order.order_number}</span>
+                                                        <span className="font-mono font-bold text-sm text-white whitespace-nowrap">{order.order_number}</span>
                                                     </div>
                                                 </td>
                                                 <td className="py-4 px-6">
-                                                    <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ${typeBadge.bg} ${typeBadge.text} ${typeBadge.border}`}>
+                                                    <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border whitespace-nowrap ${typeBadge.bg} ${typeBadge.text} ${typeBadge.border}`}>
                                                         {typeBadge.label}
                                                     </span>
                                                 </td>
-                                                <td className="py-4 px-6">
-                                                    <div>
-                                                        <p className="font-bold text-sm text-white">{order.customer_name}</p>
+                                                <td className="py-4 px-6 max-w-[220px]">
+                                                    <div className="min-w-0">
+                                                        <p className="font-bold text-sm text-white truncate">{order.customer_name}</p>
                                                         {order.customer_phone && (
-                                                            <p className="text-xs text-moonstone mt-0.5">{order.customer_phone}</p>
+                                                            <p className="text-xs text-moonstone mt-0.5 truncate">{order.customer_phone}</p>
                                                         )}
                                                     </div>
                                                 </td>
-                                                <td className="py-4 px-6 font-bold text-primary text-sm">
+                                                <td className="py-4 px-6 font-bold text-primary text-sm font-mono tabular-nums whitespace-nowrap">
                                                     {formatPrice(order.total)}
                                                 </td>
                                                 <td className="py-4 px-6">
-                                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${statusBadge.className}`}>
+                                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${statusBadge.className}`}>
                                                         {statusBadge.icon}
                                                         {statusBadge.label}
                                                     </span>
                                                 </td>
-                                                <td className="py-4 px-6 text-xs text-moonstone font-medium">
-                                                    {formatDate(order.created || order.created_at)}
+                                                <td className="py-4 px-6 text-xs text-moonstone font-medium whitespace-nowrap">
+                                                    {safeFormatDate(order.created || order.created_at, (d) => format(d, "dd MMM yyyy"))}
                                                 </td>
                                                 <td className="py-4 px-6 text-right">
                                                     <div className="flex items-center justify-end gap-1">
@@ -362,6 +371,36 @@ export default function OrdersPage() {
                                 </tbody>
                             </table>
                         </div>
+                        {filteredOrders.length > PAGE_SIZE && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-surface-hover text-xs text-moonstone">
+                                <span className="tabular-nums">
+                                    Showing {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filteredOrders.length)} of {filteredOrders.length}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={safePage <= 1}
+                                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                        className="h-7 px-2.5 text-xs"
+                                    >
+                                        Previous
+                                    </Button>
+                                    <span className="tabular-nums font-medium text-white">
+                                        Page {safePage} of {totalPages}
+                                    </span>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={safePage >= totalPages}
+                                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                        className="h-7 px-2.5 text-xs"
+                                    >
+                                        Next
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
                     </>
                     )}
                 </div>

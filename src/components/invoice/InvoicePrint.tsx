@@ -6,7 +6,7 @@ import { format } from "date-fns";
 import { formatINR } from "@/lib/gst";
 import { formatJewelrySpecs } from "@/lib/jewelry-engine";
 import type { Invoice } from "@/lib/invoice";
-import { escapeHtml } from "@/lib/utils";
+import { escapeHtml, safeFormatDate } from "@/lib/utils";
 
 export type PrintMode = "regular" | "thermal58" | "thermal80";
 
@@ -62,15 +62,15 @@ const regularStyles = `
         margin-bottom: 15px;
     }
     .logo { max-height: 60px; max-width: 150px; margin-bottom: 8px; }
-    .company-name { font-size: 24px; font-weight: bold; color: #1a1a2e; }
+    .company-name { font-size: 24px; font-weight: bold; color: #1a1a2e; word-break: break-word; overflow-wrap: anywhere; }
     .invoice-title { font-size: 18px; font-weight: bold; text-align: right; color: #b8860b; }
-    .invoice-number { font-size: 14px; font-family: monospace; }
+    .invoice-number { font-size: 14px; font-family: monospace; word-break: break-all; }
     .parties { display: flex; justify-content: space-between; margin-bottom: 20px; }
     .party { width: 48%; }
     .party-title { font-weight: bold; background: #f5f5f5; padding: 5px; margin-bottom: 5px; }
-    .party-details { padding: 5px; }
+    .party-details { padding: 5px; word-break: break-word; overflow-wrap: anywhere; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; word-break: break-word; overflow-wrap: anywhere; }
     th { background: #1a1a2e; color: white; font-weight: 500; }
     .text-right { text-align: right; }
     .text-center { text-align: center; }
@@ -101,15 +101,15 @@ const thermal58Styles = `
         width: 58mm;
         padding: 3mm;
     }
-    .receipt { width: 100%; }
+    .receipt { width: 100%; word-break: break-word; overflow-wrap: anywhere; }
     .center { text-align: center; }
     .logo { max-height: 40px; max-width: 50mm; margin-bottom: 5px; }
-    .store-name { font-size: 14px; font-weight: bold; margin-bottom: 3px; }
+    .store-name { font-size: 14px; font-weight: bold; margin-bottom: 3px; word-break: break-word; overflow-wrap: anywhere; }
     .divider { border-top: 1px dashed #000; margin: 5px 0; }
     .bold { font-weight: bold; }
-    .row { display: flex; justify-content: space-between; margin: 2px 0; }
+    .row { display: flex; justify-content: space-between; gap: 4px; margin: 2px 0; }
     .item { margin: 3px 0; border-bottom: 1px dotted #ccc; padding-bottom: 3px; }
-    .item-name { font-size: 9px; }
+    .item-name { font-size: 9px; word-break: break-word; overflow-wrap: anywhere; }
     .item-details { display: flex; justify-content: space-between; font-size: 9px; }
     .total-section { margin-top: 5px; }
     .grand-total { font-size: 12px; font-weight: bold; }
@@ -131,15 +131,15 @@ const thermal80Styles = `
         width: 80mm;
         padding: 4mm;
     }
-    .receipt { width: 100%; }
+    .receipt { width: 100%; word-break: break-word; overflow-wrap: anywhere; }
     .center { text-align: center; }
     .logo { max-height: 50px; max-width: 70mm; margin-bottom: 8px; }
-    .store-name { font-size: 16px; font-weight: bold; margin-bottom: 5px; }
+    .store-name { font-size: 16px; font-weight: bold; margin-bottom: 5px; word-break: break-word; overflow-wrap: anywhere; }
     .divider { border-top: 1px dashed #000; margin: 6px 0; }
     .bold { font-weight: bold; }
-    .row { display: flex; justify-content: space-between; margin: 3px 0; }
+    .row { display: flex; justify-content: space-between; gap: 4px; margin: 3px 0; }
     .item { margin: 4px 0; border-bottom: 1px dotted #ccc; padding-bottom: 4px; }
-    .item-name { font-size: 10px; }
+    .item-name { font-size: 10px; word-break: break-word; overflow-wrap: anywhere; }
     .item-details { display: flex; justify-content: space-between; font-size: 10px; }
     .total-section { margin-top: 6px; }
     .grand-total { font-size: 14px; font-weight: bold; }
@@ -201,7 +201,12 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                         <div className="center">
                             {storeSettings?.store_logo && (
                                 // eslint-disable-next-line @next/next/no-img-element -- store logo is a dynamic base64 upload with unknown aspect ratio rendered into a raw print window via innerHTML
-                                <img src={storeSettings.store_logo} alt="Logo" className="logo" />
+                                <img
+                                    src={storeSettings.store_logo}
+                                    alt="Logo"
+                                    className="logo"
+                                    onError={(e) => { e.currentTarget.style.display = "none"; }}
+                                />
                             )}
                             <div className="store-name">{invoice.seller_name}</div>
                             {storeSettings?.store_phone && (
@@ -223,7 +228,7 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                             <span>No: {invoice.invoice_number}</span>
                         </div>
                         <div className="row">
-                            <span>Date: {format(new Date(invoice.invoice_date), "dd/MM/yyyy HH:mm")}</span>
+                            <span>Date: {safeFormatDate(invoice.invoice_date, (d) => format(d, "dd/MM/yyyy HH:mm"))}</span>
                         </div>
 
                         <div className="divider"></div>
@@ -339,7 +344,12 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                     <div>
                         {storeSettings?.store_logo && (
                             // eslint-disable-next-line @next/next/no-img-element -- store logo is a dynamic base64 upload with unknown aspect ratio rendered into a raw print window via innerHTML
-                            <img src={storeSettings.store_logo} alt="Logo" className="logo" />
+                            <img
+                                src={storeSettings.store_logo}
+                                alt="Logo"
+                                className="logo"
+                                onError={(e) => { e.currentTarget.style.display = "none"; }}
+                            />
                         )}
                         <div className="company-name">{invoice.seller_name}</div>
                         {cleanSellerAddress && (
@@ -370,12 +380,12 @@ export const InvoicePrint = forwardRef<InvoicePrintRef, InvoicePrintProps>(
                             <div className="invoice-number">{invoice.invoice_number}</div>
                             <div style={{ marginTop: "10px" }}>
                                 <strong>Date:</strong>{" "}
-                                {format(new Date(invoice.invoice_date), "dd/MM/yyyy")}
+                                {safeFormatDate(invoice.invoice_date, (d) => format(d, "dd/MM/yyyy"))}
                             </div>
                             {invoice.due_date && (
                                 <div>
                                     <strong>Due Date:</strong>{" "}
-                                    {format(new Date(invoice.due_date), "dd/MM/yyyy")}
+                                    {safeFormatDate(invoice.due_date, (d) => format(d, "dd/MM/yyyy"))}
                                 </div>
                             )}
                         </div>

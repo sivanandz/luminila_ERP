@@ -59,6 +59,14 @@ import {
 } from "@/lib/invoice";
 import { exportToJSON } from "@/lib/reports";
 import { formatINR, generateEWayBillJSON, type EWayBillDetails } from "@/lib/gst";
+import {
+    generateEwayBillFromInvoice,
+    updateEwayBillVehicle,
+    cancelEwayBill,
+    cancelInvoiceEwayBill,
+    recordManualEwayBill,
+    isEwayBillRequired,
+} from "@/lib/eway-bill";
 import { escapeHtml } from "@/lib/utils";
 import { getTenantStorageKey } from "@/lib/pocketbase";
 import { useAuth } from "@/contexts/AuthContext";
@@ -95,6 +103,14 @@ function InvoiceDetailContent() {
         vehicleType: "R",
     });
     const [supplierGstin, setSupplierGstin] = useState("");
+    const [manualEwbNo, setManualEwbNo] = useState("");
+    const [manualEwbValidUntil, setManualEwbValidUntil] = useState("");
+    const [ewbVehicleNo, setEwbVehicleNo] = useState("");
+    const [ewbTransporterId, setEwbTransporterId] = useState("");
+    const [ewbToPlace, setEwbToPlace] = useState("");
+    const [ewbToPincode, setEwbToPincode] = useState("");
+    const [ewbCancelReason, setEwbCancelReason] = useState<1 | 2 | 3 | 4>(4);
+    const [ewbBusy, setEwbBusy] = useState(false);
 
     const loadInvoice = useCallback(async () => {
         if (!id) return;
@@ -189,7 +205,7 @@ function InvoiceDetailContent() {
             ? invoice.balance_due
             : Math.max(0, (invoice.grand_total || invoice.total || 0) - (invoice.paid_amount || 0));
         if (amount > outstanding + 0.005) {
-            toast.error(`Amount exceeds the outstanding balance of ₹${formatINR(outstanding)}`);
+            toast.error(`Amount exceeds the outstanding balance of ${formatINR(outstanding)}`);
             return;
         }
 
@@ -204,7 +220,7 @@ function InvoiceDetailContent() {
                 recorded_by: user?.name || user?.email || "Admin",
             });
 
-            toast.success(`Recorded payment of ₹${formatINR(amount)} successfully!`);
+            toast.success(`Recorded payment of ${formatINR(amount)} successfully!`);
             setShowPaymentDialog(false);
             setPaymentReference("");
             await loadInvoice();
@@ -266,6 +282,106 @@ function InvoiceDetailContent() {
         }
     };
 
+    const handleDirectNicEwb = async () => {
+        if (!invoice?.id) return;
+        setEwbBusy(true);
+        try {
+            const res = await generateEwayBillFromInvoice(invoice.id, {
+                toPlace: ewbToPlace.trim() || undefined,
+                toPincode: ewbToPincode.trim() || undefined,
+                transDistanceKm: ewayDetails.distance > 0 ? ewayDetails.distance : undefined,
+            });
+            toast.success(`E-Way Bill #${res.ewayBillNo} generated via NIC API`);
+            await loadInvoice();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "NIC E-Way Bill generation failed");
+        } finally {
+            setEwbBusy(false);
+        }
+    };
+
+    const handleRecordManualEwb = async () => {
+        if (!invoice?.id) return;
+        if (!manualEwbNo.trim()) {
+            toast.error("Enter the 12-digit E-Way Bill number");
+            return;
+        }
+        setEwbBusy(true);
+        try {
+            await recordManualEwayBill(
+                invoice.id,
+                manualEwbNo.trim(),
+                manualEwbValidUntil.trim() || undefined,
+                ewbVehicleNo.trim() || undefined,
+                ewbTransporterId.trim() || undefined
+            );
+            toast.success("Portal E-Way Bill recorded on invoice");
+            setManualEwbNo("");
+            await loadInvoice();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Failed saving E-Way Bill details");
+        } finally {
+            setEwbBusy(false);
+        }
+    };
+
+    const handleUpdatePartBVehicle = async () => {
+        if (!invoice?.id || !invoice.eway_bill_no) return;
+        if (!ewbVehicleNo.trim()) {
+            toast.error("Enter the new vehicle registration number");
+            return;
+        }
+        setEwbBusy(true);
+        try {
+            const ok = await updateEwayBillVehicle(
+                invoice.eway_bill_no,
+                ewbVehicleNo.trim().toUpperCase(),
+                1,
+                ewbToPlace.trim() || undefined
+            );
+            if (ok) {
+                await recordManualEwayBill(
+                    invoice.id,
+                    invoice.eway_bill_no,
+                    invoice.eway_bill_valid_until,
+                    ewbVehicleNo.trim().toUpperCase()
+                );
+                toast.success("Part-B vehicle updated");
+                await loadInvoice();
+            } else {
+                toast.error("NIC portal rejected Part-B vehicle update");
+            }
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Failed updating Part-B vehicle");
+        } finally {
+            setEwbBusy(false);
+        }
+    };
+
+    const handleCancelEwb = async () => {
+        if (!invoice?.id || !invoice.eway_bill_no) return;
+        setEwbBusy(true);
+        try {
+            const ok = await cancelInvoiceEwayBill(invoice.id, invoice.eway_bill_no, ewbCancelReason);
+            if (ok) {
+                toast.success("E-Way Bill cancelled cleanly");
+                await loadInvoice();
+            } else {
+                const fallbackOk = await cancelEwayBill(invoice.eway_bill_no, ewbCancelReason);
+                if (fallbackOk) {
+                    toast.success("NIC E-Way Bill cancelled");
+                    await loadInvoice();
+                } else {
+                    toast.error("NIC portal rejected EWB cancellation");
+                }
+            }
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Failed cancelling E-Way Bill");
+        } finally {
+            setEwbBusy(false);
+        }
+    };
+
     const printPaymentVoucher = (payment: NonNullable<Invoice["payments"]>[number]) => {
         const voucherWindow = window.open("", "_blank");
         if (!voucherWindow) return;
@@ -292,7 +408,7 @@ function InvoiceDetailContent() {
                 <div class="row"><span>Date:</span><span>${format(new Date(payment.date), "dd MMMM yyyy HH:mm")}</span></div>
                 <div class="row"><span>Payment Method:</span><strong style="text-transform:uppercase;">${escapeHtml(payment.method || "")}</strong></div>
                 ${payment.reference ? `<div class="row"><span>Reference ID:</span><span>${escapeHtml(payment.reference)}</span></div>` : ""}
-                <div class="total">Amount Received: ₹${formatINR(payment.amount)}</div>
+                <div class="total">Amount Received: ${formatINR(payment.amount)}</div>
                 <div style="text-align:center;"><div class="stamp">PAYMENT CONFIRMED</div></div>
                 <p style="text-align:center;font-size:11px;color:#94a3b8;margin-top:24px;">Thank you for your payment!</p>
             </body>
@@ -433,7 +549,7 @@ function InvoiceDetailContent() {
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
                                     <DropdownMenuItem onClick={() => {
-                                        const text = `Invoice ${invoice.invoice_number} from Luminila. Total: ₹${formatINR(invoice.grand_total)}`;
+                                        const text = `Invoice ${invoice.invoice_number} from Luminila. Total: ${formatINR(invoice.grand_total)}`;
                                         window.open(`https://wa.me/${invoice.buyer_phone || ""}?text=${encodeURIComponent(text)}`);
                                     }}>
                                         Share on WhatsApp
@@ -538,19 +654,19 @@ function InvoiceDetailContent() {
                                         <div className="flex justify-between text-sm">
                                             <span className="text-muted-foreground">Total Bill:</span>
                                             <span className="font-mono font-bold text-foreground">
-                                                ₹{formatINR(invoice.grand_total)}
+                                                {formatINR(invoice.grand_total)}
                                             </span>
                                         </div>
                                         <div className="flex justify-between text-sm">
                                             <span className="text-muted-foreground">Paid Amount:</span>
                                             <span className="font-mono font-semibold text-emerald-400">
-                                                ₹{formatINR(invoice.paid_amount || 0)}
+                                                {formatINR(invoice.paid_amount || 0)}
                                             </span>
                                         </div>
                                         <div className="flex justify-between text-sm border-t border-border pt-2">
                                             <span className="font-semibold text-foreground">Remaining Balance:</span>
                                             <span className="font-mono font-bold text-amber-400">
-                                                ₹{formatINR(balanceDue)}
+                                                {formatINR(balanceDue)}
                                             </span>
                                         </div>
                                     </div>
@@ -587,7 +703,7 @@ function InvoiceDetailContent() {
                                                 >
                                                     <div className="flex justify-between items-center">
                                                         <span className="font-bold text-foreground font-mono">
-                                                            ₹{formatINR(p.amount)}
+                                                            {formatINR(p.amount)}
                                                         </span>
                                                         <Badge variant="outline" className="text-[10px] uppercase font-semibold">
                                                             {p.method}
@@ -659,6 +775,78 @@ function InvoiceDetailContent() {
                                     )}
                                 </CardContent>
                             </Card>
+
+                            {/* E-Way Bill Compliance & Tracking Card */}
+                            <Card className="bg-card border-border">
+                                <CardHeader className="pb-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+                                            <Truck className="w-4 h-4 text-primary" />
+                                            E-Way Bill
+                                        </CardTitle>
+                                        <Badge
+                                            variant="outline"
+                                            className={`text-[10px] uppercase ${
+                                                invoice.eway_bill_status === "cancelled"
+                                                    ? "border-rose-500/40 text-rose-400"
+                                                    : invoice.eway_bill_no
+                                                    ? "border-emerald-500/40 text-emerald-400"
+                                                    : isEwayBillRequired(invoice.grand_total)
+                                                    ? "border-amber-500/40 text-amber-400"
+                                                    : "border-border text-muted-foreground"
+                                            }`}
+                                        >
+                                            {invoice.eway_bill_no
+                                                ? invoice.eway_bill_status || "generated"
+                                                : isEwayBillRequired(invoice.grand_total)
+                                                ? "Mandatory (>₹50k)"
+                                                : "Optional (≤₹50k)"}
+                                        </Badge>
+                                    </div>
+                                </CardHeader>
+                                <CardContent className="space-y-2 text-xs">
+                                    {invoice.eway_bill_no ? (
+                                        <>
+                                            <div className="flex justify-between">
+                                                <span className="text-muted-foreground">EWB No:</span>
+                                                <span className="font-mono font-bold text-foreground">
+                                                    {invoice.eway_bill_no}
+                                                </span>
+                                            </div>
+                                            {invoice.eway_bill_valid_until && (
+                                                <div className="flex justify-between">
+                                                    <span className="text-muted-foreground">Valid Until:</span>
+                                                    <span className="font-mono text-foreground">
+                                                        {invoice.eway_bill_valid_until}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            {invoice.vehicle_number && (
+                                                <div className="flex justify-between">
+                                                    <span className="text-muted-foreground">Vehicle:</span>
+                                                    <span className="font-mono text-foreground">
+                                                        {invoice.vehicle_number}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <p className="text-muted-foreground">
+                                            {isEwayBillRequired(invoice.grand_total)
+                                                ? "Consignment exceeds ₹50,000. Generate via NIC API or record an EWB number before dispatch."
+                                                : "Below ₹50,000 threshold — optional E-Way Bill available for inter-state or voluntary transit documentation."}
+                                        </p>
+                                    )}
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => setShowEwayDialog(true)}
+                                        className="w-full h-8 text-xs mt-1"
+                                    >
+                                        Manage E-Way Bill
+                                    </Button>
+                                </CardContent>
+                            </Card>
                         </div>
                     </div>
                 </div>
@@ -673,7 +861,7 @@ function InvoiceDetailContent() {
                     <div className="space-y-4 pt-2">
                         <div className="p-3 bg-muted/40 rounded-lg border border-border flex justify-between items-center text-xs">
                             <span className="text-muted-foreground">Current Balance Due:</span>
-                            <span className="font-mono font-bold text-amber-400 text-sm">₹{formatINR(balanceDue)}</span>
+                            <span className="font-mono font-bold text-amber-400 text-sm">{formatINR(balanceDue)}</span>
                         </div>
 
                         <div className="space-y-2">
@@ -693,7 +881,7 @@ function InvoiceDetailContent() {
                                     className="text-xs h-7"
                                     onClick={() => setPaymentAmount(balanceDue.toString())}
                                 >
-                                    Pay Remaining (₹{formatINR(balanceDue)})
+                                    Pay Remaining ({formatINR(balanceDue)})
                                 </Button>
                                 {balanceDue > 1000 && (
                                     <Button
@@ -703,7 +891,7 @@ function InvoiceDetailContent() {
                                         className="text-xs h-7"
                                         onClick={() => setPaymentAmount(Math.round(balanceDue / 2).toString())}
                                     >
-                                        50% (₹{formatINR(Math.round(balanceDue / 2))})
+                                        50% ({formatINR(Math.round(balanceDue / 2))})
                                     </Button>
                                 )}
                             </div>
@@ -765,7 +953,7 @@ function InvoiceDetailContent() {
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img
                                     src={qrImageUrl}
-                                    alt={`UPI QR code for ₹${formatINR(balanceDue)}`}
+                                    alt={`UPI QR code for ${formatINR(balanceDue)}`}
                                     className="w-36 h-36"
                                 />
                             ) : (
@@ -777,7 +965,7 @@ function InvoiceDetailContent() {
                         <div className="text-xs text-muted-foreground">
                             Merchant VPA: <span className="font-mono font-semibold text-foreground">{merchantVpa || "not set"}</span>
                             <br />
-                            Amount: <span className="font-bold text-foreground">₹{formatINR(balanceDue)}</span>
+                            Amount: <span className="font-bold text-foreground">{formatINR(balanceDue)}</span>
                         </div>
                         <div className="w-full space-y-1.5">
                             <Label htmlFor="merchant-upi-id" className="text-xs">
@@ -798,52 +986,207 @@ function InvoiceDetailContent() {
                 </DialogContent>
             </Dialog>
 
-            {/* E-Way Bill Dialog */}
+            {/* E-Way Bill Dialog (NIC API + Offline JSON + Manual Portal Tracking + Part-B/Cancel) */}
             <Dialog open={showEwayDialog} onOpenChange={setShowEwayDialog}>
-                <DialogContent>
+                <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Generate E-Way Bill JSON</DialogTitle>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Truck className="w-4 h-4 text-primary" />
+                            E-Way Bill Operations
+                        </DialogTitle>
                     </DialogHeader>
-                    <div className="space-y-4 pt-2">
-                        <div className="space-y-2">
-                            <Label>Supplier GSTIN</Label>
-                            <Input
-                                placeholder="Your Organization GSTIN"
-                                value={supplierGstin}
-                                onChange={(e) => setSupplierGstin(e.target.value)}
-                            />
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                                <Label>Approx. Distance (km)</Label>
-                                <Input
-                                    type="number"
-                                    value={ewayDetails.distance || ""}
-                                    onChange={(e) => setEwayDetails({ ...ewayDetails, distance: parseInt(e.target.value) || 0 })}
-                                />
+                    <div className="space-y-5 pt-1">
+                        {/* Section 1: Direct NIC API & Offline JSON Export */}
+                        <div className="space-y-3 rounded-lg border border-border p-3">
+                            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Generate via NIC API or Export Offline JSON
                             </div>
-                            <div className="space-y-2">
-                                <Label>Vehicle Type</Label>
-                                <Select
-                                    value={ewayDetails.vehicleType}
-                                    onValueChange={(val) => setEwayDetails({ ...ewayDetails, vehicleType: val === "O" ? "O" : "R" })}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Supplier GSTIN (for JSON)</Label>
+                                    <Input
+                                        placeholder="Organization GSTIN"
+                                        value={supplierGstin}
+                                        onChange={(e) => setSupplierGstin(e.target.value.toUpperCase())}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Approx. Distance (km)</Label>
+                                    <Input
+                                        type="number"
+                                        value={ewayDetails.distance || ""}
+                                        onChange={(e) => setEwayDetails({ ...ewayDetails, distance: parseInt(e.target.value, 10) || 0 })}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Destination City</Label>
+                                    <Input
+                                        placeholder="Buyer city"
+                                        value={ewbToPlace}
+                                        onChange={(e) => setEwbToPlace(e.target.value)}
+                                        className="h-8 text-xs"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Destination PIN</Label>
+                                    <Input
+                                        placeholder="e.g. 560001"
+                                        value={ewbToPincode}
+                                        onChange={(e) => setEwbToPincode(e.target.value)}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1 col-span-2">
+                                    <Label className="text-xs">Vehicle Type</Label>
+                                    <Select
+                                        value={ewayDetails.vehicleType}
+                                        onValueChange={(val) => setEwayDetails({ ...ewayDetails, vehicleType: val === "O" ? "O" : "R" })}
+                                    >
+                                        <SelectTrigger className="h-8 text-xs">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="R">Regular (Road)</SelectItem>
+                                            <SelectItem value="O">Over Dimensional Cargo</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2 pt-1">
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={ewbBusy}
+                                    onClick={() => void handleDirectNicEwb()}
+                                    className="text-xs"
                                 >
-                                    <SelectTrigger>
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="R">Regular (Road)</SelectItem>
-                                        <SelectItem value="O">Over Dimensional Cargo</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                                    {ewbBusy ? "Working..." : "Generate via NIC API"}
+                                </Button>
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={handleGenerateEWayBill}
+                                    className="text-xs"
+                                >
+                                    Download EWB JSON
+                                </Button>
                             </div>
                         </div>
-                        <div className="flex justify-end gap-3 pt-4">
-                            <Button variant="outline" onClick={() => setShowEwayDialog(false)}>
-                                Cancel
+
+                        {/* Section 2: Manual Portal Tracking */}
+                        <div className="space-y-3 rounded-lg border border-border p-3">
+                            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Record EWB Generated on ewaybillgst.gov.in
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                    <Label className="text-xs">12-Digit EWB No.</Label>
+                                    <Input
+                                        placeholder="e.g. 141000012345"
+                                        value={manualEwbNo}
+                                        onChange={(e) => setManualEwbNo(e.target.value)}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Valid Until (optional)</Label>
+                                    <Input
+                                        placeholder="DD/MM/YYYY HH:mm"
+                                        value={manualEwbValidUntil}
+                                        onChange={(e) => setManualEwbValidUntil(e.target.value)}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Vehicle No. (optional)</Label>
+                                    <Input
+                                        placeholder="KA01AB1234"
+                                        value={ewbVehicleNo}
+                                        onChange={(e) => setEwbVehicleNo(e.target.value.toUpperCase())}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Transporter ID (optional)</Label>
+                                    <Input
+                                        placeholder="GSTIN / Trans ID"
+                                        value={ewbTransporterId}
+                                        onChange={(e) => setEwbTransporterId(e.target.value.toUpperCase())}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                            </div>
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                disabled={ewbBusy}
+                                onClick={() => void handleRecordManualEwb()}
+                                className="text-xs"
+                            >
+                                Save Portal EWB No.
                             </Button>
-                            <Button onClick={handleGenerateEWayBill} className="bg-primary">
-                                Download EWB JSON
+                        </div>
+
+                        {/* Section 3: Active EWB Part-B & Cancellation */}
+                        {invoice.eway_bill_no && invoice.eway_bill_status !== "cancelled" && (
+                            <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                                <div className="text-xs font-semibold uppercase tracking-wider text-amber-400">
+                                    Active EWB #{invoice.eway_bill_no} Controls
+                                </div>
+                                <div className="flex gap-2">
+                                    <Input
+                                        placeholder="New Vehicle No. (Part-B)"
+                                        value={ewbVehicleNo}
+                                        onChange={(e) => setEwbVehicleNo(e.target.value.toUpperCase())}
+                                        className="h-8 text-xs font-mono flex-1"
+                                    />
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={ewbBusy}
+                                        onClick={() => void handleUpdatePartBVehicle()}
+                                        className="h-8 text-xs"
+                                    >
+                                        Update Part-B
+                                    </Button>
+                                </div>
+                                <div className="flex gap-2 pt-1 border-t border-border/50">
+                                    <Select
+                                        value={String(ewbCancelReason)}
+                                        onValueChange={(val) => setEwbCancelReason((Number(val) || 4) as 1 | 2 | 3 | 4)}
+                                    >
+                                        <SelectTrigger className="h-8 text-xs flex-1">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="1">1 — Duplicate</SelectItem>
+                                            <SelectItem value="2">2 — Order Cancelled</SelectItem>
+                                            <SelectItem value="3">3 — Data Entry Mistake</SelectItem>
+                                            <SelectItem value="4">4 — Others</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="destructive"
+                                        disabled={ewbBusy}
+                                        onClick={() => void handleCancelEwb()}
+                                        className="h-8 text-xs"
+                                    >
+                                        Cancel EWB
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="flex justify-end">
+                            <Button variant="outline" size="sm" onClick={() => setShowEwayDialog(false)}>
+                                Done
                             </Button>
                         </div>
                     </div>

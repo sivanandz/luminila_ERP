@@ -19,15 +19,6 @@ interface EwayBillSettings {
     is_production: boolean;
 }
 
-interface EwayBillSettingsRecord {
-    id: string;
-    eway_client_id?: string;
-    eway_client_secret?: string;
-    eway_username?: string;
-    eway_password?: string;
-    eway_is_production?: boolean;
-}
-
 export function EwayBillSettings() {
     const [settings, setSettings] = useState<EwayBillSettings>({
         client_id: "",

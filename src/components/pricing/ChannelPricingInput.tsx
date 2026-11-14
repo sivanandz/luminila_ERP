@@ -39,7 +39,6 @@ import {
     Plus,
     ChevronDown,
     ChevronUp,
-    Percent,
     RotateCcw,
     Trash2,
 } from "lucide-react";
@@ -80,7 +79,6 @@ export function ChannelPricingInput({
     }, []);
 
     // Categorize channels: The Big 3 Primary Channels vs Additional/Custom Channels
-    const primaryChannelIds = ["pos", "whatsapp", "website"];
     const primaryChannels = [
         channels.find((c) => c.id === "pos" || c.id === "shop") || {
             id: "pos",
@@ -244,8 +242,8 @@ export function ChannelPricingInput({
             setNewChannelDesc("");
             setNewChannelPreset("0");
             setIsMoreOpen(true);
-        } catch (e: any) {
-            toast.error(e.message || "Failed to create channel");
+        } catch (e: unknown) {
+            toast.error(e instanceof Error ? e.message : "Failed to create channel");
         } finally {
             setIsSavingChannel(false);
         }
@@ -259,8 +257,8 @@ export function ChannelPricingInput({
             delete updated[id];
             onChange(updated);
             toast.success(`Removed channel "${name}"`);
-        } catch (e: any) {
-            toast.error(e.message || "Failed to remove channel");
+        } catch (e: unknown) {
+            toast.error(e instanceof Error ? e.message : "Failed to remove channel");
         }
     };
 

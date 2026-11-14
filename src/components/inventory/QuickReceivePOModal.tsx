@@ -22,11 +22,9 @@ import {
 import {
     Truck,
     PackageCheck,
-    Clock,
     Plus,
     Loader2,
     ArrowUpRight,
-    AlertCircle,
 } from "lucide-react";
 import { getOpenPurchaseOrders, type PurchaseOrder } from "@/lib/purchase";
 import { formatINR } from "@/lib/gst";
@@ -44,14 +42,24 @@ export function QuickReceivePOModal({ isOpen, onClose }: QuickReceivePOModalProp
 
     useEffect(() => {
         if (!isOpen) return;
-        setLoading(true);
-        getOpenPurchaseOrders()
-            .then(setOrders)
+        let cancelled = false;
+        void Promise.resolve().then(() => {
+            if (!cancelled) setLoading(true);
+            return getOpenPurchaseOrders();
+        })
+            .then((data) => {
+                if (!cancelled) setOrders(data);
+            })
             .catch((err) => {
                 console.error("Error loading open POs:", err);
-                toast.error("Could not load open purchase orders. Please retry.");
+                if (!cancelled) toast.error("Could not load open purchase orders. Please retry.");
             })
-            .finally(() => setLoading(false));
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [isOpen]);
 
     return (

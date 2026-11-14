@@ -6,6 +6,8 @@
  * (Shopify, WooCommerce, WhatsApp Catalog, Marketplaces).
  */
 
+import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+
 export type SalesChannel =
     | 'pos'
     | 'shopify'
@@ -215,11 +217,71 @@ export class CartReservationManager {
         return list.reduce((sum, r) => sum + r.quantity, 0);
     }
 
+    /**
+     * Get all active (unexpired) reservations across variants
+     */
+    public getAllActiveReservations(): ActiveCartReservation[] {
+        this.cleanExpired();
+        const all: ActiveCartReservation[] = [];
+        for (const list of this.reservations.values()) {
+            all.push(...list);
+        }
+        return all;
+    }
+
     private cleanExpired() {
         const now = Date.now();
         for (const [vId, list] of this.reservations.entries()) {
             const active = list.filter(r => r.expiresAt > now);
             this.reservations.set(vId, active);
         }
+    }
+}
+
+export const globalCartReservationManager = new CartReservationManager();
+
+const BUFFER_SETTINGS_KEY = 'omnichannel_buffer_configs';
+
+/** Load tenant-scoped omnichannel safety buffer rules, falling back to DEFAULT_CHANNEL_CONFIGS. */
+export async function loadChannelBufferConfigs(): Promise<ChannelBufferConfig[]> {
+    const tenant = accountScopeEmail();
+    if (!tenant) return DEFAULT_CHANNEL_CONFIGS;
+    try {
+        const record = await pb.collection('store_settings').getFirstListItem<{
+            value?: unknown;
+            account_email?: string;
+        }>(`key="${BUFFER_SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`);
+        if (record?.account_email && record.account_email.trim().toLowerCase() !== tenant.toLowerCase()) {
+            return DEFAULT_CHANNEL_CONFIGS;
+        }
+        const raw = record?.value;
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return Array.isArray(parsed) && parsed.length > 0
+            ? (parsed as ChannelBufferConfig[])
+            : DEFAULT_CHANNEL_CONFIGS;
+    } catch {
+        return DEFAULT_CHANNEL_CONFIGS;
+    }
+}
+
+/** Save tenant-scoped omnichannel safety buffer rules into store_settings. */
+export async function saveChannelBufferConfigs(configs: ChannelBufferConfig[]): Promise<void> {
+    const tenant = accountScopeEmail();
+    if (!tenant) return;
+    const existing = await pb
+        .collection('store_settings')
+        .getFirstListItem<{ id: string }>(
+            `key="${BUFFER_SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
+        )
+        .catch(() => null);
+    if (existing) {
+        await pb.collection('store_settings').update(existing.id, { value: configs });
+    } else {
+        await pb.collection('store_settings').create({
+            key: BUFFER_SETTINGS_KEY,
+            value: configs,
+            category: 'inventory',
+            account_email: tenant,
+        });
     }
 }

@@ -46,11 +46,11 @@ export function KpiStrip({ items }: { items: KpiItem[] }) {
     return (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2.5 md:gap-4">
             {items.map((item) => (
-                <Card key={item.label} className="bg-card border-border">
-                    <CardContent className="p-4 space-y-1.5">
-                        <p className="text-xs text-muted-foreground">{item.label}</p>
-                        <p className="text-xl font-semibold tracking-tight">{item.value}</p>
-                        <div className="flex items-center gap-2">
+                <Card key={item.label} className="bg-card border-border min-w-0">
+                    <CardContent className="p-4 space-y-1.5 min-w-0">
+                        <p className="text-xs text-muted-foreground truncate">{item.label}</p>
+                        <p className="text-base sm:text-xl font-semibold tracking-tight tabular-nums break-words">{item.value}</p>
+                        <div className="flex items-center gap-2 min-w-0">
                             {item.deltaPct !== undefined && <DeltaBadge deltaPct={item.deltaPct} invert={item.invertDelta} />}
                             {item.sub && <span className="text-xs text-muted-foreground truncate">{item.sub}</span>}
                         </div>
@@ -104,6 +104,8 @@ export function AnalyticsTable<R extends Record<string, unknown>>({
 }) {
     const [sortKey, setSortKey] = useState<string | undefined>(initialSortKey);
     const [sortDesc, setSortDesc] = useState(true);
+    const [page, setPage] = useState(1);
+    const pageSize = 50;
 
     const sorted = useMemo(() => {
         if (!sortKey) return rows;
@@ -156,6 +158,10 @@ export function AnalyticsTable<R extends Record<string, unknown>>({
         return <EmptyState title={emptyTitle} hint={emptyHint} />;
     }
 
+    const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const visibleRows = sorted.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
     return (
         <Card className="bg-card border-border">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -178,6 +184,7 @@ export function AnalyticsTable<R extends Record<string, unknown>>({
                                             setSortKey(col.key);
                                             setSortDesc(true);
                                         }
+                                        setPage(1);
                                     }}
                                 >
                                     {col.header}
@@ -187,10 +194,10 @@ export function AnalyticsTable<R extends Record<string, unknown>>({
                         </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {sorted.map((row, i) => (
+                        {visibleRows.map((row, i) => (
                             <TableRow key={String(row.id ?? row.key ?? i)}>
                                 {columns.map((col) => (
-                                    <TableCell key={col.key} className={cn(col.align === 'right' && 'text-right')}>
+                                    <TableCell key={col.key} className={cn(col.align === 'right' && 'text-right tabular-nums')}>
                                         {col.render ? col.render(row) : String(row[col.key] ?? '—')}
                                     </TableCell>
                                 ))}
@@ -199,6 +206,21 @@ export function AnalyticsTable<R extends Record<string, unknown>>({
                     </TableBody>
                 </Table>
             </CardContent>
+            {totalPages > 1 && (
+                <div className="flex items-center justify-between px-4 py-2 border-t border-border text-xs text-muted-foreground">
+                    <span className="tabular-nums">
+                        Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, sorted.length)} of {sorted.length.toLocaleString("en-IN")}
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={currentPage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                            Prev
+                        </Button>
+                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={currentPage >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
+                            Next
+                        </Button>
+                    </div>
+                </div>
+            )}
         </Card>
     );
 }

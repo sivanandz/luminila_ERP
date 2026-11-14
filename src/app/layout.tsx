@@ -78,7 +78,7 @@ export default function RootLayout({
             <AppChrome>
               {children}
             </AppChrome>
-            <Toaster position="top-right" richColors closeButton />
+            <Toaster position="top-center" richColors closeButton />
           </AuthGate>
         </AuthProvider>
       </body>

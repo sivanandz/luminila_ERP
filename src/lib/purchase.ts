@@ -210,6 +210,26 @@ interface GRNItemRecord extends PBRecord {
     quantity_received: number;
     quantity_rejected?: number;
     rejection_reason?: string;
+    expand?: {
+        variant?: {
+            id: string;
+            variant_name: string;
+            sku_suffix?: string;
+            stock_level?: number;
+            expand?: {
+                product?: {
+                    id: string;
+                    name: string;
+                    sku: string;
+                };
+            };
+        };
+        po_item?: {
+            id: string;
+            description: string;
+            unit_price?: number;
+        };
+    };
 }
 
 // ===========================================
@@ -265,7 +285,7 @@ const META_TAG_START = '<!--LUMINILA_PO_META:';
 const META_TAG_END = '-->';
 
 export function encodePOMetadata(po: Partial<PurchaseOrder>, userNotes: string = ''): string {
-    const meta: Record<string, any> = {
+    const meta: Partial<PurchaseOrder> = {
         po_type: po.po_type || (po.budget_amount ? 'blanket' : 'itemized'),
         budget_amount: po.budget_amount,
         inward_goods_cost: po.inward_goods_cost || 0,
@@ -283,7 +303,7 @@ export function encodePOMetadata(po: Partial<PurchaseOrder>, userNotes: string =
     return `${META_TAG_START}${JSON.stringify(meta)}${META_TAG_END}\n${userNotes.trim()}`;
 }
 
-export function decodePOMetadata(notesText?: string): { cleanNotes: string; meta: Record<string, any> } {
+export function decodePOMetadata(notesText?: string): { cleanNotes: string; meta: Partial<PurchaseOrder> } {
     if (!notesText || !notesText.includes(META_TAG_START)) {
         return { cleanNotes: notesText || '', meta: {} };
     }
@@ -292,7 +312,7 @@ export function decodePOMetadata(notesText?: string): { cleanNotes: string; meta
         const endIdx = notesText.indexOf(META_TAG_END, startIdx);
         if (endIdx !== -1) {
             const jsonStr = notesText.substring(startIdx, endIdx);
-            const meta = JSON.parse(jsonStr);
+            const meta = JSON.parse(jsonStr) as Partial<PurchaseOrder>;
             const cleanNotes = notesText.substring(endIdx + META_TAG_END.length).trim();
             return { cleanNotes, meta };
         }
@@ -362,7 +382,7 @@ export async function createPurchaseOrder(
     const poStatus = po.status || 'sent';
 
     let allocatedPoNumber = po.po_number || '';
-    let poRecord: any;
+    let poRecord: { id: string; po_number?: string; created?: string; updated?: string; [key: string]: unknown };
 
     if (allocatedPoNumber) {
         // Explicit PO Number provided
@@ -733,7 +753,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
         try {
             const poRecord = await pb.collection('purchase_orders').getOne(grn.po_id, { expand: 'vendor' });
             poNumber = poRecord.po_number || '';
-            vendorName = (poRecord.expand?.vendor as any)?.name || '';
+            vendorName = (poRecord.expand?.vendor as { name?: string } | undefined)?.name || '';
         } catch (e) {
             console.warn('Could not load PO record for GRN logging:', e);
         }
@@ -790,7 +810,7 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
             // A rejection-only line has nothing to receive or reserve.
             if (!(requested > 0)) continue;
 
-            let poItem: Record<string, any>;
+            let poItem: Record<string, unknown>;
             try {
                 poItem = await pb.collection('purchase_order_items').getOne(item.po_item_id);
             } catch (err) {
@@ -977,7 +997,7 @@ export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
 
         // Fetch items for all GRNs in chunks of 30
         const grnIds = grns.map(g => g.id);
-        const allItems: any[] = [];
+        const allItems: GRNItemRecord[] = [];
         if (grnIds.length > 0) {
             const chunkSize = 30;
             for (let i = 0; i < grnIds.length; i += chunkSize) {
@@ -987,12 +1007,12 @@ export async function getGRNsForPO(poId: string): Promise<GoodsReceivedNote[]> {
                     filter: `(${itemFilter})${tenantClause()}`,
                     expand: 'variant,variant.product,po_item',
                 });
-                allItems.push(...chunkItems);
+                allItems.push(...(chunkItems as unknown as GRNItemRecord[]));
             }
         }
 
         // Group items by GRN
-        const itemsByGRN = new Map<string, any[]>();
+        const itemsByGRN = new Map<string, GRNItemRecord[]>();
         allItems.forEach(item => {
             if (!itemsByGRN.has(item.grn)) {
                 itemsByGRN.set(item.grn, []);
@@ -1078,8 +1098,8 @@ export async function quickCreateInventoryProductForPOItem(
     name: string;
     basePrice: number;
     costPrice: number;
-    productRecord: any;
-    variantRecord: any;
+    productRecord: Record<string, unknown>;
+    variantRecord: Record<string, unknown>;
 }> {
     const accountEmail = accountScopeEmail();
     const generatedSku = details.sku?.trim() || `SKU-${Date.now().toString(36).toUpperCase()}`;
@@ -1109,7 +1129,7 @@ export async function quickCreateInventoryProductForPOItem(
         }
     }
 
-    const productPayload: Record<string, any> = {
+    const productPayload: Record<string, unknown> = {
         name: details.name.trim(),
         sku: generatedSku,
         cost_price: details.cost_price,
@@ -1129,7 +1149,7 @@ export async function quickCreateInventoryProductForPOItem(
 
     const productRecord = await pb.collection('products').create(productPayload);
 
-    const variantPayload: Record<string, any> = {
+    const variantPayload: Record<string, unknown> = {
         product: productRecord.id,
         variant_name: 'Standard',
         sku_suffix: 'STD',
@@ -1223,9 +1243,20 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
         });
 
         // 3. For any GRN without po_number expanded directly, collect PO IDs to resolve
+        type ExpandedVendorRef = { id?: string; name?: string; phone?: string; email?: string };
+        type ExpandedGRNRef = {
+            id?: string;
+            po?: string;
+            purchase_order?: string;
+            grn_number?: string;
+            received_date?: string;
+            received_by?: string;
+            notes?: string;
+            expand?: { vendor?: ExpandedVendorRef };
+        };
         const poIdsToFetch = new Set<string>();
         grnItems.forEach(item => {
-            const grnRec = (item.expand as any)?.grn;
+            const grnRec = (item.expand as { grn?: ExpandedGRNRef } | undefined)?.grn;
             const poId = grnRec?.po || grnRec?.purchase_order;
             if (poId) poIdsToFetch.add(poId);
         });
@@ -1240,13 +1271,17 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
             poRecords.forEach(p => {
                 poMap.set(p.id, {
                     po_number: p.po_number || '',
-                    vendor_name: (p.expand?.vendor as any)?.name || 'Unknown Vendor',
+                    vendor_name: (p.expand?.vendor as ExpandedVendorRef | undefined)?.name || 'Unknown Vendor',
                 });
             });
         }
 
         const deliveries = grnItems.map(item => {
-            const exp = item.expand as any;
+            const exp = item.expand as {
+                grn?: ExpandedGRNRef;
+                po_item?: { unit_price?: number };
+                variant?: { variant_name?: string; sku_suffix?: string; expand?: { product?: { sku?: string } } };
+            } | undefined;
             const grn = exp?.grn;
             const poId = grn?.po || grn?.purchase_order || '';
             const poInfo = poMap.get(poId);
@@ -1278,14 +1313,23 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
             sort: '-created',
         });
 
+        type ExpandedPOItemPO = {
+            status?: string;
+            po_number?: string;
+            order_date?: string;
+            created?: string;
+            expected_date?: string;
+            expand?: { vendor?: ExpandedVendorRef };
+        };
         const incomingPOs: ProductPurchaseHistory['incomingPOs'] = [];
         for (const item of poItems) {
             const poId = item.po || item.purchase_order;
             if (!poId) continue;
-            let poRecord = (item.expand as any)?.po || (item.expand as any)?.purchase_order;
+            const itemExp = item.expand as { po?: ExpandedPOItemPO; purchase_order?: ExpandedPOItemPO } | undefined;
+            let poRecord: ExpandedPOItemPO | null = itemExp?.po || itemExp?.purchase_order || null;
             if (!poRecord) {
                 try {
-                    poRecord = await pb.collection('purchase_orders').getOne(poId, { expand: 'vendor' });
+                    poRecord = await pb.collection('purchase_orders').getOne(poId, { expand: 'vendor' }) as unknown as ExpandedPOItemPO;
                 } catch {
                     continue;
                 }
@@ -1299,8 +1343,8 @@ export async function getProductPurchaseHistory(productId: string): Promise<Prod
                 incomingPOs.push({
                     poId,
                     poNumber: poRecord.po_number || 'PO',
-                    vendorName: (poRecord.expand?.vendor as any)?.name || 'Vendor',
-                    orderDate: poRecord.order_date || poRecord.created,
+                    vendorName: poRecord.expand?.vendor?.name || 'Vendor',
+                    orderDate: poRecord.order_date || poRecord.created || '',
                     expectedDate: poRecord.expected_date,
                     status,
                     quantityOrdered: ordered,
@@ -1340,6 +1384,7 @@ export async function getOpenPurchaseOrders(): Promise<PurchaseOrder[]> {
         });
         return records.map((po) => {
             const { cleanNotes, meta } = decodePOMetadata(po.notes);
+            const expVendor = (po.expand as { vendor?: Vendor } | undefined)?.vendor;
             return {
                 id: po.id,
                 po_number: po.po_number,
@@ -1367,11 +1412,11 @@ export async function getOpenPurchaseOrders(): Promise<PurchaseOrder[]> {
                 approval_remarks: meta.approval_remarks,
                 approved_by: meta.approved_by,
                 approved_at: meta.approved_at,
-                vendor: (po.expand as any)?.vendor ? {
-                    id: (po.expand as any).vendor.id,
-                    name: (po.expand as any).vendor.name,
-                    phone: (po.expand as any).vendor.phone,
-                    email: (po.expand as any).vendor.email,
+                vendor: expVendor ? {
+                    id: expVendor.id,
+                    name: expVendor.name,
+                    phone: expVendor.phone,
+                    email: expVendor.email,
                 } : undefined,
                 created_at: po.created,
                 updated_at: po.updated,
@@ -1435,7 +1480,7 @@ export async function reconcilePOWithInwardBatch(
     discrepancyStatus: DiscrepancyStatus;
     approvalStatus: ApprovalStatus;
 }> {
-    let poRecord: any = null;
+    let poRecord: { id: string; account_email?: string; po_number?: string; notes?: string; subtotal?: number; status?: POStatus } | null = null;
     try {
         poRecord = await pb.collection('purchase_orders').getOne(poRefOrId, { expand: 'vendor' });
     } catch {
@@ -1489,7 +1534,7 @@ export async function reconcilePOWithInwardBatch(
         discrepancyStatus = 'balanced';
     }
 
-    let nextPOStatus: POStatus = poRecord.status;
+    let nextPOStatus: POStatus = poRecord.status || 'draft';
     if (poRecord.status !== 'cancelled') {
         if (newInwardCost >= budgetedAmount && discrepancyStatus === 'balanced') {
             nextPOStatus = 'received';
@@ -1544,7 +1589,7 @@ export async function approvePODiscrepancy(
     assertPurchaseOrderOwner({ ...poRecord, id: poId, po_number: poRecord.po_number });
     const { cleanNotes, meta } = decodePOMetadata(poRecord.notes);
 
-    const currentUser = pb.authStore.model as any;
+    const currentUser = pb.authStore.model as { name?: string; email?: string } | null;
     const approvedBy = managerName || currentUser?.name || currentUser?.email || 'Store Manager';
     const approvedAt = new Date().toISOString();
 

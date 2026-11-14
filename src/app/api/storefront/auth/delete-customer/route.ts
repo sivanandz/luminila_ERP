@@ -107,10 +107,11 @@ async function handleDelete(req: Request) {
             },
             { status: 200, headers: CORS_HEADERS }
         );
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error("[Delete Customer API Error]:", err);
+        const message = err instanceof Error ? err.message : "Failed to delete customer account";
         return NextResponse.json(
-            { success: false, error: err?.message || "Failed to delete customer account" },
+            { success: false, error: message },
             { status: 500, headers: CORS_HEADERS }
         );
     }

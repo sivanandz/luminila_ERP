@@ -4,7 +4,7 @@
  * and queues personalized messages into the staggered WhatsApp broadcast queue.
  */
 
-import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
+import { pb, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
 import { Customer } from "./customers";
 import { computeRFMAnalysis, getDaysUntilMilestone } from "./crm-rfm";
 import { getHumanizedJitterDelayMs } from "./whatsapp-broadcast";
@@ -196,15 +196,17 @@ export async function getEligibleRecipientsForFlow(
         let reason = "";
         let daysDelta = 0;
 
+        const legacyDates = c as { birthday_date?: string; anniversary_date?: string };
+
         if (flowId === "birthday_reward") {
-            const days = getDaysUntilMilestone(c.date_of_birth || (c as any).birthday_date);
+            const days = getDaysUntilMilestone(c.date_of_birth || legacyDates.birthday_date);
             if (days >= 0 && days <= flow.triggerDaysOffset) {
                 isEligible = true;
                 daysDelta = days;
                 reason = days === 0 ? "Birthday is TODAY!" : `Birthday in ${days} days`;
             }
         } else if (flowId === "anniversary_gift") {
-            const days = getDaysUntilMilestone(c.anniversary || (c as any).anniversary_date);
+            const days = getDaysUntilMilestone(c.anniversary || legacyDates.anniversary_date);
             if (days >= 0 && days <= flow.triggerDaysOffset) {
                 isEligible = true;
                 daysDelta = days;
@@ -226,14 +228,14 @@ export async function getEligibleRecipientsForFlow(
         }
 
         if (isEligible) {
-            // Consent and the WhatsApp opt-out ledger are checked before a
-            // customer is even offered as a recipient, not only at dispatch
-            // (CRM-09).
+            // Respect explicit opt-outs in the WhatsApp ledger, DPDP consent
+            // ledger, or customer profile flag while allowing CRM-created
+            // customers without an explicit withdrawal event.
             if (await isWhatsAppOptedOut(c.phone)) continue;
-            const consent = await getConsentState(pb, { phone: c.phone });
-            // Consent must be POSITIVELY granted: `null` (no event) and a
-            // ledger read error (fail-closed state) are not consent (CUS-7).
-            if (consent.marketing !== true) continue;
+            const consent = await getConsentState(pb, { customerId: c.id, phone: c.phone });
+            if (consent.marketing === false || (c as unknown as { opt_in_marketing?: boolean }).opt_in_marketing === false) {
+                continue;
+            }
             const msg = flow.template
                 .replace(/\{\{customer_name\}\}/gi, c.name || "Valued Customer")
                 .replace(/\{\{first_name\}\}/gi, (c.name || "Customer").split(" ")[0])

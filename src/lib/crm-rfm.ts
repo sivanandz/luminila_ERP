@@ -173,8 +173,9 @@ export async function computeRFMAnalysis(
         const avgOrderValue = frequency > 0 ? Math.round(monetary / frequency) : 0;
 
         // Celebrations check (Birthdays or Anniversaries in next 7 days)
-        const daysToBirthday = getDaysUntilMilestone(c.date_of_birth || (c as any).birthday_date);
-        const daysToAnniversary = getDaysUntilMilestone(c.anniversary || (c as any).anniversary_date);
+        const legacyDates = c as { birthday_date?: string; anniversary_date?: string };
+        const daysToBirthday = getDaysUntilMilestone(c.date_of_birth || legacyDates.birthday_date);
+        const daysToAnniversary = getDaysUntilMilestone(c.anniversary || legacyDates.anniversary_date);
 
         const hasUpcomingBirthday = daysToBirthday >= 0 && daysToBirthday <= 7;
         const hasUpcomingAnniversary = daysToAnniversary >= 0 && daysToAnniversary <= 7;

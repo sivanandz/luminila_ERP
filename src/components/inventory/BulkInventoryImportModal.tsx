@@ -18,7 +18,6 @@ import {
     AlertCircle,
     X,
     Loader2,
-    RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -89,9 +88,9 @@ export function BulkInventoryImportModal({
             } else if (result.invalidRows.length > 0) {
                 setActiveTab("errors");
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error("Parse error:", err);
-            toast.error(err.message || "Failed to parse the uploaded file.");
+            toast.error(err instanceof Error ? err.message : "Failed to parse the uploaded file.");
             resetState();
         } finally {
             setIsParsing(false);
@@ -139,9 +138,9 @@ export function BulkInventoryImportModal({
                     `${result.failureCount} row(s) failed database insertion. Check console for details.`
                 );
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error("Commit error:", err);
-            toast.error("Bulk import failed: " + (err.message || String(err)));
+            toast.error("Bulk import failed: " + (err instanceof Error ? err.message : String(err)));
         } finally {
             setIsCommitting(false);
         }

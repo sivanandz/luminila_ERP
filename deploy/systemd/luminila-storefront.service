@@ -1,0 +1,27 @@
+[Unit]
+Description=Luminila Storefront Next server (public e-commerce web app)
+After=network-online.target luminila-next.service
+Wants=network-online.target luminila-next.service
+
+[Service]
+Type=simple
+User=luminila
+Group=luminila
+WorkingDirectory=/opt/luminila/app/storefront
+EnvironmentFile=/etc/luminila/storefront.env
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/node /opt/luminila/app/storefront/.next/standalone/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/luminila/app/storefront
+
+[Install]
+WantedBy=multi-user.target

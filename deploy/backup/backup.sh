@@ -6,11 +6,22 @@
 #          sudo chmod 750 /usr/local/bin/luminila-backup
 set -Eeuo pipefail
 
+BACKUP_ENV="${BACKUP_ENV:-/etc/luminila/backup.env}"
+if [ -r "$BACKUP_ENV" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$BACKUP_ENV"
+    set +a
+fi
+
 PB_ROOT="${PB_ROOT:-/opt/luminila/pocketbase}"
+APP_ROOT="${APP_ROOT:-/opt/luminila/app}"
 OUT_ROOT="${OUT_ROOT:-/var/backups/luminila}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${OUT_ROOT}/${STAMP}"
 KEEP_DAYS="${KEEP_DAYS:-14}"
+# Optional off-VPS rclone target (e.g. "r2:niththigal-backups" or "b2:niththigal-backups")
+RCLONE_DEST="${RCLONE_DEST:-}"
 
 mkdir -p "$OUT"
 
@@ -46,5 +57,20 @@ if [ -f "${PB_ROOT}/pb_data/pb_tenants/registry.json" ]; then
     cp -a "${PB_ROOT}/pb_data/pb_tenants/registry.json" "${OUT}/registry.json"
 fi
 
+# WPPConnect session tokens live on the VPS and are needed to restore WhatsApp without re-scanning QR.
+if [ -d "${APP_ROOT}/wppconnect-sidecar/tokens" ]; then
+    cp -a "${APP_ROOT}/wppconnect-sidecar/tokens" "${OUT}/wppconnect-tokens"
+fi
+
 find "$OUT_ROOT" -maxdepth 1 -mindepth 1 -type d -mtime "+${KEEP_DAYS}" -exec rm -rf {} +
+
+if [ -n "$RCLONE_DEST" ]; then
+    if command -v rclone >/dev/null 2>&1; then
+        rclone copy "$OUT" "${RCLONE_DEST%/}/${STAMP}"
+        echo "offsite copy complete: ${RCLONE_DEST%/}/${STAMP}"
+    else
+        echo "warning: RCLONE_DEST is set but rclone is not installed; skipping offsite copy" >&2
+    fi
+fi
+
 echo "backup complete: ${OUT}"

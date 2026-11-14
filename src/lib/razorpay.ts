@@ -273,8 +273,8 @@ export async function createPaymentLink(
                 }),
             });
             return await res.json();
-        } catch (err: any) {
-            return { success: false, error: err.message || 'Failed to connect to payment service' };
+        } catch (err: unknown) {
+            return { success: false, error: err instanceof Error ? err.message : 'Failed to connect to payment service' };
         }
     }
 
@@ -407,8 +407,8 @@ export async function fetchPaymentLinkStatus(
                 }),
             });
             return await res.json();
-        } catch (err: any) {
-            return { success: false, error: err.message || 'Failed to connect to payment service' };
+        } catch (err: unknown) {
+            return { success: false, error: err instanceof Error ? err.message : 'Failed to connect to payment service' };
         }
     }
 

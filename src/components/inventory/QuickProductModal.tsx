@@ -109,7 +109,7 @@ export function QuickProductModal({
     const [makingCharges, setMakingCharges] = useState<number | "">("");
     const [hsnCode, setHsnCode] = useState(initialData?.hsn_code || "7113");
     const [location, setLocation] = useState("Showcase Tray A");
-    const [description, setDescription] = useState("");
+    const [description] = useState("");
     const [submitting, setSubmitting] = useState(false);
 
     // Sync when initialData changes
@@ -132,7 +132,7 @@ export function QuickProductModal({
             getCategories()
                 .then((cats) => {
                     if (cats.length > 0) {
-                        const names = Array.from(new Set([...cats.map((c: any) => c.name), ...DEFAULT_CATEGORIES]));
+                        const names = Array.from(new Set([...cats.map((c) => c.name), ...DEFAULT_CATEGORIES]));
                         setCategories(names);
                     }
                 })
@@ -184,9 +184,9 @@ export function QuickProductModal({
             toast.success(`Registered product "${result.name}" with SKU ${result.sku}!`);
             onSuccess(result);
             onClose();
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error("Error quick-creating product:", err);
-            toast.error(err.message || "Failed to create product in inventory");
+            toast.error(err instanceof Error ? err.message : "Failed to create product in inventory");
         } finally {
             setSubmitting(false);
         }

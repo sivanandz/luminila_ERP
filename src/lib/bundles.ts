@@ -12,8 +12,6 @@
  *    so packers verify every single item in the set.
  */
 
-import { pb, accountScopeEmail, sanitizeFilter } from "./pocketbase";
-
 export interface BundleComponent {
     variant_id: string;
     product_id: string;

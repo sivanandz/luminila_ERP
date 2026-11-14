@@ -32,46 +32,46 @@ function StCourierTrackingContent() {
     const rawAwb = searchParams.get("awb") || "";
     const cleanAwb = rawAwb.replace(/[^0-9]/g, "");
 
-    const [loading, setLoading] = useState(false);
-    const [tracking, setTracking] = useState<StCourierTrackingResult | null>(null);
+    const isAwbValid = Boolean(cleanAwb && isValidStCourierAwb(cleanAwb));
+    const [trackingState, setTrackingState] = useState<{ awb: string; result: StCourierTrackingResult } | null>(null);
+    const tracking = isAwbValid && trackingState?.awb === cleanAwb ? trackingState.result : null;
+    const loading = isAwbValid && trackingState?.awb !== cleanAwb;
     const [inputAwb, setInputAwb] = useState(cleanAwb);
     const [copied, setCopied] = useState(false);
 
     useEffect(() => {
-        if (!cleanAwb || !isValidStCourierAwb(cleanAwb)) {
-            setTracking(null);
+        if (!isAwbValid) {
             return;
         }
 
         let isMounted = true;
-        setLoading(true);
 
         fetchStCourierLiveTracking(cleanAwb)
             .then((res) => {
                 if (isMounted) {
-                    setTracking(res);
+                    setTrackingState({ awb: cleanAwb, result: res });
                 }
             })
             .catch((err) => {
                 if (isMounted) {
-                    setTracking({
-                        awbNumber: cleanAwb,
-                        isValid: false,
-                        statusCode: 500,
-                        statusText: "Error contacting tracking network",
-                        events: [],
-                        error: err?.message || "Failed to reach ST Courier network",
+                    setTrackingState({
+                        awb: cleanAwb,
+                        result: {
+                            awbNumber: cleanAwb,
+                            isValid: false,
+                            statusCode: 500,
+                            statusText: "Error contacting tracking network",
+                            events: [],
+                            error: err?.message || "Failed to reach ST Courier network",
+                        },
                     });
                 }
-            })
-            .finally(() => {
-                if (isMounted) setLoading(false);
             });
 
         return () => {
             isMounted = false;
         };
-    }, [cleanAwb]);
+    }, [cleanAwb, isAwbValid]);
 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -90,7 +90,6 @@ function StCourierTrackingContent() {
         }
     };
 
-    const isAwbValid = cleanAwb && isValidStCourierAwb(cleanAwb);
     const status = tracking?.summary?.currentStatus || tracking?.statusText || (loading ? "Verifying Transit Status..." : "Ready to Track");
     const isDelivered = status.toLowerCase().includes("delivered");
     const isOutForDelivery = status.toLowerCase().includes("out for delivery");

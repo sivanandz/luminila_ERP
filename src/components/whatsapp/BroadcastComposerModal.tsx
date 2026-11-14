@@ -21,7 +21,6 @@ import {
     Megaphone,
     Radio,
     Check,
-    Send,
 } from "lucide-react";
 import { toast } from "sonner";
 import {

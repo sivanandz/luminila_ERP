@@ -65,7 +65,19 @@ export async function POST(req: Request) {
         const client = await createTenantClient(boundAdminEmail);
 
         // 4. Look up or auto-provision customer in PocketBase
-        let customerRecord: any = null;
+        interface CustomerOtpRecord {
+            id: string;
+            name?: string;
+            phone?: string;
+            email?: string;
+            address?: string;
+            shipping_address?: string;
+            city?: string;
+            state?: string;
+            pincode?: string;
+            loyalty_points?: number;
+        }
+        let customerRecord: CustomerOtpRecord | null = null;
         const phoneSuffix = cleanDigits.slice(-10);
 
         try {
@@ -105,6 +117,13 @@ export async function POST(req: Request) {
                     name: customerName,
                 });
             } catch {}
+        }
+
+        if (!customerRecord) {
+            return NextResponse.json(
+                { success: false, error: "Could not complete sign in. Please try again." },
+                { status: 500, headers: CORS_HEADERS }
+            );
         }
 
         // Consent ledger (A30): the OTP proves phone ownership, so record the
@@ -163,10 +182,11 @@ export async function POST(req: Request) {
             },
             { status: 200, headers: CORS_HEADERS }
         );
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error("[Verify OTP API Error]:", err);
+        const message = err instanceof Error ? err.message : "Internal server error";
         return NextResponse.json(
-            { success: false, error: err?.message || "Internal server error" },
+            { success: false, error: message },
             { status: 500, headers: CORS_HEADERS }
         );
     }

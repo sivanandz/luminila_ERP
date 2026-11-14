@@ -25,28 +25,36 @@ const productColumns: AnalyticsTableColumn<MarginRow>[] = [
 
 export function ProfitabilityTab() {
     const range = useAnalyticsRange((s) => s.range);
-    const [data, setData] = useState<ProfitabilityAnalytics | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const rangeKey = JSON.stringify(range);
+    const [state, setState] = useState<{
+        key: string;
+        data: ProfitabilityAnalytics | null;
+        error: string | null;
+    } | null>(null);
 
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
-        setError(null);
         getProfitabilityAnalytics(range)
             .then((d) => {
-                if (!cancelled) setData(d);
+                if (!cancelled) setState({ key: rangeKey, data: d, error: null });
             })
             .catch((e) => {
-                if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load profitability analytics');
-            })
-            .finally(() => {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) {
+                    setState({
+                        key: rangeKey,
+                        data: null,
+                        error: e instanceof Error ? e.message : "Failed to load profitability analytics",
+                    });
+                }
             });
         return () => {
             cancelled = true;
         };
-    }, [range]);
+    }, [range, rangeKey]);
+
+    const loading = state?.key !== rangeKey;
+    const error = state?.key === rangeKey ? state.error : null;
+    const data = state?.key === rangeKey ? state.data : null;
 
     if (loading) return <LoadingBlock />;
     if (error) return <EmptyState title="Profitability analytics unavailable" hint={error} />;
@@ -76,9 +84,9 @@ export function ProfitabilityTab() {
             {(data.marginUnknownCostUnits > 0 || (data.costEstimatedUnits ?? 0) > 0) && (
                 <Card className="border-yellow-500/40 bg-yellow-500/5">
                     <CardContent className="py-3 text-xs text-muted-foreground">
-                        ⚠ {data.marginUnknownCostUnits} sold unit(s) have no cost basis at all
+                        ⚠ {data.marginUnknownCostUnits} sold {data.marginUnknownCostUnits === 1 ? 'unit has' : 'units have'} no cost basis at all
                         {(data.costEstimatedUnits ?? 0) > 0
-                            ? `; ${data.costEstimatedUnits} unit(s) use an estimated (current-cost) basis because no sale-time snapshot exists`
+                            ? `; ${data.costEstimatedUnits} ${data.costEstimatedUnits === 1 ? 'unit uses' : 'units use'} an estimated (current-cost) basis because no sale-time snapshot exists`
                             : ''}. Their margins shift if product cost changes — run the backfill script to snapshot historical costs.
                     </CardContent>
                 </Card>

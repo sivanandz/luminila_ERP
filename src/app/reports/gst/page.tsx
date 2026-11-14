@@ -20,7 +20,6 @@ import {
     SelectContent,
     SelectItem,
     SelectTrigger,
-    SelectValue,
 } from "@/components/ui/select";
 import {
     Table,
@@ -279,10 +278,10 @@ export default function GSTReportPage() {
                 )}
 
                 {/* Tabs */}
-                <Tabs value={activeGstTab} onValueChange={(v) => setActiveGstTab(v as any)} className="w-full">
+                <Tabs value={activeGstTab} onValueChange={(v) => setActiveGstTab(v as "b2b" | "b2c")} className="w-full">
                     {/* Mobile / Narrow Viewport: Dropdown */}
                     <div className="block sm:hidden w-full mb-3">
-                        <Select value={activeGstTab} onValueChange={(v) => v && setActiveGstTab(v as any)}>
+                        <Select value={activeGstTab} onValueChange={(v) => v && setActiveGstTab(v as "b2b" | "b2c")}>
                             <SelectTrigger className="w-full h-10 bg-card border-border text-xs font-semibold px-3 rounded-xl flex items-center justify-between shadow-xs">
                                 <span className="text-xs font-semibold text-foreground">
                                     {activeGstTab === "b2b" ? `B2B Invoices (${b2b.length})` : `B2C Invoices (${b2c.length})`}

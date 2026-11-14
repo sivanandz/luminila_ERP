@@ -13,7 +13,6 @@ import {
     AlertCircle,
     Send,
     PackageCheck,
-    Printer,
     Tag,
     ExternalLink,
     Sparkles,
@@ -23,7 +22,6 @@ import {
     Coins,
     ShieldAlert,
     ShieldCheck,
-    FileSpreadsheet,
     type LucideIcon,
 } from "lucide-react";
 
@@ -139,9 +137,9 @@ function PurchaseOrderDetailContent() {
             setShowApprovalModal(false);
             setApprovalRemarks("");
             toast.success("PO cost discrepancy approved successfully!");
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error("Discrepancy approval error:", err);
-            toast.error(err.message || "Failed to approve discrepancy");
+            toast.error(err instanceof Error ? err.message : "Failed to approve discrepancy");
         } finally {
             setApproving(false);
         }
@@ -189,7 +187,7 @@ function PurchaseOrderDetailContent() {
             try {
                 const vars = await listVariantsWithProduct({ sort: 'product.name' });
                 setAvailableVariants(
-                    vars.map((v: any) => ({
+                    vars.map((v) => ({
                         id: v.id,
                         name: v.expand?.product?.name ? `${v.expand.product.name} (${v.variant_name})` : v.variant_name,
                         sku: v.expand?.product?.sku ? (v.sku_suffix ? `${v.expand.product.sku}-${v.sku_suffix}` : v.expand.product.sku) : v.id,
@@ -880,7 +878,7 @@ function PurchaseOrderDetailContent() {
                                     const currentVariant = availableVariants.find(v => v.id === currentVariantId);
                                     const hasMatch = Boolean(currentVariantId && currentVariant);
                                     const receivingQty = receivingQuantities[item.id!] || 0;
-                                    const onHandStock = currentVariant?.stock_level ?? ((item.variant as any)?.stock_level || 0);
+                                    const onHandStock = currentVariant?.stock_level ?? ((item.variant as { stock_level?: number } | undefined)?.stock_level || 0);
 
                                     return (
                                         <TableRow key={item.id} className="align-top">

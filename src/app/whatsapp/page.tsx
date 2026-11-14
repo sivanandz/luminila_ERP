@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Image from "next/image";
 import { Header } from "@/components/layout";
 import type { Socket } from "socket.io-client";
@@ -90,7 +90,7 @@ import {
     MapPin,
     Star,
 } from "lucide-react";
-import { formatPrice } from "@/lib/utils";
+import { formatPrice, pluralize } from "@/lib/utils";
 import {
     findCustomerByPhone,
     createCustomerFromChat,
@@ -149,7 +149,6 @@ import { AdminApprovalModal } from "@/components/whatsapp/AdminApprovalModal";
 import { MarqueeText } from "@/components/ui/marquee-text";
 import { getWhatsAppBinding, type WhatsAppBinding } from "@/lib/whatsapp-binding";
 import { useAuth } from "@/contexts/AuthContext";
-import type { Product as ProductRecord, Sale } from "@/types/database";
 import { getChannelPrice } from "@/lib/channel-pricing";
 
 // --- Types ---
@@ -330,12 +329,9 @@ function ChatAvatar({
     isGrp?: boolean;
     size?: number;
 }) {
-    const [imgFailed, setImgFailed] = useState(false);
+    const [failedPic, setFailedPic] = useState<string | null>(null);
 
-    useEffect(() => {
-        setImgFailed(false);
-    }, [profilePic]);
-
+    const imgFailed = Boolean(profilePic && failedPic === profilePic);
     const hasPic = Boolean(profilePic && !imgFailed);
     const iconSize = size <= 32 ? 15 : size >= 56 ? 26 : 18;
 
@@ -361,7 +357,7 @@ function ChatAvatar({
                     alt={name || "Avatar"}
                     referrerPolicy="no-referrer"
                     className="w-full h-full object-cover"
-                    onError={() => setImgFailed(true)}
+                    onError={() => setFailedPic(profilePic ?? null)}
                 />
             ) : isChan ? (
                 <Radio size={iconSize} className="text-violet-400" />
@@ -396,47 +392,62 @@ function QuotedBlock({
     // Initial thumbnail check:
     // 1. QuotedMsg mediaUrl or thumbnail if data URL or valid non-whatsapp http URL
     // 2. ChatMessages lookup if parent message is in memory
-    const getInitialThumbnail = (): string | null => {
-        const q = msg.quotedMsg;
-        if (!q) return null;
-        if (q.thumbnail && q.thumbnail.startsWith('data:')) return q.thumbnail;
-        if (q.mediaUrl && (q.mediaUrl.startsWith('data:') || (q.mediaUrl.startsWith('http') && !q.mediaUrl.includes('whatsapp.net')))) {
-            return q.mediaUrl;
+    const quotedId = quoted?.id;
+    const initialThumbnail = useMemo((): string | null => {
+        if (!quoted) return null;
+        if (quoted.thumbnail && quoted.thumbnail.startsWith('data:')) return quoted.thumbnail;
+        if (quoted.mediaUrl && (quoted.mediaUrl.startsWith('data:') || (quoted.mediaUrl.startsWith('http') && !quoted.mediaUrl.includes('whatsapp.net')))) {
+            return quoted.mediaUrl;
         }
-        if (chatMessages && q.id) {
-            const stanza = getMessageStanzaId(q.id);
-            const found = chatMessages.find(m => m.id === q.id || (stanza && getMessageStanzaId(m.id) === stanza));
+        if (chatMessages && quoted.id) {
+            const stanza = getMessageStanzaId(quoted.id);
+            const found = chatMessages.find(m => m.id === quoted.id || (stanza && getMessageStanzaId(m.id) === stanza));
             if (found?.mediaUrl && (found.mediaUrl.startsWith('data:') || (found.mediaUrl.startsWith('http') && !found.mediaUrl.includes('whatsapp.net')))) {
                 return found.mediaUrl;
             }
         }
         return null;
-    };
+    }, [quoted, chatMessages]);
 
-    const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(getInitialThumbnail);
-    const [loadingThumbnail, setLoadingThumbnail] = useState(false);
-    const [imgFailed, setImgFailed] = useState(false);
+    const [fetchedMedia, setFetchedMedia] = useState<{ quotedId: string; url: string | null; failed: boolean } | null>(null);
+    const [loadingId, setLoadingId] = useState<string | null>(null);
+    const [failedUrls, setFailedUrls] = useState<Record<string, boolean>>({});
+
+    const fetchedForQuoted = quotedId && fetchedMedia?.quotedId === quotedId ? fetchedMedia : null;
+    const thumbnailUrl = initialThumbnail ?? fetchedForQuoted?.url ?? null;
+    const loadingThumbnail = Boolean(quotedId && loadingId === quotedId);
+    const imgFailed = Boolean(fetchedForQuoted?.failed || (thumbnailUrl && failedUrls[thumbnailUrl]));
 
     useEffect(() => {
-        const initial = getInitialThumbnail();
-        if (initial) {
-            setThumbnailUrl(initial);
-            return;
-        }
-        if (hasImageThumbnail && onLoadMedia && msg.quotedMsg?.id && !thumbnailUrl && !loadingThumbnail && !imgFailed) {
-            setLoadingThumbnail(true);
-            onLoadMedia(msg.quotedMsg.id)
-                .then(url => {
-                    if (url) {
-                        setThumbnailUrl(url);
-                    } else {
-                        setImgFailed(true);
-                    }
-                })
-                .catch(() => setImgFailed(true))
-                .finally(() => setLoadingThumbnail(false));
-        }
-    }, [msg.quotedMsg?.id, hasImageThumbnail, onLoadMedia, chatMessages]);
+        if (initialThumbnail || !hasImageThumbnail || !onLoadMedia || !quotedId) return;
+        if (fetchedMedia?.quotedId === quotedId) return;
+
+        let cancelled = false;
+        void Promise.resolve()
+            .then(() => {
+                if (!cancelled) setLoadingId(quotedId);
+                return onLoadMedia(quotedId);
+            })
+            .then((url) => {
+                if (!cancelled) {
+                    setFetchedMedia({ quotedId, url, failed: !url });
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setFetchedMedia({ quotedId, url: null, failed: true });
+                }
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setLoadingId((prev) => (prev === quotedId ? null : prev));
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [initialThumbnail, hasImageThumbnail, onLoadMedia, quotedId, fetchedMedia?.quotedId]);
 
     // Hooks must run in the same order on every render, so the empty state is
     // decided after them. Returning earlier crashed the whole chat whenever a
@@ -518,7 +529,7 @@ function QuotedBlock({
                             src={thumbnailUrl}
                             alt="Quoted media thumbnail"
                             className="w-full h-full object-cover"
-                            onError={() => setImgFailed(true)}
+                            onError={() => setFailedUrls((prev) => ({ ...prev, [thumbnailUrl]: true }))}
                         />
                     ) : loadingThumbnail ? (
                         <Loader2 size={14} className="animate-spin text-muted-foreground" />
@@ -758,7 +769,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar, chatMessages }: {
                         <span className="text-sm italic">Failed to load image</span>
                     </div>
                 )}
-                {(msg.caption || (msg.body && msg.body !== mediaUrl)) && <p className="text-sm leading-relaxed">{msg.caption || msg.body}</p>}
+                {(msg.caption || (msg.body && msg.body !== mediaUrl)) && <p className="text-sm leading-relaxed break-words [overflow-wrap:anywhere] whitespace-pre-wrap">{msg.caption || msg.body}</p>}
 
                 {/* Lightbox Modal */}
                 {showLightbox && mediaUrl && (
@@ -886,7 +897,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar, chatMessages }: {
         return (
             <div>
                 <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
-                <p className="text-sm leading-relaxed">
+                <p className="text-sm leading-relaxed break-words [overflow-wrap:anywhere] whitespace-pre-wrap">
                     {parts.map((part, i) =>
                         urlRegex.test(part) ? (
                             <a key={i} href={part} target="_blank" rel="noopener noreferrer"
@@ -903,7 +914,7 @@ function MessageContent({ msg, onLoadMedia, onFindSimilar, chatMessages }: {
     return (
         <div>
             <QuotedBlock msg={msg} chatMessages={chatMessages} onLoadMedia={onLoadMedia} />
-            <p className="text-sm leading-relaxed">{msg.body}</p>
+            <p className="text-sm leading-relaxed break-words [overflow-wrap:anywhere] whitespace-pre-wrap">{msg.body}</p>
         </div>
     );
 }
@@ -933,6 +944,7 @@ export default function WhatsAppPage() {
     const phonePollRef = React.useRef<NodeJS.Timeout | null>(null);
 
     const [chats, setChats] = useState<ChatListItem[]>([]);
+    const [chatRenderLimit, setChatRenderLimit] = useState(60);
     const [loadingChats, setLoadingChats] = useState(false);
     const [selectedChat, setSelectedChat] = useState<string | null>(null);
     const selectedChatRef = React.useRef<string | null>(null);
@@ -1185,10 +1197,10 @@ export default function WhatsAppPage() {
         setLoadingChats(true);
         try {
             const fetchedChats = await whatsappManager.getChats();
-            const chatList: ChatListItem[] = await Promise.all(fetchedChats.map(async (chat) => {
-                // Use profile pic from chat if already available, otherwise fetch
+            const chatList: ChatListItem[] = await Promise.all(fetchedChats.map(async (chat, idx) => {
+                // Only eager-fetch profile pics for the first 30 chats to avoid N+1 bursts
                 let profilePic: string | null = chat.profilePic || null;
-                if (!profilePic) {
+                if (!profilePic && idx < 30) {
                     try {
                         profilePic = await whatsappManager.getProfilePic(chat.id);
                     } catch { /* ignore */ }
@@ -1997,19 +2009,6 @@ export default function WhatsAppPage() {
             console.error("Reset error:", e);
         }
         await handleConnect(true);
-    };
-
-    const handleResetSession = async () => {
-        if (binding?.isBound) {
-            setPendingActionType("reset");
-            setApprovalModalMode("approval");
-            setApprovalModalOpen(true);
-            return;
-        }
-        if (!confirm("Are you sure you want to completely reset and clear stored WhatsApp session credentials? You will be prompted to scan a fresh QR code.")) {
-            return;
-        }
-        await executeResetSession();
     };
 
     const executeDisconnect = async () => {
@@ -3114,7 +3113,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
             }
 
             // Insert product (and its default variant when stock is set)
-            const productData = await createChatProduct({
+            await createChatProduct({
                 sku: addProductForm.sku,
                 name: addProductForm.name,
                 description: addProductForm.description,
@@ -3495,7 +3494,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                 };
 
                                 return (
-                                    <Select value={chatFilter} onValueChange={(v) => v && setChatFilter(v as any)}>
+                                    <Select value={chatFilter} onValueChange={(v) => v && setChatFilter(v as 'all' | 'vendor' | 'vendor_group' | 'community' | 'customer' | 'group')}>
                                         <SelectTrigger className="w-full h-9 bg-card border-border text-xs font-semibold px-2.5 rounded-lg flex items-center justify-between shadow-xs">
                                             <span className="text-xs font-semibold text-foreground">
                                                 {filterLabelMap[chatFilter] || 'All Chats'}
@@ -3585,19 +3584,24 @@ _Your order will be confirmed and processed immediately upon successful payment.
                         </div>
 
                         <div className="flex-1 overflow-y-auto">
-                            {chats.filter((c) => {
-                                const isGrp = c.isGroup || c.id.includes('@g.us');
-                                const isChan = c.id.includes('@newsletter');
-                                const isVendorGrp = chatLabelsMap[c.id]?.includes('vendor_group') || (isGrp && chatTypeMap[c.id] === 'vendor');
-                                const isComm = Boolean(c.isCommunity || c.isCommunityAnnounce || chatLabelsMap[c.id]?.includes('community_announcement') || (c.name || '').toLowerCase().includes('announcement') || (c.name || '').toLowerCase().includes('community'));
+                            {(() => {
+                                const filteredChats = chats.filter((c) => {
+                                    const isGrp = c.isGroup || c.id.includes('@g.us');
+                                    const isChan = c.id.includes('@newsletter');
+                                    const isVendorGrp = chatLabelsMap[c.id]?.includes('vendor_group') || (isGrp && chatTypeMap[c.id] === 'vendor');
+                                    const isComm = Boolean(c.isCommunity || c.isCommunityAnnounce || chatLabelsMap[c.id]?.includes('community_announcement') || (c.name || '').toLowerCase().includes('announcement') || (c.name || '').toLowerCase().includes('community'));
 
-                                if (chatFilter === 'vendor') return chatTypeMap[c.id] === 'vendor' || isVendorGrp;
-                                if (chatFilter === 'vendor_group') return isVendorGrp;
-                                if (chatFilter === 'community') return isComm;
-                                if (chatFilter === 'group') return isGrp || isChan;
-                                if (chatFilter === 'customer') return chatTypeMap[c.id] === 'customer';
-                                return true;
-                            }).map(chat => {
+                                    if (chatFilter === 'vendor') return chatTypeMap[c.id] === 'vendor' || isVendorGrp;
+                                    if (chatFilter === 'vendor_group') return isVendorGrp;
+                                    if (chatFilter === 'community') return isComm;
+                                    if (chatFilter === 'group') return isGrp || isChan;
+                                    if (chatFilter === 'customer') return chatTypeMap[c.id] === 'customer';
+                                    return true;
+                                });
+                                const visibleChats = filteredChats.slice(0, chatRenderLimit);
+                                return (
+                                    <>
+                                        {visibleChats.map(chat => {
                                 const isGrp = chat.isGroup || chat.id.includes('@g.us');
                                 const isChan = chat.id.includes('@newsletter');
                                 const isVendorGrp = chatLabelsMap[chat.id]?.includes('vendor_group') || (isGrp && chatTypeMap[chat.id] === 'vendor');
@@ -3685,6 +3689,18 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                     </div>
                                 </div>
                             );})}
+                                        {filteredChats.length > chatRenderLimit && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setChatRenderLimit((prev) => prev + 60)}
+                                                className="w-full py-2.5 text-xs font-semibold text-primary hover:bg-muted/40 border-b border-border transition-colors"
+                                            >
+                                                Show more chats ({(filteredChats.length - chatRenderLimit).toLocaleString("en-IN")} remaining)
+                                            </button>
+                                        )}
+                                    </>
+                                );
+                            })()}
                         </div>
                     </div>
 
@@ -4281,7 +4297,7 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                         <div className="flex-1 flex flex-col overflow-hidden">
                                             <div className="p-4 border-b border-border flex justify-between items-center">
                                                 <h2 className="font-bold text-sm">Current Cart</h2>
-                                                <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">{cart.length} items</span>
+                                                <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full tabular-nums">{pluralize(cart.length, "item")}</span>
                                             </div>
 
                                             <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -4590,8 +4606,8 @@ _Your order will be confirmed and processed immediately upon successful payment.
                                                                     {order.status}
                                                                 </span>
                                                             </div>
-                                                            <div className="flex justify-between items-center text-xs">
-                                                                <span className="text-muted-foreground">{order.items_count} items</span>
+                                                            <div className="flex justify-between items-center text-xs tabular-nums">
+                                                                <span className="text-muted-foreground">{pluralize(order.items_count, "item")}</span>
                                                                 <span className="font-bold">{formatPrice(order.total)}</span>
                                                             </div>
                                                         </div>

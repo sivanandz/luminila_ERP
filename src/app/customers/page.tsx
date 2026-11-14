@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
     Users,
@@ -14,37 +14,25 @@ import {
     Sparkles,
     Send,
     BarChart3,
-    Calendar,
     Zap,
-    TrendingUp,
-    CheckCircle2,
-    AlertCircle,
     Eye,
     MessageCircle,
-    Percent,
-    ShoppingBag,
-    Tag,
-    Clock,
     RefreshCw,
     Loader2,
-    Flame,
     ArrowUpRight,
-    ExternalLink,
-    Filter,
     Layers,
     DollarSign,
     Check,
     X,
-    HeartHandshake,
     Pencil,
     Edit3,
-    SlidersHorizontal,
-    CheckSquare,
-    Square,
+    Trash2,
+    Ticket,
+    type LucideIcon,
 } from "lucide-react";
 
 import { Header } from "@/components/layout/Header";
-import { cn } from "@/lib/utils";
+import { cn, pluralize } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -77,6 +65,14 @@ import {
     type Customer,
     type CustomerType,
 } from "@/lib/customers";
+import {
+    getLoyaltySettings,
+    saveLoyaltySettings,
+    getLoyaltyTiers,
+    seedDefaultLoyaltyTiers,
+    type LoyaltySettings,
+    type LoyaltyTier,
+} from "@/lib/loyalty";
 import { formatINR } from "@/lib/gst";
 import {
     computeRFMAnalysis,
@@ -88,21 +84,29 @@ import {
     getCampaignAnalyticsOverview,
     createMarketingCampaign,
     updateCampaignQueueCounts,
-    type MarketingCampaign,
     type CampaignAnalyticsOverview,
     type CampaignCategory,
 } from "@/lib/campaign-attribution";
 import {
     getLifecycleConfigs,
     updateLifecycleConfig,
-    scanAndDispatchLifecycleTriggers,
     getEligibleRecipientsForFlow,
     dispatchCustomRecipientsMessages,
     type LifecycleFlowConfig,
     type LifecycleFlowId,
     type EligibleRecipient,
 } from "@/lib/crm-lifecycle-triggers";
-import { queueCampaign } from "@/lib/whatsapp-broadcast";
+import { queueCampaign, type AudienceSegment } from "@/lib/whatsapp-broadcast";
+import { pb } from "@/lib/pocketbase";
+import { recordConsentEvent } from "@/lib/consent-ledger";
+import {
+    getDiscounts,
+    createDiscount,
+    toggleDiscountActive,
+    deleteDiscount,
+    type Discount,
+    type DiscountType,
+} from "@/lib/discounts";
 
 const typeConfig: Record<CustomerType, { label: string; icon: typeof User; color: string }> = {
     retail: { label: "Retail", icon: User, color: "bg-blue-500/15 text-blue-400 border-blue-500/30" },
@@ -119,7 +123,18 @@ const leadStatusConfig: Record<string, { label: string; class: string }> = {
     vip: { label: "VIP Patron", class: "bg-purple-500/10 text-purple-400 border-purple-500/20" },
 };
 
-const CRM_TABS: { value: "directory" | "rfm" | "campaigns" | "lifecycle"; label: string; icon: any; iconColor?: string }[] = [
+type CrmTabValue = "directory" | "rfm" | "campaigns" | "lifecycle";
+
+interface CustomerExtendedFields {
+    ring_size?: string;
+    bangle_size?: string;
+    preferred_metal?: string;
+    lead_status?: string;
+    birthday_date?: string;
+    anniversary_date?: string;
+}
+
+const CRM_TABS: { value: CrmTabValue; label: string; icon: LucideIcon; iconColor?: string }[] = [
     { value: "directory", label: "Customer Directory", icon: Users },
     { value: "rfm", label: "RFM Segments", icon: Layers },
     { value: "campaigns", label: "Campaign Analytics", icon: BarChart3 },
@@ -136,12 +151,69 @@ export default function CustomersPage() {
     // Active View Tab
     const [activeTab, setActiveTab] = useState<"directory" | "rfm" | "campaigns" | "lifecycle">("directory");
 
+    // Loyalty Program Config Modal State
+    const [showLoyaltyModal, setShowLoyaltyModal] = useState(false);
+    const [loyaltySettings, setLoyaltySettings] = useState<Partial<LoyaltySettings>>({
+        points_per_rupee: 0.1,
+        redemption_value: 0.5,
+        min_redemption_points: 100,
+        max_redemption_percent: 50,
+        signup_bonus: 50,
+    });
+    const [loyaltyTiers, setLoyaltyTiers] = useState<LoyaltyTier[]>([]);
+    const [loyaltySaving, setLoyaltySaving] = useState(false);
+
+    const handleOpenLoyaltyModal = async () => {
+        setShowLoyaltyModal(true);
+        try {
+            const [s, t] = await Promise.all([
+                getLoyaltySettings(),
+                getLoyaltyTiers(),
+            ]);
+            setLoyaltySettings(s);
+            setLoyaltyTiers(t);
+        } catch (err) {
+            toast.error("Failed to load loyalty configuration: " + (err instanceof Error ? err.message : String(err)));
+        }
+    };
+
+    const handleSaveLoyaltySettings = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setLoyaltySaving(true);
+        try {
+            const saved = await saveLoyaltySettings(loyaltySettings);
+            setLoyaltySettings(saved);
+            toast.success("Loyalty program rates updated");
+            setShowLoyaltyModal(false);
+        } catch (err) {
+            toast.error("Failed to save loyalty settings: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            setLoyaltySaving(false);
+        }
+    };
+
+    const handleSeedTiers = async () => {
+        setLoyaltySaving(true);
+        try {
+            const tiers = await seedDefaultLoyaltyTiers();
+            setLoyaltyTiers(tiers);
+            toast.success(`Loaded ${tiers.length} loyalty tiers`);
+        } catch (err) {
+            toast.error("Failed to seed loyalty tiers: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            setLoyaltySaving(false);
+        }
+    };
+
     // General Customer State
     const [customers, setCustomers] = useState<Customer[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
     const [typeFilter, setTypeFilter] = useState<string>("all");
     const [stats, setStats] = useState<Awaited<ReturnType<typeof getCustomerStats>> | null>(null);
+    const [directoryPage, setDirectoryPage] = useState(1);
+    const [rfmPage, setRfmPage] = useState(1);
+    const PAGE_SIZE = 50;
 
     // RFM Segmentation State
     const [rfmData, setRfmData] = useState<{ customers: RFMCustomer[]; cohorts: Record<RFMSegmentId, CohortSummary> } | null>(null);
@@ -204,11 +276,113 @@ export default function CustomersPage() {
         preferred_metal: "Rose Gold",
         date_of_birth: "",
         anniversary: "",
+        opt_in_marketing: true,
     });
     const [savingCustomer, setSavingCustomer] = useState(false);
 
+    // Promo Codes Management Modal
+    const [showPromoModal, setShowPromoModal] = useState(false);
+    const [promoCodes, setPromoCodes] = useState<Discount[]>([]);
+    const [loadingPromos, setLoadingPromos] = useState(false);
+    const [creatingPromo, setCreatingPromo] = useState(false);
+    const [newPromoForm, setNewPromoForm] = useState({
+        code: "",
+        name: "",
+        discount_type: "percentage" as DiscountType,
+        value: "10",
+        min_purchase: "0",
+        max_discount: "",
+        usage_limit: "",
+        end_date: "",
+    });
+
+    const loadPromoCodes = async () => {
+        setLoadingPromos(true);
+        try {
+            setPromoCodes(await getDiscounts(false));
+        } catch (err) {
+            console.error("Failed to load promo codes:", err);
+            toast.error("Could not load promo codes");
+        } finally {
+            setLoadingPromos(false);
+        }
+    };
+
+    const handleOpenPromoModal = () => {
+        setShowPromoModal(true);
+        void loadPromoCodes();
+    };
+
+    const handleCreatePromo = async () => {
+        const cleanCode = newPromoForm.code.trim().toUpperCase();
+        const val = parseFloat(newPromoForm.value);
+        if (!cleanCode || !newPromoForm.name.trim()) {
+            toast.error("Promo code and title are required");
+            return;
+        }
+        if (!Number.isFinite(val) || val <= 0) {
+            toast.error("Discount value must be greater than 0");
+            return;
+        }
+        setCreatingPromo(true);
+        try {
+            await createDiscount({
+                code: cleanCode,
+                name: newPromoForm.name.trim(),
+                discount_type: newPromoForm.discount_type,
+                value: val,
+                min_purchase: Math.max(0, parseFloat(newPromoForm.min_purchase) || 0),
+                max_discount: newPromoForm.max_discount ? Math.max(0, parseFloat(newPromoForm.max_discount) || 0) : undefined,
+                min_items: 0,
+                applies_to: "all",
+                usage_limit: newPromoForm.usage_limit ? Math.max(1, parseInt(newPromoForm.usage_limit, 10) || 1) : undefined,
+                per_customer_limit: 0,
+                end_date: newPromoForm.end_date || undefined,
+                is_active: true,
+            });
+            toast.success(`Promo code ${cleanCode} created`);
+            setNewPromoForm({
+                code: "",
+                name: "",
+                discount_type: "percentage",
+                value: "10",
+                min_purchase: "0",
+                max_discount: "",
+                usage_limit: "",
+                end_date: "",
+            });
+            await loadPromoCodes();
+        } catch (err) {
+            toast.error("Failed to create promo code: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            setCreatingPromo(false);
+        }
+    };
+
+    const handleTogglePromo = async (promo: Discount) => {
+        if (!promo.id) return;
+        try {
+            await toggleDiscountActive(promo.id, !promo.is_active);
+            toast.success(`${promo.code} ${promo.is_active ? "paused" : "activated"}`);
+            await loadPromoCodes();
+        } catch (err) {
+            toast.error("Could not update promo code: " + (err instanceof Error ? err.message : String(err)));
+        }
+    };
+
+    const handleDeletePromo = async (promo: Discount) => {
+        if (!promo.id) return;
+        try {
+            await deleteDiscount(promo.id);
+            toast.success(`Deleted ${promo.code}`);
+            await loadPromoCodes();
+        } catch (err) {
+            toast.error("Could not delete promo code: " + (err instanceof Error ? err.message : String(err)));
+        }
+    };
+
     // Fetch initial customer data
-    const fetchData = async () => {
+    const fetchData = useCallback(async () => {
         setLoading(true);
         try {
             const [customersData, statsData] = await Promise.all([
@@ -225,10 +399,10 @@ export default function CustomersPage() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [typeFilter]);
 
     // Load RFM Analysis
-    const loadRFM = async () => {
+    const loadRFM = useCallback(async () => {
         setRfmLoading(true);
         try {
             const result = await computeRFMAnalysis(customers);
@@ -238,53 +412,66 @@ export default function CustomersPage() {
         } finally {
             setRfmLoading(false);
         }
-    };
+    }, [customers]);
 
     // Load Campaign Analytics
-    const loadCampaignAnalytics = async () => {
+    const loadCampaignAnalytics = useCallback(async () => {
         try {
             const data = await getCampaignAnalyticsOverview();
             setCampaignAnalytics(data);
         } catch (err) {
             console.error("Campaign analytics error:", err);
         }
-    };
+    }, []);
 
     // Load Lifecycle Flows
-    const loadLifecycle = () => {
+    const loadLifecycle = useCallback(() => {
         const configs = getLifecycleConfigs();
         setLifecycleConfigs(configs);
-    };
+    }, []);
 
     useEffect(() => {
-        fetchData();
+        void fetchData();
         loadLifecycle();
-    }, [typeFilter]);
+    }, [fetchData, loadLifecycle]);
 
     useEffect(() => {
         if (activeTab === "rfm" && !rfmData) {
-            loadRFM();
+            void loadRFM();
         } else if (activeTab === "campaigns") {
-            loadCampaignAnalytics();
+            void loadCampaignAnalytics();
         } else if (activeTab === "lifecycle") {
             loadLifecycle();
         }
-    }, [activeTab, customers]);
+    }, [activeTab, rfmData, loadRFM, loadCampaignAnalytics, loadLifecycle]);
 
     // Filtered customer list for Directory tab
     const filteredCustomers = useMemo(() => {
         return customers.filter((c) => {
             if (!searchQuery) return true;
             const query = searchQuery.toLowerCase();
+            const ext = c as unknown as CustomerExtendedFields;
             return (
                 c.name?.toLowerCase().includes(query) ||
                 c.phone?.includes(query) ||
                 c.email?.toLowerCase().includes(query) ||
-                (c as any).ring_size?.toLowerCase().includes(query) ||
-                (c as any).preferred_metal?.toLowerCase().includes(query)
+                ext.ring_size?.toLowerCase().includes(query) ||
+                ext.preferred_metal?.toLowerCase().includes(query)
             );
         });
     }, [customers, searchQuery]);
+
+    useEffect(() => {
+        setDirectoryPage(1);
+    }, [searchQuery, typeFilter]);
+
+    useEffect(() => {
+        setRfmPage(1);
+    }, [selectedCohort]);
+
+    const dirTotalPages = Math.max(1, Math.ceil(filteredCustomers.length / PAGE_SIZE));
+    const safeDirPage = Math.min(directoryPage, dirTotalPages);
+    const paginatedCustomers = filteredCustomers.slice((safeDirPage - 1) * PAGE_SIZE, safeDirPage * PAGE_SIZE);
 
     // Handle Quick Add Customer
     const handleAddCustomer = async () => {
@@ -294,7 +481,17 @@ export default function CustomersPage() {
         }
         setSavingCustomer(true);
         try {
-            await createCustomer(formData as any);
+            const created = await createCustomer(formData as unknown as Parameters<typeof createCustomer>[0]);
+            if (created?.id || formData.phone) {
+                await recordConsentEvent(pb, {
+                    customerId: created?.id,
+                    phone: formData.phone || undefined,
+                    channel: "pos",
+                    purpose: "marketing",
+                    granted: formData.opt_in_marketing,
+                    source: "customer_crm_create",
+                });
+            }
             toast.success("Customer created successfully");
             setShowAddDialog(false);
             setFormData({
@@ -307,6 +504,7 @@ export default function CustomersPage() {
                 preferred_metal: "Rose Gold",
                 date_of_birth: "",
                 anniversary: "",
+                opt_in_marketing: true,
             });
             fetchData();
         } catch (err) {
@@ -361,7 +559,7 @@ export default function CustomersPage() {
             const queueRes = await queueCampaign({
                 campaign: created.title,
                 template: `${newCampaignForm.template}${newCampaignForm.promo_code ? `\n\nUse Code: *${newCampaignForm.promo_code}* for ${newCampaignForm.discount_percent}% off.` : ""}`,
-                segment: (newCampaignForm.target_segment as any) || "all_active",
+                segment: (newCampaignForm.target_segment as AudienceSegment) || "all_active",
                 ...(cohortRecipients.length > 0 ? { customRecipients: cohortRecipients } : {}),
             });
             await updateCampaignQueueCounts(created.id, queueRes.queued);
@@ -573,6 +771,14 @@ export default function CustomersPage() {
                             </Button>
                         )}
                         <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleOpenLoyaltyModal()}
+                            className="h-9 gap-1.5 text-xs font-semibold border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
+                        >
+                            <Crown className="w-3.5 h-3.5" /> Loyalty Program
+                        </Button>
+                        <Button
                             size="sm"
                             onClick={() => setShowAddDialog(true)}
                             className="h-9 gap-1.5 text-xs font-semibold"
@@ -585,14 +791,14 @@ export default function CustomersPage() {
 
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
                 {/* Master Navigation: Dropdown on narrow screens, Pill Tabs on desktop */}
-                <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full">
+                <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as CrmTabValue)} className="w-full">
                     {/* Mobile / Narrow Viewport: Themed Dropdown Selector */}
                     <div className="block sm:hidden w-full">
                         {(() => {
                             const curTab = CRM_TABS.find((t) => t.value === activeTab) || CRM_TABS[0];
                             const CurIcon = curTab.icon;
                             return (
-                                <Select value={activeTab} onValueChange={(v) => v && setActiveTab(v as any)}>
+                                <Select value={activeTab} onValueChange={(v) => v && setActiveTab(v as CrmTabValue)}>
                                     <SelectTrigger className="w-full h-10 bg-card border-border text-xs font-semibold px-3 rounded-xl flex items-center justify-between shadow-xs">
                                         <div className="flex items-center gap-2">
                                             <CurIcon className={cn("w-4 h-4", curTab.iconColor || "text-primary")} />
@@ -643,50 +849,50 @@ export default function CustomersPage() {
                         {stats && (
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                                 <Card className="bg-card border-border shadow-sm">
-                                    <CardContent className="p-4 flex items-center justify-between">
-                                        <div>
+                                    <CardContent className="p-4 flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
                                             <span className="text-xs text-muted-foreground">Total Customers</span>
-                                            <p className="text-2xl font-bold mt-0.5">{stats.totalCustomers}</p>
+                                            <p className="text-2xl font-bold tabular-nums mt-0.5">{stats.totalCustomers}</p>
                                         </div>
-                                        <div className="p-2.5 rounded-xl bg-primary/10 text-primary">
+                                        <div className="p-2.5 rounded-xl bg-primary/10 text-primary shrink-0">
                                             <Users className="w-5 h-5" />
                                         </div>
                                     </CardContent>
                                 </Card>
 
                                 <Card className="bg-card border-border shadow-sm">
-                                    <CardContent className="p-4 flex items-center justify-between">
-                                        <div>
+                                    <CardContent className="p-4 flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
                                             <span className="text-xs text-muted-foreground">VIP Patrons</span>
-                                            <p className="text-2xl font-bold text-amber-500 mt-0.5">{stats.byType?.vip || 0}</p>
+                                            <p className="text-2xl font-bold tabular-nums text-amber-500 mt-0.5">{stats.byType?.vip || 0}</p>
                                         </div>
-                                        <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-500">
+                                        <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-500 shrink-0">
                                             <Crown className="w-5 h-5" />
                                         </div>
                                     </CardContent>
                                 </Card>
 
                                 <Card className="bg-card border-border shadow-sm">
-                                    <CardContent className="p-4 flex items-center justify-between">
-                                        <div>
+                                    <CardContent className="p-4 flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
                                             <span className="text-xs text-muted-foreground">Wholesale Partners</span>
-                                            <p className="text-2xl font-bold text-emerald-500 mt-0.5">{stats.byType?.wholesale || 0}</p>
+                                            <p className="text-2xl font-bold tabular-nums text-emerald-500 mt-0.5">{stats.byType?.wholesale || 0}</p>
                                         </div>
-                                        <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-500">
+                                        <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-500 shrink-0">
                                             <Building2 className="w-5 h-5" />
                                         </div>
                                     </CardContent>
                                 </Card>
 
                                 <Card className="bg-card border-border shadow-sm">
-                                    <CardContent className="p-4 flex items-center justify-between">
-                                        <div>
+                                    <CardContent className="p-4 flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
                                             <span className="text-xs text-muted-foreground">Total CRM Spending</span>
-                                            <p className="text-2xl font-bold text-primary mt-0.5">
+                                            <p className="text-xl sm:text-2xl font-bold tabular-nums break-words text-primary mt-0.5">
                                                 {formatINR(customers.reduce((acc, c) => acc + (c.total_spent || 0), 0))}
                                             </p>
                                         </div>
-                                        <div className="p-2.5 rounded-xl bg-primary/10 text-primary">
+                                        <div className="p-2.5 rounded-xl bg-primary/10 text-primary shrink-0">
                                             <DollarSign className="w-5 h-5" />
                                         </div>
                                     </CardContent>
@@ -744,19 +950,20 @@ export default function CustomersPage() {
                                     No customers found matching the active search.
                                 </div>
                             ) : (
-                                filteredCustomers.map((c) => {
+                                paginatedCustomers.map((c) => {
+                                    const ext = c as unknown as CustomerExtendedFields;
                                     const typeInfo = typeConfig[c.customer_type] || typeConfig.retail;
                                     const TypeIcon = typeInfo.icon;
-                                    const leadStatus = (c as any).lead_status || "new_lead";
+                                    const leadStatus = ext.lead_status || "new_lead";
                                     const leadInfo = leadStatusConfig[leadStatus] || leadStatusConfig.new_lead;
-                                    const birthday = c.date_of_birth || (c as any).birthday_date;
-                                    const anniversary = c.anniversary || (c as any).anniversary_date;
+                                    const birthday = c.date_of_birth || ext.birthday_date;
+                                    const anniversary = c.anniversary || ext.anniversary_date;
 
                                     return (
                                         <div key={c.id} className="border border-border rounded-xl bg-card p-4 shadow-sm space-y-3">
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="min-w-0 flex-1">
-                                                    <p className="font-bold text-foreground text-sm break-words">{c.name}</p>
+                                                    <p className="font-bold text-foreground text-sm line-clamp-2 break-words">{c.name}</p>
                                                     <div className="mt-0.5 space-y-0.5 text-[11px] text-muted-foreground">
                                                         {c.phone && (
                                                             <span className="flex items-center gap-1 font-mono">
@@ -782,16 +989,16 @@ export default function CustomersPage() {
                                             </div>
 
                                             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-2.5 text-[11px] text-muted-foreground">
-                                                {(c as any).ring_size && (
-                                                    <span>Ring: <span className="font-semibold text-foreground">{(c as any).ring_size}</span></span>
+                                                {ext.ring_size && (
+                                                    <span>Ring: <span className="font-semibold text-foreground">{ext.ring_size}</span></span>
                                                 )}
-                                                {(c as any).bangle_size && (
-                                                    <span>Bangle: <span className="font-semibold text-foreground">{(c as any).bangle_size}</span></span>
+                                                {ext.bangle_size && (
+                                                    <span>Bangle: <span className="font-semibold text-foreground">{ext.bangle_size}</span></span>
                                                 )}
-                                                {(c as any).preferred_metal && (
-                                                    <span className="text-primary font-medium">{(c as any).preferred_metal}</span>
+                                                {ext.preferred_metal && (
+                                                    <span className="text-primary font-medium">{ext.preferred_metal}</span>
                                                 )}
-                                                {!((c as any).ring_size || (c as any).bangle_size || (c as any).preferred_metal) && (
+                                                {!(ext.ring_size || ext.bangle_size || ext.preferred_metal) && (
                                                     <span className="italic text-muted-foreground/60">No jewelry specs</span>
                                                 )}
                                                 {String(birthday ?? "").trim() && <span>🎂 {String(birthday).slice(5)}</span>}
@@ -799,9 +1006,9 @@ export default function CustomersPage() {
                                             </div>
 
                                             <div>
-                                                <p className="font-bold text-foreground text-sm">{formatINR(c.total_spent || 0)}</p>
-                                                <p className="text-[11px] text-muted-foreground">
-                                                    {c.total_orders || 0} orders • {c.loyalty_points || 0} pts
+                                                <p className="font-bold text-foreground text-sm tabular-nums">{formatINR(c.total_spent || 0)}</p>
+                                                <p className="text-[11px] text-muted-foreground tabular-nums">
+                                                    {pluralize(c.total_orders || 0, "order")} • {pluralize(c.loyalty_points || 0, "pt")}
                                                 </p>
                                             </div>
 
@@ -860,21 +1067,22 @@ export default function CustomersPage() {
                                                 </td>
                                             </tr>
                                         ) : (
-                                            filteredCustomers.map((c) => {
+                                            paginatedCustomers.map((c) => {
+                                                const ext = c as unknown as CustomerExtendedFields;
                                                 const typeInfo = typeConfig[c.customer_type] || typeConfig.retail;
                                                 const TypeIcon = typeInfo.icon;
-                                                const leadStatus = (c as any).lead_status || "new_lead";
+                                                const leadStatus = ext.lead_status || "new_lead";
                                                 const leadInfo = leadStatusConfig[leadStatus] || leadStatusConfig.new_lead;
 
                                                 return (
                                                     <tr key={c.id} className="hover:bg-muted/30 transition-colors">
-                                                        <td className="py-3.5 px-4">
-                                                            <div className="font-bold text-foreground text-sm flex items-center gap-2">
+                                                        <td className="py-3.5 px-4 max-w-[240px]">
+                                                            <div className="font-bold text-foreground text-sm line-clamp-2 break-words">
                                                                 {c.name}
                                                             </div>
                                                             <div className="flex items-center gap-3 text-muted-foreground mt-0.5 text-[11px]">
-                                                                {c.phone && <span className="flex items-center gap-1 font-mono"><Phone className="w-3 h-3" /> {c.phone}</span>}
-                                                                {c.email && <span className="flex items-center gap-1 truncate max-w-[150px]"><Mail className="w-3 h-3" /> {c.email}</span>}
+                                                                {c.phone && <span className="flex items-center gap-1 font-mono"><Phone className="w-3 h-3 shrink-0" /> {c.phone}</span>}
+                                                                {c.email && <span className="flex items-center gap-1 truncate max-w-[150px]"><Mail className="w-3 h-3 shrink-0" /> {c.email}</span>}
                                                             </div>
                                                         </td>
 
@@ -890,11 +1098,11 @@ export default function CustomersPage() {
                                                         </td>
 
                                                         <td className="py-3.5 px-4 text-[11px] text-muted-foreground">
-                                                            {((c as any).ring_size || (c as any).preferred_metal || (c as any).bangle_size) ? (
+                                                            {(ext.ring_size || ext.preferred_metal || ext.bangle_size) ? (
                                                                 <div className="space-y-0.5">
-                                                                    {(c as any).ring_size && <div>Ring: <span className="font-semibold text-foreground">{(c as any).ring_size}</span></div>}
-                                                                    {(c as any).bangle_size && <div>Bangle: <span className="font-semibold text-foreground">{(c as any).bangle_size}</span></div>}
-                                                                    {(c as any).preferred_metal && <div className="text-primary font-medium">{(c as any).preferred_metal}</div>}
+                                                                    {ext.ring_size && <div>Ring: <span className="font-semibold text-foreground">{ext.ring_size}</span></div>}
+                                                                    {ext.bangle_size && <div>Bangle: <span className="font-semibold text-foreground">{ext.bangle_size}</span></div>}
+                                                                    {ext.preferred_metal && <div className="text-primary font-medium">{ext.preferred_metal}</div>}
                                                                 </div>
                                                             ) : (
                                                                 <span className="italic text-muted-foreground/60">Not specified</span>
@@ -902,25 +1110,25 @@ export default function CustomersPage() {
                                                         </td>
 
                                                         <td className="py-3.5 px-4">
-                                                            <div className="font-bold text-foreground text-sm">
+                                                            <div className="font-bold text-foreground text-sm tabular-nums whitespace-nowrap">
                                                                 {formatINR(c.total_spent || 0)}
                                                             </div>
-                                                            <div className="text-[11px] text-muted-foreground">
-                                                                {c.total_orders || 0} orders • {c.loyalty_points || 0} pts
+                                                            <div className="text-[11px] text-muted-foreground tabular-nums">
+                                                                {pluralize(c.total_orders || 0, "order")} • {pluralize(c.loyalty_points || 0, "pt")}
                                                             </div>
                                                         </td>
 
                                                         <td className="py-3.5 px-4 text-[11px]">
-                                                            {(c.date_of_birth || (c as any).birthday_date || c.anniversary || (c as any).anniversary_date) ? (
+                                                            {(c.date_of_birth || ext.birthday_date || c.anniversary || ext.anniversary_date) ? (
                                                                 <div className="space-y-0.5 text-muted-foreground">
-                                                                    {(c.date_of_birth || (c as any).birthday_date) && (
+                                                                    {(c.date_of_birth || ext.birthday_date) && (
                                                                         <div className="flex items-center gap-1">
-                                                                            🎂 <span className="text-foreground">{(c.date_of_birth || (c as any).birthday_date)?.slice(5)}</span>
+                                                                            🎂 <span className="text-foreground">{(c.date_of_birth || ext.birthday_date)?.slice(5)}</span>
                                                                         </div>
                                                                     )}
-                                                                    {(c.anniversary || (c as any).anniversary_date) && (
+                                                                    {(c.anniversary || ext.anniversary_date) && (
                                                                         <div className="flex items-center gap-1">
-                                                                            💍 <span className="text-foreground">{(c.anniversary || (c as any).anniversary_date)?.slice(5)}</span>
+                                                                            💍 <span className="text-foreground">{(c.anniversary || ext.anniversary_date)?.slice(5)}</span>
                                                                         </div>
                                                                     )}
                                                                 </div>
@@ -960,6 +1168,37 @@ export default function CustomersPage() {
                                 </table>
                             </div>
                         </div>
+
+                        {filteredCustomers.length > PAGE_SIZE && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border border-border rounded-xl bg-card text-xs text-muted-foreground">
+                                <span className="tabular-nums">
+                                    Showing {(safeDirPage - 1) * PAGE_SIZE + 1}–{Math.min(safeDirPage * PAGE_SIZE, filteredCustomers.length)} of {filteredCustomers.length}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={safeDirPage <= 1}
+                                        onClick={() => setDirectoryPage((p) => Math.max(1, p - 1))}
+                                        className="h-7 px-2.5 text-xs"
+                                    >
+                                        Previous
+                                    </Button>
+                                    <span className="tabular-nums font-medium text-foreground">
+                                        Page {safeDirPage} of {dirTotalPages}
+                                    </span>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={safeDirPage >= dirTotalPages}
+                                        onClick={() => setDirectoryPage((p) => Math.min(dirTotalPages, p + 1))}
+                                        className="h-7 px-2.5 text-xs"
+                                    >
+                                        Next
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
                     </TabsContent>
 
                     {/* ============================================================== */}
@@ -1021,13 +1260,19 @@ export default function CustomersPage() {
                                 </div>
 
                                 {/* Active Cohort Member List */}
+                                {(() => {
+                                    const rfmMembers = rfmData.customers.filter((c) => selectedCohort === "all" || c.segment === selectedCohort);
+                                    const rfmTotalPages = Math.max(1, Math.ceil(rfmMembers.length / PAGE_SIZE));
+                                    const safeRfmPage = Math.min(rfmPage, rfmTotalPages);
+                                    const paginatedRfmMembers = rfmMembers.slice((safeRfmPage - 1) * PAGE_SIZE, safeRfmPage * PAGE_SIZE);
+                                    return (
                                 <div className="border border-border rounded-xl bg-card p-4 space-y-4 shadow-sm">
-                                    <div className="flex items-center justify-between">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
                                         <div>
-                                            <h4 className="font-bold text-sm text-foreground flex items-center gap-2">
+                                            <h4 className="font-bold text-sm text-foreground flex flex-wrap items-center gap-2">
                                                 <span>Cohort Members: {rfmData.cohorts[selectedCohort].label}</span>
-                                                <Badge variant="secondary" className="text-xs">
-                                                    {rfmData.customers.filter((c) => selectedCohort === "all" || c.segment === selectedCohort).length} customers
+                                                <Badge variant="secondary" className="text-xs tabular-nums">
+                                                    {pluralize(rfmMembers.length, "customer")}
                                                 </Badge>
                                             </h4>
                                             <p className="text-xs text-muted-foreground mt-0.5">
@@ -1058,19 +1303,19 @@ export default function CustomersPage() {
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-border">
-                                                {rfmData.customers
-                                                    .filter((c) => selectedCohort === "all" || c.segment === selectedCohort)
-                                                    .map((member) => (
+                                                {paginatedRfmMembers.map((member) => (
                                                         <tr key={member.id} className="hover:bg-muted/20">
-                                                            <td className="py-2.5 px-3 font-semibold text-foreground">{member.name}</td>
-                                                            <td className="py-2.5 px-3 font-mono text-muted-foreground">{member.phone || "—"}</td>
-                                                            <td className="py-2.5 px-3">
+                                                            <td className="py-2.5 px-3 font-semibold text-foreground max-w-[220px]">
+                                                                <span className="line-clamp-2 break-words">{member.name}</span>
+                                                            </td>
+                                                            <td className="py-2.5 px-3 font-mono text-muted-foreground whitespace-nowrap">{member.phone || "—"}</td>
+                                                            <td className="py-2.5 px-3 tabular-nums whitespace-nowrap">
                                                                 <span className={member.recencyDays > 60 ? "text-amber-500 font-semibold" : "text-muted-foreground"}>
                                                                     {member.recencyDays === 999 ? "Never" : `${member.recencyDays}d ago`}
                                                                 </span>
                                                             </td>
-                                                            <td className="py-2.5 px-3">{member.frequency}</td>
-                                                            <td className="py-2.5 px-3 font-bold text-foreground">{formatINR(member.monetary)}</td>
+                                                            <td className="py-2.5 px-3 tabular-nums">{member.frequency}</td>
+                                                            <td className="py-2.5 px-3 font-bold text-foreground tabular-nums whitespace-nowrap">{formatINR(member.monetary)}</td>
                                                             <td className="py-2.5 px-3">
                                                                 {member.hasUpcomingBirthday && (
                                                                     <Badge className="bg-pink-500/10 text-pink-500 border-pink-500/30 text-[9px]">
@@ -1098,7 +1343,40 @@ export default function CustomersPage() {
                                             </tbody>
                                         </table>
                                     </div>
+
+                                    {rfmMembers.length > PAGE_SIZE && (
+                                        <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-border text-xs text-muted-foreground">
+                                            <span className="tabular-nums">
+                                                Showing {(safeRfmPage - 1) * PAGE_SIZE + 1}–{Math.min(safeRfmPage * PAGE_SIZE, rfmMembers.length)} of {rfmMembers.length}
+                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={safeRfmPage <= 1}
+                                                    onClick={() => setRfmPage((p) => Math.max(1, p - 1))}
+                                                    className="h-7 px-2.5 text-xs"
+                                                >
+                                                    Previous
+                                                </Button>
+                                                <span className="tabular-nums font-medium text-foreground">
+                                                    Page {safeRfmPage} of {rfmTotalPages}
+                                                </span>
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={safeRfmPage >= rfmTotalPages}
+                                                    onClick={() => setRfmPage((p) => Math.min(rfmTotalPages, p + 1))}
+                                                    className="h-7 px-2.5 text-xs"
+                                                >
+                                                    Next
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
+                                    );
+                                })()}
                             </>
                         )}
                     </TabsContent>
@@ -1156,7 +1434,7 @@ export default function CustomersPage() {
                                     </CardHeader>
                                     <CardContent>
                                         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
-                                            {campaignAnalytics.funnel.map((stage, i) => (
+                                            {campaignAnalytics.funnel.map((stage) => (
                                                 <div key={stage.label} className="p-3 rounded-xl bg-muted/30 border border-border flex flex-col justify-between">
                                                     <div>
                                                         <span className="text-[11px] font-semibold text-muted-foreground block">{stage.label}</span>
@@ -1176,15 +1454,25 @@ export default function CustomersPage() {
 
                                 {/* Campaign Performance Table */}
                                 <div className="border border-border rounded-xl bg-card p-4 space-y-4 shadow-sm">
-                                    <div className="flex items-center justify-between">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
                                         <h4 className="font-bold text-sm text-foreground">Marketing Campaigns &amp; Attributed Sales</h4>
-                                        <Button
-                                            size="sm"
-                                            onClick={() => setShowNewCampaignDialog(true)}
-                                            className="h-8 gap-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white"
-                                        >
-                                            <Plus className="w-3.5 h-3.5" /> Create Campaign
-                                        </Button>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={handleOpenPromoModal}
+                                                className="h-8 gap-1.5 text-xs font-semibold"
+                                            >
+                                                <Ticket className="w-3.5 h-3.5 text-primary" /> Manage Promo Codes
+                                            </Button>
+                                            <Button
+                                                size="sm"
+                                                onClick={() => setShowNewCampaignDialog(true)}
+                                                className="h-8 gap-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white"
+                                            >
+                                                <Plus className="w-3.5 h-3.5" /> Create Campaign
+                                            </Button>
+                                        </div>
                                     </div>
 
                                     <div className="overflow-x-auto">
@@ -1389,7 +1677,7 @@ export default function CustomersPage() {
                                 <Label className="text-xs font-semibold">Campaign Category</Label>
                                 <Select
                                     value={newCampaignForm.category}
-                                    onValueChange={(v: any) => setNewCampaignForm({ ...newCampaignForm, category: v })}
+                                    onValueChange={(v) => v && setNewCampaignForm({ ...newCampaignForm, category: v as CampaignCategory })}
                                 >
                                     <SelectTrigger className="h-9 text-xs">
                                         <SelectValue />
@@ -2008,6 +2296,19 @@ export default function CustomersPage() {
                                 />
                             </div>
                         </div>
+
+                        <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3">
+                            <div className="min-w-0">
+                                <Label className="text-xs font-semibold">WhatsApp Marketing &amp; Milestone Offers</Label>
+                                <p className="text-[11px] text-muted-foreground">
+                                    DPDP consent for birthday wishes, VIP offers, and WhatsApp drops
+                                </p>
+                            </div>
+                            <Switch
+                                checked={formData.opt_in_marketing}
+                                onCheckedChange={(checked) => setFormData({ ...formData, opt_in_marketing: checked })}
+                            />
+                        </div>
                     </div>
 
                     <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
@@ -2023,6 +2324,301 @@ export default function CustomersPage() {
                             {savingCustomer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Save Customer"}
                         </Button>
                     </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* ============================================================== */}
+            {/* DIALOG: MANAGE PROMO CODES */}
+            {/* ============================================================== */}
+            <Dialog open={showPromoModal} onOpenChange={setShowPromoModal}>
+                <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Ticket className="w-4 h-4 text-primary" /> Manage POS &amp; Campaign Promo Codes
+                        </DialogTitle>
+                        <DialogDescription className="text-xs">
+                            Create, pause, or delete store promo codes. Built-in lifecycle codes (BDAY1000, ANNIV7, VIPRENEW, CARE50) are automatically honoured unless overridden here.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-5 py-2">
+                        <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
+                            <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">New Promo Code</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Code *</Label>
+                                    <Input
+                                        value={newPromoForm.code}
+                                        onChange={(e) => setNewPromoForm({ ...newPromoForm, code: e.target.value.toUpperCase() })}
+                                        maxLength={32}
+                                        placeholder="FESTIVE15"
+                                        className="h-8 text-xs font-mono uppercase"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Title *</Label>
+                                    <Input
+                                        value={newPromoForm.name}
+                                        onChange={(e) => setNewPromoForm({ ...newPromoForm, name: e.target.value })}
+                                        maxLength={80}
+                                        placeholder="Festive 15% Off"
+                                        className="h-8 text-xs"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Type</Label>
+                                    <Select
+                                        value={newPromoForm.discount_type}
+                                        onValueChange={(v) => setNewPromoForm({ ...newPromoForm, discount_type: (v as DiscountType) || "percentage" })}
+                                    >
+                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="percentage">Percent (%)</SelectItem>
+                                            <SelectItem value="fixed">Flat (₹)</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Value *</Label>
+                                    <Input
+                                        type="number"
+                                        min="1"
+                                        value={newPromoForm.value}
+                                        onChange={(e) => setNewPromoForm({ ...newPromoForm, value: e.target.value })}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Min Order (₹)</Label>
+                                    <Input
+                                        type="number"
+                                        min="0"
+                                        value={newPromoForm.min_purchase}
+                                        onChange={(e) => setNewPromoForm({ ...newPromoForm, min_purchase: e.target.value })}
+                                        className="h-8 text-xs font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Expiry Date</Label>
+                                    <Input
+                                        type="date"
+                                        value={newPromoForm.end_date}
+                                        onChange={(e) => setNewPromoForm({ ...newPromoForm, end_date: e.target.value })}
+                                        className="h-8 text-xs"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="flex justify-end">
+                                <Button size="sm" onClick={handleCreatePromo} disabled={creatingPromo} className="h-8 text-xs gap-1.5">
+                                    {creatingPromo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                                    Create Promo Code
+                                </Button>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Store Promo Codes</p>
+                            {loadingPromos ? (
+                                <div className="py-6 text-center text-xs text-muted-foreground">Loading promo codes...</div>
+                            ) : promoCodes.length === 0 ? (
+                                <div className="py-6 text-center text-xs text-muted-foreground border border-dashed border-border rounded-lg">
+                                    No custom promo codes saved yet. Built-in lifecycle codes are still active at POS.
+                                </div>
+                            ) : (
+                                <div className="divide-y divide-border border border-border rounded-xl overflow-hidden">
+                                    {promoCodes.map((promo) => (
+                                        <div key={promo.id || promo.code} className="p-3 flex flex-wrap items-center justify-between gap-2 bg-card">
+                                            <div className="min-w-0">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="font-mono font-bold text-xs text-primary">{promo.code}</span>
+                                                    <Badge variant={promo.is_active ? "default" : "secondary"} className="text-[10px]">
+                                                        {promo.is_active ? "Active" : "Paused"}
+                                                    </Badge>
+                                                    <span className="text-xs font-medium">{promo.name}</span>
+                                                </div>
+                                                <p className="text-[11px] text-muted-foreground tabular-nums mt-0.5">
+                                                    {promo.discount_type === "percentage" ? `${promo.value}% off` : `${formatINR(promo.value)} flat off`}
+                                                    {promo.min_purchase > 0 ? ` • Min ${formatINR(promo.min_purchase)}` : ""}
+                                                    {promo.usage_limit ? ` • Used ${promo.used_count}/${promo.usage_limit}` : ` • Used ${promo.used_count}`}
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => handleTogglePromo(promo)}
+                                                    className="h-7 px-2.5 text-[11px]"
+                                                >
+                                                    {promo.is_active ? "Pause" : "Activate"}
+                                                </Button>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    onClick={() => handleDeletePromo(promo)}
+                                                    className="h-7 w-7 text-red-500 hover:text-red-400"
+                                                    title="Delete promo code"
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* Loyalty Program & Tiers Configuration Modal */}
+            <Dialog open={showLoyaltyModal} onOpenChange={setShowLoyaltyModal}>
+                <DialogContent className="max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Crown className="w-4 h-4 text-amber-400" />
+                            Loyalty Points &amp; Tiers Configuration
+                        </DialogTitle>
+                        <DialogDescription className="text-xs">
+                            Configure earn rates, rupee redemption value, caps, and member tiers for POS &amp; storefront checkout.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleSaveLoyaltySettings} className="space-y-4">
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <Label className="text-xs">Points per ₹1 Spent</Label>
+                                <Input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={loyaltySettings.points_per_rupee ?? 0.1}
+                                    onChange={(e) =>
+                                        setLoyaltySettings((prev) => ({
+                                            ...prev,
+                                            points_per_rupee: parseFloat(e.target.value) || 0,
+                                        }))
+                                    }
+                                    className="h-9 text-xs font-mono"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label className="text-xs">₹ Value per Point</Label>
+                                <Input
+                                    type="number"
+                                    step="0.05"
+                                    min="0"
+                                    value={loyaltySettings.redemption_value ?? 0.5}
+                                    onChange={(e) =>
+                                        setLoyaltySettings((prev) => ({
+                                            ...prev,
+                                            redemption_value: parseFloat(e.target.value) || 0,
+                                        }))
+                                    }
+                                    className="h-9 text-xs font-mono"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label className="text-xs">Min Redemption Points</Label>
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    value={loyaltySettings.min_redemption_points ?? 100}
+                                    onChange={(e) =>
+                                        setLoyaltySettings((prev) => ({
+                                            ...prev,
+                                            min_redemption_points: parseInt(e.target.value, 10) || 0,
+                                        }))
+                                    }
+                                    className="h-9 text-xs font-mono"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label className="text-xs">Max Bill Redeemable (%)</Label>
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    value={loyaltySettings.max_redemption_percent ?? 50}
+                                    onChange={(e) =>
+                                        setLoyaltySettings((prev) => ({
+                                            ...prev,
+                                            max_redemption_percent: parseInt(e.target.value, 10) || 0,
+                                        }))
+                                    }
+                                    className="h-9 text-xs font-mono"
+                                />
+                            </div>
+                            <div className="space-y-1 col-span-2">
+                                <Label className="text-xs">Welcome Signup Bonus Points</Label>
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    value={loyaltySettings.signup_bonus ?? 50}
+                                    onChange={(e) =>
+                                        setLoyaltySettings((prev) => ({
+                                            ...prev,
+                                            signup_bonus: parseInt(e.target.value, 10) || 0,
+                                        }))
+                                    }
+                                    className="h-9 text-xs font-mono"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="rounded-lg border border-border p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold">Active Loyalty Tiers ({loyaltyTiers.length})</span>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={loyaltySaving}
+                                    onClick={() => void handleSeedTiers()}
+                                    className="h-7 text-[11px]"
+                                >
+                                    Seed Default Tiers
+                                </Button>
+                            </div>
+                            {loyaltyTiers.length === 0 ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                    No custom tiers seeded yet. Click Seed Default Tiers for Bronze/Silver/Gold/Platinum.
+                                </p>
+                            ) : (
+                                <div className="grid grid-cols-2 gap-2">
+                                    {loyaltyTiers.map((tier) => (
+                                        <div
+                                            key={tier.id}
+                                            className="rounded border border-border/70 px-2.5 py-1.5 text-xs flex items-center justify-between"
+                                        >
+                                            <span className="font-semibold" style={{ color: tier.color || undefined }}>
+                                                {tier.name}
+                                            </span>
+                                            <span className="text-[10px] text-muted-foreground font-mono">
+                                                {tier.min_points}+ pts · {tier.multiplier}x
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex justify-end gap-2 pt-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setShowLoyaltyModal(false)}
+                            >
+                                Cancel
+                            </Button>
+                            <Button type="submit" size="sm" disabled={loyaltySaving}>
+                                {loyaltySaving ? "Saving..." : "Save Configuration"}
+                            </Button>
+                        </div>
+                    </form>
                 </DialogContent>
             </Dialog>
         </div>

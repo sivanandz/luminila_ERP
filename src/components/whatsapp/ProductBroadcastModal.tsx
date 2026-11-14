@@ -47,7 +47,6 @@ import {
 import { getAllChats, whatsappManager, type WPPChat } from "@/lib/whatsapp";
 import { searchProductsForPicker } from "@/lib/products";
 import { getCurrentTenantEmail } from "@/lib/pocketbase";
-import type { Product } from "@/types/database";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { getChannelPrice } from "@/lib/channel-pricing";

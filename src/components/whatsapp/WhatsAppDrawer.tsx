@@ -15,7 +15,6 @@ import {
     type ContactType,
 } from "@/lib/whatsapp-crm";
 import { findVendorByPhone } from "@/lib/vendors";
-import type { Vendor } from "@/types/database";
 import { MessageActionMenu } from "@/components/whatsapp/MessageActionMenu";
 import { VendorIngestionModal, AddExistingInventoryModal } from "@/components/whatsapp/VendorIngestionModal";
 import { useLongPress } from "@/hooks/use-long-press";

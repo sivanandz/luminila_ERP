@@ -205,8 +205,12 @@ export async function resolveStockTargets(
         const name = line.name || product.name || line.productId;
 
         // Virtual Combo / Bridal Set Bundle support: explode into component variant targets
-        if ((product as any).is_bundle && Array.isArray((product as any).bundle_items) && (product as any).bundle_items.length > 0) {
-            for (const comp of (product as any).bundle_items) {
+        const bundleProd = product as ProductRecord & {
+            is_bundle?: boolean;
+            bundle_items?: Array<{ variant_id?: string; product_id?: string; name?: string; quantity?: number }>;
+        };
+        if (bundleProd.is_bundle && Array.isArray(bundleProd.bundle_items) && bundleProd.bundle_items.length > 0) {
+            for (const comp of bundleProd.bundle_items) {
                 let targetVariantId = comp.variant_id;
                 if (!targetVariantId && comp.product_id) {
                     const vList = await db.collection('product_variants').getFullList<VariantRecord>({

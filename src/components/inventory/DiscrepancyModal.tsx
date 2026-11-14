@@ -50,13 +50,6 @@ interface DiscrepancyModalProps {
     onStockUpdated: () => void;
 }
 
-/** vendors record as returned by PocketBase (company_name kept as legacy fallback) */
-interface VendorRecord {
-    id: string;
-    name: string;
-    company_name?: string;
-}
-
 export function DiscrepancyModal({
     isOpen,
     onClose,

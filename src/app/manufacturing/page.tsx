@@ -171,7 +171,7 @@ export default function ManufacturingPage() {
         <div className="flex flex-col h-full overflow-hidden">
             <Header title="Karigar Jobs" subtitle="Metal issued, making charges and loss reconciliation" />
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 space-y-6">
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                     <Card className="xl:col-span-2 bg-card">
                         <CardHeader>
@@ -183,18 +183,18 @@ export default function ManufacturingPage() {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-1">
                                     <Label>Karigar / Artisan</Label>
-                                    <Input value={karigarName} onChange={(e) => setKarigarName(e.target.value)} placeholder="Ramesh Soni" />
+                                    <Input value={karigarName} onChange={(e) => setKarigarName(e.target.value)} maxLength={100} placeholder="Ramesh Soni" />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Piece description</Label>
-                                    <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Gold ring, 2 stone" />
+                                    <Input value={productName} onChange={(e) => setProductName(e.target.value)} maxLength={150} placeholder="Gold ring, 2 stone" />
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                                 <div className="space-y-1">
                                     <Label>Metal issued (g)</Label>
-                                    <Input type="number" step="0.001" value={metalGrams} onChange={(e) => setMetalGrams(e.target.value)} />
+                                    <Input type="number" min="0" step="0.001" value={metalGrams} onChange={(e) => setMetalGrams(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Purity</Label>
@@ -209,49 +209,49 @@ export default function ManufacturingPage() {
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Rate per gram</Label>
-                                    <Input type="number" step="0.01" value={ratePerGram} onChange={(e) => setRatePerGram(e.target.value)} />
+                                    <Input type="number" min="0" step="0.01" value={ratePerGram} onChange={(e) => setRatePerGram(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Finished net (g)</Label>
-                                    <Input type="number" step="0.001" value={finishedNetGrams} onChange={(e) => setFinishedNetGrams(e.target.value)} />
+                                    <Input type="number" min="0" step="0.001" value={finishedNetGrams} onChange={(e) => setFinishedNetGrams(e.target.value)} />
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                                 <div className="space-y-1">
                                     <Label>Scrap recovered (g)</Label>
-                                    <Input type="number" step="0.001" value={scrapGrams} onChange={(e) => setScrapGrams(e.target.value)} />
+                                    <Input type="number" min="0" step="0.001" value={scrapGrams} onChange={(e) => setScrapGrams(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Labour (ac1)</Label>
-                                    <Input type="number" step="0.01" value={labour} onChange={(e) => setLabour(e.target.value)} />
+                                    <Input type="number" min="0" step="0.01" value={labour} onChange={(e) => setLabour(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Hallmarking (ac2)</Label>
-                                    <Input type="number" step="0.01" value={hallmarking} onChange={(e) => setHallmarking(e.target.value)} />
+                                    <Input type="number" min="0" step="0.01" value={hallmarking} onChange={(e) => setHallmarking(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Finishing (ac3)</Label>
-                                    <Input type="number" step="0.01" value={finishing} onChange={(e) => setFinishing(e.target.value)} />
+                                    <Input type="number" min="0" step="0.01" value={finishing} onChange={(e) => setFinishing(e.target.value)} />
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                                 <div className="space-y-1">
                                     <Label>Logistics (ac4)</Label>
-                                    <Input type="number" step="0.01" value={logistics} onChange={(e) => setLogistics(e.target.value)} />
+                                    <Input type="number" min="0" step="0.01" value={logistics} onChange={(e) => setLogistics(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Certification (ac5)</Label>
-                                    <Input type="number" step="0.01" value={certification} onChange={(e) => setCertification(e.target.value)} />
+                                    <Input type="number" min="0" step="0.01" value={certification} onChange={(e) => setCertification(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Loss tolerance %</Label>
-                                    <Input type="number" step="0.1" value={tolerancePercent} onChange={(e) => setTolerancePercent(e.target.value)} />
+                                    <Input type="number" min="0" step="0.1" value={tolerancePercent} onChange={(e) => setTolerancePercent(e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                     <Label>Notes</Label>
-                                    <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+                                    <Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={250} placeholder="Optional" />
                                 </div>
                             </div>
 
@@ -270,41 +270,45 @@ export default function ManufacturingPage() {
                             <CardTitle className="text-base">Costing</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-3 text-sm">
-                            <div className="flex justify-between">
+                            <div className="flex justify-between gap-2">
                                 <span className="text-muted-foreground">Metal cost</span>
-                                <span className="font-mono">{formatINR(cost.rawMaterialCost)}</span>
+                                <span className="font-mono tabular-nums">{formatINR(cost.rawMaterialCost)}</span>
                             </div>
-                            <div className="flex justify-between">
+                            <div className="flex justify-between gap-2">
                                 <span className="text-muted-foreground">Making &amp; other charges</span>
-                                <span className="font-mono">{formatINR(cost.additionalCosts)}</span>
+                                <span className="font-mono tabular-nums">{formatINR(cost.additionalCosts)}</span>
                             </div>
-                            <div className="flex justify-between">
+                            <div className="flex justify-between gap-2">
                                 <span className="text-muted-foreground">Scrap credit</span>
-                                <span className="font-mono text-emerald-500">-{formatINR(cost.scrapCredit)}</span>
+                                <span className="font-mono tabular-nums text-emerald-500">-{formatINR(cost.scrapCredit)}</span>
                             </div>
-                            <div className="flex justify-between border-t pt-3 text-base font-semibold">
+                            <div className="flex justify-between gap-2 border-t pt-3 text-base font-semibold">
                                 <span>Net cost</span>
-                                <span className="font-mono">{formatINR(cost.netProductionCost)}</span>
+                                <span className="font-mono tabular-nums">{formatINR(cost.netProductionCost)}</span>
                             </div>
-                            <div className="flex justify-between text-xs">
+                            <div className="flex justify-between gap-2 text-xs">
                                 <span className="text-muted-foreground">Per finished gram</span>
-                                <span className="font-mono">{formatINR(cost.perGramCost)}</span>
+                                <span className="font-mono tabular-nums">{formatINR(cost.perGramCost)}</span>
                             </div>
 
                             <div className="rounded-lg border p-3 mt-2 space-y-1">
-                                <div className="flex items-center justify-between">
+                                <div className="flex items-center justify-between gap-2">
                                     <span className="text-xs text-muted-foreground">Melting loss</span>
-                                    <span className="font-mono text-xs">{reconciliation.meltingLossPercent}%</span>
+                                    <span className="font-mono tabular-nums text-xs">{reconciliation.meltingLossPercent}%</span>
                                 </div>
-                                <div className="flex items-center justify-between">
+                                <div className="flex items-center justify-between gap-2">
                                     <span className="text-xs text-muted-foreground">Allowed</span>
-                                    <span className="font-mono text-xs">{reconciliation.allowedLossGrams.toFixed(3)}g</span>
+                                    <span className="font-mono tabular-nums text-xs">{reconciliation.allowedLossGrams.toFixed(3)}g</span>
                                 </div>
-                                <div className="flex items-center justify-between">
+                                <div className="flex items-center justify-between gap-2">
                                     <span className="text-xs text-muted-foreground">Actual</span>
-                                    <span className="font-mono text-xs">{reconciliation.unrecoveredMeltingLossGrams.toFixed(3)}g</span>
+                                    <span className="font-mono tabular-nums text-xs">{reconciliation.unrecoveredMeltingLossGrams.toFixed(3)}g</span>
                                 </div>
-                                {reconciliation.isWithinTolerance ? (
+                                {reconciliation.meltingLossPercent < 0 || reconciliation.unrecoveredMeltingLossGrams < 0 ? (
+                                    <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/40 whitespace-normal text-left">
+                                        <AlertTriangle className="w-3 h-3 mr-1 shrink-0" /> Negative loss — check finished + scrap vs issued weights
+                                    </Badge>
+                                ) : reconciliation.isWithinTolerance ? (
                                     <Badge className="bg-emerald-600/20 text-emerald-400 border-emerald-600/40">
                                         <CheckCircle className="w-3 h-3 mr-1" /> Within tolerance
                                     </Badge>
@@ -328,6 +332,7 @@ export default function ManufacturingPage() {
                         ) : jobs.length === 0 ? (
                             <p className="text-sm text-muted-foreground">No job cards yet.</p>
                         ) : (
+                            <div className="overflow-x-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -344,19 +349,21 @@ export default function ManufacturingPage() {
                                 <TableBody>
                                     {jobs.map((job) => (
                                         <TableRow key={job.id}>
-                                            <TableCell className="font-mono text-xs">{job.jobNumber}</TableCell>
-                                            <TableCell>{job.karigarName}</TableCell>
-                                            <TableCell>{job.productName}</TableCell>
-                                            <TableCell className="text-right font-mono">{job.metalGrams}</TableCell>
-                                            <TableCell className="text-right font-mono">{formatINR(job.cost.netProductionCost)}</TableCell>
-                                            <TableCell className="text-right font-mono">{job.cost.reconciliation.meltingLossPercent}</TableCell>
+                                            <TableCell className="font-mono text-xs whitespace-nowrap">{job.jobNumber}</TableCell>
+                                            <TableCell className="max-w-[160px] truncate">{job.karigarName}</TableCell>
+                                            <TableCell className="max-w-[180px] truncate">{job.productName}</TableCell>
+                                            <TableCell className="text-right font-mono tabular-nums">{job.metalGrams}</TableCell>
+                                            <TableCell className="text-right font-mono tabular-nums whitespace-nowrap">{formatINR(job.cost.netProductionCost)}</TableCell>
+                                            <TableCell className={`text-right font-mono tabular-nums ${job.cost.reconciliation.meltingLossPercent < 0 ? "text-amber-400" : ""}`}>
+                                                {job.cost.reconciliation.meltingLossPercent}%
+                                            </TableCell>
                                             <TableCell>
                                                 <Badge variant={job.status === "completed" ? "default" : "secondary"}>
                                                     {job.status === "completed" ? "Completed" : "In progress"}
                                                 </Badge>
                                             </TableCell>
                                             <TableCell className="text-right">
-                                                <div className="flex justify-end gap-1">
+                                                <div className="flex justify-end gap-1 whitespace-nowrap">
                                                     <Button variant="ghost" size="sm" onClick={() => handleStatus(job)}>
                                                         {job.status === "completed" ? "Reopen" : "Complete"}
                                                     </Button>
@@ -369,6 +376,7 @@ export default function ManufacturingPage() {
                                     ))}
                                 </TableBody>
                             </Table>
+                            </div>
                         )}
                     </CardContent>
                 </Card>

@@ -165,7 +165,7 @@ export function buildPackingLines(items: Array<OrderDetailItem | ExpandedOrderIt
                 const compQty = (Number(comp.quantity) || 1) * itemQuantity;
                 lines.push({
                     item_id: `${item.id}_comp_${compIdx}`,
-                    variant_id: ('variant_id' in comp ? (comp as any).variant_id : '') || '',
+                    variant_id: ('variant_id' in comp ? (comp as { variant_id?: string }).variant_id : '') || '',
                     product_id: comp.product_id || '',
                     sku: comp.sku,
                     description: comp.name || `Component of ${sku}`,

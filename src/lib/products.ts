@@ -28,6 +28,9 @@ export const STORAGE_LOCATIONS = [
 
 export type StorageLocation = typeof STORAGE_LOCATIONS[number];
 
+export type ProductAngleSlot = 'HERO' | 'MACR' | 'REVR' | 'SCAL';
+export type ProductGalleryAngles = Partial<Record<ProductAngleSlot, string>>;
+
 export interface Product {
     id: string;
     sku: string;
@@ -39,6 +42,7 @@ export interface Product {
     category?: string;
     image_url?: string;
     image_data?: string;
+    gallery_angles?: ProductGalleryAngles;
     barcode?: string;
     hsn_code?: string;
     /** Imitation / fashion craft attributes (Vasy-aligned; live columns craft/plating/occasion/base_metal). */
@@ -730,4 +734,101 @@ export async function searchProductsForPicker(
             : { filter: search }
     );
     return result.items;
+}
+
+const PRODUCT_GALLERY_SETTINGS_KEY = 'product_gallery_angles';
+
+/** Merge or remove a single angle image slot cleanly without mutating the source object. */
+export function mergeProductAngle(
+    existing: ProductGalleryAngles | undefined,
+    slot: ProductAngleSlot,
+    imageData: string
+): ProductGalleryAngles {
+    const next: ProductGalleryAngles = { ...(existing || {}) };
+    const trimmed = imageData.trim();
+    if (!trimmed) {
+        delete next[slot];
+    } else {
+        next[slot] = trimmed;
+    }
+    return next;
+}
+
+/** Determine whether an in-stock piece has been idle beyond thresholdDays (default 90d). */
+export function isDeadStockProduct(
+    product: { stock?: number; updated?: string; created?: string },
+    thresholdDays = 90,
+    nowMs = Date.now()
+): boolean {
+    if ((product.stock ?? 0) <= 0) return false;
+    const rawDate = product.updated || product.created;
+    if (!rawDate) return false;
+    const ts = new Date(rawDate).getTime();
+    if (!Number.isFinite(ts)) return false;
+    return nowMs - ts >= thresholdDays * 86_400_000;
+}
+
+/** Load tenant-scoped multi-angle product galleries from store_settings. */
+export async function loadProductGalleryMap(): Promise<Record<string, ProductGalleryAngles>> {
+    const tenant = accountScopeEmail();
+    if (!tenant) return {};
+    try {
+        const record = await pb.collection('store_settings').getFirstListItem<{
+            value?: unknown;
+            account_email?: string;
+        }>(`key="${PRODUCT_GALLERY_SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`);
+        if (record?.account_email && record.account_email.trim().toLowerCase() !== tenant.toLowerCase()) {
+            return {};
+        }
+        const raw = record?.value;
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, ProductGalleryAngles>)
+            : {};
+    } catch {
+        return {};
+    }
+}
+
+/** Persist a single product's multi-angle gallery map into store_settings. */
+export async function saveProductGalleryAngles(
+    productId: string,
+    angles: ProductGalleryAngles
+): Promise<void> {
+    const tenant = accountScopeEmail();
+    if (!tenant || !productId) return;
+    try {
+        const existing = await pb
+            .collection('store_settings')
+            .getFirstListItem<{ id: string; value?: unknown; account_email?: string }>(
+                `key="${PRODUCT_GALLERY_SETTINGS_KEY}" && account_email="${sanitizeFilter(tenant)}"`
+            )
+            .catch(() => null);
+        const currentRaw = existing?.value;
+        const currentMap: Record<string, ProductGalleryAngles> =
+            currentRaw && typeof currentRaw === 'object' && !Array.isArray(currentRaw)
+                ? { ...(currentRaw as Record<string, ProductGalleryAngles>) }
+                : typeof currentRaw === 'string'
+                ? JSON.parse(currentRaw)
+                : {};
+
+        if (Object.keys(angles).length === 0) {
+            delete currentMap[productId];
+        } else {
+            currentMap[productId] = angles;
+        }
+
+        if (existing) {
+            await pb.collection('store_settings').update(existing.id, { value: currentMap });
+        } else {
+            await pb.collection('store_settings').create({
+                key: PRODUCT_GALLERY_SETTINGS_KEY,
+                value: currentMap,
+                category: 'inventory',
+                account_email: tenant,
+            });
+        }
+    } catch (err) {
+        console.warn('[products] Failed persisting gallery angles:', err);
+    }
 }
