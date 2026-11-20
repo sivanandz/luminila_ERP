@@ -481,6 +481,46 @@ export async function POST(req: Request) {
                         { status: 409, headers: CORS_HEADERS }
                     );
                 }
+                // C2 (SW-06 residual): the coupon counter/usage writes run after
+                // the order commits on the fresh path; a transient failure there
+                // returned 503 and this replay used to answer `duplicate:true`
+                // without ever completing them — a usage-capped coupon could be
+                // redeemed past its cap. The usage row is the idempotency key:
+                // create it if missing, bumping the counter exactly once with it
+                // (the fresh path writes counter-then-usage, so a counter-only
+                // success can drift used_count by +1; bounded and auditable).
+                if (body.couponCode && typeof body.couponCode === "string" && body.couponCode.trim()) {
+                    const existingDiscount = Number((existing as { discount_total?: number }).discount_total || 0);
+                    if (existingDiscount > 0) {
+                        const repairCode = body.couponCode.trim().toUpperCase();
+                        try {
+                            const usages = await client.collection("discount_usage").getFullList({
+                                filter: `order = "${sanitizeFilter(existing.id)}"`,
+                            });
+                            if (usages.length === 0) {
+                                const discountRec = await client.collection("discounts").getFirstListItem(
+                                    `code = "${sanitizeFilter(repairCode)}" && account_email = "${sanitizeFilter(boundAdminEmail)}"`
+                                ).catch(() => null);
+                                if (discountRec) {
+                                    await client.collection("discounts").update(discountRec.id, { "used_count+": 1 });
+                                    await client.collection("discount_usage").create({
+                                        account_email: boundAdminEmail,
+                                        discount: discountRec.id,
+                                        discount_amount: existingDiscount,
+                                        amount_saved: existingDiscount,
+                                        order_value: Number((existing as { subtotal?: number }).subtotal || 0),
+                                        order: existing.id,
+                                    });
+                                }
+                            }
+                        } catch (repairErr) {
+                            // Best-effort: the replay still honours the
+                            // idempotency contract; the next retry attempts the
+                            // repair again.
+                            console.error("[Storefront Order] coupon usage repair failed:", repairErr);
+                        }
+                    }
+                }
                 // A retried prepare request must return the same gateway order,
                 // not create a second one (CO-05 idempotency).
                 if (body.paymentMethod === "razorpay_online" && body.prepareGateway) {
