@@ -3,7 +3,7 @@ name: brainstorm
 description: Structured brainstorming for projects and features. Explores multiple options before implementation.
 version: 1.0.0
 requires_agents: project-planner
-requires_skills: brainstorming
+requires_skills: brainstorming-socratic
 artifact_outputs: discovery-notes, decision-summary
 ---
 

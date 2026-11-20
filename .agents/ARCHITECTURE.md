@@ -100,7 +100,7 @@ Specialist AI personas for different domains.
 | Agent                    | Focus                      | Skills Used                                              |
 | ------------------------ | -------------------------- | -------------------------------------------------------- |
 | `orchestrator`           | Multi-agent coordination   | parallel-agents, coordinator-mode, memory-system, context-compression, verify-changes |
-| `project-planner`        | Discovery, task planning   | brainstorming, plan-writing, architecture                |
+| `project-planner`        | Discovery, task planning   | brainstorming-socratic, plan-writing, architecture                |
 | `frontend-specialist`    | Web UI/UX                  | frontend-design, nextjs-react-expert, tailwind-patterns |
 | `backend-specialist`     | API, business logic        | api-patterns, nodejs-best-practices, database-design     |
 | `database-architect`     | Schema, SQL                | database-design                                          |
@@ -110,12 +110,12 @@ Specialist AI personas for different domains.
 | `security-auditor`       | Security compliance        | vulnerability-scanner, red-team-tactics                  |
 | `penetration-tester`     | Offensive security         | red-team-tactics                                         |
 | `test-engineer`          | Testing strategies         | testing-patterns, tdd-workflow, webapp-testing           |
-| `debugger`               | Root cause analysis        | systematic-debugging                                     |
+| `debugger`               | Root cause analysis        | systematic-debugging-4phase                                     |
 | `performance-optimizer`  | Speed, Web Vitals          | performance-profiling                                    |
 | `seo-specialist`         | Ranking, visibility        | seo-fundamentals, geo-fundamentals                       |
 | `documentation-writer`   | Manuals, docs              | documentation-templates                                  |
-| `product-manager`        | Requirements, user stories | plan-writing, brainstorming                              |
-| `product-owner`          | Strategy, backlog, MVP     | plan-writing, brainstorming                              |
+| `product-manager`        | Requirements, user stories | plan-writing, brainstorming-socratic                              |
+| `product-owner`          | Strategy, backlog, MVP     | plan-writing, brainstorming-socratic                              |
 | `qa-automation-engineer` | E2E testing, CI pipelines  | webapp-testing, testing-patterns                         |
 | `code-archaeologist`     | Legacy code, refactoring   | clean-code, code-review-checklist                        |
 | `explorer-agent`         | Codebase analysis          | -                                                        |
@@ -183,7 +183,7 @@ Modular knowledge domains that agents can load on-demand based on task context. 
 | `app-builder`   | Full-stack app scaffolding |
 | `architecture`  | System design patterns     |
 | `plan-writing`  | Task planning, breakdown   |
-| `brainstorming` | Socratic questioning       |
+| `brainstorming-socratic` | Socratic questioning       |
 
 ### Mobile
 
@@ -235,7 +235,7 @@ Modular knowledge domains that agents can load on-demand based on task context. 
 | `documentation-templates` | Doc formats               |
 | `i18n-localization`       | Internationalization      |
 | `performance-profiling`   | Web Vitals, optimization  |
-| `systematic-debugging`    | Troubleshooting           |
+| `systematic-debugging-4phase`    | Troubleshooting           |
 | `intelligent-routing`     | Request → agent routing   |
 
 ---
@@ -387,5 +387,5 @@ For command details and prerequisites, see [scripts/README.md](scripts/README.md
 | Database | `database-architect`  | database-design                       |
 | Security | `security-auditor`    | vulnerability-scanner                 |
 | Testing  | `test-engineer`       | testing-patterns, webapp-testing      |
-| Debug    | `debugger`            | systematic-debugging                  |
-| Plan     | `project-planner`     | brainstorming, plan-writing           |
+| Debug    | `debugger`            | systematic-debugging-4phase                  |
+| Plan     | `project-planner`     | brainstorming-socratic, plan-writing           |

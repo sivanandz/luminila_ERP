@@ -21,7 +21,7 @@ This command starts a new application creation process.
 
 1. **Request Analysis**
    - Understand what the user wants
-   - If information is missing, use the `brainstorming` skill to ask clarifying questions
+   - If information is missing, use the `brainstorming-socratic` skill to ask clarifying questions
 
 2. **Project Planning**
    - Use `project-planner` agent for task breakdown

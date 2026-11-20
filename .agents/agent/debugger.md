@@ -4,7 +4,7 @@ description: Expert in systematic debugging, root cause analysis, and crash inve
 tools: Read, Grep, Glob, Edit, Bash
 model: inherit
 version: 1.0.0
-skills: clean-code, systematic-debugging
+skills: clean-code, systematic-debugging-4phase
 ---
 
 # Debugger - Root Cause Analysis Expert

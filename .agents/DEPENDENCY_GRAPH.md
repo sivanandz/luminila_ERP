@@ -50,7 +50,7 @@ flowchart LR
     S_bash_linux["bash-linux"]
     S_batch_operations["batch-operations"]
     S_behavioral_modes["behavioral-modes"]
-    S_brainstorming["brainstorming"]
+    S_brainstorming_socratic["brainstorming-socratic"]
     S_clean_code["clean-code"]
     S_code_review_checklist["code-review-checklist"]
     S_code_review_graph["code-review-graph"]
@@ -83,7 +83,7 @@ flowchart LR
     S_server_management["server-management"]
     S_simplify_code["simplify-code"]
     S_skillify["skillify"]
-    S_systematic_debugging["systematic-debugging"]
+    S_systematic_debugging_4phase["systematic-debugging-4phase"]
     S_tailwind_patterns["tailwind-patterns"]
     S_tdd_workflow["tdd-workflow"]
     S_testing_patterns["testing-patterns"]
@@ -93,7 +93,7 @@ flowchart LR
     S_webapp_testing["webapp-testing"]
   end
   W_brainstorm --> A_project_planner
-  W_brainstorm -.-> S_brainstorming
+  W_brainstorm -.-> S_brainstorming_socratic
   W_coordinate --> A_orchestrator
   W_coordinate -.-> S_coordinator_mode
   W_coordinate -.-> S_parallel_agents
@@ -103,7 +103,7 @@ flowchart LR
   W_create -.-> S_design_spec
   W_create -.-> S_verify_changes
   W_debug --> A_debugger
-  W_debug -.-> S_systematic_debugging
+  W_debug -.-> S_systematic_debugging_4phase
   W_debug -.-> S_verify_changes
   W_deploy --> A_devops_engineer
   W_deploy -.-> S_deployment_procedures
@@ -147,7 +147,7 @@ flowchart LR
   A_database_architect --> S_clean_code
   A_database_architect --> S_database_design
   A_debugger --> S_clean_code
-  A_debugger --> S_systematic_debugging
+  A_debugger --> S_systematic_debugging_4phase
   A_devops_engineer --> S_clean_code
   A_devops_engineer --> S_deployment_procedures
   A_devops_engineer --> S_server_management
@@ -158,8 +158,8 @@ flowchart LR
   A_explorer_agent --> S_clean_code
   A_explorer_agent --> S_architecture
   A_explorer_agent --> S_plan_writing
-  A_explorer_agent --> S_brainstorming
-  A_explorer_agent --> S_systematic_debugging
+  A_explorer_agent --> S_brainstorming_socratic
+  A_explorer_agent --> S_systematic_debugging_4phase
   A_frontend_specialist --> S_clean_code
   A_frontend_specialist --> S_design_spec
   A_frontend_specialist --> S_nextjs_react_expert
@@ -177,7 +177,7 @@ flowchart LR
   A_orchestrator --> S_parallel_agents
   A_orchestrator --> S_behavioral_modes
   A_orchestrator --> S_plan_writing
-  A_orchestrator --> S_brainstorming
+  A_orchestrator --> S_brainstorming_socratic
   A_orchestrator --> S_architecture
   A_orchestrator --> S_lint_and_validate
   A_orchestrator --> S_powershell_windows
@@ -193,15 +193,15 @@ flowchart LR
   A_performance_optimizer --> S_clean_code
   A_performance_optimizer --> S_performance_profiling
   A_product_manager --> S_plan_writing
-  A_product_manager --> S_brainstorming
+  A_product_manager --> S_brainstorming_socratic
   A_product_manager --> S_clean_code
   A_product_owner --> S_plan_writing
-  A_product_owner --> S_brainstorming
+  A_product_owner --> S_brainstorming_socratic
   A_product_owner --> S_clean_code
   A_project_planner --> S_clean_code
   A_project_planner --> S_app_builder
   A_project_planner --> S_plan_writing
-  A_project_planner --> S_brainstorming
+  A_project_planner --> S_brainstorming_socratic
   A_qa_automation_engineer --> S_webapp_testing
   A_qa_automation_engineer --> S_testing_patterns
   A_qa_automation_engineer --> S_web_design_guidelines

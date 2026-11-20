@@ -3,7 +3,7 @@ name: debug
 description: Debugging command. Activates DEBUG mode for systematic problem investigation.
 version: 1.0.0
 requires_agents: debugger
-requires_skills: systematic-debugging, verify-changes
+requires_skills: systematic-debugging-4phase, verify-changes
 artifact_outputs: root-cause, fix-summary, verification-report
 ---
 
