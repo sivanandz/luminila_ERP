@@ -229,6 +229,10 @@ export async function saveKarigarJob(input: KarigarJobInput): Promise<KarigarJob
     if (!input.karigarName.trim()) throw new Error('Karigar name is required.');
     if (!input.productName.trim()) throw new Error('Piece description is required.');
     if (input.metalGrams <= 0) throw new Error('Metal issued must be greater than zero grams.');
+    // P-06: finished metal plus recovered scrap cannot exceed what was issued.
+    if (input.finishedNetGrams + input.scrapGrams > input.metalGrams + 1e-9) {
+        throw new Error('Finished weight plus scrap cannot exceed the metal issued.');
+    }
 
     const tenant = requireTenantEmail();
     return enqueueTask(jobsQueueKey(tenant), async () => {

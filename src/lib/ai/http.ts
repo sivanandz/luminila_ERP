@@ -11,7 +11,7 @@ import PocketBase from 'pocketbase';
 import { NextResponse } from 'next/server';
 import { authenticateOperator, hasCapability, type OperatorSession } from '../api-auth';
 import { createTenantClient } from '../pocketbase';
-import { readRegistrySecret } from '../tenant-secrets';
+import { isEncryptedSecret, readRegistrySecret } from '../tenant-secrets';
 import { readTenantRegistry } from '../tenant-db-manager';
 import { FixedWindowRateLimiter } from '../rate-limit';
 import type { Permission, Resource } from '../rbac';
@@ -191,7 +191,8 @@ function adminCredentialsForUrl(pbUrl: string): AdminCredentials | null {
     const email = process.env.POCKETBASE_SUPERUSER_EMAIL || process.env.PB_ADMIN_EMAIL || '';
     const password = process.env.POCKETBASE_SUPERUSER_PASSWORD || process.env.PB_ADMIN_PASSWORD || '';
     if (!email || !password) return null;
-    return { email, password: readRegistrySecret(password) };
+    // H-25: env credentials are plaintext; only registry values are enc:v1:.
+    return { email, password: isEncryptedSecret(password) ? readRegistrySecret(password) : password };
 }
 
 /**

@@ -5,6 +5,7 @@
 
 import { pb, ensureAuth, getCurrentTenantEmail, getTenantStorageKey, sanitizeFilter } from "./pocketbase";
 import { normalizeE164 } from "./whatsapp-crm";
+import { pbBound } from "./analytics-v2/range";
 
 export const ATTRIBUTION_WINDOW_DAYS = 7;
 const CAMPAIGNS_COLLECTION = "whatsapp_campaigns";
@@ -239,30 +240,32 @@ export async function attributeOrderToCampaign(order: {
     if (orderPhone) {
         const windowStart = new Date(orderDate.getTime() - ATTRIBUTION_WINDOW_DAYS * 86400000);
 
-        // Find campaign created/active within the 7-day window
+        // Attribute on an actual dispatch inside the 7-day window, not on the
+        // campaign row's creation date (W-10): a queued/failed message must not
+        // count, and an old campaign that sent yesterday still attributes.
         for (const c of campaigns) {
-            // PB rows expose `created`, not `created_at`; an undefined value
-            // produced Invalid Date and silently skipped attribution (CRM-15).
-            const cmpDate = new Date(c.created_at || (c as { created?: string }).created || 0);
-            if (cmpDate >= windowStart && cmpDate <= orderDate) {
-                // Check if this recipient was in broadcast messages
-                try {
-                    const hit = await pb.collection("broadcast_messages").getFirstListItem(
-                        `campaign="${sanitizeFilter(c.title)}" && recipient_phone~"${orderPhone.slice(-10)}"` +
-                        ` && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`
-                    );
-                    if (hit) {
-                        await recordCampaignConversion(c.id, order.total);
-                        return { attributed: true, campaignId: c.id, campaignTitle: c.title };
-                    }
-                } catch (error) {
-                    // A 404 is "this campaign never dispatched to this phone".
-                    // Anything else (outage, permission, bad filter) must not be
-                    // mistaken for "not attributed" (ENG-13).
-                    if ((error as { status?: number } | null)?.status !== 404) {
-                        console.error("[campaigns] recipient lookup failed:", error);
-                        throw error;
-                    }
+            try {
+                const hit = await pb.collection("broadcast_messages").getFirstListItem(
+                    `campaign="${sanitizeFilter(c.title)}" && recipient_phone~"${orderPhone.slice(-10)}"` +
+                    // AN-02: PB compares datetime bounds as strings, so a T-format
+                    // bound silently excludes same-date boundary rows — both of
+                    // this window's edges would misfire (a dispatch lost on the
+                    // start date; a post-purchase dispatch wrongly counted).
+                    ` && status="sent" && sent_at >= "${pbBound(windowStart.toISOString())}"` +
+                    ` && sent_at <= "${pbBound(orderDate.toISOString())}"` +
+                    ` && account_email="${sanitizeFilter(getCurrentTenantEmail())}"`
+                );
+                if (hit) {
+                    await recordCampaignConversion(c.id, order.total);
+                    return { attributed: true, campaignId: c.id, campaignTitle: c.title };
+                }
+            } catch (error) {
+                // A 404 is "this campaign never dispatched to this phone in the window".
+                // Anything else (outage, permission, bad filter) must not be
+                // mistaken for "not attributed" (ENG-13).
+                if ((error as { status?: number } | null)?.status !== 404) {
+                    console.error("[campaigns] recipient lookup failed:", error);
+                    throw error;
                 }
             }
         }

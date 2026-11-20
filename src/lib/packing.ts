@@ -552,6 +552,20 @@ export async function resolveScannedCode(
     } catch (error) {
         console.warn('Variant resolution failed:', error);
     }
+
+    // H-10: a product-level tag (parent SKU only) must resolve to the PRODUCT,
+    // with no variant id. matchResolvedToLine then flags ambiguity when the
+    // order carries more than one line for it, instead of guessing a size.
+    try {
+        const tenantEmail = getCurrentTenantEmail();
+        const tenantFilter = tenantEmail ? ` && account_email="${sanitizeFilter(tenantEmail)}"` : '';
+        const product = await pb.collection('products').getFirstListItem<{ id: string; sku?: string }>(
+            `sku="${sanitizeFilter(normalized)}"${tenantFilter}`
+        ).catch(() => null);
+        if (product) return { productId: product.id, label: product.sku || normalized };
+    } catch (error) {
+        console.warn('Product-level scan resolution failed:', error);
+    }
     return null;
 }
 
@@ -604,10 +618,11 @@ export async function getOrCreateSession(
         packed_by: packedBy || '',
     });
     const session = toSession(created as unknown as Record<string, unknown>);
+    // B-20: activity writes now throw on failure; keep fire-and-forget callers
+    // from becoming unhandled rejections while surfacing the failure.
     void logActivity('create', 'order', `Packing started for ${order.order_number} (${lines.length} lines)`, {
         entityId: order.id,
-        userName: packedBy,
-    });
+    }).catch((err) => console.warn('[packing] activity log failed:', err));
     return session;
 }
 
@@ -667,8 +682,7 @@ export async function completePackingSession(
             packaging_preset: session.packaging_preset,
             weight_grams: session.weight_grams,
         },
-        userName: packedBy,
-    });
+    }).catch((err) => console.warn('[packing] activity log failed:', err));
 }
 
 /** Cancel a session (order was cancelled, or packing restarted). */
@@ -823,7 +837,7 @@ export async function handleMidPackDamage(
         reason: `Order #${session.order_number} short-shipped: 0 spare units on shelf. ${reason}`.trim(),
         status: 'active',
         flagged_by: flaggedBy,
-    }).catch((err) => console.warn('Discrepancy write warning:', err));
+    });
 
     const newShortage: ShortageItem = {
         item_id: line.item_id,

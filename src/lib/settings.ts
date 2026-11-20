@@ -192,7 +192,14 @@ export async function getStoreSettings(userId?: string, userName?: string, userE
                             JSON.stringify(stripClientSecrets(parsed))
                         );
                     }
-                    return normalizeLoadedSettings(parsed as Record<string, unknown>, defaults);
+                    // H-23: the canonical row is readable by every tenant member,
+                    // so strip gateway credentials from the RETURN value too —
+                    // not just the localStorage mirror. Admins reveal them via
+                    // the capability-checked /api/settings/secrets route.
+                    return normalizeLoadedSettings(
+                        stripClientSecrets(parsed) as Record<string, unknown>,
+                        defaults
+                    );
                 }
             }
         } catch {
@@ -257,7 +264,10 @@ export async function saveStoreSettings(settings: StoreSettings, userId?: string
         const shouldClaim = !existingRecord || !existingRecord.account_email;
         const payload = {
             key,
-            value: settings,
+            // H-23: gateway secrets never live in the canonical row — it is
+            // readable by every tenant member. They are stored (encrypted) in a
+            // dedicated row via /api/settings/secrets instead.
+            value: stripClientSecrets(settings as unknown as Record<string, unknown>) as unknown as StoreSettings,
             category: "store_config",
             ...(shouldClaim ? { account_email: tenant } : {}),
         };

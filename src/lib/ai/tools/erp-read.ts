@@ -122,7 +122,7 @@ export const readTools: AiTool[] = [
             const window = rollingWindow(args.days, context.now);
             const tenant = accountFilter(context.accountEmail);
 
-            const [sales, orders, variants, invoices] = await Promise.all([
+            const [sales, orders, b2bOrders, variants, invoices] = await Promise.all([
                 listRecords(context.client, 'sales', {
                     filter: `${tenant} && created >= "${window.fromIso}"`,
                     fields: 'id,total,channel,created,status',
@@ -131,6 +131,14 @@ export const readTools: AiTool[] = [
                 listRecords(context.client, 'sales_orders', {
                     filter: `${tenant} && status != "delivered" && status != "cancelled" && status != "invoiced"`,
                     fields: 'id,status,total',
+                    perPage: 500,
+                }).catch(() => []),
+                // O-19: manual B2B orders are real revenue but never appear in
+                // `sales`. Exclude channel mirrors so settled storefront/WhatsApp
+                // orders are not counted twice.
+                listRecords(context.client, 'sales_orders', {
+                    filter: `${tenant} && (order_date >= "${window.fromIso}" || created >= "${window.fromIso}") && (status = "confirmed" || status = "shipped" || status = "delivered" || status = "invoiced") && (capture_source = "" || (capture_source != "storefront" && capture_source != "whatsapp"))`,
+                    fields: 'id,total,order_date,created,status,capture_source',
                     perPage: 500,
                 }).catch(() => []),
                 listRecords(context.client, 'product_variants', {
@@ -146,9 +154,18 @@ export const readTools: AiTool[] = [
             ]);
 
             const rows = asSalesRows(sales).filter((row) => row.status !== 'cancelled');
-            const revenue = rows.reduce((sum, row) => sum + row.total, 0);
+            const b2bTotals = b2bOrders.map((order) => {
+                const record = order as Record<string, unknown>;
+                return {
+                    total: asNumber(record.total),
+                    day: dayKey(String(record.order_date || record.created || '')),
+                };
+            });
+            const revenue = rows.reduce((sum, row) => sum + row.total, 0)
+                + b2bTotals.reduce((sum, row) => sum + row.total, 0);
             const todayKey = window.toDate;
-            const revenueToday = rows.filter((row) => dayKey(row.created) === todayKey).reduce((sum, row) => sum + row.total, 0);
+            const revenueToday = rows.filter((row) => dayKey(row.created) === todayKey).reduce((sum, row) => sum + row.total, 0)
+                + b2bTotals.filter((row) => row.day === todayKey).reduce((sum, row) => sum + row.total, 0);
             const lowStock = variants.filter((variant) => {
                 const record = variant as Record<string, unknown>;
                 const stock = asNumber(record.stock_level);
@@ -165,8 +182,10 @@ export const readTools: AiTool[] = [
                 windowDays: args.days,
                 revenue: Math.round(revenue * 100) / 100,
                 revenueToday: Math.round(revenueToday * 100) / 100,
-                salesCount: rows.length,
-                averageOrderValue: rows.length > 0 ? Math.round((revenue / rows.length) * 100) / 100 : 0,
+                salesCount: rows.length + b2bOrders.length,
+                averageOrderValue: rows.length + b2bOrders.length > 0
+                    ? Math.round((revenue / (rows.length + b2bOrders.length)) * 100) / 100
+                    : 0,
                 pendingSalesOrders: orders.length,
                 lowStockVariantCount: lowStock,
                 unpaidInvoiceCount: invoices.length,

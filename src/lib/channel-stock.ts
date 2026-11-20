@@ -508,6 +508,53 @@ export async function applyChannelStock(
  */
 const REVERSAL_MARKER = /\[reversal-of:([a-z0-9]+)\]/;
 
+/**
+ * H-05: units already restocked by an approved return of this order. Return
+ * approval writes `movement_type="return"` rows keyed to the CREDIT NOTE id,
+ * so a later cancellation saw no reversal on the sale movement and restored
+ * the full quantity again.
+ */
+async function returnedQuantitiesForOrder(
+    db: StockDb,
+    tenant: string,
+    reference: string
+): Promise<Map<string, number>> {
+    const byVariant = new Map<string, number>();
+    const creditNotes = await db.collection('credit_notes').getFullList<{
+        id: string;
+        original_sale?: string;
+        original_invoice?: string;
+        status?: string;
+    }>({
+        filter: `account_email="${escapeFilter(tenant)}" && status!="cancelled" && status!="pending" && status!="draft"`,
+    }).catch(() => [] as Array<{ id: string; original_sale?: string; original_invoice?: string; status?: string }>);
+
+    const linkedIds: string[] = [];
+    for (const cn of creditNotes) {
+        if (cn.original_sale === reference) {
+            linkedIds.push(cn.id);
+            continue;
+        }
+        if (cn.original_invoice) {
+            const invoice = await db.collection('invoices')
+                .getOne<{ order?: string; sale?: string }>(cn.original_invoice)
+                .catch(() => null);
+            if (String(invoice?.order || invoice?.sale || '') === reference) linkedIds.push(cn.id);
+        }
+    }
+    if (linkedIds.length === 0) return byVariant;
+
+    const refFilter = linkedIds.map((id) => `reference_id="${escapeFilter(id)}"`).join(' || ');
+    const returns = await db.collection('stock_movements').getFullList<MovementRecord>({
+        filter: `(${refFilter}) && movement_type="return" && account_email="${escapeFilter(tenant)}"`,
+    }).catch(() => [] as MovementRecord[]);
+    for (const row of returns) {
+        if (!row.variant) continue;
+        byVariant.set(row.variant, (byVariant.get(row.variant) || 0) + Math.abs(Number(row.quantity) || 0));
+    }
+    return byVariant;
+}
+
 export async function restoreChannelStockForReference(
     db: StockDb,
     options: {
@@ -540,6 +587,10 @@ export async function restoreChannelStockForReference(
         if (match) reversedMovementIds.add(match[1]);
     }
 
+    // H-05: units an approved return already put back must not be restored a
+    // second time when the order is cancelled.
+    const returnedByVariant = await returnedQuantitiesForOrder(db, tenant, options.referenceId);
+
     let restored = 0;
     for (const movement of movements) {
         if (reversedMovementIds.has(movement.id)) continue;
@@ -554,6 +605,14 @@ export async function restoreChannelStockForReference(
             );
             continue;
         }
+
+        // Net the units a prior return already restocked (H-05). A full return
+        // leaves nothing to restore; a partial return only restores the rest.
+        const alreadyReturned = returnedByVariant.get(movement.variant) || 0;
+        const consumed = Math.min(alreadyReturned, quantity);
+        returnedByVariant.set(movement.variant, alreadyReturned - consumed);
+        const remaining = quantity - consumed;
+        if (remaining === 0) continue;
 
         // The ledger row is tenant-scoped, but the variant is not: verify its
         // owner before moving any stock (SYN-2).
@@ -576,7 +635,7 @@ export async function restoreChannelStockForReference(
         const marker = await db.collection('stock_movements').create({
             variant: movement.variant,
             movement_type: 'return',
-            quantity,
+            quantity: remaining,
             reference_id: options.referenceId,
             source: options.channel || movement.source || 'storefront',
             // Carry the tenant stamp across the reversal (CO-07).
@@ -588,7 +647,7 @@ export async function restoreChannelStockForReference(
         try {
             await db
                 .collection('product_variants')
-                .update(movement.variant, { 'stock_level+': quantity });
+                .update(movement.variant, { 'stock_level+': remaining });
         } catch (restockError) {
             // Nothing was restored, so release the marker: the line must stay
             // un-reversed for a retry. A failed cleanup is loud, not silent.

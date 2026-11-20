@@ -73,6 +73,7 @@ export function StockTransferModal({
         }[]
     >([]);
     const [submitting, setSubmitting] = useState(false);
+    const [receivingId, setReceivingId] = useState<string | null>(null);
 
     useEffect(() => {
         if (open) {
@@ -203,6 +204,10 @@ export function StockTransferModal({
     };
 
     const handleReceive = async (trfId: string) => {
+        // H-48: two clicks before the status write both saw "dispatched" and
+        // credited the destination twice. Guard per transfer in the UI.
+        if (receivingId) return;
+        setReceivingId(trfId);
         try {
             await receiveStockTransfer(trfId);
             toast.success("Stock received and verified into destination inventory!");
@@ -211,6 +216,8 @@ export function StockTransferModal({
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : "Failed to receive transfer";
             toast.error(msg);
+        } finally {
+            setReceivingId(null);
         }
     };
 
@@ -488,6 +495,7 @@ export function StockTransferModal({
                                                 <Button
                                                     size="sm"
                                                     onClick={() => handleReceive(trf.id)}
+                                                    disabled={receivingId === trf.id}
                                                     className="h-8 text-xs bg-emerald-600 hover:bg-emerald-500 text-white gap-1"
                                                 >
                                                     <CheckCircle2 className="w-3.5 h-3.5" />

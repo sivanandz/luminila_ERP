@@ -86,10 +86,11 @@ function normalizePrice(val: unknown): number {
     if (val === undefined || val === null) return 0;
     const num = Number(val);
     if (isNaN(num)) return 0;
-    // Meta Catalog micro-units (e.g. 1500000 = 1500 INR)
-    if (num >= 100000 && num % 1000 === 0) {
-        return num / 1000;
-    }
+    // H-30 (W-06/U-06): this app writes and reads catalog prices in whole
+    // rupees — catalog-sync compares them 1:1 against rupee channel prices.
+    // The old `>= 100000 && % 1000 === 0` magnitude guess divided genuine
+    // rupee prices like 150000 to 150, silently repricing high-value pieces
+    // on every edit.
     return num;
 }
 
@@ -340,6 +341,8 @@ export function WhatsAppCatalogEditorModal({
                 isHidden: selectedItem.isHidden,
             });
             setLinkingProductId(selectedItem.linkedProduct?.id || "");
+            // U-07: the PB price write is a per-item decision; never carry it to the next item.
+            setSyncInventoryPriceToPB(false);
         }
     }, [selectedItem]);
 

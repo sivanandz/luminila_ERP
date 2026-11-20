@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
+import { dayKey } from "@/lib/analytics-v2/range";
 import {
     Sparkles,
     ShoppingBag,
@@ -74,7 +75,8 @@ export function SmartReplenishmentModal({
         }
         setCreatingPOForVendor(group.vendorId);
         try {
-            const todayStr = new Date().toISOString().split("T")[0];
+            // U-13: local business day, not UTC (toISOString is yesterday before 05:30 IST).
+            const todayStr = dayKey(new Date());
             const items = group.items.map((it) => {
                 const totalLine = it.suggestedQuantity * it.unitCost;
                 return {

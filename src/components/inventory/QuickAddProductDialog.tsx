@@ -121,6 +121,10 @@ export function QuickAddProductDialog({
     const [showImageUrl, setShowImageUrl] = useState(false);
     const [imageBusy, setImageBusy] = useState(false);
     const [saving, setSaving] = useState(false);
+    // H-46: Enter key auto-repeat re-fires the save handler while the first
+    // save is still in flight, and `saving` state does not land between
+    // keydowns — only a synchronous ref can stop the double submit.
+    const saveInFlightRef = useRef(false);
     const [dragging, setDragging] = useState(false);
     const [channels, setChannels] = useState<SalesChannelDefinition[]>(() =>
         getConfiguredChannels()
@@ -461,6 +465,7 @@ export function QuickAddProductDialog({
         !imageBusy;
 
     const save = async (addAnother: boolean) => {
+        if (saveInFlightRef.current) return;
         if (!pieceName) {
             toast.error("Give the piece a name.");
             return;
@@ -470,6 +475,7 @@ export function QuickAddProductDialog({
             return;
         }
 
+        saveInFlightRef.current = true;
         setSaving(true);
         try {
             const seriesSku = seriesEnabled ? finalSkuPreview : undefined;
@@ -553,6 +559,7 @@ export function QuickAddProductDialog({
                 error instanceof Error ? error.message : "Could not save the product"
             );
         } finally {
+            saveInFlightRef.current = false;
             setSaving(false);
         }
     };

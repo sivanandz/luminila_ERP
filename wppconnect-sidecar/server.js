@@ -362,6 +362,35 @@ async function closeSessionData(data) {
     }
 }
 
+// --- Unattended STOP opt-out (H-27) -------------------------------------------
+// The app's WhatsApp hub registers STOP only while an operator has it open.
+// The sidecar sees every inbound message, so it reports STOP intents here and
+// the ERP records the opt-out without any page being open.
+const APP_INTERNAL_URL = (process.env.SIDECAR_APP_URL || process.env.APP_URL || '').replace(/\/+$/, '');
+const APP_TENANT_EMAIL = (process.env.SIDECAR_TENANT_EMAIL || '').trim().toLowerCase();
+
+function isStopIntent(body) {
+    const text = String(body || '').trim().toLowerCase();
+    return text === 'stop' || text.includes('opt out');
+}
+
+async function reportOptOut(from) {
+    if (!APP_INTERNAL_URL || !SECRET_KEY || !from) return;
+    try {
+        const res = await fetch(`${APP_INTERNAL_URL}/api/whatsapp/opt-out`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-sidecar-secret': SECRET_KEY },
+            body: JSON.stringify({ phone: from, ...(APP_TENANT_EMAIL ? { tenant: APP_TENANT_EMAIL } : {}) }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        console.log(`[sidecar] STOP reply from ${from} registered with the ERP`);
+    } catch (err) {
+        // Never break the message stream on a reporting failure; the ERP also
+        // registers the STOP when an operator next opens the chat.
+        console.warn(`[sidecar] could not report STOP from ${from}:`, err.message || err);
+    }
+}
+
 function attachClientListeners(names, client) {
     const emit = (event, data) => emitSessionEvent(names, event, data);
 
@@ -378,6 +407,9 @@ function attachClientListeners(names, client) {
             sender: message.sender
         };
         emit('message', { message: payload });
+        if (!message.fromMe && !message.isGroupMsg && isStopIntent(message.body)) {
+            reportOptOut(message.from);
+        }
     };
 
     if (typeof client.onAnyMessage === 'function') {

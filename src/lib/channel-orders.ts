@@ -127,7 +127,16 @@ export async function upsertChannelCustomer(
             updates.opt_in_marketing = input.marketingConsent;
         }
         if (Object.keys(updates).length > 0) {
-            await client.collection('customers').update(existing.id, updates).catch(() => {});
+            // SW-17: marketing consent is compliance-relevant — never swallow a
+            // failed write when it is part of the update. Other backfill fields
+            // are non-critical, so warn rather than fail the whole order.
+            const consentChanged = Object.prototype.hasOwnProperty.call(updates, 'opt_in_marketing');
+            try {
+                await client.collection('customers').update(existing.id, updates);
+            } catch (err) {
+                if (consentChanged) throw err;
+                console.warn(`[channel-orders] customer ${existing.id} backfill failed:`, err);
+            }
         }
         return { id: existing.id, existed: true };
     }
@@ -431,6 +440,15 @@ export async function findExistingChannelOrder(
         // miss rather than returning another customer's order.
         if (stored !== wanted) return null;
     }
+
+    // H-29: a cancelled or line-less order is NOT a successful duplicate. The
+    // idempotency key is unique, so returning null here would just make the
+    // caller's create fail with a unique error; throw a typed reason instead.
+    if (record.status === 'cancelled') throw new Error('ORDER_CANCELLED');
+    const lines = await client.collection('sales_order_items')
+        .getList(1, 1, { filter: client.filter('order = {:id}', { id: record.id }) })
+        .catch(() => null);
+    if (!lines || lines.totalItems === 0) throw new Error('ORDER_HAS_NO_LINES');
 
     return record;
 }

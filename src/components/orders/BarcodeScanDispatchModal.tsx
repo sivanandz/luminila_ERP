@@ -259,20 +259,7 @@ export function BarcodeScanDispatchModal({
                 carrierTitle = "DTDC Courier";
             }
 
-            // 1. Dispatch VIP WhatsApp notification with live link
-            const waRes = await dispatchOrderMilestoneWhatsApp({
-                orderId: selectedOrder.id,
-                orderNumber: selectedOrder.order_number,
-                customerName: selectedOrder.customer_name,
-                customerPhone: selectedOrder.customer_phone,
-                milestone: "shipped",
-                courierName: carrierTitle,
-                trackingNumber: cleanAwb,
-                trackingUrl,
-                notes: "Dispatched via Barcode Scan Station",
-            });
-
-            // 2. Register the shipment and move the order to shipped through
+            // 1. Register the shipment and move the order to shipped through
             // the canonical path, which enforces the paid/COD and status guards
             // instead of writing `shipped` from the UI (ORD-08).
             const shipment = await createShipmentForOrder(pb, getCurrentTenantEmail(), {
@@ -285,6 +272,20 @@ export function BarcodeScanDispatchModal({
             if (!shipment.success) {
                 throw new Error(shipment.error || "Could not create the shipment.");
             }
+
+            // 2. Notify only after the state change succeeded (U-08): the guards
+            // above must be able to reject dispatch before a "shipped" message goes out.
+            const waRes = await dispatchOrderMilestoneWhatsApp({
+                orderId: selectedOrder.id,
+                orderNumber: selectedOrder.order_number,
+                customerName: selectedOrder.customer_name,
+                customerPhone: selectedOrder.customer_phone,
+                milestone: "shipped",
+                courierName: carrierTitle,
+                trackingNumber: cleanAwb,
+                trackingUrl,
+                notes: "Dispatched via Barcode Scan Station",
+            });
 
             playSuccessTone();
 

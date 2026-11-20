@@ -462,10 +462,14 @@ export function subscribeSKUTaxonomies(callback: (taxonomies: SKUTaxonomies) => 
  */
 export async function loadSKUTaxonomies(): Promise<SKUTaxonomies> {
     const tenantEmail = ensureTenantScope();
+    // B-24: an unscoped key-only lookup can return another store's settings.
+    // With no resolved tenant, keep the (already tenant-scoped) local cache and
+    // defaults instead of adopting a foreign taxonomy list.
+    if (!tenantEmail || tenantEmail === "default") {
+        return { ...currentTaxonomies };
+    }
     try {
-        const filter = tenantEmail && tenantEmail !== "default"
-            ? `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`
-            : `key="${PB_KEY}"`;
+        const filter = `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`;
         const record = await pb.collection("store_settings").getFirstListItem(filter).catch(() => null);
         if (record && record.value) {
             const val = typeof record.value === "string" ? JSON.parse(record.value) : record.value;
@@ -497,7 +501,7 @@ export async function loadSKUTaxonomies(): Promise<SKUTaxonomies> {
  * Saves and broadcasts updated taxonomies to PocketBase & localStorage
  */
 export async function saveSKUTaxonomies(taxonomies: SKUTaxonomies): Promise<void> {
-    ensureTenantScope();
+    const tenantEmail = ensureTenantScope();
     currentTaxonomies = { ...taxonomies };
 
     if (typeof window !== "undefined") {
@@ -506,23 +510,23 @@ export async function saveSKUTaxonomies(taxonomies: SKUTaxonomies): Promise<void
     notifyListeners();
 
     try {
-        const tenantEmail = getCurrentTenantEmail();
-        const filter = tenantEmail && tenantEmail !== "default"
-            ? `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`
-            : `key="${PB_KEY}"`;
+        // B-24: no resolved tenant means no scoped settings row. Writing an
+        // unscoped one lets another store adopt or overwrite it on restore.
+        if (!tenantEmail || tenantEmail === "default") return;
+        const filter = `key="${PB_KEY}" && account_email="${sanitizeFilter(tenantEmail)}"`;
         const existing = await pb.collection("store_settings").getFirstListItem(filter).catch(() => null);
         if (existing) {
             await pb.collection("store_settings").update(existing.id, {
                 value: currentTaxonomies,
                 category: "sku_taxonomies",
-                account_email: tenantEmail && tenantEmail !== "default" ? tenantEmail : (existing.account_email || ""),
+                account_email: tenantEmail,
             });
         } else {
             await pb.collection("store_settings").create({
                 key: PB_KEY,
                 value: currentTaxonomies,
                 category: "sku_taxonomies",
-                account_email: tenantEmail && tenantEmail !== "default" ? tenantEmail : "",
+                account_email: tenantEmail,
             });
         }
     } catch (e) {
@@ -710,6 +714,11 @@ export interface SKUBuildParams {
  * Example: TMPNECCHK04821
  */
 export function generateParentSKU(genre: string, category: string, subcategory: string, sequence: number): string {
+    // B-23: padStart(5).slice(-5) silently wraps 100000 to "00000", reusing an
+    // existing style number. Fail loudly instead of minting a collision.
+    if (!Number.isInteger(sequence) || sequence < 0 || sequence > 99999) {
+        throw new Error(`SKU sequence must be an integer between 0 and 99999 (got ${sequence}).`);
+    }
     const g = (genre || "GEN").substring(0, 3).toUpperCase();
     const c = (category || "GEN").substring(0, 3).toUpperCase();
     const s = (subcategory || "GEN").substring(0, 3).toUpperCase();
@@ -718,7 +727,7 @@ export function generateParentSKU(genre: string, category: string, subcategory: 
 }
 
 /**
- * Generates the 21-character Child Variant SKU
+ * Generates the 22-character Child Variant SKU
  * Formula: ParentSKU + "-" + Plating(2) + Color(2) + Size(3)
  * Example: TMPNECCHK04821-MGRBSTD
  */
@@ -777,6 +786,9 @@ export function parseSKUType(sku: string): {
     if (parts.length === 1 && clean.length === 14) {
         return { is1DPointer: false, isParent: true, isChild: false, isWholesale: false, multiplier: 1 };
     }
+    // B-22: generated child SKUs are parent(14) + "-" + plating(2) +
+    // color(2) + size(3) = 22 characters; the old "21" in the doc comment was
+    // the error, not this classifier.
     if (parts.length === 2 && clean.length === 22) {
         return { is1DPointer: false, isParent: false, isChild: true, isWholesale: false, multiplier: 1 };
     }

@@ -1,6 +1,6 @@
 import { pb, sanitizeFilter, getCurrentTenantEmail } from '@/lib/pocketbase';
 import { Product } from '@/types/database';
-import { getWhatsAppUrl, whatsappManager } from '@/lib/whatsapp';
+import { getWhatsAppUrl, whatsappManager, getWppConnectSecret } from '@/lib/whatsapp';
 import { resolveProductCatalogImage } from '@/lib/whatsapp-catalog';
 import { getChannelPrice } from '@/lib/channel-pricing';
 
@@ -12,6 +12,15 @@ const SIDECAR_URL = {
 function humanPaceDelay(): Promise<void> {
     const ms = Math.round(1400 + Math.random() * 1800);
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// W-14: the sidecar rejects unauthenticated /api calls. Reuse the same secret
+// resolution as the rest of the WhatsApp service layer (server + desktop shell).
+function withSidecarAuth(init?: RequestInit): RequestInit {
+    const headers = new Headers(init?.headers || {});
+    const secret = getWppConnectSecret();
+    if (secret) headers.set('Authorization', `Bearer ${secret}`);
+    return { ...(init || {}), headers };
 }
 
 interface WhatsAppProduct {
@@ -89,7 +98,7 @@ export async function syncCatalog() {
         // recreated every active SKU in WhatsApp (SYN-4).
         let catalogFetched = false;
         try {
-            const res = await fetch(`${SIDECAR_URL}/catalog/products`);
+            const res = await fetch(`${SIDECAR_URL}/catalog/products`, withSidecarAuth());
             if (!res.ok) throw new Error('Sidecar unreachable');
             const json = await res.json();
             if (!json.success) throw new Error('Sidecar returned an unsuccessful catalog response');
@@ -204,11 +213,11 @@ async function createProductInWhatsApp(p: Product) {
         image: resolvedImage
     };
 
-    const res = await fetch(`${SIDECAR_URL}/catalog/products`, {
+    const res = await fetch(`${SIDECAR_URL}/catalog/products`, withSidecarAuth({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
-    });
+    }));
 
     if (!res.ok) throw new Error(`Create failed: ${res.statusText}`);
 }
@@ -223,18 +232,18 @@ async function updateProductInWhatsApp(waId: string, p: Product) {
         }
     };
 
-    const res = await fetch(`${SIDECAR_URL}/catalog/products/${waId}`, {
+    const res = await fetch(`${SIDECAR_URL}/catalog/products/${waId}`, withSidecarAuth({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
-    });
+    }));
 
     if (!res.ok) throw new Error(`Update failed: ${res.statusText}`);
 }
 
 async function deleteProductInWhatsApp(waId: string) {
-    const res = await fetch(`${SIDECAR_URL}/catalog/products/${waId}`, {
+    const res = await fetch(`${SIDECAR_URL}/catalog/products/${waId}`, withSidecarAuth({
         method: 'DELETE'
-    });
+    }));
     if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);
 }

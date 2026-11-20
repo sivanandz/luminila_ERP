@@ -156,11 +156,17 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
     const adjusted = adjustedLineRevenues(lines, txs);
     const adjustedPrev = adjustedLineRevenues(prevLines, prevTxs);
 
-    const revenue = lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0);
+    // O-16: refunds are negative-revenue txs in the loaded set; net them into
+    // the headline figures (COGS is not reversed — restocked pieces are back in
+    // inventory, so only the revenue side of the return is recognised here).
+    const refunds = (windowTxs: typeof txs) =>
+        windowTxs.filter((t) => t.isRefund).reduce((s, t) => s + Math.abs(t.revenue), 0);
+
+    const revenue = lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0) - refunds(txs);
     const cogs = lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
     const margin = revenue - cogs;
 
-    const prevRevenue = prevLines.reduce((s, l) => s + (adjustedPrev.get(l) ?? l.netRevenue), 0);
+    const prevRevenue = prevLines.reduce((s, l) => s + (adjustedPrev.get(l) ?? l.netRevenue), 0) - refunds(prevTxs);
     const prevCogs = prevLines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
     const prevMargin = prevRevenue - prevCogs;
 
@@ -174,6 +180,14 @@ export async function getProfitabilityAnalytics(range: AnalyticsRange): Promise<
         const a = monthly.get(m) || { revenue: 0, margin: 0 };
         a.revenue += adjusted.get(l) ?? l.netRevenue;
         a.margin += (adjusted.get(l) ?? l.netRevenue) - l.quantity * l.unitCost;
+        monthly.set(m, a);
+    }
+    for (const t of txs) {
+        if (!t.isRefund) continue;
+        const m = t.day.slice(0, 7);
+        const a = monthly.get(m) || { revenue: 0, margin: 0 };
+        a.revenue -= Math.abs(t.revenue);
+        a.margin -= Math.abs(t.revenue);
         monthly.set(m, a);
     }
     const prevMonthly = new Map<string, number>();

@@ -366,7 +366,11 @@ export const NITHTHIGAL_DEFAULT_SECTIONS: NtSection[] = ([
 }));
 
 export const NITHTHIGAL_DEFAULTS: NiththigalContent = {
-    enabled: true,
+    // D-06: fail closed. A fresh tenant has no saved CMS record and empty
+    // contact details; publishing the unreviewed default copy (COD, 7-day
+    // returns, "talk to our concierge" with no channel) as the live storefront
+    // is not acceptable. A saved `enabled: true` still wins via mergeNiththigal.
+    enabled: false,
     brand: {
         name: "Niththigal",
         tagline: "Jewellery, with soul",

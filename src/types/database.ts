@@ -32,8 +32,10 @@ export interface Product extends PBRecord {
     image_url?: string;
     barcode?: string;
     is_active: boolean;
-    /** GST percentage for this product. Optional until the column exists. */
+    /** GST percentage for this product. 0/absent means "use the category default". */
     gst_rate?: number;
+    /** Explicit 0% GST (exempt) — distinct from an unconfigured gst_rate. */
+    gst_exempt?: boolean;
     hsn_code?: string;
     // Jewelry Specifications (Vyapar / BIS Aligned)
     gross_weight?: number;

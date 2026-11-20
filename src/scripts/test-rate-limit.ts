@@ -64,27 +64,42 @@ test('pruning drops only expired windows', () => {
     assert.equal(limiter.size(), 1);
 });
 
-test('the client key uses the right-most untrusted forwarded hop', () => {
-    const headers = new Headers({ 'x-forwarded-for': '203.0.113.9, 10.0.0.2' });
-    assert.equal(clientKeyFromHeaders(headers), '10.0.0.2');
+test('forwarding headers are ignored unless a trusted proxy is configured (T-06)', () => {
+    const forged = new Headers({
+        'x-forwarded-for': '203.0.113.9, 10.0.0.2',
+        'cf-connecting-ip': '198.51.100.99',
+        'x-real-ip': '198.51.100.4',
+    });
+    const key = clientKeyFromHeaders(forged);
+    assert.ok(key.startsWith('direct:'), `forged headers must not select a bucket, got ${key}`);
+});
 
-    // TRUSTED_PROXY_HOPS moves the selection left past our own proxies.
-    process.env.TRUSTED_PROXY_HOPS = '1';
+test('the client key uses the right-most untrusted forwarded hop when proxy trust is on', () => {
+    process.env.TRUST_PROXY_HEADERS = '1';
     try {
-        assert.equal(clientKeyFromHeaders(headers), '203.0.113.9');
+        const headers = new Headers({ 'x-forwarded-for': '203.0.113.9, 10.0.0.2' });
+        assert.equal(clientKeyFromHeaders(headers), '10.0.0.2');
+
+        // TRUSTED_PROXY_HOPS moves the selection left past our own proxies.
+        process.env.TRUSTED_PROXY_HOPS = '1';
+        try {
+            assert.equal(clientKeyFromHeaders(headers), '203.0.113.9');
+        } finally {
+            delete process.env.TRUSTED_PROXY_HOPS;
+        }
+
+        const realIp = new Headers({ 'x-real-ip': '198.51.100.4' });
+        assert.equal(clientKeyFromHeaders(realIp), '198.51.100.4');
+
+        // No forwarding header: a separate bucket per request, never a shared
+        // "unknown" that one caller can exhaust for everyone.
+        const first = clientKeyFromHeaders(new Headers());
+        const second = clientKeyFromHeaders(new Headers());
+        assert.ok(first.startsWith('direct:'));
+        assert.notEqual(first, second);
     } finally {
-        delete process.env.TRUSTED_PROXY_HOPS;
+        delete process.env.TRUST_PROXY_HEADERS;
     }
-
-    const realIp = new Headers({ 'x-real-ip': '198.51.100.4' });
-    assert.equal(clientKeyFromHeaders(realIp), '198.51.100.4');
-
-    // No forwarding header: a separate bucket per request, never a shared
-    // "unknown" that one caller can exhaust for everyone.
-    const first = clientKeyFromHeaders(new Headers());
-    const second = clientKeyFromHeaders(new Headers());
-    assert.ok(first.startsWith('direct:'));
-    assert.notEqual(first, second);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

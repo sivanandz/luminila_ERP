@@ -5,6 +5,7 @@ import { CloudOff, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { OfflineQueue } from "@/lib/offline-queue";
+import { accountScopeEmail } from "@/lib/pocketbase";
 
 /**
  * Activates the offline queue: drains it when the browser comes back online,
@@ -46,6 +47,8 @@ export function OfflineSync() {
     }, [refresh]);
 
     useEffect(() => {
+        // H-41: recover any queue stranded under `_default` before draining.
+        OfflineQueue.rekeyDefaultQueue(accountScopeEmail());
         setOnline(navigator.onLine);
         refresh();
 

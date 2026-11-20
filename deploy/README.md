@@ -54,9 +54,10 @@ sudo -u luminila git clone <repo> /opt/luminila/app
 cd /opt/luminila/app
 
 # PocketBase binary + migrations (migrations are already in the repo)
-sudo -u luminila curl -L -o /opt/luminila/pocketbase/pocketbase \
+sudo -u luminila curl -L -o /tmp/pb.zip \
   https://github.com/pocketbase/pocketbase/releases/download/v0.25.0/pocketbase_0.25.0_linux_amd64.zip
-# (unzip; or install the unzipped binary directly)
+sudo -u luminila unzip -o -j /tmp/pb.zip pocketbase -d /opt/luminila/pocketbase
+sudo chmod +x /opt/luminila/pocketbase/pocketbase
 sudo -u luminila cp -r pocketbase/pb_migrations /opt/luminila/pocketbase/pb_migrations
 
 # environment (ERP + Storefront)
@@ -136,9 +137,21 @@ and sign in. Nothing on this hostname exists in public DNS.
 
 ## 6. First run and the S-06 re-key
 
-1. Open the ERP over Tailscale → `/setup` → provision the tenant.
-2. Run the registry re-key **inside the deployed environment** (this is the step
-   that cannot be done on a machine without tenants):
+**Single-account mode (the shipped default):** there is no `/setup` wizard —
+it redirects to `/login`. On the first start of the ERP server, when the
+`users` collection is empty, the boot hook creates the login from
+`INITIAL_ADMIN_EMAIL` / `INITIAL_ADMIN_PASSWORD` (in `/etc/luminila/env`),
+seeds the role rows and writes the store settings. Sign in over Tailscale at
+`https://<machine>.<tailnet>.ts.net/login` with the account address. The
+registry re-key below does not apply — single mode has no tenant registry to
+encrypt. Full reference: `docs/SINGLE_ACCOUNT_DEPLOYMENT_2026-10-29.md`.
+
+1. Open the ERP over Tailscale and sign in with the account email and
+   `INITIAL_ADMIN_PASSWORD`.
+2. Multi-account deployments only (`TENANT_MODE=multi`): provision the tenant
+   through `/setup`, then run the registry re-key **inside the deployed
+   environment** (this is the step that cannot be done on a machine without
+   tenants):
 
 ```bash
 cd /opt/luminila/app
@@ -184,6 +197,12 @@ backup only on the same disk is not a backup.
       - `POST /api/storefront/order` (e.g. max 10 req / min per IP to block spam orders & inventory holds)
 - [ ] PocketBase and the sidecar are never published through Cloudflare.
 - [ ] Nightly backups run (`RCLONE_DEST` off-VPS copy enabled) and a restore has been tested once.
+- [ ] The audit-remediation requirements in
+      `docs/DEPLOYMENT-REQUIRED-CONFIG-2026-11-18.md` are applied: the three new
+      RBAC migrations ran on the PocketBase first start, `TRUST_PROXY_HEADERS=1`
+      is set (both ingresses proxy), `SIDECAR_APP_URL` is set for unattended
+      STOP registration, and `TENANT_REGISTRY_KEY` is present so the gateway
+      secrets stored by `/api/settings/secrets` are encrypted at rest.
 
 ## 9. WhatsApp sidecar notes
 

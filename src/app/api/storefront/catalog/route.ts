@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveStorefrontTenant } from "@/lib/storefront-tenant";
+import { resolvePublicStorefrontTenant } from "@/lib/storefront";
 import { getChannelPriceFromList } from "@/lib/pricing-rules";
 import { loadTenantChannelDefinitions } from "@/lib/server-pricing";
 import {
@@ -64,10 +65,28 @@ export async function GET(req: NextRequest) {
             req.headers.get("x-account-email") ||
             undefined;
 
+        // H-26: an anonymous caller must never pick an arbitrary tenant. The
+        // hint is only a selector into the server-side public allowlist.
+        const publicTenant = resolvePublicStorefrontTenant(hintEmail);
+        if (!publicTenant) {
+            return NextResponse.json(
+                { success: false, products: [], error: "This storefront is not available." },
+                { status: 404, headers: CORS_HEADERS }
+            );
+        }
+
         // The storefront content's adminBinding is authoritative: the catalogue
         // must show the inventory of the tenant the CMS is actually bound to.
         const { email: boundAdminEmail, client } =
-            await resolveStorefrontTenant(hintEmail);
+            await resolveStorefrontTenant(publicTenant);
+        // The binding-follow in resolveStorefrontTenant can point at another
+        // tenant; validate that target too before listing any inventory.
+        if (resolvePublicStorefrontTenant(boundAdminEmail) !== boundAdminEmail) {
+            return NextResponse.json(
+                { success: false, products: [], error: "This storefront is not available." },
+                { status: 404, headers: CORS_HEADERS }
+            );
+        }
 
         const channels = await loadTenantChannelDefinitions(client, boundAdminEmail);
 

@@ -41,6 +41,8 @@ interface Row {
 class FakeDb implements StockDb {
     products = new Map<string, Row>();
     variants = new Map<string, Row>();
+    creditNotes = new Map<string, Row>();
+    invoices = new Map<string, Row>();
     movements: Row[] = [];
     failMovementCreate = false;
 
@@ -48,6 +50,8 @@ class FakeDb implements StockDb {
         const map =
             name === 'products' ? this.products :
             name === 'product_variants' ? this.variants :
+            name === 'credit_notes' ? this.creditNotes :
+            name === 'invoices' ? this.invoices :
             null;
 
         return {
@@ -251,6 +255,28 @@ async function main() {
         const second = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789015', channel: 'whatsapp' });
         assert.deepEqual(second, { restored: 0, alreadyRestored: true });
         assert.equal(db.variants.get('var000000000001')?.stock_level, 5);
+    });
+
+    await test('cancel after a return restores only the unreturned balance (H-05)', async () => {
+        const db = new FakeDb().addProduct('prod00000000001', 0).addVariant('var000000000001', 'prod00000000001', 5);
+        // Sale of 3 leaves 2 in stock; a later approved return restocks 2 of them.
+        await applyChannelStock(
+            db,
+            [{ productId: 'prod00000000001', variantId: 'var000000000001', quantity: 3 }],
+            { accountEmail: TENANT, channel: 'pos', referenceId: 'ord123456789021' }
+        );
+        db.movements.push({
+            id: 'returncn0000001', variant: 'var000000000001', movement_type: 'return',
+            quantity: 2, reference_id: 'cn000000000001', account_email: TENANT,
+            notes: 'Restock from Return #CN-1',
+        });
+        db.creditNotes.set('cn000000000001', {
+            id: 'cn000000000001', original_sale: 'ord123456789021', status: 'approved', account_email: TENANT,
+        });
+        const before = Number(db.variants.get('var000000000001')?.stock_level);
+        const result = await restoreChannelStockForReference(db, { accountEmail: TENANT, referenceId: 'ord123456789021' });
+        assert.equal(result.restored, 1, 'only the one unreturned unit is restored');
+        assert.equal(Number(db.variants.get('var000000000001')?.stock_level), before + 1);
     });
 
     await test('clamp settles a paid order at the available stock', async () => {

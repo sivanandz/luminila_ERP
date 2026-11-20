@@ -57,6 +57,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { usePermissions } from "@/hooks/usePermissions";
+import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 
 import {
     getCustomers,
@@ -141,11 +142,13 @@ const CRM_TABS: { value: CrmTabValue; label: string; icon: LucideIcon; iconColor
     { value: "lifecycle", label: "Auto-Triggers", icon: Sparkles, iconColor: "text-amber-500" },
 ];
 
-export default function CustomersPage() {
+function CustomersContent() {
     const router = useRouter();
-    // PG-19: dispatching campaign messages is destructive (customer-facing,
-    // rate-limited); re-check the permission in the handlers.
+    // T-05: the data-plane rules for customer/loyalty/discount create+update are
+    // tenant-only, so the UI must gate every write, not just campaign dispatch.
     const { hasPermission, isAdmin } = usePermissions();
+    const canWriteCustomers = () => isAdmin || hasPermission("customers", "update");
+    const canManageSettings = () => isAdmin || hasPermission("settings", "update");
     const canDispatchCampaigns = () => isAdmin || hasPermission("customers", "update");
 
     // Active View Tab
@@ -164,6 +167,10 @@ export default function CustomersPage() {
     const [loyaltySaving, setLoyaltySaving] = useState(false);
 
     const handleOpenLoyaltyModal = async () => {
+        if (!canManageSettings()) {
+            toast.error("You do not have permission to manage loyalty settings.");
+            return;
+        }
         setShowLoyaltyModal(true);
         try {
             const [s, t] = await Promise.all([
@@ -179,6 +186,10 @@ export default function CustomersPage() {
 
     const handleSaveLoyaltySettings = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!canManageSettings()) {
+            toast.error("You do not have permission to manage loyalty settings.");
+            return;
+        }
         setLoyaltySaving(true);
         try {
             const saved = await saveLoyaltySettings(loyaltySettings);
@@ -193,6 +204,10 @@ export default function CustomersPage() {
     };
 
     const handleSeedTiers = async () => {
+        if (!canManageSettings()) {
+            toast.error("You do not have permission to manage loyalty settings.");
+            return;
+        }
         setLoyaltySaving(true);
         try {
             const tiers = await seedDefaultLoyaltyTiers();
@@ -314,6 +329,10 @@ export default function CustomersPage() {
     };
 
     const handleCreatePromo = async () => {
+        if (!canWriteCustomers()) {
+            toast.error("You do not have permission to create promo codes.");
+            return;
+        }
         const cleanCode = newPromoForm.code.trim().toUpperCase();
         const val = parseFloat(newPromoForm.value);
         if (!cleanCode || !newPromoForm.name.trim()) {
@@ -360,6 +379,10 @@ export default function CustomersPage() {
     };
 
     const handleTogglePromo = async (promo: Discount) => {
+        if (!canWriteCustomers()) {
+            toast.error("You do not have permission to update promo codes.");
+            return;
+        }
         if (!promo.id) return;
         try {
             await toggleDiscountActive(promo.id, !promo.is_active);
@@ -371,6 +394,10 @@ export default function CustomersPage() {
     };
 
     const handleDeletePromo = async (promo: Discount) => {
+        if (!canWriteCustomers()) {
+            toast.error("You do not have permission to delete promo codes.");
+            return;
+        }
         if (!promo.id) return;
         try {
             await deleteDiscount(promo.id);
@@ -475,6 +502,10 @@ export default function CustomersPage() {
 
     // Handle Quick Add Customer
     const handleAddCustomer = async () => {
+        if (!canWriteCustomers()) {
+            toast.error("You do not have permission to create customers.");
+            return;
+        }
         if (!formData.name) {
             toast.error("Name is required");
             return;
@@ -537,6 +568,10 @@ export default function CustomersPage() {
 
     // Handle Submit New Campaign
     const handleCreateCampaignSubmit = async () => {
+        if (!canWriteCustomers()) {
+            toast.error("You do not have permission to create campaigns.");
+            return;
+        }
         if (!newCampaignForm.title || !newCampaignForm.template) {
             toast.error("Campaign title and template are required");
             return;
@@ -577,6 +612,10 @@ export default function CustomersPage() {
 
     // Handle Toggle Lifecycle Flow
     const handleToggleFlow = (flowId: LifecycleFlowId, currentVal: boolean) => {
+        if (!canWriteCustomers()) {
+            toast.error("You do not have permission to update automated flows.");
+            return;
+        }
         const updated = updateLifecycleConfig(flowId, { enabled: !currentVal });
         setLifecycleConfigs(updated);
         toast.success(`Automated flow "${flowId}" ${!currentVal ? "enabled" : "paused"}`);
@@ -595,6 +634,10 @@ export default function CustomersPage() {
 
     // Handle Save Edit Flow Template
     const handleSaveEditFlow = () => {
+        if (!canWriteCustomers()) {
+            toast.error("You do not have permission to update automated flows.");
+            return;
+        }
         if (!editingFlow) return;
         if (!editFlowForm.template.trim()) {
             toast.error("Template cannot be empty");
@@ -2622,5 +2665,13 @@ export default function CustomersPage() {
                 </DialogContent>
             </Dialog>
         </div>
+    );
+}
+
+export default function CustomersPage() {
+    return (
+        <ProtectedRoute resource="customers" action="read">
+            <CustomersContent />
+        </ProtectedRoute>
     );
 }

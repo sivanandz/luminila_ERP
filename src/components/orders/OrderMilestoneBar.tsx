@@ -99,7 +99,7 @@ export function OrderMilestoneBar({
                 huid: selectedMilestone === 'quality_checked' ? huid : undefined,
                 courierName: selectedMilestone === 'shipped' ? courierName : undefined,
                 trackingNumber: selectedMilestone === 'shipped' ? trackingNumber : undefined,
-                trackingUrl: selectedMilestone === 'shipped'
+                trackingUrl: selectedMilestone === 'shipped' && trackingUrl
                     ? (trackingUrl.startsWith('http')
                         ? `${trackingUrl}${trackingNumber}`
                         : `${typeof window !== 'undefined' ? window.location.origin : ''}${trackingUrl}${trackingNumber}`)
@@ -242,6 +242,11 @@ export function OrderMilestoneBar({
                                             setTrackingUrl("https://shiprocket.co/tracking/");
                                         } else if (c === "Blue Dart") {
                                             setTrackingUrl("https://www.bluedart.com/tracking?handler=trak&numbers=");
+                                        } else if (c === "DTDC Express") {
+                                            setTrackingUrl("https://www.dtdc.in/tracking/shipment-tracking.asp?awb=");
+                                        } else {
+                                            // U-14: no template for an unknown courier; never reuse the previous one.
+                                            setTrackingUrl("");
                                         }
                                     }}
                                     className="w-full bg-surface-navy border border-surface-hover rounded-lg px-2.5 py-1.5 text-white text-xs"

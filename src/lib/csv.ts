@@ -137,13 +137,17 @@ export function validateProductRow(row: ProductCSVRow, rowIndex: number): string
     if (!row.sku) errors.push(`Row ${rowIndex}: SKU is required`);
     if (!row.name) errors.push(`Row ${rowIndex}: Product name is required`);
 
-    const price = parseFloat(row.base_price);
-    if (isNaN(price) || price <= 0) {
+    // H-39: parseFloat("1,290") is 1 and parseFloat("1290abc") is 1290 —
+    // both used to pass validation. Accept only plain decimal numerals.
+    const priceRaw = String(row.base_price ?? '').trim();
+    const price = /^\d+(\.\d+)?$/.test(priceRaw) ? Number(priceRaw) : NaN;
+    if (!Number.isFinite(price) || price <= 0) {
         errors.push(`Row ${rowIndex}: Invalid base price "${row.base_price}"`);
     }
 
-    const stock = parseInt(row.stock);
-    if (isNaN(stock) || stock < 0) {
+    const stockRaw = String(row.stock ?? '').trim();
+    const stock = /^\d+$/.test(stockRaw) ? Number(stockRaw) : NaN;
+    if (!Number.isFinite(stock) || stock < 0) {
         errors.push(`Row ${rowIndex}: Invalid stock value "${row.stock}"`);
     }
 
@@ -159,6 +163,10 @@ export function exportProductsToCSV(products: {
     category: string;
     basePrice: number;
     costPrice: number;
+    // B-16: HSN/tax drive the 3% GST rate; keep them on the export so the file
+    // can be reconciled (and re-imported) without losing tax data.
+    hsnCode?: string;
+    gstRate?: number;
     variants: {
         name: string;
         material?: string;
@@ -166,6 +174,7 @@ export function exportProductsToCSV(products: {
         color?: string;
         stock: number;
         priceAdjustment: number;
+        makingCharges?: number;
     }[];
 }[]): string {
     const headers = [
@@ -180,6 +189,9 @@ export function exportProductsToCSV(products: {
         "Color",
         "Stock",
         "Price Adjustment",
+        "HSN Code",
+        "GST Rate (%)",
+        "Making Charges",
     ];
 
     const rows: string[][] = [headers];
@@ -198,6 +210,9 @@ export function exportProductsToCSV(products: {
                 escapeCSVField(variant.color || ""),
                 variant.stock.toString(),
                 variant.priceAdjustment.toString(),
+                escapeCSVField(product.hsnCode || ""),
+                product.gstRate === undefined ? "" : product.gstRate.toString(),
+                variant.makingCharges === undefined ? "" : variant.makingCharges.toString(),
             ]);
         });
     });
@@ -307,13 +322,21 @@ export function exportInventoryReport(products: {
     sku: string;
     name: string;
     category: string;
+    // B-16: a stock report without cost/retail value cannot be used for
+    // valuation or GST reconciliation.
+    hsnCode?: string;
+    costPrice?: number;
+    basePrice?: number;
     variants: {
         name: string;
         stock: number;
         lowStockThreshold: number;
     }[];
 }[]): string {
-    const headers = ["SKU", "Product Name", "Category", "Variant", "Stock", "Status"];
+    const headers = [
+        "SKU", "Product Name", "Category", "Variant", "Stock", "Status",
+        "HSN Code", "Unit Cost", "Stock Value (Cost)", "Stock Value (Retail)",
+    ];
     const rows: string[][] = [headers];
 
     products.forEach((product) => {
@@ -331,6 +354,10 @@ export function exportInventoryReport(products: {
                 escapeCSVField(variant.name),
                 variant.stock.toString(),
                 escapeCSVField(status),
+                escapeCSVField(product.hsnCode || ""),
+                product.costPrice === undefined ? "" : product.costPrice.toString(),
+                product.costPrice === undefined ? "" : (product.costPrice * variant.stock).toFixed(2),
+                product.basePrice === undefined ? "" : (product.basePrice * variant.stock).toFixed(2),
             ]);
         });
     });

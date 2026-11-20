@@ -10,7 +10,7 @@
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
 import { enqueueTask } from './concurrency';
-import { createBankTransaction } from './banking';
+import { getBankAccount } from './banking';
 import {
     aggregateChequePortfolio,
     getPdcMaturityInfo,
@@ -200,18 +200,47 @@ export async function advanceCheque(
         const { bankBalanceDelta, bankAccountId, description } = result.ledgerEffect;
         if (bankBalanceDelta !== 0 && bankAccountId) {
             const transactionDate = (options.transitionDate || new Date().toISOString()).slice(0, 10);
+            // A bank that honoured a cheque is authoritative even when the app's
+            // recorded balance is short. Post the movement directly — still
+            // tenant-checked and balance-atomic — instead of letting the generic
+            // overdraft guard strand a real debit in `deposited` (P-08).
+            const credit = bankBalanceDelta > 0;
+            const amount = Math.abs(bankBalanceDelta);
+            let postedLedgerId = '';
             try {
-                await createBankTransaction({
+                const tenant = accountScopeEmail();
+                if (!tenant) throw new Error('No tenant is selected; refusing to post the cheque ledger movement.');
+                if (!await getBankAccount(bankAccountId)) {
+                    throw new Error(`Bank account ${bankAccountId} not found`);
+                }
+                const row = await pb.collection('bank_transactions').create<{ id: string }>({
                     account: bankAccountId,
                     transaction_date: transactionDate,
-                    type: bankBalanceDelta > 0 ? 'deposit' : 'withdrawal',
-                    amount: Math.abs(bankBalanceDelta),
+                    type: credit ? 'deposit' : 'withdrawal',
+                    amount,
                     description: description || `Cheque #${result.cheque.chequeNumber}`,
                     reference_number: result.cheque.chequeNumber,
                     related_entity_type: 'cheque',
                     related_entity_id: result.cheque.id,
+                    account_email: tenant,
                 });
+                postedLedgerId = row.id;
+                const updated = await pb.collection('bank_accounts').update<{ current_balance: number }>(
+                    bankAccountId,
+                    { [credit ? 'current_balance+' : 'current_balance-']: amount }
+                );
+                if (Number(updated.current_balance) < 0) {
+                    console.warn(
+                        `[cheque-register] Cheque #${result.cheque.chequeNumber} posted a negative bank balance ` +
+                        `(₹${updated.current_balance}); keeping the bank-confirmed movement.`
+                    );
+                }
             } catch (ledgerErr) {
+                if (postedLedgerId) {
+                    await pb.collection('bank_transactions').delete(postedLedgerId).catch((cleanupErr) =>
+                        console.error('Cheque ledger rollback failed:', cleanupErr)
+                    );
+                }
                 // Roll the register back so the cheque and the bank ledger agree;
                 // the caller can retry the whole transition.
                 const reverted = await readCheques();

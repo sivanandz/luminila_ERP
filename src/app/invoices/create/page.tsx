@@ -51,7 +51,7 @@ import {
     getStateCode,
     validateGSTIN,
     formatINR,
-    GST_RATES,
+    getGSTRateForHSN,
     HSN_CODES,
 } from "@/lib/gst";
 import { getSellableVariants, resolveBarcodeProduct } from "@/lib/products";
@@ -234,10 +234,11 @@ export default function CreateInvoicePage() {
         // manual line (POS-08).
         const productFields = variant.product as unknown as {
             gst_rate?: number;
+            gst_exempt?: boolean;
             hsn_code?: string;
         };
         const effectiveGstRate = isGstRegistered
-            ? (productFields.gst_rate ?? GST_RATES.JEWELRY)
+            ? (productFields.gst_exempt ? 0 : productFields.gst_rate ?? getGSTRateForHSN(productFields.hsn_code || ''))
             : 0;
         const unitPrice = Math.max(0, (variant.product.base_price || 0) + (variant.price_adjustment || 0));
         const newItem: Omit<InvoiceItem, "id" | "invoice_id"> = {
@@ -346,7 +347,7 @@ export default function CreateInvoicePage() {
     // Add blank item
     const addBlankItem = () => {
         const isGstRegistered = storeSettings?.is_gst_registered !== false && Boolean(storeSettings?.store_gstin);
-        const effectiveGstRate = isGstRegistered ? GST_RATES.JEWELRY : 0;
+        const effectiveGstRate = isGstRegistered ? getGSTRateForHSN(HSN_CODES.DEFAULT) : 0;
         const newItem: Omit<InvoiceItem, "id" | "invoice_id"> = {
             sr_no: items.length + 1,
             description: "",

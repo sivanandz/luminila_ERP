@@ -21,6 +21,7 @@ import {
     applyChannelStock,
     assertStockAvailable,
     InsufficientStockError,
+    restoreChannelStockForReference,
     VariantMismatchError,
     VariantRequiredError,
     toStockDb,
@@ -359,6 +360,8 @@ export async function POST(req: Request) {
         let persistedOrderId: string = txnId;
         let pbSyncSuccess = false;
         let duplicate = false;
+        // SW-20: surface consent-ledger write failures instead of discarding them.
+        let consentWriteFailed = false;
 
         // Tenant is fixed by the session, not by the request body (§12.4.1 A25).
         const boundAdminEmail = tenant;
@@ -437,7 +440,25 @@ export async function POST(req: Request) {
             const buyerStateCode = buyerGstin && billingStateCode ? billingStateCode : shippingStateCode;
             const placeOfSupply = buyerStateCode;
 
-            const existing = await findExistingChannelOrder(client, txnId, boundAdminEmail, cleanPhoneDigits);
+            let existing;
+            try {
+                existing = await findExistingChannelOrder(client, txnId, boundAdminEmail, cleanPhoneDigits);
+            } catch (replayErr) {
+                const code = replayErr instanceof Error ? replayErr.message : '';
+                if (code === 'ORDER_CANCELLED' || code === 'ORDER_HAS_NO_LINES') {
+                    return NextResponse.json(
+                        {
+                            success: false,
+                            code,
+                            error: code === 'ORDER_CANCELLED'
+                                ? 'This checkout was cancelled. Start a new checkout.'
+                                : 'This checkout has no line items. Start a new checkout.',
+                        },
+                        { status: 409, headers: CORS_HEADERS }
+                    );
+                }
+                throw replayErr;
+            }
             if (existing) {
                 // The idempotency key proves "same checkout session"; the cart
                 // hash proves the payload is unchanged. A retry with edited
@@ -491,14 +512,24 @@ export async function POST(req: Request) {
                         },
                     });
                     if (gw.configured && gw.orderId) {
-                        await client
-                            .collection("sales_orders")
-                            .update(existing.id, {
-                                gateway: "razorpay",
-                                gateway_order_id: gw.orderId,
-                                payment_method: body.paymentMethod,
-                            })
-                            .catch(() => {});
+                        // H-45: never hand the browser a gateway order the DB
+                        // never recorded — confirm would then 409 forever.
+                        try {
+                            await client
+                                .collection("sales_orders")
+                                .update(existing.id, {
+                                    gateway: "razorpay",
+                                    gateway_order_id: gw.orderId,
+                                    payment_method: body.paymentMethod,
+                                });
+                        } catch {
+                            await client.collection("sales_orders")
+                                .update(existing.id, { status: "cancelled" }).catch(() => {});
+                            return NextResponse.json(
+                                { success: false, error: "Could not record the payment order. Please try again." },
+                                { status: 503, headers: CORS_HEADERS }
+                            );
+                        }
                         return NextResponse.json(
                             {
                                 success: true,
@@ -739,12 +770,14 @@ export async function POST(req: Request) {
             }
             verifiedDiscount = Math.max(0, Math.min(calculatedSubtotal, verifiedDiscount));
 
-            // Shipping (gap B1): persist the quoted charge instead of silently
-            // shipping free; clamped so a tampered client cannot invent credit.
-            const shippingCharges = Math.max(
-                0,
-                Math.min(5000, Math.round((Number(body.shippingCharges) || 0) * 100) / 100)
-            );
+            // W-11: shipping and COD fees are server-owned. Derive them from the
+            // verified subtotal and payment method using the storefront's
+            // published rules (free over ₹799, else ₹99; COD adds ₹99). A
+            // client-sent `shippingCharges` is ignored — otherwise a tampered
+            // checkout could waive both fees. Tax-inclusive total below.
+            const shippingFee = calculatedSubtotal >= 799 ? 0 : 99;
+            const codFee = body.paymentMethod === "cod" ? 99 : 0;
+            const shippingCharges = shippingFee + codFee;
             // The charged amount stays exactly what the customer saw at
             // checkout: subtotal - discount + shipping. Tax is contained
             // within that amount (tax-inclusive, same model as POS invoices).
@@ -861,7 +894,19 @@ export async function POST(req: Request) {
                         ""
                 );
                 if (!/unique/i.test(msg)) throw createErr;
-                const raced = await findExistingChannelOrder(client, txnId, boundAdminEmail, cleanPhoneDigits);
+                let raced;
+                try {
+                    raced = await findExistingChannelOrder(client, txnId, boundAdminEmail, cleanPhoneDigits);
+                } catch (replayErr) {
+                    const code = replayErr instanceof Error ? replayErr.message : '';
+                    if (code === 'ORDER_CANCELLED' || code === 'ORDER_HAS_NO_LINES') {
+                        return NextResponse.json(
+                            { success: false, code, error: 'This checkout cannot be replayed. Start a new checkout.' },
+                            { status: 409, headers: CORS_HEADERS }
+                        );
+                    }
+                    throw replayErr;
+                }
                 if (!raced) throw createErr;
                 salesOrder = raced;
             }
@@ -937,7 +982,7 @@ export async function POST(req: Request) {
             // Consent ledger (A30): placing the order records transactional
             // consent; marketing consent is exactly what the checkout checkbox
             // said. Append-only events keep the decision auditable.
-            await recordConsentEvents(client, [
+            const consentOutcomes = await recordConsentEvents(client, [
                 {
                     customerId,
                     phone: cleanPhoneDigits,
@@ -957,6 +1002,7 @@ export async function POST(req: Request) {
                     orderId: salesOrder.id,
                 },
             ]);
+            consentWriteFailed = consentOutcomes.some((ok) => !ok);
 
             // Unified channel stock: COD/offline orders settle at intake; an online
             // order deducts when its paid webhook confirms. The service's atomic
@@ -1007,8 +1053,21 @@ export async function POST(req: Request) {
                         } Txn: ${body.razorpayPaymentId || "N/A"}`,
                         account_email: boundAdminEmail,
                     })
-                    .catch((mirrorErr) => {
-                        console.warn("[Storefront Order] sales mirror write failed (order is durable):", mirrorErr);
+                    .catch(async (mirrorErr) => {
+                        // SW-11: a missing mirror is missing revenue in every
+                        // report. Fail the order instead of reporting success.
+                        console.error("[Storefront Order] sales mirror write failed:", mirrorErr);
+                        // Undo the stock this intake deducted, else the
+                        // cancelled order strands it forever and the
+                        // customer's retry deducts a second time.
+                        await restoreChannelStockForReference(toStockDb(client), {
+                            referenceId: salesOrder.id,
+                            accountEmail: boundAdminEmail,
+                            notes: `Storefront order cancelled: sales mirror write failed (${txnId})`,
+                        }).catch(() => {});
+                        await client.collection("sales_orders")
+                            .update(salesOrder.id, { status: "cancelled" }).catch(() => {});
+                        throw mirrorErr;
                     });
             }
 
@@ -1038,14 +1097,24 @@ export async function POST(req: Request) {
                         { status: 503, headers: CORS_HEADERS }
                     );
                 }
-                await client
-                    .collection("sales_orders")
-                    .update(salesOrder.id, {
-                        gateway: "razorpay",
-                        gateway_order_id: gateway.orderId,
-                        payment_method: body.paymentMethod,
-                    })
-                    .catch(() => {});
+                // H-45: the gateway order id must be committed before the
+                // browser is allowed to charge against it.
+                try {
+                    await client
+                        .collection("sales_orders")
+                        .update(salesOrder.id, {
+                            gateway: "razorpay",
+                            gateway_order_id: gateway.orderId,
+                            payment_method: body.paymentMethod,
+                        });
+                } catch {
+                    await client.collection("sales_orders")
+                        .update(salesOrder.id, { status: "cancelled" }).catch(() => {});
+                    return NextResponse.json(
+                        { success: false, error: "Could not record the payment order. Please try again." },
+                        { status: 503, headers: CORS_HEADERS }
+                    );
+                }
                 return NextResponse.json(
                     {
                         success: true,
@@ -1094,11 +1163,14 @@ export async function POST(req: Request) {
 
             // Count the coupon use only after the order and its lines exist, so
             // a rolled-back checkout does not burn the code (SF-18).
+            // SW-06: never swallow these writes. A discount applied without its
+            // counter/usage row lets a usage-limited coupon be redeemed past its
+            // cap and breaks per-customer limits. Let failures reach the outer
+            // catch so the caller is told the checkout did not fully succeed.
             if (appliedDiscountId) {
                 await client
                     .collection("discounts")
-                    .update(appliedDiscountId, { "used_count+": 1 })
-                    .catch((err: unknown) => console.warn("[order] coupon counter update failed:", err));
+                    .update(appliedDiscountId, { "used_count+": 1 });
                 await client
                     .collection("discount_usage")
                     .create({
@@ -1108,8 +1180,7 @@ export async function POST(req: Request) {
                         amount_saved: verifiedDiscount,
                         order_value: calculatedSubtotal,
                         order: persistedOrderId,
-                    })
-                    .catch((err: unknown) => console.warn("[order] coupon usage row failed:", err));
+                    });
             }
 
             pbSyncSuccess = true;
@@ -1133,6 +1204,7 @@ export async function POST(req: Request) {
                 txnId,
                 syncedToDb: pbSyncSuccess,
                 duplicate,
+                ...(consentWriteFailed ? { consentWarning: 'Consent could not be recorded; please retry if you need an audit receipt.' } : {}),
             },
             { status: 200, headers: CORS_HEADERS }
         );

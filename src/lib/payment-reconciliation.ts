@@ -98,21 +98,90 @@ export async function getRazorpayClearingAccountId(): Promise<string> {
     }
 }
 
+/** True only when PocketBase reported "no matching record", not a transport failure. */
+function isNotFoundError(err: unknown): boolean {
+    return (err as { status?: number } | null)?.status === 404;
+}
+
 /** True if a clearing deposit already exists for this payment link (crash-safe retry guard). */
 async function hasClearingEntry(linkRecordId: string): Promise<boolean> {
+    // SW-12: only 404 means "not recorded yet". A transport/500 error must
+    // throw, or the caller creates a second clearing row for the same link.
     const existing = await pb.collection('bank_transactions').getFirstListItem(
         `related_entity_type="payment_link" && related_entity_id="${sanitizeFilter(linkRecordId)}"${tenantClause()}`
-    ).catch(() => null);
+    ).catch((err) => {
+        if (isNotFoundError(err)) return null;
+        throw err;
+    });
     return !!existing;
 }
 
 /** True if an invoice payment with this reference was already recorded (retry guard). */
 async function hasInvoicePayment(invoiceId: string, reference: string): Promise<boolean> {
     if (!reference) return false;
+    // SW-12: same fail-closed rule — a failed read is not "no payment".
     const existing = await pb.collection('invoice_payments').getFirstListItem(
         `invoice="${sanitizeFilter(invoiceId)}" && reference_number="${sanitizeFilter(reference)}"${tenantClause()}`
-    ).catch(() => null);
+    ).catch((err) => {
+        if (isNotFoundError(err)) return null;
+        throw err;
+    });
     return !!existing;
+}
+
+/** Marker appended to a clearing row's description once its balance delta is applied (legacy marker, kept readable). */
+const CLEARING_BALANCE_APPLIED = '|balance_applied';
+
+function clearingEntriesFilter(link: PaymentLinkRecord): string {
+    return `related_entity_type="payment_link" && related_entity_id="${sanitizeFilter(link.id)}"${tenantClause()}`;
+}
+
+/** Stable 15-char id for the per-link "balance was credited" claim (P-13). */
+function clearingClaimId(linkId: string): string {
+    let hash = 2166136261 >>> 0;
+    for (let index = 0; index < linkId.length; index += 1) {
+        hash ^= linkId.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `clr${hash.toString(36).padStart(12, '0').slice(0, 12)}`;
+}
+
+/** PocketBase reports a client-supplied id clash as a 400 validation_not_unique. */
+function isDuplicateIdError(error: unknown): boolean {
+    const candidate = error as { status?: number; data?: { data?: Record<string, { code?: string }> } };
+    return candidate?.status === 400
+        && candidate?.data?.data?.id?.code === 'validation_not_unique';
+}
+
+/**
+ * Atomically claim the right to credit this link's amount to the clearing
+ * account. The deterministic-id create is PocketBase-atomic, so no crash window
+ * or concurrent pass can credit the same link twice. A crash after the claim
+ * but before the increment leaves the claim row behind — a visible repair point
+ * (delete it to let the next pass re-credit).
+ */
+async function claimClearingBalance(linkId: string): Promise<boolean> {
+    try {
+        await pb.collection('activity_logs').create({
+            id: clearingClaimId(linkId),
+            account_email: accountScopeEmail(),
+            entity_type: 'clearing_balance_claim',
+            entity_id: linkId,
+            action: 'deposit',
+            description: `Idempotency claim: clearing balance credit for payment link ${linkId}`,
+        });
+        return true;
+    } catch (err) {
+        if (isDuplicateIdError(err)) return false;
+        throw err;
+    }
+}
+
+/** Release the credit claim when the increment itself failed, so a retry can re-apply it. */
+async function releaseClearingClaim(linkId: string): Promise<void> {
+    await pb.collection('activity_logs').delete(clearingClaimId(linkId)).catch((err) =>
+        console.error(`[reconciler] Could not release the clearing claim for ${linkId}:`, err)
+    );
 }
 
 /** Record double-entry clearing deposit in banking ledger (spec §7). Idempotent per link. */
@@ -120,42 +189,73 @@ async function recordClearingDeposit(
     link: PaymentLinkRecord,
     paymentRef: string
 ): Promise<void> {
-    if (await hasClearingEntry(link.id)) return; // already ledgered (crash-retry)
-
     const accountId = await getRazorpayClearingAccountId();
 
-    const created = await pb.collection('bank_transactions').create({
-        account_email: accountScopeEmail(),
-        account: accountId,
-        transaction_date: new Date().toISOString(),
-        type: 'deposit',
-        amount: link.amount,
-        description: `Razorpay payment link settled (${link.link_id})`,
-        reference_number: paymentRef || link.link_id,
-        related_entity_type: 'payment_link',
-        related_entity_id: link.id,
-    });
+    // P-13: a row existing is NOT proof the balance was credited. A crash after
+    // the insert but before the increment used to make hasClearingEntry() return
+    // early forever. Keep the (SW-12 fail-closed) read, but never short-circuit
+    // on it — the claim below is the atomic authority.
+    const existing = await hasClearingEntry(link.id);
+    let createdId: string | null = null;
+    if (!existing) {
+        const created = await pb.collection('bank_transactions').create({
+            account_email: accountScopeEmail(),
+            account: accountId,
+            transaction_date: new Date().toISOString(),
+            type: 'deposit',
+            amount: link.amount,
+            description: `Razorpay payment link settled (${link.link_id})`,
+            reference_number: paymentRef || link.link_id,
+            related_entity_type: 'payment_link',
+            related_entity_id: link.id,
+        });
+        createdId = created.id;
+    }
 
-    // Two reconcilers can both pass the check above. Re-read the entries for
+    // Two reconcilers can both pass the guard above. Re-read the entries for
     // this link and keep exactly one (lowest id); losers delete their own row
-    // and must not touch the balance (WA-1 / PAY-6).
-    const entries = await pb.collection('bank_transactions').getFullList({
-        filter: `related_entity_type="payment_link" && related_entity_id="${sanitizeFilter(link.id)}"${tenantClause()}`,
+    // and must not touch the balance (WA-1 / PAY-6). A real delete failure
+    // throws — a duplicate row must never be silently left behind.
+    const entries = await pb.collection('bank_transactions').getFullList<{
+        id: string;
+        description?: string;
+    }>({
+        filter: clearingEntriesFilter(link),
         sort: 'id',
     });
-    if (entries.length > 1) {
-        for (const duplicate of entries.slice(1)) {
-            await pb.collection('bank_transactions').delete(duplicate.id).catch((err) =>
-                console.warn('[reconciler] duplicate clearing entry cleanup failed:', err)
-            );
-        }
+    for (const duplicate of entries.slice(1)) {
+        await pb.collection('bank_transactions').delete(duplicate.id).catch((err) => {
+            // A concurrent reconciler may have deleted this loser first; the
+            // desired state is already reached. Any other failure throws.
+            if (isNotFoundError(err)) return;
+            throw err;
+        });
     }
-    if (entries.length > 0 && entries[0].id !== created.id) return;
+    const winner = entries[0];
+    if (!winner) throw new Error(`[reconciler] clearing row for ${link.id} disappeared`);
+    if (createdId && winner.id !== createdId) return; // a concurrent reconciler owns the credit
+
+    // Legacy rows already credited under the old description marker.
+    if (String(winner.description || '').includes(CLEARING_BALANCE_APPLIED)) return;
+
+    // Atomic claim: exactly one pass ever credits this link's amount. A crash
+    // after claiming leaves a durable, visible repair point instead of a
+    // silent double-credit.
+    if (!(await claimClearingBalance(link.id))) return;
 
     // Atomic increment: the old read-modify-write lost concurrent deposits (PAY-9).
-    await pb.collection('bank_accounts').update(accountId, {
-        'current_balance+': link.amount,
-    });
+    try {
+        await pb.collection('bank_accounts').update(accountId, {
+            'current_balance+': link.amount,
+        });
+    } catch (err) {
+        await releaseClearingClaim(link.id);
+        throw err;
+    }
+    // Best-effort bookkeeping marker; the claim row is the real authority.
+    await pb.collection('bank_transactions').update(winner.id, {
+        description: `${String(winner.description || '')}${CLEARING_BALANCE_APPLIED}`,
+    }).catch(() => {});
 }
 
 /** Settle linked sales order, invoice, and loyalty (spec §7). Idempotent per order/link. */
@@ -164,6 +264,22 @@ async function settleLinkedOrder(
     paymentRef: string
 ): Promise<{ orderNumber: string; pointsCredited: number }> {
     if (!link.order) return { orderNumber: '', pointsCredited: 0 };
+
+    const order = await pb.collection('sales_orders').getOne(link.order) as unknown as {
+        id: string;
+        order_number?: string;
+        total?: number;
+    };
+
+    // C-03: an editable advance link must never settle the whole order. The
+    // webhook path already checks the captured amount; do the same here before
+    // any stock/invoice side effect, otherwise the shortfall is never collected.
+    const orderTotal = Number(order.total || 0);
+    if (orderTotal > 0 && Number(link.amount) + 0.005 < orderTotal) {
+        throw new Error(
+            `Link ₹${link.amount} is below order total ₹${orderTotal}; refusing partial settlement`
+        );
+    }
 
     // Delegate to the canonical settlement path. The old code marked the order
     // PAID here without deducting stock, raising an invoice or bumping customer
@@ -176,11 +292,6 @@ async function settleLinkedOrder(
     if (!settled.success) {
         throw new Error(settled.error || 'Order settlement failed');
     }
-
-    const order = await pb.collection('sales_orders').getOne(link.order) as unknown as {
-        id: string;
-        order_number?: string;
-    };
 
     // Settle the invoice the link points at (settleCapturedOrder raises one from
     // the order but leaves it pending).

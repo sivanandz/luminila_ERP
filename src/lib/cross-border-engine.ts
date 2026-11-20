@@ -9,6 +9,8 @@
  * - Port code & Shipping Bill statutory compliance
  */
 
+import { getGSTRateForHSN } from './gst';
+
 export type ForeignCurrency = 'USD' | 'GBP' | 'EUR' | 'AED' | 'CAD' | 'AUD' | 'SGD';
 
 export interface CurrencyConfig {
@@ -50,6 +52,7 @@ export interface LutExportInvoiceRequest {
         hsnCode: string;
         quantity: number;
         unitPriceInr: number;
+        gstRate?: number; // defaults to the statutory rate for the HSN
     }>;
     isLutExport: boolean; // True = 0% GST under LUT; False = Pay IGST with refund
     lutArnNumber?: string;
@@ -171,7 +174,9 @@ export function compileLutExportInvoice(req: LutExportInvoiceRequest): Statutory
         const unitForeign = Math.round((item.unitPriceInr / rate) * 100) / 100;
         const lineForeign = Math.round((item.quantity * (item.unitPriceInr / rate)) * 100) / 100;
 
-        const gstRate = req.isLutExport ? 0 : 3.0;
+        // An IGST-paid export still carries the HSN's statutory rate (18% for
+        // imitation jewellery); charging a flat 3% understates output tax (M-08).
+        const gstRate = req.isLutExport ? 0 : (item.gstRate ?? getGSTRateForHSN(item.hsnCode || ''));
         const gstAmtInr = req.isLutExport ? 0 : Math.round((lineTotalInr * (gstRate / 100)) * 100) / 100;
         const gstAmtForeign = req.isLutExport ? 0 : Math.round((lineForeign * (gstRate / 100)) * 100) / 100;
 

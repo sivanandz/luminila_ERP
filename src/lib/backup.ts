@@ -17,6 +17,8 @@ export interface BackupData {
     createdAt: string;
     tables: {
         customers?: unknown[];
+        /** H-33: categories must be restored before products or their relation dangles. */
+        categories?: unknown[];
         products: unknown[];
         product_variants: unknown[];
         vendors: unknown[];
@@ -62,6 +64,7 @@ export const BACKUP_TABLES = [
     "vendors",
     "customers",
     "expense_categories",
+    "categories",
     "products",
     "product_variants",
     "loyalty_tiers",
@@ -93,6 +96,15 @@ export const BACKUP_TABLES = [
 ] as const;
 
 export type BackupTable = (typeof BACKUP_TABLES)[number];
+
+/** H-34: make the pre-restore rollback snapshot actionable before the page unloads. */
+export function downloadRestoreSnapshot(snapshot: BackupData): void {
+    downloadAsFile(
+        JSON.stringify(snapshot, null, 2),
+        `luminila-restore-snapshot-${Date.now()}.json`,
+        'application/json'
+    );
+}
 
 /** Tenant scope for a backup operation; empty when no tenant can be resolved. */
 function backupTenant(): string {
@@ -256,8 +268,13 @@ export async function restoreFromBackup(file: File): Promise<RestoreBackupResult
         const tenantScope = tenantClause(tenant);
         const tenantKey = tenant.toLowerCase();
 
+        // B-17: a version mismatch is a schema gate failure, not a warning.
+        // Replaying an unknown schema field-by-field corrupts rows after earlier
+        // tables were already committed.
         if (data.version !== BACKUP_VERSION) {
-            console.warn(`Backup version mismatch: ${data.version} vs ${BACKUP_VERSION}`);
+            return empty(
+                `Backup version mismatch: file is "${data.version}", this app expects "${BACKUP_VERSION}". Restore refused.`
+            );
         }
 
         const tablesResult: BackupTableRestoreResult[] = [];
@@ -314,8 +331,11 @@ export async function restoreFromBackup(file: File): Promise<RestoreBackupResult
                 }
 
                 const owner = String(row.account_email ?? "").trim().toLowerCase();
-                if (owner && owner !== tenantKey) {
-                    // A backup from another tenant must never write into this one.
+                if (!owner || owner !== tenantKey) {
+                    // B-25: an owner-less row is not "shared" — re-stamping it
+                    // with the restoring tenant imports another store's data.
+                    // A backup from another tenant (or with no owner) must
+                    // never write into this one.
                     stats.skipped += 1;
                     continue;
                 }
@@ -386,8 +406,13 @@ export async function restoreFromBackup(file: File): Promise<RestoreBackupResult
                     await pb.collection(table).create({ ...row, id });
                     stats.created += 1;
                 } catch (error) {
+                    // H-34: a failed create used to be counted and skipped, so
+                    // the restore half-applied (invoices without items) and
+                    // still returned "restored with issues". Stop the world.
                     stats.failed += 1;
                     recordError(table, id, error);
+                    aborted = true;
+                    break;
                 }
             }
 
@@ -455,11 +480,13 @@ export function scheduleAutoBackup(
 
     let dailyInterval: NodeJS.Timeout;
 
+    // H-35: this records only the daily reminder time. A full export can contain
+    // gateway secrets and can exceed localStorage's quota, so it is never stored
+    // here — the user downloads a restorable snapshot instead.
     const persist = (_backup: BackupData) => {
         if (typeof window === "undefined") return;
         try {
             const keys = getBackupStorageKeys();
-            // C-07: Never store full unencrypted database exports in browser localStorage
             localStorage.removeItem(keys.autoBackup);
             localStorage.setItem(keys.lastBackup, new Date().toISOString());
         } catch {
@@ -503,27 +530,6 @@ export function getLastBackupInfo(): { date: string | null; available: boolean }
         date: lastBackup,
         available: !!lastBackup,
     };
-}
-
-/**
- * Restore from last auto backup
- */
-export async function restoreFromAutoBackup(): Promise<boolean> {
-    if (typeof window === "undefined") return false;
-
-    const backupData = localStorage.getItem(getBackupStorageKeys().autoBackup);
-    if (!backupData) return false;
-
-    try {
-        const data = JSON.parse(backupData);
-        if (!validateBackup(data)) return false;
-
-        const file = new File([backupData], "auto_backup.json", { type: "application/json" });
-        const result = await restoreFromBackup(file);
-        return result.success;
-    } catch {
-        return false;
-    }
 }
 
 export interface BackupSummary {

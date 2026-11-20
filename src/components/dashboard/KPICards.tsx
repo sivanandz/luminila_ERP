@@ -56,11 +56,19 @@ interface KPICardsProps {
         aov: number;
         marginChange: { current: number; previous: number; deltaPct: number | null };
     };
+    degraded?: boolean;
 }
 
-export function KPICards({ stats }: KPICardsProps) {
+export function KPICards({ stats, degraded }: KPICardsProps) {
     return (
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5 md:gap-4">
+        <div className="space-y-3">
+            {degraded && (
+                <div className="flex items-center gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>Figures unavailable — the latest data refresh failed. Values below are not reliable.</span>
+                </div>
+            )}
+        <div className={`grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5 md:gap-4 ${degraded ? "opacity-50 grayscale" : ""}`}>
             <KPICard
                 title="Revenue (30d)"
                 value={formatINR(stats.totalRevenue)}
@@ -72,7 +80,7 @@ export function KPICards({ stats }: KPICardsProps) {
             <KPICard
                 title="Total Orders"
                 value={stats.totalOrders.toLocaleString()}
-                subtitle={`Today: ${stats.todayOrders}`}
+                subtitle={`Today: ${stats.todayOrders} · ${pluralize(stats.pendingOrders, "pending order")}`}
                 icon={<ShoppingCart className="w-5 h-5" />}
                 iconColor="text-blue-400"
             />
@@ -94,7 +102,6 @@ export function KPICards({ stats }: KPICardsProps) {
             <KPICard
                 title="Products"
                 value={stats.totalProducts.toLocaleString()}
-                subtitle={pluralize(stats.pendingOrders, "pending order")}
                 icon={<Package className="w-5 h-5" />}
                 iconColor="text-primary"
             />
@@ -105,6 +112,7 @@ export function KPICards({ stats }: KPICardsProps) {
                 icon={<AlertTriangle className="w-5 h-5" />}
                 iconColor={stats.lowStockCount > 0 ? "text-yellow-400" : "text-green-400"}
             />
+        </div>
         </div>
     );
 }

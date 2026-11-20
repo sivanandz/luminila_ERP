@@ -19,7 +19,7 @@ import { getTenantStorageKey } from "@/lib/pocketbase";
 import { getChannelPrice, getConfiguredChannels, loadConfiguredChannels, type SalesChannelDef } from "@/lib/channel-pricing";
 import { formatImitationSpec, PLATING_DEFINITIONS } from "@/lib/imitation-jewelry-engine";
 import { toast } from "sonner";
-import { consumeLabelQueue } from "@/lib/label-queue";
+import { peekLabelQueue, clearLabelQueue } from "@/lib/label-queue";
 
 /** Per-product and per-job caps that keep Array.from() from freezing the tab (I14). */
 const MAX_LABEL_QUANTITY = 500;
@@ -427,6 +427,9 @@ function LabelsContent() {
     const [startSlot, setStartSlot] = useState<0 | 1 | 2>(0);
     const [selectedChannel, setSelectedChannel] = useState<string>("pos");
     const selectedChannelRef = useRef(selectedChannel);
+    // S-15: remember which SKUs came from the handover queue so they are removed
+    // only after a print, not on mount.
+    const queuedSkusRef = useRef<string[]>([]);
     useEffect(() => {
         selectedChannelRef.current = selectedChannel;
     }, [selectedChannel]);
@@ -434,8 +437,9 @@ function LabelsContent() {
 
     useEffect(() => {
         loadConfiguredChannels().then(setAvailableChannels).catch(console.error);
-        const batchItems = consumeLabelQueue();
+        const batchItems = peekLabelQueue();
         if (batchItems.length > 0) {
+            queuedSkusRef.current = batchItems.map((item) => item.sku);
             setSelectedProducts((prev) => {
                 const next = [...prev];
                 for (const item of batchItems) {
@@ -621,6 +625,13 @@ function LabelsContent() {
     };
 
     const handlePrint = () => {
+        // S-15: only release the queue after a print job actually starts.
+        const markPrinted = () => {
+            if (queuedSkusRef.current.length > 0) {
+                clearLabelQueue(queuedSkusRef.current);
+                queuedSkusRef.current = [];
+            }
+        };
         // I13: refuse the whole job when any SKU cannot be encoded.
         const invalid = selectedProducts.find((product) => !isValidLabelSku(product.sku));
         if (invalid) {
@@ -640,6 +651,7 @@ function LabelsContent() {
         const pending = images.filter(img => !img.complete);
         if (pending.length === 0) {
             window.print();
+            markPrinted();
             return;
         }
 
@@ -649,6 +661,7 @@ function LabelsContent() {
             if (fired) return;
             fired = true;
             window.print();
+            markPrinted();
         };
 
         pending.forEach(img => {

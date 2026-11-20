@@ -298,7 +298,10 @@ export async function getTurnoverAnalytics(range: AnalyticsRange, opts: Turnover
     const avgInventoryValue = (stockValueStart + stockValueCurrent) / 2;
 
     const cogs = lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
-    const revenue = lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0);
+    // O-16: net the window's refunds into the headline revenue/margin. COGS is
+    // not reversed — restocked pieces are back in inventory.
+    const refunds = txs.filter((t) => t.isRefund).reduce((s, t) => s + Math.abs(t.revenue), 0);
+    const revenue = lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0) - refunds;
     const grossMargin = revenue - cogs;
     const soldUnits = lines.reduce((s, l) => s + l.quantity, 0);
     const unknownCostLines = lines.filter((l) => l.unitCost === 0);

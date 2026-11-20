@@ -82,6 +82,10 @@ export function TrayCycleCountModal({
     const [quarantineMissing, setQuarantineMissing] = useState(true);
     const [acceptSurplus, setAcceptSurplus] = useState(true);
     const [misplacedDecisions, setMisplacedDecisions] = useState<Record<string, "move_to_tray" | "keep_original">>({});
+    // B4: the audit id of a partially-applied attempt. A retry passes it back so
+    // commitTrayAudit's claims dedupe the items that already applied instead of
+    // double-quarantining / double-crediting them under a fresh audit id.
+    const [lastAuditId, setLastAuditId] = useState<string | null>(null);
 
     const scanInputRef = useRef<HTMLInputElement>(null);
 
@@ -106,6 +110,7 @@ export function TrayCycleCountModal({
         if (open) {
             setScannedCounts(new Map());
             setScanInput("");
+            setLastAuditId(null);
             setTimeout(() => scanInputRef.current?.focus(), 150);
         }
     }, [open, selectedLocation]);
@@ -138,7 +143,8 @@ export function TrayCycleCountModal({
                     acceptSurplus,
                     misplacedActions: misplacedDecisions,
                 },
-                "Staff Auditor"
+                "Staff Auditor",
+                lastAuditId || undefined
             );
 
             if (res.success) {
@@ -146,9 +152,13 @@ export function TrayCycleCountModal({
                 toast.success(
                     `Tray Audit Completed! ${res.quarantinedCount} missing quarantined, ${res.surplusAdjustedCount} surplus added, ${res.locationMovedCount} items moved to ${selectedLocation}.`
                 );
+                setLastAuditId(null);
                 onAuditCompleted();
                 onOpenChange(false);
             } else {
+                // B4: keep the attempt's audit id so a retry dedupes the items
+                // that already applied instead of applying them twice.
+                if (res.auditId) setLastAuditId(res.auditId);
                 toast.error(res.error || "Failed to commit audit.");
             }
         } catch (err) {

@@ -117,7 +117,7 @@ export function buildTrend(currentTxs: UnifiedTx[], previousTxs: UnifiedTx[], wi
         const key = monthly ? monthKey(tx.day) : tx.day;
         const agg = currentAgg.get(key) || { revenue: 0, orders: 0 };
         agg.revenue += tx.revenue;
-        agg.orders += 1;
+        if (!tx.isRefund) agg.orders += 1;
         currentAgg.set(key, agg);
     }
 
@@ -126,7 +126,7 @@ export function buildTrend(currentTxs: UnifiedTx[], previousTxs: UnifiedTx[], wi
         const key = monthly ? monthKey(tx.day) : tx.day;
         const agg = previousAgg.get(key) || { revenue: 0, orders: 0 };
         agg.revenue += tx.revenue;
-        agg.orders += 1;
+        if (!tx.isRefund) agg.orders += 1;
         previousAgg.set(key, agg);
     }
 
@@ -142,7 +142,23 @@ export function buildTrend(currentTxs: UnifiedTx[], previousTxs: UnifiedTx[], wi
     // across months (see alignPreviousMonths — a label lookup never matches).
     let prevByAlignedKey = new Map<string, { revenue: number; orders: number }>();
     if (monthly) {
-        prevByAlignedKey = alignPreviousMonths(previousAgg, keys);
+        // Zero-fill months BETWEEN the first and last previous month with data:
+        // a silent zero-sales month is otherwise absent, so every later month
+        // shifts one slot early (O-11). Trailing empty months stay unmapped
+        // (null = no comparison), as before.
+        const dataMonths = [...previousAgg.keys()].sort();
+        const prevFilled = new Map<string, TrendBucket>();
+        if (dataMonths.length > 0) {
+            const [firstY, firstM] = dataMonths[0].split('-').map(Number);
+            const [lastY, lastM] = dataMonths[dataMonths.length - 1].split('-').map(Number);
+            for (let y = firstY, m = firstM; y < lastY || (y === lastY && m <= lastM); ) {
+                const key = `${y}-${String(m).padStart(2, '0')}`;
+                prevFilled.set(key, previousAgg.get(key) || { revenue: 0, orders: 0 });
+                m += 1;
+                if (m > 12) { m = 1; y += 1; }
+            }
+            prevByAlignedKey = alignPreviousMonths(prevFilled, keys);
+        }
     } else {
         const currentDays = win.current.days;
         const previousDays = win.previous.days;
@@ -173,6 +189,7 @@ export function buildChannelTable(currentTxs: UnifiedTx[], previousTxs: UnifiedT
     const agg = (txs: UnifiedTx[]) => {
         const m = new Map<string, { orders: number; revenue: number }>();
         for (const tx of txs) {
+            if (tx.isRefund) continue; // refunds have no channel; they net the top-line only
             const a = m.get(tx.channel) || { orders: 0, revenue: 0 };
             a.orders += 1;
             a.revenue += tx.revenue;
@@ -204,6 +221,7 @@ export function buildPaymentMix(currentTxs: UnifiedTx[]): PaymentMixRow[] {
     const m = new Map<string, { amount: number; count: number }>();
     let total = 0;
     for (const tx of currentTxs) {
+        if (tx.isRefund) continue; // no payment method to attribute a refund to
         const method = tx.paymentMethod || 'unspecified';
         const a = m.get(method) || { amount: 0, count: 0 };
         a.amount += tx.revenue;
@@ -233,6 +251,7 @@ export function buildPaymentMix(currentTxs: UnifiedTx[]): PaymentMixRow[] {
 export function buildHeatmap(currentTxs: UnifiedTx[]): HeatCell[] {
     const cells = new Map<string, HeatCell>();
     for (const tx of currentTxs) {
+        if (tx.isRefund) continue; // no sale instant to place on the heatmap
         const d = new Date(tx.dateISO);
         const weekday = d.getDay();
         const hour = d.getHours();
@@ -299,10 +318,14 @@ export async function buildCustomerSplit(tenant: string, win: { current: DateWin
     const historyFilterSales =
         `account_email="${sanitizeFilter(tenant)}" && channel!="storefront"` +
         // Same De Morgan rewrite as load.ts: PocketBase rejects unary `!`.
-        ` && (channel!="whatsapp" || channel_order_id = "") && status!="cancelled"` +
+        ` && (channel!="whatsapp" || channel_order_id = "" || status!="pending") && status!="cancelled"` +
         ` && created<"${pbBound(win.current.startISO)}"`;
+    // Business date, not `created`: conversion resets order_date to confirmation
+    // while leaving created at the estimate date, which double-counts the
+    // customer in history (O-12). Matches loadTxWindow's order-date expression.
+    const historyBound = pbBound(win.current.startISO);
     const historyFilterOrders =
-        `account_email="${sanitizeFilter(tenant)}" && created<"${pbBound(win.current.startISO)}"` +
+        `account_email="${sanitizeFilter(tenant)}" && (order_date<"${historyBound}" || (order_date="" && created<"${historyBound}"))` +
         ` && (${['confirmed', 'shipped', 'delivered', 'invoiced'].map((s) => `status="${s}"`).join(' || ')})`;
 
     const [histSales, histOrders] = await Promise.all([
@@ -327,7 +350,8 @@ export async function buildCustomerSplit(tenant: string, win: { current: DateWin
 export function buildKpis(currentTxs: UnifiedTx[], previousTxs: UnifiedTx[], margin?: ComparedMetric, units?: ComparedMetric): SalesKpis {
     const sum = (txs: UnifiedTx[]) => txs.reduce((s, t) => s + t.revenue, 0);
     const revenue = compare(sum(currentTxs), sum(previousTxs));
-    const orders = compare(currentTxs.length, previousTxs.length);
+    const countOrders = (list: UnifiedTx[]) => list.filter((t) => !t.isRefund).length;
+    const orders = compare(countOrders(currentTxs), countOrders(previousTxs));
     const aov = compare(
         orders.current > 0 ? Math.round(revenue.current / orders.current) : 0,
         orders.previous > 0 ? Math.round(revenue.previous / orders.previous) : 0

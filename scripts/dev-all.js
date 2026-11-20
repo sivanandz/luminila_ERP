@@ -460,8 +460,12 @@ async function main() {
     const nextBin = path.join(ROOT_DIR, 'node_modules', 'next', 'dist', 'bin', 'next');
     const isWin = process.platform === 'win32';
     supervise('[NEXT]', () => {
+        // Same exFAT readlink preload as the build script: without it webpack's
+        // persistent cache fails every snapshot ("Unable to snapshot resolve
+        // dependencies") on exFAT checkouts and dev rebuilds never cache.
+        const nextArgs = ['--require', path.join(ROOT_DIR, 'scripts', 'fix-exfat-readlink.cjs'), nextBin, 'dev', '--webpack'];
         const nextProc = fs.existsSync(nextBin)
-            ? spawn(process.execPath, [nextBin, 'dev', '--webpack'], {
+            ? spawn(process.execPath, nextArgs, {
                 cwd: ROOT_DIR,
                 stdio: ['ignore', 'pipe', 'pipe'],
                 // Server-side only: layout.tsx hands this to the browser at

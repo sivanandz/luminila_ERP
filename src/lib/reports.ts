@@ -212,7 +212,7 @@ export async function getSalesReport(
     try {
         const { start, end } = normalizeDateRange(startDate, endDate);
         const invoices = await pb.collection('invoices').getFullList<InvoiceReportRecord>({
-            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
+            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
             sort: '-invoice_date',
             expand: 'customer',
         });
@@ -230,11 +230,20 @@ export async function getSalesReport(
             isPaid: Boolean(inv.is_paid || inv.status === 'paid'),
         }));
 
+        // Approved/refunded returns reduce realized sales; credit notes are
+        // separate documents that never alter the source invoice (O-16).
+        const refunds = await pb.collection('credit_notes').getFullList<{ grand_total?: number; amount?: number }>({
+            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && (status="approved" || status="refunded") && created>="${start}" && created<="${end}"`,
+            fields: 'grand_total,amount',
+        });
+        const refundTotal = refunds.reduce((sum, cn) => sum + (Number(cn.grand_total ?? cn.amount) || 0), 0);
+
+        const invoiceItems = await fetchInvoiceItemsForInvoices(invoices.map((inv) => inv.id));
         const summary: ReportSummary = {
-            totalSales: rows.reduce((sum, r) => sum + r.total, 0),
+            totalSales: rows.reduce((sum, r) => sum + r.total, 0) - refundTotal,
             totalTax: rows.reduce((sum, r) => sum + r.cgst + r.sgst + r.igst, 0),
             totalOrders: rows.length,
-            totalItems: 0,
+            totalItems: invoiceItems.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0), // O-21
         };
 
         return { rows, summary };
@@ -396,11 +405,14 @@ export async function buildLandedCostMap(db: typeof pb = pb, tenant: string = ac
         }
 
         for (const order of orders) {
+            // Only units actually received carry freight; `||` treated an
+            // explicit 0 receipt on a partial PO as "use ordered qty" and
+            // valued goods that never entered stock (O-17).
             const lines = (itemsByOrder.get(order.id) || [])
-                .filter((item) => item.variant && (item.quantity_received || item.quantity_ordered || 0) > 0)
+                .filter((item) => item.variant && Number(item.quantity_received ?? 0) > 0)
                 .map((item) => ({
                     key: item.variant as string,
-                    quantity: Number(item.quantity_received || item.quantity_ordered || 0),
+                    quantity: Number(item.quantity_received ?? 0),
                     unitCost: Number(item.unit_price || 0),
                 }));
 
@@ -520,7 +532,7 @@ export async function getHSNSummary(
         const { start, end } = normalizeDateRange(startDate, endDate);
         // Fetch invoice items with date filter through invoice
         const invoices = await pb.collection('invoices').getFullList({
-            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && status != "draft" && status != "cancelled"`,
+            filter: `account_email="${sanitizeFilter(accountScopeEmail())}" && invoice_date>="${start}" && invoice_date<="${end}" && invoice_type="regular" && status != "draft" && status != "cancelled"`,
         });
 
         const invoiceIds = invoices.map(inv => inv.id);

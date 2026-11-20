@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout";
 import {
@@ -228,12 +228,29 @@ export default function SettingsPage() {
         };
     }, []);
 
+    // True only while the settings in state hold REAL gateway secrets loaded
+    // from the admin route. A failed load leaves '' backfills in those fields;
+    // round-tripping them on save would wipe the stored secrets (C3).
+    const secretsLoadedRef = useRef(false);
+
     // Load settings scoped to current user/store (independent of section switching
     // so unsaved edits are not overwritten, and guarded against out-of-order loads)
     useEffect(() => {
         let cancelled = false;
-        getStoreSettings(user?.id, user?.name, user?.email).then(loaded => {
-            if (!cancelled) setSettings(loaded);
+        secretsLoadedRef.current = false;
+        getStoreSettings(user?.id, user?.name, user?.email).then(async loaded => {
+            // H-23: secrets are redacted from the normal settings load. Admins
+            // fetch them from a server-verified route instead.
+            const merged = { ...loaded };
+            try {
+                const res = await fetch('/api/settings/secrets');
+                const data = await res.json();
+                if (data?.success && data?.secrets) {
+                    Object.assign(merged, data.secrets);
+                    secretsLoadedRef.current = true;
+                }
+            } catch { /* non-admin or offline: keep the redacted settings */ }
+            if (!cancelled) setSettings(merged);
         }).catch((error) => {
             if (cancelled) return;
             console.error("Failed to load store settings:", error);
@@ -391,6 +408,36 @@ export default function SettingsPage() {
         setIsSaving(true);
         try {
             await saveStoreSettings(settings, user?.id);
+            // H-23: gateway secrets are stored (encrypted) through a
+            // server-verified route, never in the canonical row the save above
+            // writes. A failure here must be visible, not silent.
+            // C3: only round-trip a field that was really loaded (an admin
+            // GET that failed leaves '' backfills — sending those would wipe
+            // the stored secrets) or that the operator typed a new value into.
+            const secretPayload: Record<string, string> = {};
+            if (secretsLoadedRef.current || settings.razorpayKeySecret) {
+                secretPayload.razorpayKeySecret = settings.razorpayKeySecret || '';
+            }
+            if (secretsLoadedRef.current || settings.razorpayWebhookSecret) {
+                secretPayload.razorpayWebhookSecret = settings.razorpayWebhookSecret || '';
+            }
+            if (secretsLoadedRef.current || settings.phonepeSaltKey) {
+                secretPayload.phonepeSaltKey = settings.phonepeSaltKey || '';
+            }
+            if (secretsLoadedRef.current || settings.shopifyToken) {
+                secretPayload.shopifyToken = settings.shopifyToken || '';
+            }
+            try {
+                const res = await fetch("/api/settings/secrets", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(secretPayload),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            } catch (secretErr) {
+                console.error("Failed to save gateway secrets", secretErr);
+                toast.error("Settings saved, but the payment gateway secrets could not be stored.");
+            }
             toast.success("Settings Saved Successfully");
         } catch (error) {
             console.error("Failed to save settings", error);

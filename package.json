@@ -4,11 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev-all.js",
-    "dev:frontend": "next dev --webpack",
+    "dev:frontend": "set NODE_OPTIONS=--require ./scripts/fix-exfat-readlink.cjs&& next dev --webpack",
     "dev:pb": "pocketbase\\pocketbase.exe serve --http=127.0.0.1:8090 --dir=pocketbase\\pb_data",
     "dev:sidecar": "node wppconnect-sidecar/server.js",
     "dev:all": "node scripts/dev-all.js",
-    "build": "set NODE_OPTIONS=--require ./scripts/fix-exfat-readlink.cjs&& node node_modules/next/dist/bin/next build --webpack",
+    "build": "node scripts/run-next-build.mjs",
     "build:desktop": "npm run build && node scripts/prepare-server-dist.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit --incremental false",

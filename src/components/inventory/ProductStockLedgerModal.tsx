@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Loader2, History, ArrowDownRight, ArrowUpRight, MapPin } from "lucide-react";
 import { getProductStockLedger, type StockLedgerEntry } from "@/lib/stock-ledger";
+import { pb } from "@/lib/pocketbase";
 
 interface ProductStockLedgerModalProps {
     open: boolean;
@@ -31,21 +32,32 @@ export function ProductStockLedgerModal({
 }: ProductStockLedgerModalProps) {
     const [loading, setLoading] = useState(false);
     const [entries, setEntries] = useState<StockLedgerEntry[]>([]);
+    const [loadError, setLoadError] = useState(false);
+    const [reloadKey, setReloadKey] = useState(0);
 
     useEffect(() => {
         if (!open || !product?.id) {
             setEntries([]);
+            setLoadError(false);
             return;
         }
 
         let cancelled = false;
         async function fetchLedger() {
             setLoading(true);
+            setLoadError(false);
             try {
+                // U-16: the helper swallows fetch errors and returns [], so probe
+                // the collection first; a failed read must never read as "no movements".
+                await pb.collection("stock_movements").getList(1, 1, { fields: "id", requestKey: null });
                 const data = await getProductStockLedger(product!.id);
                 if (!cancelled) setEntries(data);
             } catch (err) {
                 console.error("Failed to load ledger:", err);
+                if (!cancelled) {
+                    setEntries([]);
+                    setLoadError(true);
+                }
             } finally {
                 if (!cancelled) setLoading(false);
             }
@@ -55,7 +67,7 @@ export function ProductStockLedgerModal({
         return () => {
             cancelled = true;
         };
-    }, [open, product]);
+    }, [open, product, reloadKey]);
 
     return (
         <Dialog open={open && Boolean(product)} onOpenChange={onOpenChange}>
@@ -85,6 +97,14 @@ export function ProductStockLedgerModal({
                     {loading ? (
                         <div className="flex justify-center p-12">
                             <Loader2 className="animate-spin text-primary size-6" />
+                        </div>
+                    ) : loadError ? (
+                        <div className="text-center p-8 text-amber-400 text-xs">
+                            <p className="font-semibold">Could not load stock ledger</p>
+                            <p className="text-moonstone mt-1">The ledger could not be read — no movements are claimed.</p>
+                            <Button size="sm" variant="outline" className="mt-3" onClick={() => setReloadKey((k) => k + 1)}>
+                                Retry
+                            </Button>
                         </div>
                     ) : entries.length === 0 ? (
                         <div className="text-center p-8 text-moonstone text-xs">

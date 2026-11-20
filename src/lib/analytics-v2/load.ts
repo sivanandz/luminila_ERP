@@ -108,6 +108,49 @@ export interface UnifiedTx {
     customerKey: string;
     /** order-level totals (taxes incl.) */
     total: number;
+    /** credit-note refund recognized in the window: negative revenue, not an order (O-16) */
+    isRefund?: boolean;
+}
+
+/**
+ * Approved/refunded credit notes recognized in the window. Returns are separate
+ * documents and never update the source sale, so without this they silently
+ * inflate revenue everywhere (O-16). A read failure is rethrown — reporting
+ * gross revenue when refunds could not be read would be a false figure.
+ */
+export async function loadRefundTx(
+    tenant: string,
+    win: DateWindow,
+    db: AnalyticsDb = pb as unknown as AnalyticsDb
+): Promise<UnifiedTx[]> {
+    if (!tenant) return [];
+    const notes = await db.collection('credit_notes').getFullList({
+        filter:
+            `account_email="${sanitizeFilter(tenant)}"` +
+            ` && (status="approved" || status="refunded")` +
+            ` && created>="${pbBound(win.startISO)}" && created<"${pbBound(win.endISO)}"`,
+        fields: 'id,created,grand_total,amount',
+    });
+    const refunds: UnifiedTx[] = [];
+    for (const cn of notes) {
+        const created = String(cn.created || win.startISO);
+        if (!inWindow(created, win)) continue;
+        const amount = Number(cn.grand_total ?? cn.amount ?? 0);
+        refunds.push({
+            id: String(cn.id),
+            kind: 'order',
+            day: dayKey(new Date(created)),
+            dateISO: created,
+            revenue: -amount,
+            discount: 0,
+            channel: '',
+            paymentMethod: '',
+            customerKey: '',
+            total: -amount,
+            isRefund: true,
+        });
+    }
+    return refunds;
 }
 
 /** Fetch the deduped transaction set for a window (tx-level only, no items). */
@@ -127,7 +170,9 @@ export async function loadTxWindow(tenant: string, win: DateWindow, db: Analytic
         `account_email="${sanitizeFilter(tenant)}" && channel!="${MIRROR_CHANNEL}"` +
         // PocketBase filters have no unary `!`; the mirror exclusion is
         // De Morgan'd (`!(A && B)` == `!A || !B`) or the query 400s wholesale.
-        ` && (channel!="whatsapp" || channel_order_id = "")` +
+        // H-21: POS sales saved under WhatsApp carry channel_order_id too;
+        // only the pending chat mirror (chat-sales.ts) is a duplicate.
+        ` && (channel!="whatsapp" || channel_order_id = "" || status!="pending")` +
         ` && status!="cancelled"` +
         ` && created>="${pbBound(win.startISO)}" && created<"${pbBound(win.endISO)}"`;
     const ordersFilter =
@@ -183,6 +228,11 @@ export async function loadTxWindow(tenant: string, win: DateWindow, db: Analytic
             total: Number(o.total || 0),
         });
     }
+
+    // Net approved/refunded returns against revenue (O-16). They carry no
+    // channel/payment/customer, so the order-count and breakdown consumers
+    // skip them via `isRefund`.
+    txs.push(...(await loadRefundTx(tenant, win, db)));
 
     return txs;
 }

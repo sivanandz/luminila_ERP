@@ -5,7 +5,6 @@
 
 import { pb, accountScopeEmail, ensureAuth, sanitizeFilter } from './pocketbase';
 import { normalizeDateBounds } from './utils';
-import { OfflineQueue } from './offline-queue';
 
 // ===========================================
 // TYPES
@@ -79,13 +78,13 @@ export async function getActivityLogs(
     filters?: ActivityFilter,
     limit: number = 50,
     offset: number = 0
-): Promise<{ logs: ActivityLog[]; total: number }> {
+): Promise<{ ok: boolean; error?: string; logs: ActivityLog[]; total: number }> {
     try {
         ensureAuth();
         const tenant = accountScopeEmail();
         if (!tenant) {
             // Fail closed: an unresolved tenant must not read every account's log.
-            return { logs: [], total: 0 };
+            return { ok: false, error: 'No signed-in tenant; audit log unavailable.', logs: [], total: 0 };
         }
 
         const filterParts: string[] = [`account_email="${sanitizeFilter(tenant)}"`];
@@ -133,10 +132,16 @@ export async function getActivityLogs(
             created_at: log.created,
         }));
 
-        return { logs, total: result.totalItems };
+        return { ok: true, logs, total: result.totalItems };
     } catch (error) {
+        // B-19: an unreadable audit trail must never look like a clean one.
         console.error('Error fetching activity logs:', error);
-        return { logs: [], total: 0 };
+        return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            logs: [],
+            total: 0,
+        };
     }
 }
 
@@ -152,11 +157,11 @@ export async function logActivity(
         entityId?: string;
         oldValues?: Record<string, unknown>;
         newValues?: Record<string, unknown>;
-        userName?: string;
     }
 ): Promise<void> {
     ensureAuth();
-    const model = pb.authStore.model as { id?: string; name?: string } | null;
+    // H-40: actor identity comes from the session, never from a caller.
+    const model = pb.authStore.model as { id?: string; name?: string; email?: string } | null;
     const tenant = accountScopeEmail();
     if (!tenant) {
         // Fail closed: an activity row stamped with an empty account_email is an
@@ -178,23 +183,18 @@ export async function logActivity(
         old_values: options?.oldValues,
         new_values: options?.newValues,
         user_id: model?.id || '',
-        user_name: options?.userName || model?.name || '',
+        user_name: model?.name || model?.email || '',
         account_email: tenant,
     };
 
     try {
         await pb.collection('activity_logs').create(payload);
     } catch (error) {
-        // Keep the audit entry when the database is unreachable; the offline
-        // queue replays it when connectivity returns.
-        console.warn('Activity log queued for replay:', error);
-        try {
-            OfflineQueue.enqueue('activity_logs', 'create', payload);
-        } catch (queueError) {
-            // Storage unavailable: the entry is lost, and saying so is the only
-            // honest option left.
-            console.warn('[activity] offline replay queue unavailable; audit entry lost:', queueError);
-        }
+        // B-20: never park audit writes in client storage. A queued payload is
+        // editable and replay stamps `created` at replay time, so entries can
+        // be forged or back-dated. A failed audit write must fail loudly.
+        console.error('[activity] audit write failed:', error);
+        throw error;
     }
 }
 
@@ -236,6 +236,8 @@ export async function logPrint(entityType: EntityType, entityId: string, descrip
 // ===========================================
 
 export async function getActivityStats(): Promise<{
+    ok: boolean;
+    error?: string;
     todayCount: number;
     weekCount: number;
     byAction: Record<ActivityAction, number>;
@@ -245,6 +247,8 @@ export async function getActivityStats(): Promise<{
         const tenant = accountScopeEmail();
         if (!tenant) {
             return {
+                ok: false,
+                error: 'No signed-in tenant; audit stats unavailable.',
                 todayCount: 0,
                 weekCount: 0,
                 byAction: {} as Record<ActivityAction, number>,
@@ -272,6 +276,7 @@ export async function getActivityStats(): Promise<{
         });
 
         return {
+            ok: true,
             todayCount: todayLogs.totalItems,
             weekCount: weekLogs.length,
             byAction: byAction as Record<ActivityAction, number>,
@@ -279,6 +284,8 @@ export async function getActivityStats(): Promise<{
     } catch (error) {
         console.error('Error fetching activity stats:', error);
         return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
             todayCount: 0,
             weekCount: 0,
             byAction: {} as Record<ActivityAction, number>,

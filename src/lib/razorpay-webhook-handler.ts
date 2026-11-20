@@ -41,7 +41,13 @@ export interface SettleResult {
  */
 export async function settleCapturedOrder(
     orderId: string,
-    options: { paymentId?: string; tenantEmail?: string; client?: typeof pb } = {}
+    options: {
+        paymentId?: string;
+        tenantEmail?: string;
+        client?: typeof pb;
+        /** Actually captured rupees; falls back to the order total. */
+        amountRupees?: number;
+    } = {}
 ): Promise<SettleResult> {
     // Settlement is check-then-act (read payment_status, then write). Three
     // callers can race on one order — the client confirm, `payment.captured`
@@ -114,7 +120,12 @@ async function fulfillmentMarkersPresent(
 
 async function settleCapturedOrderInner(
     orderId: string,
-    options: { paymentId?: string; tenantEmail?: string; client?: typeof pb } = {}
+    options: {
+        paymentId?: string;
+        tenantEmail?: string;
+        client?: typeof pb;
+        amountRupees?: number;
+    } = {}
 ): Promise<SettleResult> {
     const db = options.client || (await createTenantClient(options.tenantEmail));
     const pb = db;
@@ -229,38 +240,108 @@ async function settleCapturedOrderInner(
     }
 
     // Flash-drop holds: complete the reservation for whichever caller settles
-    // (buyer confirm or payment.captured webhook). Completion used to live only
-    // in the confirm route, so webhook-settled orders left the hold active →
-    // expired → the sold unit reappeared in the drop's available count and the
-    // allocation cap could be oversold (audit FD-02). Best effort: the paid
-    // stock movement remains the authority.
+    // (buyer confirm or payment.captured webhook), but NEVER honour an expired
+    // hold (H-28). Re-checking here matters because the webhook settles
+    // independently of the confirm route that validated the hold at intake.
+    let holdExpired = false;
     try {
         const orderNumber = String(existingOrder.order_number || '');
         if (orderNumber.startsWith('ORD-FD-')) {
             const reservationId = orderNumber.slice('ORD-FD-'.length);
-            await pb
+            const reservation = await pb
                 .collection('flash_drop_reservations')
-                .update(reservationId, { status: 'completed', order: orderId })
-                .catch(() => {});
+                .getOne<{ status?: string; expires_at?: string; order?: string }>(reservationId)
+                .catch(() => null);
+            if (reservation) {
+                const expiresAt = Date.parse(String(reservation.expires_at || '').replace(' ', 'T'));
+                const expired = Number.isFinite(expiresAt) && expiresAt <= Date.now();
+                const completedForThisOrder =
+                    reservation.status === 'completed' && reservation.order === orderId;
+                if (expired && !completedForThisOrder) {
+                    holdExpired = true;
+                    console.error(`[settlement] Flash-drop hold ${reservationId} expired before settlement`);
+                } else if (reservation.status === 'active' || completedForThisOrder) {
+                    await pb
+                        .collection('flash_drop_reservations')
+                        .update(reservationId, { status: 'completed', order: orderId })
+                        .catch(() => {});
+                }
+            }
         }
     } catch {
         /* best effort */
     }
 
-    // Raise the GST invoice before notifying the customer (CO-16).
+    // Raise the GST invoice before notifying the customer (CO-16), then settle
+    // its receivable from the captured payment (H-11). A failure here MUST fail
+    // settlement, otherwise the webhook 200s and Razorpay never redelivers (H-13).
+    let invoiceFailed = false;
     try {
         const invoiceResult = await generateInvoiceFromOrder(orderId, db);
-        if (!invoiceResult?.success) {
+        if (!invoiceResult?.success || !invoiceResult.invoice?.id) {
+            invoiceFailed = true;
             console.warn(`[settlement] Invoice generation did not succeed for ${orderId}`);
+        } else {
+            const invoiceId = invoiceResult.invoice.id;
+            // Same reference as the payment-link reconciler so its dedupe sees
+            // this row and never writes a second receipt on a resumed settle.
+            const reference = options.paymentId || orderId;
+            const existingPayment = await pb
+                .collection('invoice_payments')
+                .getFirstListItem(
+                    `invoice="${sanitizeFilter(invoiceId)}" && reference_number="${sanitizeFilter(reference)}"`
+                )
+                .catch(() => null);
+            if (!existingPayment) {
+                const owner =
+                    (updatedOrder as { account_email?: string }).account_email ||
+                    options.tenantEmail ||
+                    '';
+                await pb.collection('invoice_payments').create({
+                    account_email: owner,
+                    invoice: invoiceId,
+                    amount: Number(options.amountRupees ?? existingOrder.total ?? 0),
+                    payment_date: new Date().toISOString(),
+                    payment_method: 'upi',
+                    reference_number: reference,
+                    notes: `Settled via Razorpay payment ${reference}`,
+                });
+            }
+            const invoice = await pb.collection('invoices').getOne<{
+                grand_total?: number;
+                total?: number;
+            }>(invoiceId);
+            const invoiceTotal = Number(invoice.grand_total ?? invoice.total ?? 0);
+            const payments = await pb.collection('invoice_payments').getFullList({
+                filter: `invoice="${sanitizeFilter(invoiceId)}"`,
+            });
+            const ledgerTotal = payments.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+            const paidAmount = invoiceTotal > 0 ? Math.min(invoiceTotal, ledgerTotal) : ledgerTotal;
+            const isPaid = invoiceTotal > 0 && paidAmount >= invoiceTotal - 0.005;
+            await pb.collection('invoices').update(invoiceId, {
+                paid_amount: paidAmount,
+                status: isPaid ? 'paid' : 'partially_paid',
+                is_paid: isPaid,
+            });
         }
     } catch (invoiceErr) {
-        console.warn(`[settlement] Invoice generation failed for ${orderId}:`, invoiceErr);
+        invoiceFailed = true;
+        console.error(`[settlement] Invoice settlement failed for ${orderId}:`, invoiceErr);
     }
 
     // Mirror the now-paid order into `sales` for unified reporting. Online
     // intake deliberately skips this, so an abandoned checkout never creates a
     // phantom revenue row (SF-16).
-    try {
+    let mirrorFailed = false;
+    let mirrorError = '';
+    // A2/H-11 residual: while the invoice receivable is unresolved, writing the
+    // mirror would complete the fulfillment-marker set and a redelivery would
+    // short-circuit before the pending ₹0-paid invoice is ever repaired. Skip
+    // it; the redelivery resumes settlement and writes the mirror after the
+    // invoice payment row lands.
+    if (invoiceFailed) {
+        console.warn(`[settlement] Skipping sales mirror for ${orderId}: invoice receivable unresolved`);
+    } else try {
         const placed = updatedOrder as unknown as {
             order_number?: string;
             customer?: string;
@@ -273,13 +354,21 @@ async function settleCapturedOrderInner(
             account_email?: string;
         };
         const orderNumber = String(placed.order_number || orderId);
+        // SW-11: only "no such row" may mean "write the mirror". A real read
+        // failure used to look like no mirror and created a duplicate revenue
+        // row; surface it so a retry is possible.
         const existingMirror = await pb
             .collection('sales')
             .getFirstListItem(
                 `channel="storefront" && channel_order_id="${sanitizeFilter(orderNumber)}"`
             )
-            .catch(() => null);
+            .catch((err) => {
+                if (isNotFoundError(err)) return null;
+                throw err;
+            });
         if (!existingMirror) {
+            // Let a failed create fail settlement: reporting success would leave
+            // the order out of `sales` permanently (no webhook-level retry).
             await pb.collection('sales').create({
                 channel: 'storefront',
                 channel_order_id: orderNumber,
@@ -296,7 +385,9 @@ async function settleCapturedOrderInner(
             });
         }
     } catch (mirrorErr) {
-        console.warn(`[settlement] sales mirror write failed for ${orderId}:`, mirrorErr);
+        mirrorFailed = true;
+        mirrorError = mirrorErr instanceof Error ? mirrorErr.message : String(mirrorErr);
+        console.error(`[settlement] sales mirror write failed for ${orderId}:`, mirrorErr);
     }
 
     // A settlement that keeps resuming (stock flagged for review) must not
@@ -306,15 +397,22 @@ async function settleCapturedOrderInner(
             fields: 'internal_notes',
         });
         if (!String(freshNotes.internal_notes || '').includes(NOTIFY_MARKER)) {
-            await sendPaidOrderInvoice(orderId, db);
-            await pb.collection('sales_orders').update(orderId, {
-                internal_notes: [
-                    freshNotes.internal_notes,
-                    `[settlement ${new Date().toISOString()}] ${NOTIFY_MARKER}`,
-                ]
-                    .filter(Boolean)
-                    .join('\n'),
-            });
+            const notified = await sendPaidOrderInvoice(orderId, db);
+            if (notified.success) {
+                await pb.collection('sales_orders').update(orderId, {
+                    internal_notes: [
+                        freshNotes.internal_notes,
+                        `[settlement ${new Date().toISOString()}] ${NOTIFY_MARKER}`,
+                    ]
+                        .filter(Boolean)
+                        .join('\n'),
+                });
+            } else {
+                // H-14: the send reports business failures (opt-out, no phone,
+                // sidecar down) as {success:false} without throwing. Marking it
+                // "sent" would permanently suppress retries.
+                console.warn(`[settlement] Invoice notification not marked for ${orderId}: ${notified.error}`);
+            }
         }
     } catch (notifyErr) {
         console.warn(`[settlement] Invoice notification failed for ${orderId}:`, notifyErr);
@@ -357,6 +455,29 @@ async function settleCapturedOrderInner(
             error: 'Stock deduction failed; settlement flagged for manual review',
         };
     }
+    if (invoiceFailed) {
+        return {
+            success: false,
+            orderId,
+            error: 'Invoice generation or payment settlement failed; redelivery will retry',
+        };
+    }
+    if (mirrorFailed) {
+        // SW-11: the order is PAID and the sales-mirror check is part of
+        // fulfillmentMarkersPresent, so a retry resumes and re-attempts the write.
+        return {
+            success: false,
+            orderId,
+            error: `Sales mirror write failed; redelivery will retry: ${mirrorError}`,
+        };
+    }
+    if (holdExpired) {
+        return {
+            success: false,
+            orderId,
+            error: 'Flash-drop hold expired before settlement; captured payment needs manual refund',
+        };
+    }
 
     return { success: true, orderId };
 }
@@ -388,7 +509,16 @@ export async function processRazorpayWebhookEvent(
     let eventData: {
         event?: string;
         payload?: {
-            payment?: { entity?: { id?: string; currency?: string; amount?: number; notes?: Record<string, string> } };
+            payment?: {
+                entity?: {
+                    id?: string;
+                    currency?: string;
+                    amount?: number;
+                    order_id?: string;
+                    notes?: Record<string, string>;
+                };
+            };
+            order?: { entity?: { id?: string; notes?: Record<string, string> } };
             payment_link?: {
                 entity?: {
                     id?: string;
@@ -412,6 +542,7 @@ export async function processRazorpayWebhookEvent(
 
     const payment = eventData.payload?.payment?.entity;
     const paymentLink = eventData.payload?.payment_link?.entity;
+    const gatewayOrder = eventData.payload?.order?.entity;
 
     // PAY-11: the dedupe key must name the payment that was captured. Keying
     // `payment_link.paid` on the link id made a later capture on the same link
@@ -428,10 +559,34 @@ export async function processRazorpayWebhookEvent(
     const eventKey = webhookEventKey(event, eventEntityId);
 
     if (event === 'payment_link.paid' || event === 'payment.captured') {
-        const orderId =
-            paymentLink?.notes?.order_id || paymentLink?.reference_id || payment?.notes?.order_id;
         const tenantEmail =
-            paymentLink?.notes?.account_email || payment?.notes?.account_email || undefined;
+            paymentLink?.notes?.account_email ||
+            payment?.notes?.account_email ||
+            gatewayOrder?.notes?.account_email ||
+            undefined;
+        let orderId =
+            paymentLink?.notes?.order_id || paymentLink?.reference_id || payment?.notes?.order_id || '';
+
+        // H-12: gateway-checkout capture carries the ERP id on the Razorpay
+        // ORDER (payment.order_id), never in payment.notes. Resolve it through
+        // gateway_order_id, scoped by the tenant in the signed order notes.
+        if (!orderId && (payment?.order_id || gatewayOrder?.id) && tenantEmail) {
+            const gatewayOrderId = String(payment?.order_id || gatewayOrder?.id);
+            const matched = await pb
+                .collection('sales_orders')
+                .getFirstListItem(
+                    `gateway_order_id="${sanitizeFilter(gatewayOrderId)}" && account_email="${sanitizeFilter(tenantEmail)}"`
+                )
+                .catch(() => null);
+            orderId = String((matched as { id?: string } | null)?.id || '');
+        }
+
+        // Never 200 an unmatched capture: that acknowledges the money and
+        // stops Razorpay redelivering it.
+        if (event === 'payment.captured' && !orderId) {
+            console.error('[webhook] payment.captured did not resolve to an ERP order');
+            return { success: false, event, error: 'Captured payment did not resolve to an order' };
+        }
 
         if (orderId) {
             try {
@@ -498,7 +653,42 @@ export async function processRazorpayWebhookEvent(
                     };
                 }
 
-                const expectedRupees = Number(existingOrder.total ?? existingOrder.subtotal ?? 0);
+                // P-05: a payment link collects the *gross* amount (the ERP adds
+                // a 2.2% MDR markup), so the order's net total is not what the
+                // customer actually pays. Verify against the amount the ERP
+                // requested in its own payment_links ledger. Only a 404 means
+                // "no ledger row"; a real read error fails closed so Razorpay
+                // retries instead of a marked-up payment being rejected.
+                let expectedRupees = Number(existingOrder.total ?? existingOrder.subtotal ?? 0);
+                if (event === 'payment_link.paid' && paymentLink?.id) {
+                    const linkRecord = await db
+                        .collection('payment_links')
+                        .getFirstListItem(`link_id="${sanitizeFilter(paymentLink.id)}"`)
+                        .catch((err) => {
+                            if (isNotFoundError(err)) return null;
+                            throw err;
+                        });
+                    if (linkRecord) {
+                        expectedRupees = Number((linkRecord as { amount?: number }).amount ?? expectedRupees);
+                        // C-03 (webhook path): an editable advance link collects
+                        // less than the order total; captured==link.amount would
+                        // always pass, fully settling an order whose shortfall is
+                        // never collected. The polling reconciler already refuses
+                        // (payment-reconciliation.ts); this path must agree.
+                        const orderTotalRupees = Number(existingOrder.total ?? existingOrder.subtotal ?? 0);
+                        if (expectedRupees + 0.005 < orderTotalRupees) {
+                            console.error(
+                                `[webhook] Link ₹${expectedRupees} is below order total ₹${orderTotalRupees} on order ${orderId}; refusing partial settlement`
+                            );
+                            return {
+                                success: false,
+                                orderId,
+                                event,
+                                error: `Link ₹${expectedRupees} is below order total ₹${orderTotalRupees}; refusing partial settlement`,
+                            };
+                        }
+                    }
+                }
                 if (!amountMatchesRupees(expectedRupees, capturedPaise)) {
                     console.error(
                         `[webhook] Amount mismatch on order ${orderId}: expected ₹${expectedRupees}, captured ₹${(capturedPaise / 100).toFixed(2)}`
@@ -507,7 +697,7 @@ export async function processRazorpayWebhookEvent(
                         success: false,
                         orderId,
                         event,
-                        error: 'Captured amount does not match the order total',
+                        error: 'Captured amount does not match the requested payment amount',
                     };
                 }
 
@@ -515,14 +705,17 @@ export async function processRazorpayWebhookEvent(
                     paymentId: payment?.id,
                     tenantEmail,
                     client: db,
+                    amountRupees: capturedPaise / 100,
                 });
                 if (!settled.success) {
                     return { success: false, orderId, event, error: settled.error };
                 }
 
-                await saveProcessedEvents(rememberEvent(processedEvents, eventKey), db).catch((err) => {
-                    console.warn('[webhook] Could not record the processed event:', err);
-                });
+                // SW-19: do not swallow the dedupe write. Settlement is already
+                // durable, so a failure here returns a retryable error and a
+                // redelivery short-circuits on PAID/fulfillment markers rather
+                // than re-running settlement with a missing processed-event key.
+                await saveProcessedEvents(rememberEvent(processedEvents, eventKey), db);
 
                 return { success: true, orderId, event };
             } catch (orderErr) {

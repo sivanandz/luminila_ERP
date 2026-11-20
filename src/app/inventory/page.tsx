@@ -165,7 +165,7 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Archive, MoreVertical, RotateCcw, ShieldCheck } from "lucide-react";
-import { pb } from "@/lib/pocketbase";
+import { pb, accountScopeEmail } from "@/lib/pocketbase";
 import { usePermissions } from "@/hooks/usePermissions";
 
 // UI Product interface (flat structure)
@@ -184,6 +184,7 @@ interface Product {
     image: string | null;
     gallery_angles?: ProductGalleryAngles;
     hsn_code?: string;
+    gst_exempt?: boolean;
     barcode?: string;
     location?: string;
     craft?: string;
@@ -315,6 +316,7 @@ function InventoryContent() {
         channel_prices: {} as Record<string, number>,
         stock: "",
         hsn_code: "71179010",
+        gst_exempt: false,
         image_url: "",
         gallery_angles: {} as ProductGalleryAngles,
         location: "Showcase Tray A",
@@ -498,6 +500,36 @@ function InventoryContent() {
             // cannot lose each other's update.
             await updateStock(variant.id, change);
 
+            // S-09: updateStock only shifts stock_level. Record the ledger
+            // movement so the Stock Ledger can explain the change; if the
+            // movement write fails, undo the stock change so the two never
+            // diverge (fail closed, never leave an unexplained +/-).
+            try {
+                if (change > 0) {
+                    await recordManualIntakeMovement({
+                        variantId: variant.id,
+                        quantity: change,
+                        referenceId: scanResult.id,
+                        notes: `Scanner +${change}: manual stock receipt.`,
+                    });
+                } else {
+                    await pb.collection('stock_movements').create({
+                        account_email: accountScopeEmail() || '',
+                        variant: variant.id,
+                        movement_type: 'adjustment',
+                        quantity: change,
+                        reference_id: scanResult.id,
+                        source: 'manual_scan',
+                        notes: `Scanner ${change}: manual stock removal.`,
+                    });
+                }
+            } catch (movementErr) {
+                await updateStock(variant.id, -change).catch((undoErr) =>
+                    console.error('Could not undo stock after movement-log failure:', undoErr)
+                );
+                throw movementErr;
+            }
+
             // Update local list: product `stock` is the aggregate, so it shifts by `change`
             setProducts(prev => prev.map(p =>
                 p.id === scanResult.id ? { ...p, stock: p.stock + change } : p
@@ -626,6 +658,7 @@ function InventoryContent() {
                     image: primaryImage,
                     gallery_angles: angles,
                     hsn_code: p.hsn_code,
+                    gst_exempt: Boolean(p.gst_exempt),
                     barcode: p.barcode,
                     location: p.location || "Showcase Tray A",
                     craft: p.craft || "",
@@ -738,6 +771,7 @@ function InventoryContent() {
                 cost_price: costPrice,
                 channel_prices: newProduct.channel_prices || {},
                 hsn_code: newProduct.hsn_code,
+                gst_exempt: Boolean(newProduct.gst_exempt),
                 image_url: newProduct.image_url && newProduct.image_url.startsWith('http') ? newProduct.image_url : '',
                 image_data: newProduct.gallery_angles?.HERO || newProduct.image_url || '',
                 location: newProduct.location || "Showcase Tray A",
@@ -799,13 +833,17 @@ function InventoryContent() {
                     );
                 } else if (variants.length === 1) {
                     targetVariantId = variants[0].id;
-                    const liveVariantStock = Number(variants[0].stock_level || 0);
-                    const stockDelta = parsedStock - liveVariantStock;
+                    // H-08: compare against the stock captured when the dialog
+                    // opened, not a fresh read. Writing the stale absolute value
+                    // undid any sale/restock that happened while it was open.
+                    const originalStock = editingVariants.length === 1
+                        ? Number(editingVariants[0].original_stock ?? 0)
+                        : Number(variants[0].stock_level || 0);
+                    const stockDelta = parsedStock - originalStock;
                     intakeQuantity = Math.max(0, stockDelta);
                     if (stockDelta !== 0) {
-                        await updateVariant(variants[0].id, {
-                            stock_level: Math.max(0, liveVariantStock + stockDelta),
-                        });
+                        // Atomic +/- keeps a concurrent change intact.
+                        await updateStock(variants[0].id, stockDelta);
                         if (!poRef) {
                             await recordManualIntakeMovement({
                                 variantId: variants[0].id,
@@ -900,7 +938,7 @@ function InventoryContent() {
             }
 
             setShowAddDialog(false);
-            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', image_url: '', gallery_angles: {} as ProductGalleryAngles, location: trayOptions[0]?.code ?? 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '', is_bundle: false, bundle_items: [] });
+            setNewProduct({ name: '', sku: '', category: 'Uncategorized', base_price: '', cost_price: '', po_reference: activeInwardPo || '', channel_prices: {}, stock: '', hsn_code: '71179010', gst_exempt: false, image_url: '', gallery_angles: {} as ProductGalleryAngles, location: trayOptions[0]?.code ?? 'Showcase Tray A', craft: '', plating: '', occasion: '', base_metal: '', is_bundle: false, bundle_items: [] });
             fetchProducts();
         } catch (err) {
             console.error('Error saving product:', err);
@@ -995,6 +1033,7 @@ function InventoryContent() {
             channel_prices: product.channel_prices || {},
             stock: String(product.stock),
             hsn_code: product.hsn_code || "7117",
+            gst_exempt: Boolean(product.gst_exempt),
             image_url: product.image || "",
             gallery_angles: product.gallery_angles || (product.image ? { HERO: product.image } : {}),
             location: product.location || "Showcase Tray A",
@@ -1422,7 +1461,7 @@ function InventoryContent() {
                                         <ClipboardPaste size={14} />
                                         Paste a product list
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => window.location.assign("/api/inventory/template")}>
+                                    <DropdownMenuItem onClick={() => window.location.assign(`/api/inventory/template?tenant=${encodeURIComponent(accountScopeEmail())}`)}>
                                         <FileSpreadsheet size={14} />
                                         Download Excel template
                                     </DropdownMenuItem>
@@ -2178,7 +2217,7 @@ function InventoryContent() {
                             {/* 3. Statutory HSN Code & Compliance */}
                             <div className="bg-bg-navy/60 border border-surface-hover/70 rounded-xl p-3 flex items-center justify-between gap-3">
                                 <div className="flex-1 min-w-0">
-                                    <Label className="text-[11px] text-moonstone">Statutory HSN Code (3% GST)</Label>
+                                    <Label className="text-[11px] text-moonstone">Statutory HSN Code (sets GST rate)</Label>
                                     <Input
                                         value={newProduct.hsn_code}
                                         onChange={e => setNewProduct({ ...newProduct, hsn_code: e.target.value })}
@@ -2186,6 +2225,15 @@ function InventoryContent() {
                                         placeholder="71179010"
                                     />
                                 </div>
+                                <label className="flex items-center gap-2 text-[11px] text-moonstone shrink-0 self-end pb-1 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={newProduct.gst_exempt}
+                                        onChange={e => setNewProduct({ ...newProduct, gst_exempt: e.target.checked })}
+                                        className="size-4 rounded border-surface-hover accent-gold cursor-pointer"
+                                    />
+                                    0% GST (exempt)
+                                </label>
                                 {!showSkuArchitect && (
                                     <Button
                                         type="button"

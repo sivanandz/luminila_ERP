@@ -59,6 +59,22 @@ export function pbBound(iso: string): string {
     return iso;
 }
 
+/**
+ * Local calendar-day instants for a picked YYYY-MM-DD range: start at local
+ * midnight, end at local 23:59:59.999. Business dates (reports, GST filing)
+ * are calendar days in the store's local time, not UTC days (H-22). route every
+ * date bound through this so the filter, the printed date and the filing month
+ * agree.
+ */
+export function localDayRange(startDate: string, endDate: string): { start: Date; end: Date } {
+    const [sy, sm, sd] = startDate.split('-').map(Number);
+    const [ey, em, ed] = endDate.split('-').map(Number);
+    return {
+        start: new Date(sy, sm - 1, sd),
+        end: new Date(ey, em - 1, ed, 23, 59, 59, 999),
+    };
+}
+
 function buildWindow(start: Date, endExclusive: Date): DateWindow {
     const days: string[] = [];
     const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());

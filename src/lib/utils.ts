@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
+import { localDayRange, pbBound } from "./analytics-v2/range"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -105,20 +106,23 @@ export function generateId(): string {
 }
 
 /**
- * Normalizes start and end date bounds for PocketBase SQLite datetime queries.
- * Expands 10-char 'YYYY-MM-DD' strings to full-day UTC timestamps ('00:00:00.000Z' and '23:59:59.999Z')
- * preventing lexicographical exclusion of records timestamped on the end date.
+ * Normalizes picked YYYY-MM-DD bounds for PocketBase datetime filters. Uses
+ * LOCAL calendar-day edges (H-22) so a report for "30 Apr" contains exactly
+ * the rows printed as 30 Apr, rather than UTC's 00:00–23:59 of that date.
+ * Non-date-only values pass through unchanged.
  */
+function normalizeDayBound(value: string | undefined, isEnd: boolean): string | undefined {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const { start, end } = localDayRange(value, value);
+  return pbBound((isEnd ? end : start).toISOString());
+}
+
 export function normalizeDateBounds(startDate?: string, endDate?: string): { start?: string; end?: string } {
-  const start = startDate && startDate.length === 10 ? `${startDate} 00:00:00.000Z` : startDate;
-  const end = endDate && endDate.length === 10 ? `${endDate} 23:59:59.999Z` : endDate;
-  return { start, end };
+  return { start: normalizeDayBound(startDate, false), end: normalizeDayBound(endDate, true) };
 }
 
 export function normalizeDateRange(startDate: string, endDate: string): { start: string; end: string } {
-  const start = startDate && startDate.length === 10 ? `${startDate} 00:00:00.000Z` : startDate;
-  const end = endDate && endDate.length === 10 ? `${endDate} 23:59:59.999Z` : endDate;
-  return { start, end };
+  return { start: normalizeDayBound(startDate, false)!, end: normalizeDayBound(endDate, true)! };
 }
 
 export function escapeHtml(str: string | number | null | undefined): string {

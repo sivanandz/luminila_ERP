@@ -315,8 +315,6 @@ export function getHSNForProduct(category?: string, material?: string): string {
 
 export function getGSTRateForHSN(hsn: string): number {
     if (hsn.startsWith('7117')) return GST_RATES.IMITATION;
-    if (hsn.startsWith('7113')) return GST_RATES.JEWELRY;
-    if (hsn.startsWith('7113')) return GST_RATES.JEWELRY;
     return GST_RATES.JEWELRY;
 }
 

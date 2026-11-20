@@ -141,7 +141,12 @@ export async function saveLoyaltySettings(
     const tenant = dbTenant(db);
     const payload = {
         points_per_rupee: Number(settings.points_per_rupee ?? DEFAULT_LOYALTY_SETTINGS.points_per_rupee),
-        redemption_value: Number(settings.redemption_value ?? DEFAULT_LOYALTY_SETTINGS.redemption_value),
+        // A zero/negative rate divides by zero in the redemption cap and lets
+        // points be debited for ₹0 (M-13).
+        redemption_value: Math.max(
+            0.01,
+            Number(settings.redemption_value ?? DEFAULT_LOYALTY_SETTINGS.redemption_value)
+        ),
         min_redemption_points: Math.max(
             0,
             Math.floor(Number(settings.min_redemption_points ?? DEFAULT_LOYALTY_SETTINGS.min_redemption_points))
@@ -333,8 +338,9 @@ export async function calculatePointsToEarn(purchaseAmount: number, tierId?: str
     const settings = await getLoyaltySettings(db);
     if (!settings) return 0;
 
-    // Base points: amount / 100 * points_per_rupee
-    let points = Math.floor((purchaseAmount / 100) * settings.points_per_rupee);
+    // The setting is labelled "points per ₹1", so it applies to every rupee —
+    // dividing by 100 accrued only 1/100 of the promised points (M-09).
+    let points = Math.floor(purchaseAmount * settings.points_per_rupee);
 
     // Apply tier multiplier
     if (tierId) {
@@ -364,6 +370,10 @@ export async function calculateMaxRedeemablePoints(billAmount: number, currentBa
     if (currentBalance < settings.min_redemption_points) {
         return 0;
     }
+
+    // A legacy row can still hold a zero/negative rate: refuse redemption
+    // rather than dividing by zero and offering the whole balance for ₹0 (M-13).
+    if (!(settings.redemption_value > 0)) return 0;
 
     // Calculate max based on bill percentage
     const maxValueFromBill = billAmount * (settings.max_redemption_percent / 100);
@@ -457,8 +467,11 @@ export async function earnPoints(
 
             return { pointsEarned: pointsToEarn, newBalance };
         } catch (error) {
+            // The balance update precedes the ledger row; swallowing here left
+            // points with no audit trail (SW-13). Fail closed so the caller
+            // knows the write failed. The customer mirror above stays best-effort.
             console.error('Error updating loyalty account:', error);
-            return null;
+            throw error;
         }
     });
 }
@@ -530,8 +543,10 @@ export async function redeemPoints(
 
             return { redeemed: true, valueApplied, newBalance };
         } catch (error) {
+            // Same fail-closed rule as earnPoints: a moved balance without its
+            // ledger row must reach the caller (SW-13).
             console.error('Error redeeming loyalty points:', error);
-            return null;
+            throw error;
         }
     });
 }

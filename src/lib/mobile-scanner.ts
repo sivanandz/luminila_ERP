@@ -9,6 +9,9 @@
 
 import { soundEffects } from './sound-effects';
 
+/** Max gap between wedge-scanner keystrokes to count as one scan burst. */
+const SCAN_KEY_GAP_MS = 100;
+
 export interface ScanResult {
     barcode: string;
     format?: string;
@@ -53,6 +56,8 @@ interface RegisteredHandler {
 export class MobileScanner {
     private static barcodeBuffer = '';
     private static lastKeyTime = 0;
+    /** Whether the current keystroke burst qualified as a hardware scan (D-04). */
+    private static scanBurstIsScan = false;
     private static hardwareListener: ((e: KeyboardEvent) => void) | null = null;
     private static handlers: RegisteredHandler[] = [];
     private static nextId = 1;
@@ -112,13 +117,14 @@ export class MobileScanner {
      */
     static async dispatchScan(
         barcode: string,
-        source: 'hardware' | 'camera' | 'tauri_native' = 'camera'
+        source: 'hardware' | 'camera' | 'tauri_native' = 'camera',
+        format?: string
     ): Promise<boolean> {
         const cleaned = barcode.trim();
         if (!cleaned) return false;
 
         const activeContext = this.getActiveContext() || 'global';
-        const result: ScanResult = { barcode: cleaned, source, context: activeContext };
+        const result: ScanResult = { barcode: cleaned, source, context: activeContext, format };
 
         console.info(`[Barcode Scan] Value: "${cleaned}" | Source: ${source} | Target Context: ${activeContext}`);
 
@@ -140,17 +146,21 @@ export class MobileScanner {
     }
 
     /**
-     * Start camera barcode scanning
+     * Start camera barcode scanning.
      * Attempts native Tauri camera scanner on Android first, then falls back to
      * the browser's BarcodeDetector (I8 — the fallback was documented but absent).
+     *
+     * Delivery contract (D-11): the scan is dispatched to registered handlers
+     * exactly once. The boolean return only says whether a code was scanned —
+     * it is NOT a barcode, so callers must not re-process it.
      */
-    static async startCameraScan(): Promise<string | null> {
+    static async startCameraScan(): Promise<boolean> {
         if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
             try {
                 // Dynamically access optional plugin if running in Tauri environment
                 const pluginModule: string = '@tauri-apps/plugin-barcode-scanner';
                 const tauriScanner = (await import(/* webpackIgnore: true */ pluginModule).catch(() => null)) as {
-                    scan?: (opts: { windowed: boolean; cameraDirection: string; formats: string[] }) => Promise<{ content?: string } | null>;
+                    scan?: (opts: { windowed: boolean; cameraDirection: string; formats: string[] }) => Promise<{ content?: string; format?: string } | null>;
                 } | null;
                 if (tauriScanner && typeof tauriScanner.scan === 'function') {
                     const res = await tauriScanner.scan({
@@ -161,8 +171,8 @@ export class MobileScanner {
                         formats: ['QRCode', 'Code128', 'EAN13', 'UPCA', 'DataMatrix'],
                     });
                     if (res?.content) {
-                        await this.dispatchScan(res.content, 'tauri_native');
-                        return res.content;
+                        await this.dispatchScan(res.content, 'tauri_native', res.format);
+                        return true;
                     }
                 }
             } catch (e) {
@@ -174,12 +184,12 @@ export class MobileScanner {
     }
 
     /** HTML5 camera fallback using the BarcodeDetector API. */
-    private static async scanWithBrowserCamera(): Promise<string | null> {
+    private static async scanWithBrowserCamera(): Promise<boolean> {
         if (typeof window === 'undefined' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
             throw new Error('Camera scanning is not supported on this device.');
         }
 
-        type DetectedBarcode = { rawValue?: string };
+        type DetectedBarcode = { rawValue?: string; format?: string };
         const Detector = (
             window as unknown as {
                 BarcodeDetector?: new (options?: { formats?: string[] }) => {
@@ -218,15 +228,15 @@ export class MobileScanner {
                         const codes = await detector.detect(canvas);
                         const value = codes[0]?.rawValue?.trim();
                         if (value) {
-                            await this.dispatchScan(value, 'camera');
-                            return value;
+                            await this.dispatchScan(value, 'camera', codes[0]?.format);
+                            return true;
                         }
                     }
                 }
                 await new Promise((resolve) => setTimeout(resolve, 250));
             }
 
-            return null;
+            return false;
         } finally {
             stream.getTracks().forEach((track) => track.stop());
             video.srcObject = null;
@@ -251,18 +261,23 @@ export class MobileScanner {
             const now = Date.now();
             const elapsed = now - this.lastKeyTime;
 
-            // Hardware scanners typically stream characters in rapid succession (< 80ms per key)
-            if (elapsed > 100) {
+            // A gap above the cadence threshold ends the previous burst. A burst
+            // is only a wedge scan if every key arrived fast AND it did not start
+            // in an ordinary text field — fast hand typing must stay typing (D-04).
+            if (elapsed > SCAN_KEY_GAP_MS) {
                 this.barcodeBuffer = '';
+                this.scanBurstIsScan = !isRegularInput;
             }
             this.lastKeyTime = now;
 
             if (e.key === 'Enter') {
-                if (this.barcodeBuffer.length >= 3) {
+                if (this.barcodeBuffer.length >= 3 && this.scanBurstIsScan) {
                     const scanned = this.barcodeBuffer.trim();
                     this.barcodeBuffer = '';
+                    this.scanBurstIsScan = false;
 
-                    // Prevent enter submitting standard form or adding newline in textarea
+                    // Only consume Enter for a classified scan; otherwise let
+                    // the form submit / textarea newline happen normally.
                     e.preventDefault();
 
                     // I9: only a dedicated scanner field is written back. A
@@ -276,10 +291,16 @@ export class MobileScanner {
 
                     soundEffects.playScanSuccess();
                     void this.dispatchScan(scanned, 'hardware');
+                } else {
+                    // Not a scan — leave Enter alone and drop the partial buffer.
+                    this.barcodeBuffer = '';
+                    this.scanBurstIsScan = false;
                 }
             } else if (e.key.length === 1) {
-                // If the user is typing slowly by hand in a standard text field (> 100ms between keys), don't buffer
-                if (isRegularInput && elapsed > 100 && this.barcodeBuffer.length === 0) {
+                if (isRegularInput) {
+                    // Never buffer ordinary typing as a barcode, however fast.
+                    this.barcodeBuffer = '';
+                    this.scanBurstIsScan = false;
                     return;
                 }
                 this.barcodeBuffer += e.key;

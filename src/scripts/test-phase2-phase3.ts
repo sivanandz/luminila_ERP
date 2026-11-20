@@ -1678,14 +1678,17 @@ async function runTests() {
         const { getExpenses, getExpenseStats, createExpense, updateExpense, deleteExpense } = await import('../lib/expenses');
         const { getCreditNotes } = await import('../lib/returns');
         const { normalizeDateBounds, normalizeDateRange } = await import('../lib/utils');
+        const { localDayRange } = await import('../lib/analytics-v2/range');
 
-        // A. WPA-34: Date-Range Boundary Normalization Helper
+        // A. WPA-34: Date-Range Boundary Normalization Helper (local calendar days, H-22)
+        const day = localDayRange('2026-09-23', '2026-09-23');
         const norm = normalizeDateBounds('2026-09-23', '2026-09-23');
-        assert(norm.start === '2026-09-23 00:00:00.000Z', "normalizeDateBounds expands 10-char startDate to 00:00:00.000Z");
-        assert(norm.end === '2026-09-23 23:59:59.999Z', "normalizeDateBounds expands 10-char endDate to 23:59:59.999Z");
+        assert(norm.start === day.start.toISOString().replace('T', ' '), "start bound is local midnight of the picked day");
+        assert(norm.end === day.end.toISOString().replace('T', ' '), "end bound is local 23:59:59.999 of the picked day");
 
+        const month = localDayRange('2026-09-01', '2026-09-30');
         const normRange = normalizeDateRange('2026-09-01', '2026-09-30');
-        assert(normRange.start === '2026-09-01 00:00:00.000Z' && normRange.end === '2026-09-30 23:59:59.999Z', "normalizeDateRange formats full month boundary");
+        assert(normRange.start === month.start.toISOString().replace('T', ' ') && normRange.end === month.end.toISOString().replace('T', ' '), "normalizeDateRange covers the full local month boundary");
 
         let expIdToClean = '';
         try {

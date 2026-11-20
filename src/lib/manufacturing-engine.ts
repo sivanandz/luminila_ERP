@@ -192,7 +192,11 @@ export function reconcileMetalBalance(
     );
 
     const accountForMetal = roundGrams(totalFinishedNetMetalGrams + totalScrapRecoveredGrams);
-    const unrecoveredMeltingLossGrams = roundGrams(Math.max(0, totalInputMetalGrams - accountForMetal));
+    // Do not clamp to zero: finished + scrap exceeding the metal issued is an
+    // impossible over-issue, and hiding it behind a 0% loss shows a green
+    // "within tolerance" badge on an invalid karigar job (P-06). A negative
+    // loss is surfaced by the manufacturing UI's existing warning branch.
+    const unrecoveredMeltingLossGrams = roundGrams(totalInputMetalGrams - accountForMetal);
 
     const meltingLossPercent = totalInputMetalGrams > 0
         ? Math.round(((unrecoveredMeltingLossGrams / totalInputMetalGrams) * 100) * 1000) / 1000

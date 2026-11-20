@@ -162,20 +162,9 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
         }
 
         const channelPrices = product.channel_prices || {};
-        const price = getChannelPriceFromList(
-            {
-                base_price: Number(product.base_price) || 0,
-                cost_price: Number(product.cost_price) || 0,
-                channel_prices: channelPrices,
-            },
-            'whatsapp',
-            channelDefinitions
-        );
-        if (price <= 0) {
-            throw new Error(`Product has no valid pricing configured: ${product.name || item.id}`);
-        }
 
         let variantId = item.variantId || '';
+        let variantAdjustment = 0;
         if (variantId) {
             const variant = await pb.collection('product_variants').getOne(variantId).catch(() => null);
             if (!variant || variant.product !== item.id) {
@@ -185,15 +174,16 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
             if (variantTenant && variantTenant !== tenantEmail.toLowerCase()) {
                 throw new VariantMismatchError(item.id, variantId);
             }
+            variantAdjustment = Number(variant.price_adjustment) || 0;
         } else {
-            const variants = await pb.collection('product_variants').getFullList<{ id: string }>({
+            const variants = await pb.collection('product_variants').getFullList<{ id: string; price_adjustment?: number }>({
                 // WA-08: relational-active-guard — never sell a variant whose
                 // product was deactivated after it was added to the cart.
                 filter: pb.filter('product = {:product} && product.is_active = true && account_email = {:tenant}', {
                     product: item.id,
                     tenant: tenantEmail,
                 }),
-                fields: 'id',
+                fields: 'id,price_adjustment',
             });
             if (variants.length > 1) {
                 throw new VariantRequiredError(item.id, product.name || item.name || item.id, variants.length);
@@ -204,6 +194,21 @@ export async function createSaleFromChat(input: ChatSaleInput): Promise<ChatSale
                 );
             }
             variantId = variants[0].id;
+            variantAdjustment = Number(variants[0].price_adjustment) || 0;
+        }
+
+        const price = getChannelPriceFromList(
+            {
+                base_price: Number(product.base_price) || 0,
+                cost_price: Number(product.cost_price) || 0,
+                channel_prices: channelPrices,
+            },
+            'whatsapp',
+            channelDefinitions,
+            variantAdjustment
+        );
+        if (price <= 0) {
+            throw new Error(`Product has no valid pricing configured: ${product.name || item.id}`);
         }
 
         lines.push({

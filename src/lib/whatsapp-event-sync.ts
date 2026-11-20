@@ -859,7 +859,7 @@ export async function executeProductCatalogSync(
                     await pb.collection('products').update(product.id, {
                         whatsapp_catalog_id: waCatalogId,
                         whatsapp_last_synced: new Date().toISOString(),
-                    }).catch(() => {});
+                    });
                 }
                 return { success: true, skipped: true, productName: product.name };
             }
@@ -891,7 +891,7 @@ export async function executeProductCatalogSync(
                 await pb.collection('products').update(product.id, {
                     whatsapp_catalog_id: waCatalogId,
                     whatsapp_last_synced: new Date().toISOString(),
-                }).catch(() => {});
+                });
 
                 clearEditGateOnSuccess();
 
@@ -939,7 +939,7 @@ export async function executeProductCatalogSync(
             await pb.collection('products').update(product.id, {
                 whatsapp_catalog_id: createRes.productId,
                 whatsapp_last_synced: new Date().toISOString(),
-            }).catch(() => {});
+            });
 
             clearEditGateOnSuccess();
 
@@ -958,17 +958,6 @@ export async function executeProductCatalogSync(
         noteEditFailure((err as Error)?.message || String(err));
         return { success: false, error: (err as Error)?.message || String(err) };
     }
-}
-
-/**
- * Adopt a live WhatsApp catalog price into PocketBase (catalog_master mode).
- * Price-only: the catalog owns the price; inventory keeps names/stock/hidden state.
- * Mirrors the editor modal's micro-unit guard so a raw priceAmount1000 value that
- * slipped through normalization is never written as rupees.
- */
-function normalizeWaPrice(value: number): number {
-    if (value >= 100000 && value % 1000 === 0) return value / 1000;
-    return value;
 }
 
 /**
@@ -1058,7 +1047,7 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
                 // Adopt direction: the live catalog owns the price; every other field
                 // stays inventory-driven and no WhatsApp writes are attempted.
                 if (!matchedLive || targetPrice === undefined) continue;
-                const livePrice = normalizeWaPrice(Number(matchedLive.price) || 0);
+                const livePrice = Number(matchedLive.price) || 0;
                 if (livePrice > 0 && Math.abs(livePrice - targetPrice) >= 1) {
                     try {
                         await setWhatsAppCatalogPrice(p.id, livePrice);
@@ -1084,7 +1073,7 @@ export async function triggerStealthCatalogReconcile(): Promise<{ queued: number
                     if (editGateDetected) gateProbeUsed = true;
                 }
             } else {
-                const livePrice = normalizeWaPrice(Number(matchedLive.price) || 0);
+                const livePrice = Number(matchedLive.price) || 0;
                 const liveHidden = Boolean(matchedLive.isHidden);
                 const liveName = (matchedLive.name || '').trim();
                 const drifted =

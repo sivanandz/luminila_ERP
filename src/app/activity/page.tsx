@@ -19,6 +19,7 @@ import {
     Edit,
     Trash2,
     Plus,
+    AlertTriangle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -86,6 +87,8 @@ const entityIcons: Record<EntityType, LucideIcon> = {
 export default function ActivityPage() {
     const [logs, setLogs] = useState<ActivityLog[]>([]);
     const [loading, setLoading] = useState(true);
+    // B-19: distinguish "no entries" from "could not read the audit trail".
+    const [loadError, setLoadError] = useState<string | null>(null);
     const [stats, setStats] = useState<Awaited<ReturnType<typeof getActivityStats>> | null>(null);
     const [search, setSearch] = useState("");
     const [actionFilter, setActionFilter] = useState<string>("all");
@@ -102,10 +105,20 @@ export default function ActivityPage() {
                 }, 100),
                 getActivityStats(),
             ]);
-            setLogs(logsData.logs);
-            setStats(statsData);
+            if (!logsData.ok || !statsData.ok) {
+                const reason = logsData.error || statsData.error || 'Audit log unavailable';
+                setLoadError(reason);
+                setLogs([]);
+                setStats(null);
+                toast.error("Could not load the activity log.");
+            } else {
+                setLoadError(null);
+                setLogs(logsData.logs);
+                setStats(statsData);
+            }
         } catch (error) {
             console.error("Failed to load activity log:", error);
+            setLoadError(error instanceof Error ? error.message : String(error));
             toast.error("Could not load the activity log.");
         } finally {
             setLoading(false);
@@ -217,6 +230,12 @@ export default function ActivityPage() {
                     <CardContent className="pt-6">
                         {loading ? (
                             <div className="text-center py-12 text-muted-foreground">Loading...</div>
+                        ) : loadError ? (
+                            <div className="text-center py-12" role="alert">
+                                <AlertTriangle className="w-12 h-12 text-destructive mx-auto mb-3" />
+                                <p className="font-medium text-foreground">Audit log unavailable</p>
+                                <p className="text-sm text-muted-foreground mt-1">{loadError}</p>
+                            </div>
                         ) : logs.length === 0 ? (
                             <div className="text-center py-12">
                                 <Activity className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
@@ -249,9 +268,10 @@ export default function ActivityPage() {
                                                     </Badge>
                                                 </div>
                                                 <p className="text-sm break-words">{log.description}</p>
-                                                {log.user_name && (
+                                                {/* B-18: a user with no display name still has a user_id; show it rather than leaving the action unattributed. */}
+                                                {(log.user_name || log.user_id) && (
                                                     <p className="text-xs text-muted-foreground mt-1">
-                                                        by {log.user_name}
+                                                        by {log.user_name || log.user_id}
                                                     </p>
                                                 )}
                                             </div>

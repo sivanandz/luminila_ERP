@@ -31,6 +31,8 @@ import {
     resolveBarcodeProduct,
     searchProductsForDocuments,
 } from "@/lib/products";
+import { pb } from "@/lib/pocketbase";
+import { resolveVariantForProduct } from "@/lib/channel-orders";
 import { toast } from "sonner";
 
 // Product search dropdown result: Product/ProductVariant records narrowed
@@ -144,6 +146,26 @@ export default function CreateChallanPage() {
         setSelectedConsignee(customer);
         setConsigneeSearch("");
         setShowConsigneeResults(false);
+        // O-13: the consignee's state decides the CGST/SGST vs IGST split, so
+        // lines added before the consignee was picked (or for a different
+        // state) must be recomputed — else an inter-state challan carries a
+        // header that disagrees with its lines.
+        const sellerState = storeSettings?.store_state_code || '';
+        const buyerState = customer.state_code || sellerState;
+        setItems(prev => prev.map(item => {
+            const gst = calculateGST(item.unit_price, sellerState, buyerState, item.gst_rate);
+            return {
+                ...item,
+                taxable_value: gst.taxableAmount,
+                cgst_rate: gst.cgstRate,
+                cgst_amount: gst.cgstAmount,
+                sgst_rate: gst.sgstRate,
+                sgst_amount: gst.sgstAmount,
+                igst_rate: gst.igstRate,
+                igst_amount: gst.igstAmount,
+                total: gst.grandTotal,
+            };
+        }));
     };
 
     const handleAddItem = (product: ProductSearchResult, variant: ProductVariantOption) => {
@@ -180,9 +202,26 @@ export default function CreateChallanPage() {
         setShowProductResults(false);
     };
 
-    const handleScannedItem = (payload: ScannedItemPayload) => {
+    const handleScannedItem = async (payload: ScannedItemPayload) => {
         if (!payload.product) {
             toast.error(`Barcode "${payload.barcode}" not found in catalog`);
+            return;
+        }
+
+        // delivery_challan_items.variant is a required relation; 'default' is
+        // not a valid record id (O-22). Resolve the real variant first, as the
+        // order-create page does.
+        let variantId = payload.variant?.id || '';
+        if (!variantId) {
+            try {
+                variantId = await resolveVariantForProduct(pb, payload.product.id);
+            } catch (err) {
+                toast.error(`Could not resolve a variant for "${payload.product.name}": ${err instanceof Error ? err.message : 'not found'}`);
+                return;
+            }
+        }
+        if (!variantId) {
+            toast.error(`"${payload.product.name}" has no variant and cannot be added to a challan.`);
             return;
         }
 
@@ -191,15 +230,12 @@ export default function CreateChallanPage() {
             name: payload.product.name,
             base_price: payload.product.base_price,
             hsn_code: payload.product.hsn_code,
-            variants: payload.variant ? [{
-                id: payload.variant.id,
+            variants: [{
+                id: variantId,
                 sku_suffix: '',
-                size: payload.variant.size,
-                color: payload.variant.color,
-                price_adjustment: payload.variant.price_adjustment || 0
-            }] : [{
-                id: 'default',
-                price_adjustment: 0
+                size: payload.variant?.size,
+                color: payload.variant?.color,
+                price_adjustment: payload.variant?.price_adjustment || 0
             }]
         };
 
@@ -252,9 +288,12 @@ export default function CreateChallanPage() {
         // Recalculate totals
         if (field === 'quantity' || field === 'unit_price') {
             item.taxable_value = item.quantity * item.unit_price;
+            // Recompute every component incl. IGST; dropping IGST here made an
+            // inter-state line (and its header total) stop adding up (O-13).
             item.cgst_amount = (item.taxable_value * item.cgst_rate) / 100;
             item.sgst_amount = (item.taxable_value * item.sgst_rate) / 100;
-            item.total = item.taxable_value + item.cgst_amount + item.sgst_amount;
+            item.igst_amount = (item.taxable_value * item.igst_rate) / 100;
+            item.total = item.taxable_value + item.cgst_amount + item.sgst_amount + item.igst_amount;
         }
 
         newItems[index] = item;
@@ -273,10 +312,14 @@ export default function CreateChallanPage() {
     const taxableValue = items.reduce((sum, item) => sum + item.taxable_value, 0);
     const cgstAmount = items.reduce((sum, item) => sum + item.cgst_amount, 0);
     const sgstAmount = items.reduce((sum, item) => sum + item.sgst_amount, 0);
+    const igstAmount = items.reduce((sum, item) => sum + item.igst_amount, 0);
     const totalValue = items.reduce((sum, item) => sum + item.total, 0);
 
     const handleSave = async () => {
         const consigneeName = selectedConsignee?.name || manualConsignee.name;
+        // The selected customer's state decides the tax split; the manual
+        // field is only a fallback for a walk-in consignee (O-13).
+        const consigneeState = selectedConsignee?.state_code || manualConsignee.state_code;
         if (!consigneeName) {
             toast.error("Please select or enter consignee details");
             return;
@@ -305,7 +348,8 @@ export default function CreateChallanPage() {
             consignee_name: consigneeName,
             consignee_gstin: selectedConsignee?.gstin || manualConsignee.gstin,
             consignee_address: selectedConsignee?.address || manualConsignee.address,
-            consignee_state_code: manualConsignee.state_code,
+            consignee_state_code: consigneeState,
+            place_of_supply: consigneeState,
             vehicle_number: vehicleNumber,
             transporter_name: transporterName,
             driver_name: driverName,
@@ -315,7 +359,7 @@ export default function CreateChallanPage() {
             taxable_value: taxableValue,
             cgst_amount: cgstAmount,
             sgst_amount: sgstAmount,
-            igst_amount: 0,
+            igst_amount: igstAmount,
             total_value: totalValue,
             reason: reason
         };

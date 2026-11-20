@@ -130,8 +130,9 @@ export async function createChatProduct(input: ChatProductInput): Promise<ChatPr
     });
 
     const initialStock = Number(input.initialStock) || 0;
+    let variantId = '';
     if (initialStock > 0) {
-        await pb.collection('product_variants').create({
+        const variant = await pb.collection('product_variants').create({
             product: product.id,
             sku_suffix: 'DEFAULT',
             variant_name: 'Default',
@@ -140,6 +141,32 @@ export async function createChatProduct(input: ChatProductInput): Promise<ChatPr
             low_stock_threshold: 5,
             account_email: tenant,
         });
+        variantId = variant.id;
+    }
+
+    // S-10: opening stock must have a ledger receipt, like quick-add/Excel
+    // intakes. Fail closed: if the movement cannot be written, remove the new
+    // rows so a stocked product with an empty ledger is never left behind.
+    if (variantId) {
+        try {
+            await pb.collection('stock_movements').create({
+                account_email: tenant,
+                variant: variantId,
+                movement_type: 'restock',
+                quantity: initialStock,
+                reference_id: product.id,
+                source: 'chat_product_create',
+                notes: `Initial stock for chat-created product ${product.sku}: ${initialStock} units`,
+            });
+        } catch (movementErr) {
+            await pb.collection('product_variants').delete(variantId).catch((undoErr) =>
+                console.error('Could not remove variant after ledger failure:', undoErr)
+            );
+            await pb.collection('products').delete(product.id).catch((undoErr) =>
+                console.error('Could not remove product after ledger failure:', undoErr)
+            );
+            throw movementErr;
+        }
     }
 
     return toChatProduct(product);

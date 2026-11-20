@@ -27,6 +27,14 @@ export interface DatabaseSnapshot {
         invoices: unknown[];
         invoice_items: unknown[];
         store_settings: unknown[];
+        /** H-36: money, cash and stock must be reconstructible from a snapshot. */
+        invoice_payments: unknown[];
+        sales: unknown[];
+        sale_items: unknown[];
+        stock_movements: unknown[];
+        vendors: unknown[];
+        purchase_orders: unknown[];
+        expenses: unknown[];
     };
 }
 
@@ -98,20 +106,34 @@ export async function collectDatabaseSnapshot(exportedBy: string): Promise<Datab
     const tenant = accountScopeEmail();
     const scope = tenant ? `account_email = "${sanitizeFilter(tenant)}"` : 'id = ""';
 
-    const [products, variants, customers, invoices, invoiceItems, settingsRaw] = await Promise.all([
+    const [products, variants, customers, invoices, invoiceItems, settingsRaw, payments, sales, saleItems, movements, vendors, purchaseOrders, expenses] = await Promise.all([
         readCollection('products', { filter: scope, sort: '-created' }),
         readCollection('product_variants', { filter: scope }),
         readCollection('customers', { filter: scope }),
         readCollection('invoices', { filter: scope }),
         readCollection('invoice_items', { filter: scope }),
         readCollection('store_settings', { filter: scope }),
+        readCollection('invoice_payments', { filter: scope }),
+        readCollection('sales', { filter: scope }),
+        readCollection('sale_items', { filter: scope }),
+        readCollection('stock_movements', { filter: scope }),
+        readCollection('vendors', { filter: scope }),
+        readCollection('purchase_orders', { filter: scope }),
+        readCollection('expenses', { filter: scope }),
     ]);
 
     // INF-6: a failed read used to become `.catch(() => [])`, silently exporting
     // a zero-row backup. Fail the whole export instead of producing one.
-    if (!products.ok || !variants.ok || !customers.ok || !invoices.ok || !invoiceItems.ok || !settingsRaw.ok) {
-        const failures = [products, variants, customers, invoices, invoiceItems, settingsRaw]
-            .flatMap((result) => (result.ok ? [] : [result.error]));
+    // The explicit checks narrow each discriminated union so `.rows` is safe.
+    if (
+        !products.ok || !variants.ok || !customers.ok || !invoices.ok || !invoiceItems.ok ||
+        !settingsRaw.ok || !payments.ok || !sales.ok || !saleItems.ok || !movements.ok ||
+        !vendors.ok || !purchaseOrders.ok || !expenses.ok
+    ) {
+        const failures = [
+            products, variants, customers, invoices, invoiceItems, settingsRaw,
+            payments, sales, saleItems, movements, vendors, purchaseOrders, expenses,
+        ].flatMap((result) => (result.ok ? [] : [result.error]));
         throw new Error(
             `Database snapshot incomplete — ${failures.length} collection read(s) failed: ${failures.join('; ')}`
         );
@@ -121,7 +143,7 @@ export async function collectDatabaseSnapshot(exportedBy: string): Promise<Datab
 
     return {
         app: "Luminila Jewelry ERP",
-        version: "2.1.0",
+        version: "2.2.0",
         exported_at: new Date().toISOString(),
         exported_by: exportedBy,
         summary: {
@@ -138,6 +160,13 @@ export async function collectDatabaseSnapshot(exportedBy: string): Promise<Datab
             invoices: invoices.rows,
             invoice_items: invoiceItems.rows,
             store_settings: settingsList,
+            invoice_payments: payments.rows,
+            sales: sales.rows,
+            sale_items: saleItems.rows,
+            stock_movements: movements.rows,
+            vendors: vendors.rows,
+            purchase_orders: purchaseOrders.rows,
+            expenses: expenses.rows,
         },
     };
 }

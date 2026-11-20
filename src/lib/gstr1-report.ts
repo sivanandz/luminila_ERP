@@ -8,6 +8,7 @@
  */
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+import { localDayRange } from './analytics-v2/range';
 import { getStoreSettings } from './invoice';
 import {
     compileGstr1Payload,
@@ -188,13 +189,22 @@ export async function buildGstr1OfficialPayload(
         throw new Error('Set a valid 15-character store GSTIN before generating the GSTN file.');
     }
 
-    const end = parseDate(`${endDate}T23:59:59`) || new Date();
-    const start = parseDate(`${startDate}T00:00:00`) || new Date(end.getFullYear(), end.getMonth(), 1);
+    // H-22: filing periods are local calendar days, matching the printed date
+    // and the date the invoice was created, not UTC day boundaries. A cleared
+    // picker passes "" and localDayRange would yield Invalid-Date bounds and a
+    // silently empty filing — refuse it loudly instead.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+        throw new Error('Select a valid GSTR-1 filing period (YYYY-MM-DD) for both bounds.');
+    }
+    const { start, end } = localDayRange(startDate, endDate);
 
     // A showroom database is small enough to filter in memory, which avoids
     // string-comparison surprises between "2026-10-01" and ISO timestamps.
+    // H-03: note-type rows raised in Invoices > New are stored in `invoices`
+    // with an INV/ number. They must reach the compiler too — it already splits
+    // credit_note/debit_note into the C/D tables and out of the B2B/HSN tables.
     const allRegular = await pb.collection('invoices').getFullList<InvoiceRow>({
-        filter: `${tenantFilter()} && invoice_type="regular"`,
+        filter: tenantFilter(),
         sort: 'invoice_date',
     });
 
@@ -216,9 +226,12 @@ export async function buildGstr1OfficialPayload(
         sort: 'created',
     });
 
-    // Pending notes are not filed yet; cancelled notes stay for Table 13.
+    // File notes in the period of their issue date. A note approved in a later
+    // month must not be dropped here: approval writes no date, so it would be
+    // absent from every GSTR-1 (M-07). Drafts stay out; cancelled notes remain
+    // for Table 13.
     const periodNotes = allNotes.filter(
-        (note) => note.status !== 'draft' && note.status !== 'pending' && inRange(creditNoteDate(note), start, end)
+        (note) => note.status !== 'draft' && inRange(creditNoteDate(note), start, end)
     );
 
     const noteItems = await loadItemsByParent(
@@ -234,7 +247,9 @@ export async function buildGstr1OfficialPayload(
             id: invoice.id,
             invoice_number: invoice.invoice_number || invoice.id,
             invoice_date: invoice.invoice_date || '',
-            invoice_type: 'regular' as const,
+            invoice_type: (invoice.invoice_type === 'credit_note' || invoice.invoice_type === 'debit_note'
+                ? invoice.invoice_type
+                : 'regular') as SourceInvoice['invoice_type'],
             buyer_name: invoice.buyer_name || 'Walk-in Customer',
             buyer_gstin: invoice.buyer_gstin || '',
             buyer_state_code: invoice.buyer_state_code || '',
@@ -307,8 +322,11 @@ export async function buildGstr1OfficialPayload(
     const sumTurnover = (from: Date, to: Date) =>
         allRegular.reduce((sum, invoice) => {
             // Drafts are not filed sales; cancelled invoices are excluded from
-            // turnover too (FIN-08).
+            // turnover too (FIN-08). Note-type rows (H-03) are adjustments
+            // carried in the C/D tables with positive totals — counting them
+            // here inflated the gt/cur_gt turnover context.
             if (invoice.status === 'cancelled' || invoice.status === 'draft') return sum;
+            if (invoice.invoice_type === 'credit_note' || invoice.invoice_type === 'debit_note') return sum;
             const date = parseDate(invoice.invoice_date);
             if (!date || date < from || date > to) return sum;
             return sum + (invoice.grand_total ?? invoice.total ?? 0);

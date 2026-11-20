@@ -95,6 +95,7 @@ export async function openShift(
         throw new Error('You have a paused shift. Please resume or close it before opening a new one.');
     }
 
+    let createdShiftId: string | null = null;
     try {
         const record = await pb.collection('cash_register_shifts').create({
             account_email: accountScopeEmail(),
@@ -112,6 +113,7 @@ export async function openShift(
             cash_added: 0,
             cash_removed: 0
         });
+        createdShiftId = record.id;
 
         // Record initial opening float in audit trail without incrementing cash_added.
         // The schema enum only accepts add|remove|sale|refund, so the float is an
@@ -126,11 +128,22 @@ export async function openShift(
                 reason: "Opening Float",
                 performed_by: userId,
                 performed_at: new Date().toISOString()
-            }).catch((err) => console.warn('Failed to record initial drawer operation:', err));
+            });
         }
 
         return record as unknown as CashRegisterShift;
     } catch (error) {
+        // SW-16: the audit write no longer fails silently, so compensate the
+        // shift row — an "open" shift with no opening-float record is a trap for
+        // the next operator. Best-effort; a failed cleanup is logged loudly.
+        if (createdShiftId) {
+            await pb.collection('cash_register_shifts').delete(createdShiftId).catch((cleanupErr) => {
+                console.error(
+                    `[register] Could not roll back shift ${createdShiftId} after a failed opening float:`,
+                    cleanupErr
+                );
+            });
+        }
         console.error('Error opening shift:', error);
         // Log detailed PocketBase error info
         if (error instanceof ClientResponseError && error.response?.data) {

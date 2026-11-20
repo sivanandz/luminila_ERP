@@ -7,7 +7,7 @@
  * Run: npx tsx src/scripts/test-channel-orders.ts
  */
 
-import { canonicalPhone, computeChannelTax, phoneSuffix } from '../lib/channel-orders';
+import { canonicalPhone, computeChannelTax, findExistingChannelOrder, phoneSuffix } from '../lib/channel-orders';
 
 let passed = 0;
 let failed = 0;
@@ -94,5 +94,34 @@ console.log('\n=== computeChannelTax (tax-inclusive, post-discount base) ===');
     check('over-discount taxable is zero', t.taxableValue, 0);
 }
 
-console.log(`\n=== channel-orders: ${passed} passed, ${failed} failed ===`);
-if (failed > 0) process.exit(1);
+(async () => {
+    console.log('\n=== findExistingChannelOrder replay validity (H-29) ===');
+    const mkClient = (record: Record<string, unknown> | null, lineCount: number) => ({
+        filter: (tpl: string, vals: Record<string, unknown>) =>
+            tpl.replace(/\{:(\w+)\}/g, (_, key: string) => String(vals[key])),
+        collection: (name: string) => ({
+            getFirstListItem: async () => {
+                if (name !== 'sales_orders' || !record) throw new Error('404');
+                return record;
+            },
+            getList: async () => ({ totalItems: lineCount, items: [] }),
+        }),
+    }) as unknown as Parameters<typeof findExistingChannelOrder>[0];
+    const base = { id: 'ord000000000001', order_number: 'ORD-1', status: 'confirmed', account_email: 'a@b.com' };
+    const valid = await findExistingChannelOrder(mkClient(base, 1), 'ORD-1', 'a@b.com');
+    check('a valid replay returns the order', valid?.id, base.id);
+    for (const [label, rec, lines, expected] of [
+        ['cancelled replay refused', { ...base, status: 'cancelled' }, 1, 'ORDER_CANCELLED'],
+        ['line-less replay refused', base, 0, 'ORDER_HAS_NO_LINES'],
+    ] as const) {
+        try {
+            await findExistingChannelOrder(mkClient(rec, lines), 'ORD-1', 'a@b.com');
+            check(label, 'no error', expected);
+        } catch (err) {
+            check(label, (err as Error).message, expected);
+        }
+    }
+
+    console.log(`\n=== channel-orders: ${passed} passed, ${failed} failed ===`);
+    if (failed > 0) process.exit(1);
+})();

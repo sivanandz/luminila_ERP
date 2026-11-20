@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 
 import { Header } from "@/components/layout/Header";
@@ -29,6 +29,7 @@ import {
 export default function DashboardPage() {
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [error, setError] = useState(false);
 
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [salesTrend, setSalesTrend] = useState<SalesDataPoint[]>([]);
@@ -39,6 +40,7 @@ export default function DashboardPage() {
     const loadDashboard = async (showRefresh = false) => {
         if (showRefresh) setRefreshing(true);
         else setLoading(true);
+        setError(false);
 
         try {
             const [statsData, trendData, productsData, channelsData, activityData] = await Promise.all([
@@ -56,6 +58,8 @@ export default function DashboardPage() {
             setActivities(activityData);
         } catch (error) {
             console.error("Error loading dashboard:", error);
+            // D-05: surface the failure instead of leaving a plausible "₹0 / 0 orders" screen.
+            setError(true);
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -116,8 +120,18 @@ export default function DashboardPage() {
                             </Button>
                         </div>
 
+                        {/* D-05: when the whole load rejected there are no KPI cards to
+                            carry the warning, so surface it at page level too. */}
+                        {error && !stats && (
+                            <div className="flex items-center gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+                                <AlertTriangle className="w-4 h-4 shrink-0" />
+                                <span className="flex-1">Figures unavailable — the dashboard data could not be loaded. Nothing below is a reliable zero.</span>
+                                <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing}>Retry</Button>
+                            </div>
+                        )}
+
                         {/* KPI Cards */}
-                        {stats && <KPICards stats={stats} />}
+                        {stats && <KPICards stats={stats} degraded={Boolean(stats.degraded) || error} />}
 
                         {/* Charts Row */}
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

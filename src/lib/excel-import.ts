@@ -4,8 +4,9 @@
  */
 
 import ExcelJS from 'exceljs';
-import { getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
+import { accountScopeEmail, getCurrentTenantEmail, pb, sanitizeFilter } from './pocketbase';
 import { calculateLandedUnitCosts, reconcilePOWithInwardBatch, decodePOMetadata } from './purchase';
+import { computeNextSkuSequence, generateParentSKU } from './sku-generator';
 
 export interface InventoryImportRow {
     rowNumber: number;
@@ -206,8 +207,14 @@ export async function generateInventoryImportTemplateWorkbook(): Promise<ExcelJS
         }
     ];
 
+    // C-07: examples live on their own sheet. The importer only reads
+    // 'Products', so downloading the template and uploading it cannot create
+    // five phantom products and stock movements.
+    const exampleSheet = workbook.addWorksheet('Examples (not imported)');
+    exampleSheet.columns = columns;
+
     sampleRows.forEach(row => {
-        const addedRow = dataSheet.addRow(row);
+        const addedRow = exampleSheet.addRow(row);
         addedRow.height = 22;
         addedRow.alignment = { vertical: 'middle' };
         addedRow.eachCell((cell) => {
@@ -250,7 +257,7 @@ export async function generateInventoryImportTemplateWorkbook(): Promise<ExcelJS
         ['Description', 'OPTIONAL. Detailed notes, design details, or hallmark certifications.'],
         ['Purchase Order Ref', 'OPTIONAL. Tag items to a Purchase Order reference number (e.g., PO-GEN-20261019-180532). Auto-reconciles inward cost and absorbs GST/shipping overheads into landed cost if configured.'],
         ['------------------', '-----------------------------------------------------------------------------------'],
-        ['File Formats', 'Save and upload this file as .xlsx, .xls, or .csv. Headers must not be removed.'],
+        ['File Formats', 'Save and upload this file as .xlsx or .csv. Headers must not be removed.'],
         ['Data Isolation', 'Uploaded inventory is strictly partitioned and accessible only to your authenticated store account.'],
     ];
 
@@ -440,6 +447,11 @@ export async function parseInventoryImportFile(
     fileName: string
 ): Promise<ParsedImportResult> {
     const workbook = new ExcelJS.Workbook();
+    // B-15: ExcelJS only reads OOXML (.xlsx). Advertise and enforce the real
+    // formats instead of failing with a raw library error on a BIFF .xls.
+    if (fileName.toLowerCase().endsWith('.xls')) {
+        throw new Error('Legacy .xls files are not supported. Please save this file as .xlsx or .csv and retry.');
+    }
     const isCsv = fileName.toLowerCase().endsWith('.csv');
 
     if (isCsv) {
@@ -516,9 +528,15 @@ export async function parseInventoryImportFile(
     const nameCol = getColIndex(['productname', 'name', 'title']);
     const skuCol = getColIndex(['sku', 'code', 'barcode']);
     const categoryCol = getColIndex(['category', 'type']);
-    const priceCol = getColIndex(['sellingprice', 'baseprice', 'price', 'mrp', 'rate']);
-    const costCol = getColIndex(['costprice', 'cost', 'purchaseprice']);
-    const stockCol = getColIndex(['stockquantity', 'stock', 'qty', 'quantity']);
+    // H-32: money and stock columns must match EXACTLY. A substring match made
+    // "Cost Price" claim the price column (selling at cost, zero margin) and
+    // "Low Stock Threshold" claim stock. Other descriptive columns keep the
+    // fuzzy match for backwards compatibility.
+    const getExactColIndex = (keywords: string[]): number | undefined =>
+        headers.find(h => keywords.includes(h.normalized))?.index;
+    const priceCol = getExactColIndex(['sellingprice', 'baseprice', 'price', 'mrp', 'rate']);
+    const costCol = getExactColIndex(['costprice', 'cost', 'purchaseprice']);
+    const stockCol = getExactColIndex(['stockquantity', 'stock', 'qty', 'quantity']);
     const hsnCol = getColIndex(['hsncode', 'hsn']);
     const materialCol = getColIndex(['material', 'metal']);
     const purityCol = getColIndex(['purity', 'karat']);
@@ -531,6 +549,12 @@ export async function parseInventoryImportFile(
 
     if (!nameCol) {
         throw new Error('Required column "Product Name" was not found in the uploaded file.');
+    }
+    if (!priceCol) {
+        throw new Error('Required column "Selling Price (₹)" was not found. A sheet with only "Cost Price" cannot be imported.');
+    }
+    if (!stockCol) {
+        throw new Error('Required column "Stock Quantity" was not found in the uploaded file.');
     }
 
     const validRows: InventoryImportRow[] = [];
@@ -554,7 +578,7 @@ export async function parseInventoryImportFile(
 
         const rawName = String(getVal(nameCol) || '').trim();
         const rawSku = String(getVal(skuCol) || '').trim();
-        const rawCat = String(getVal(categoryCol) || 'Uncategorized').trim();
+        const rawCat = String(getVal(categoryCol) || '').trim();
         const rawPrice = getVal(priceCol);
         const rawCost = getVal(costCol);
         const rawStock = getVal(stockCol);
@@ -568,8 +592,16 @@ export async function parseInventoryImportFile(
         const rawDesc = String(getVal(descCol) || '').trim();
         const rawPoRef = String(getVal(poRefCol) || '').trim();
 
-        // Skip completely empty spacer rows
-        if (!rawName && !rawSku && rawPrice === undefined && rawStock === undefined) {
+        // B-14: only skip a spacer row when EVERY mapped cell is empty. A row
+        // with just cost/weight/description filled used to vanish silently and
+        // be excluded from totalRows; now it falls through to validation and is
+        // reported as an invalid row.
+        const rowHasData = [
+            rawName, rawSku, rawCat, rawPrice, rawCost, rawStock, rawHsn,
+            rawMaterial, rawPurity, rawGrossWeight, rawNetWeight,
+            rawMakingCharges, rawLocation, rawDesc, rawPoRef,
+        ].some((value) => value !== undefined && value !== null && String(value).trim() !== '');
+        if (!rowHasData) {
             continue;
         }
 
@@ -580,23 +612,28 @@ export async function parseInventoryImportFile(
             errors.push('Product Name is required.');
         }
 
-        // Validation 2: Selling Price
-        const parsedPrice = parseFloat(String(rawPrice || '0').replace(/[^0-9.-]+/g, ''));
-        if (rawPrice === undefined || isNaN(parsedPrice) || parsedPrice <= 0) {
+        // Validation 2: Selling Price. B-13: validate the plain decimal text
+        // before converting; stripping arbitrary characters accepted "1e3" as
+        // 13 and silently truncated "12.5" stock to 12.
+        const rawPriceText = rawPrice === undefined || rawPrice === null ? '' : String(rawPrice).trim();
+        const parsedPrice = /^\d+(\.\d+)?$/.test(rawPriceText) ? parseFloat(rawPriceText) : NaN;
+        if (rawPrice === undefined || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
             errors.push(`Selling Price must be a positive number (found: "${rawPrice}").`);
         }
 
         // Validation 3: Stock Quantity
-        const parsedStock = parseInt(String(rawStock ?? '0').replace(/[^0-9.-]+/g, ''), 10);
-        if (rawStock === undefined || isNaN(parsedStock) || parsedStock < 0) {
+        const rawStockText = rawStock === undefined || rawStock === null ? '' : String(rawStock).trim();
+        const parsedStock = /^\d+$/.test(rawStockText) ? parseInt(rawStockText, 10) : NaN;
+        if (rawStock === undefined || !Number.isFinite(parsedStock) || parsedStock < 0) {
             errors.push(`Stock Quantity must be an integer >= 0 (found: "${rawStock}").`);
         }
 
         // Validation 4: Optional Cost Price
         let parsedCost: number | undefined = undefined;
         if (rawCost !== undefined && String(rawCost).trim() !== '') {
-            const c = parseFloat(String(rawCost).replace(/[^0-9.-]+/g, ''));
-            if (isNaN(c) || c < 0) {
+            const costText = String(rawCost).trim();
+            const c = /^\d+(\.\d+)?$/.test(costText) ? parseFloat(costText) : NaN;
+            if (!Number.isFinite(c) || c < 0) {
                 errors.push(`Cost Price must be a valid number >= 0 if provided (found: "${rawCost}").`);
             } else {
                 parsedCost = c;
@@ -606,8 +643,9 @@ export async function parseInventoryImportFile(
         // Validation 5: Weights
         let parsedGross: number | undefined = undefined;
         if (rawGrossWeight !== undefined && String(rawGrossWeight).trim() !== '') {
-            const gw = parseFloat(String(rawGrossWeight).replace(/[^0-9.-]+/g, ''));
-            if (isNaN(gw) || gw < 0) {
+            const gwText = String(rawGrossWeight).trim();
+            const gw = /^\d+(\.\d+)?$/.test(gwText) ? parseFloat(gwText) : NaN;
+            if (!Number.isFinite(gw) || gw < 0) {
                 errors.push(`Gross Weight must be a valid number >= 0 if provided.`);
             } else {
                 parsedGross = gw;
@@ -616,8 +654,9 @@ export async function parseInventoryImportFile(
 
         let parsedNet: number | undefined = undefined;
         if (rawNetWeight !== undefined && String(rawNetWeight).trim() !== '') {
-            const nw = parseFloat(String(rawNetWeight).replace(/[^0-9.-]+/g, ''));
-            if (isNaN(nw) || nw < 0) {
+            const nwText = String(rawNetWeight).trim();
+            const nw = /^\d+(\.\d+)?$/.test(nwText) ? parseFloat(nwText) : NaN;
+            if (!Number.isFinite(nw) || nw < 0) {
                 errors.push(`Net Weight must be a valid number >= 0 if provided.`);
             } else {
                 parsedNet = nw;
@@ -626,8 +665,9 @@ export async function parseInventoryImportFile(
 
         let parsedMakingCharges: number | undefined = undefined;
         if (rawMakingCharges !== undefined && String(rawMakingCharges).trim() !== '') {
-            const mc = parseFloat(String(rawMakingCharges).replace(/[^0-9.-]+/g, ''));
-            if (isNaN(mc) || mc < 0) {
+            const mcText = String(rawMakingCharges).trim();
+            const mc = /^\d+(\.\d+)?$/.test(mcText) ? parseFloat(mcText) : NaN;
+            if (!Number.isFinite(mc) || mc < 0) {
                 errors.push(`Making Charges must be a valid number >= 0 if provided.`);
             } else {
                 parsedMakingCharges = mc;
@@ -693,16 +733,37 @@ export async function commitBulkInventoryImport(
         }
     }
 
-    const accountEmail = getCurrentTenantEmail() || (pbClient.authStore.model as { email?: string } | null)?.email || '';
+    // H-38: getCurrentTenantEmail() falls back to "default" with no session;
+    // accountScopeEmail() returns '' instead, so refuse to import unscoped.
+    const accountEmail = accountScopeEmail() || (pbClient.authStore.model as { email?: string } | null)?.email || '';
+    if (!accountEmail) throw new Error('Bulk import requires a signed-in tenant.');
     const importedProducts: { id: string; name: string; sku: string; stock: number; cost_price?: number }[] = [];
     const errors: { rowNumber: number; error: string }[] = [];
 
-    // Cache existing categories to avoid redundant queries
-    const existingCats = await pbClient.collection('categories').getFullList().catch(() => []);
+    // H-38: tenant-scoped category cache; a failed read must abort rather than
+    // become an empty cache that creates cross-tenant duplicates.
+    const existingCats = await pbClient.collection('categories').getFullList({
+        filter: `account_email="${sanitizeFilter(accountEmail)}"`,
+    });
     const catMap = new Map<string, string>();
     existingCats.forEach((c) => {
         const cat = c as unknown as { id: string; name: string };
         catMap.set(cat.name.toLowerCase().trim(), cat.id);
+    });
+
+    // C-06: one tenant-scoped read for existing SKUs, then a local set so a
+    // re-upload (or two rows with the same SKU) cannot duplicate products and
+    // double-count stock.
+    const seenSkus = new Set<string>();
+    // Let a failed read abort the import: an empty cache would silently
+    // re-enable duplicate products and double-counted stock.
+    const existingProducts = await pbClient.collection('products').getFullList({
+        fields: 'sku',
+        filter: accountEmail ? `account_email="${sanitizeFilter(accountEmail)}"` : '',
+    });
+    existingProducts.forEach((p) => {
+        const sku = String((p as { sku?: string }).sku || '').trim().toLowerCase();
+        if (sku) seenSkus.add(sku);
     });
 
     // 0. Pre-resolve any Purchase Orders referenced across rows or via defaultPoReference
@@ -712,7 +773,7 @@ export async function commitBulkInventoryImport(
         if (r.po_reference?.trim()) allPoRefs.add(r.po_reference.trim());
     });
 
-    const poRecordMap = new Map<string, { record: Record<string, unknown>; meta: { absorb_overhead?: boolean; gst_paid_overhead?: number; shipping_overhead?: number } }>();
+    const poRecordMap = new Map<string, { record: Record<string, unknown>; meta: { absorb_overhead?: boolean; gst_paid_overhead?: number; shipping_overhead?: number; budget_amount?: number } }>();
     const poScope = accountEmail ? ` && account_email="${sanitizeFilter(accountEmail)}"` : '';
     for (const poRef of allPoRefs) {
         try {
@@ -754,10 +815,21 @@ export async function commitBulkInventoryImport(
         if (poData && poData.meta?.absorb_overhead) {
             const totalOverhead = Number(poData.meta.gst_paid_overhead || 0) + Number(poData.meta.shipping_overhead || 0);
             if (totalOverhead > 0) {
-                const landed = calculateLandedUnitCosts(rows, totalOverhead);
-                landed.forEach(l => {
-                    landedCostMap.set(l.rowNumber, l.landed_cost_price);
-                });
+                // P-07: absorb only the still-unabsorbed portion. inward_cost is
+                // incremented atomically by reconcilePOWithInwardBatch, so a
+                // second Excel batch under the same blanket PO receives the
+                // remainder instead of capitalising the full overhead again.
+                const budget = Number(poData.meta.budget_amount ?? poData.record.subtotal ?? 0);
+                const alreadyReceived = Math.max(0, Number(poData.record.inward_cost ?? 0));
+                const remainingOverhead = budget > 0
+                    ? Math.max(0, totalOverhead * (1 - alreadyReceived / budget))
+                    : 0; // no budget basis: fail closed rather than re-apply in full
+                if (remainingOverhead > 0) {
+                    const landed = calculateLandedUnitCosts(rows, remainingOverhead);
+                    landed.forEach(l => {
+                        landedCostMap.set(l.rowNumber, l.landed_cost_price);
+                    });
+                }
             }
         }
     }
@@ -767,6 +839,12 @@ export async function commitBulkInventoryImport(
     const poBatchCostMap = new Map<string, number>();
 
     for (const item of validRows) {
+        // H-31: PocketBase has no transaction here; track what THIS row created
+        // so a failure can compensate instead of leaving an orphan product.
+        let createdCategoryId = '';
+        let createdProductId = '';
+        let createdVariantId = '';
+        let reservedSku = '';
         try {
             // 1. Resolve or create Category
             let categoryId = '';
@@ -777,18 +855,33 @@ export async function commitBulkInventoryImport(
                     categoryId = catMap.get(lowerCat)!;
                 } else {
                     const newCat = await pbClient.collection('categories').create({
+                        account_email: accountEmail,
                         name: normalizedCatName,
                         is_active: true,
                     });
                     categoryId = newCat.id;
+                    createdCategoryId = newCat.id;
                     catMap.set(lowerCat, categoryId);
                 }
             }
 
             // 2. Generate unique SKU if missing
+            // H-37: timestamp+random collides for ~58% of 40 blank-SKU rows and
+            // bypasses the race-safe allocator. Use the real sequence instead.
             const finalSku = item.sku && item.sku.trim().length > 0
                 ? item.sku.trim()
-                : `SKU-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
+                : generateParentSKU('GEN', 'GEN', 'GEN', await computeNextSkuSequence('GENGENGEN'));
+
+            if (seenSkus.has(finalSku.toLowerCase())) {
+                failureCount++;
+                errors.push({
+                    rowNumber: item.rowNumber,
+                    error: `SKU ${finalSku} already exists; skipped to avoid a duplicate product and stock.`,
+                });
+                continue;
+            }
+            seenSkus.add(finalSku.toLowerCase());
+            reservedSku = finalSku.toLowerCase();
 
             const effPoRef = (item.po_reference || defaultPoReference || '').trim();
             const baseCost = item.cost_price || 0;
@@ -811,6 +904,7 @@ export async function commitBulkInventoryImport(
                 description: item.description || (effPoRef ? `Inward stock under PO: ${effPoRef}` : ''),
                 is_active: true,
             });
+            createdProductId = product.id;
 
             // 4. Create Product Variant
             const variant = await pbClient.collection('product_variants').create({
@@ -827,6 +921,7 @@ export async function commitBulkInventoryImport(
                 net_weight: item.net_weight,
                 making_charges: item.making_charges,
             });
+            createdVariantId = variant.id;
 
             // 5. Log Stock Movement for initial inventory balance
             if (item.stock > 0) {
@@ -845,7 +940,7 @@ export async function commitBulkInventoryImport(
                     reference_id: effPoRef || product.id,
                     source: 'bulk_excel_import',
                     notes: noteMsg,
-                }).catch(err => console.warn('Could not log initial stock movement:', err));
+                });
 
                 // Accumulate batch inward cost for PO reconciliation
                 if (effPoRef) {
@@ -863,6 +958,25 @@ export async function commitBulkInventoryImport(
             });
             successCount++;
         } catch (err: unknown) {
+            // H-31: undo this row's writes so a retry is not blocked by its own
+            // orphaned product/SKU. Compensation is best-effort — PB has no
+            // transaction — but every failure is logged.
+            for (const [collection, id] of [
+                ['product_variants', createdVariantId],
+                ['products', createdProductId],
+                ['categories', createdCategoryId],
+            ] as const) {
+                if (!id) continue;
+                await pbClient.collection(collection).delete(id).catch((cleanupErr) =>
+                    console.error(`[import] Could not roll back ${collection} ${id}:`, cleanupErr)
+                );
+            }
+            if (reservedSku) seenSkus.delete(reservedSku);
+            if (createdCategoryId) {
+                for (const [name, id] of catMap) {
+                    if (id === createdCategoryId) catMap.delete(name);
+                }
+            }
             failureCount++;
             const msg = err instanceof Error ? err.message : String(err);
             errors.push({

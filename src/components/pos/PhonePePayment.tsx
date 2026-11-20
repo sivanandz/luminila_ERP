@@ -90,6 +90,9 @@ export function PhonePePayment({
                     completedRef.current = true;
                     clearInterval(pollInterval);
                     setError('Payment verification timed out. Please check your payment status manually.');
+                    // U-12: the pending stage has no close/retry control; move to
+                    // failed so Try Again / Cancel actually render.
+                    setStatus('failed');
                 }
             } catch (err) {
                 console.error('Status poll error:', err);
@@ -143,6 +146,10 @@ export function PhonePePayment({
         setError(null);
         setTransactionId(null);
         setPollCount(0);
+        // A timed-out poll left these latched; clear them so the next pending
+        // session actually polls (otherwise Try Again silently never verifies).
+        pollCountRef.current = 0;
+        completedRef.current = false;
     };
 
     if (!isOpen) return null;

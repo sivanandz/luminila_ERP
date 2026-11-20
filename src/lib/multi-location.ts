@@ -646,15 +646,23 @@ export async function receiveStockTransfer(
 
     // Clamp every received quantity to [0, dispatched] so a bad payload cannot
     // receive more than left the source (BNK-5).
-    const receivedQuantities = new Map<string, number>();
-    for (const item of transfer.items) {
+    // Key by LINE INDEX, not variant id: a manifest can repeat the same SKU,
+    // and a variant-keyed map collapsed the last write then applied it to every
+    // line — receiving +3 +3 = +6 for a 5-unit dispatch (H-07).
+    const receivedQuantities = new Map<number, number>();
+    for (const [index, item] of transfer.items.entries()) {
         const dispatched = Math.max(0, Number(item.dispatched_quantity) || 0);
-        const requested = receivedItems?.find((r) => r.variantId === item.variant_id)?.quantity;
+        // Index-first only when that entry belongs to this line; a partial
+        // variant-keyed payload must not credit line A with line B's quantity.
+        const byIndex = receivedItems?.[index];
+        const requested =
+            (byIndex && byIndex.variantId === item.variant_id ? byIndex.quantity : undefined) ??
+            receivedItems?.find((r) => r.variantId === item.variant_id)?.quantity;
         const requestedNumber = requested === undefined ? dispatched : Number(requested);
         const receivedQty = Number.isFinite(requestedNumber)
             ? Math.min(dispatched, Math.max(0, requestedNumber))
             : dispatched;
-        receivedQuantities.set(item.variant_id || item.product_id, receivedQty);
+        receivedQuantities.set(index, receivedQty);
     }
 
     // Persist the status change before stock moves: a failed write used to be
@@ -664,9 +672,9 @@ export async function receiveStockTransfer(
             status: "received",
             received_by: pb.authStore.model?.email || "Store Manager",
             received_at: now,
-            items: transfer.items.map((item) => ({
+            items: transfer.items.map((item, index) => ({
                 ...item,
-                received_quantity: receivedQuantities.get(item.variant_id || item.product_id) ?? 0,
+                received_quantity: receivedQuantities.get(index) ?? 0,
             })),
         });
     } catch (err) {
@@ -675,8 +683,8 @@ export async function receiveStockTransfer(
     }
 
     // Reconcile and add stock to destination location
-    for (const item of transfer.items) {
-        const receivedQty = receivedQuantities.get(item.variant_id || item.product_id) ?? 0;
+    for (const [index, item] of transfer.items.entries()) {
+        const receivedQty = receivedQuantities.get(index) ?? 0;
         item.received_quantity = receivedQty;
 
         if (receivedQty <= 0) continue;

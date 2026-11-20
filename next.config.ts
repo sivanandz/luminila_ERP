@@ -30,6 +30,14 @@ const nextConfig: NextConfig = {
         ignored: /[\\/](\.next|node_modules|\.git|\.mimosa|\.playwright-mcp|pocketbase|docs)[\\/]/,
       };
     }
+    if (dev && process.env.LUMINILA_FS_DISK_CACHE !== "1") {
+      // exFAT checkouts cannot satisfy webpack's filesystem-cache snapshot
+      // ("Unable to snapshot resolve dependencies"), so the pack is dropped on
+      // every write and each dev start is a full recompile anyway. Fall back to
+      // the in-memory cache: identical HMR behaviour, no failed-snapshot noise.
+      // Set LUMINILA_FS_DISK_CACHE=1 on NTFS machines to keep the disk cache.
+      config.cache = { type: "memory" };
+    }
     return config;
   },
 

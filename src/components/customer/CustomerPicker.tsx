@@ -29,24 +29,35 @@ export function CustomerPicker({
     const [results, setResults] = useState<Customer[]>([]);
     const [isOpen, setIsOpen] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(false);
+    const [retryKey, setRetryKey] = useState(0);
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const handleSearch = async () => {
             if (query.length < 2) {
                 setResults([]);
+                setError(false);
                 return;
             }
 
             setLoading(true);
-            const data = await searchCustomers(query, 8);
-            setResults(data);
-            setLoading(false);
+            setError(false);
+            try {
+                const data = await searchCustomers(query, 8);
+                setResults(data);
+            } catch (err) {
+                console.error("Customer search failed:", err);
+                setResults([]);
+                setError(true);
+            } finally {
+                setLoading(false);
+            }
         };
 
         const debounce = setTimeout(handleSearch, 300);
         return () => clearTimeout(debounce);
-    }, [query]);
+    }, [query, retryKey]);
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
@@ -116,6 +127,13 @@ export function CustomerPicker({
                     {loading ? (
                         <div className="p-4 text-center text-muted-foreground text-sm">
                             Searching...
+                        </div>
+                    ) : error ? (
+                        <div className="p-4 text-center text-sm text-destructive">
+                            <p>Search failed — no results shown.</p>
+                            <Button variant="outline" size="sm" className="mt-2" onClick={() => setRetryKey((k) => k + 1)}>
+                                Retry
+                            </Button>
                         </div>
                     ) : results.length === 0 ? (
                         <div className="p-4">

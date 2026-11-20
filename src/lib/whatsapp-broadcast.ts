@@ -13,7 +13,7 @@
  * time and re-schedules the rest — call it on an interval from a long-lived surface.
  */
 
-import { pb, sanitizeFilter } from './pocketbase';
+import { pb, accountScopeEmail, sanitizeFilter } from './pocketbase';
 import { whatsappManager } from './whatsapp';
 import {
     normalizeE164,
@@ -397,32 +397,63 @@ export async function queueCampaign(input: {
     return result;
 }
 
+/** Stable 15-char id for a broadcast dispatch claim (W-12). */
+function broadcastClaimId(entryId: string): string {
+    let hash = 2166136261 >>> 0;
+    for (let index = 0; index < entryId.length; index += 1) {
+        hash ^= entryId.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `bcl${hash.toString(36).padStart(12, '0').slice(0, 12)}`;
+}
+
+/** PocketBase reports a client-supplied id clash as a 400 validation_not_unique. */
+function isDuplicateIdError(error: unknown): boolean {
+    const candidate = error as { status?: number; data?: { data?: Record<string, { code?: string }> } };
+    return candidate?.status === 400
+        && candidate?.data?.data?.id?.code === 'validation_not_unique';
+}
+
 /**
- * WA-6: claim a queued row before sending it.
- *
- * PocketBase has no conditional update, so the row is re-read and its `updated`
- * stamp compared immediately before the status flip: a concurrent drain that
- * got there first changes the stamp (or the status), and this drain backs off
- * instead of sending the same message twice.
+ * WA-6 / W-12: claim a queued row before sending it. The deterministic-id row
+ * create is PocketBase-atomic — exactly one of two concurrent drains can create
+ * it; the loser sees a duplicate-id conflict and backs off, so a message is
+ * never sent twice. The claim is a lease: the drain releases it after the send
+ * attempt settles, so a failed send can be retried.
  */
 async function claimQueuedMessage(entryId: string): Promise<boolean> {
     try {
-        const before = await pb.collection('broadcast_messages').getOne<{ status?: string; updated?: string }>(
+        const before = await pb.collection('broadcast_messages').getOne<{ status?: string }>(
             entryId,
-            { fields: 'status,updated' }
+            { fields: 'status' }
         );
         if (String(before.status) !== 'queued') return false;
-        const after = await pb.collection('broadcast_messages').getOne<{ status?: string; updated?: string }>(
-            entryId,
-            { fields: 'status,updated' }
-        );
-        if (String(after.status) !== 'queued' || after.updated !== before.updated) return false;
-        await pb.collection('broadcast_messages').update(entryId, { status: 'sending' });
+
+        await pb.collection('broadcast_messages').update(entryId, {
+            status: 'sending',
+            error: '',
+        });
+        await pb.collection('activity_logs').create({
+            id: broadcastClaimId(entryId),
+            account_email: accountScopeEmail(),
+            entity_type: 'broadcast_claim',
+            entity_id: entryId,
+            action: 'send',
+            description: `Idempotency claim: broadcast send for ${entryId}`,
+        });
         return true;
     } catch (err) {
+        if (isDuplicateIdError(err)) return false;
         console.warn('[broadcast] could not claim queued message', entryId, (err as Error)?.message);
         return false;
     }
+}
+
+/** Release the dispatch lease so a failed or interrupted send can be retried. */
+async function releaseQueuedMessageClaim(entryId: string): Promise<void> {
+    await pb.collection('activity_logs').delete(broadcastClaimId(entryId)).catch((err) =>
+        console.warn('[broadcast] could not release send claim', entryId, (err as Error)?.message)
+    );
 }
 
 /**
@@ -453,6 +484,22 @@ export async function processBroadcastQueue(): Promise<{
         const quotaRemaining = Math.max(0, DAILY_MARKETING_QUOTA - quotaUsed);
         stats.quotaRemaining = quotaRemaining;
         if (quotaRemaining <= 0) return stats;
+
+        // W-12 crash recovery: a drain that died mid-send leaves rows stuck in
+        // 'sending' with a live claim. Requeue any untouched for 5 minutes and
+        // release their leases so a later drain retries them exactly once.
+        try {
+            const staleCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
+            const stale = await pb.collection('broadcast_messages').getList(1, 50, {
+                filter: withTenantFilter(`status="sending" && updated<="${staleCutoff}"`),
+            });
+            for (const row of stale.items as unknown as { id: string }[]) {
+                await pb.collection('broadcast_messages').update(row.id, { status: 'queued' }).catch(() => {});
+                await releaseQueuedMessageClaim(row.id);
+            }
+        } catch (err) {
+            console.warn('[broadcast] stale send recovery failed:', (err as Error)?.message);
+        }
 
         let due;
         try {
@@ -520,6 +567,10 @@ export async function processBroadcastQueue(): Promise<{
                     error: (err as Error)?.message || 'send error',
                 }).catch(() => {});
                 stats.failed++;
+            } finally {
+                // W-12: the lease only guards the in-flight send; the row's own
+                // status decides what a later drain does with it.
+                await releaseQueuedMessageClaim(entry.id);
             }
         }
 

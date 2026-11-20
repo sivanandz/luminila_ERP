@@ -1,5 +1,5 @@
 import PocketBase from 'pocketbase';
-import { readRegistrySecret } from './tenant-secrets';
+import { isEncryptedSecret, readRegistrySecret } from './tenant-secrets';
 import { isAllowedPocketBaseUrl, resolvePocketBaseBaseUrl } from './pocketbase-url';
 import {
     assertDeploymentModeConsistent,
@@ -109,7 +109,10 @@ export function resolveTenantRuntime(
 async function authenticateTenantClient(client: PocketBase, email: string, password: string): Promise<void> {
     if (!email || !password) return;
     // Values may be plaintext (legacy registry) or enc:v1: ciphertext.
-    const secret = readRegistrySecret(password);
+    // H-25: the registry policy only applies to enc:v1: registry values. Env
+    // superuser credentials are plaintext by design; decrypting them threw in
+    // production and broke every tenant client.
+    const secret = isEncryptedSecret(password) ? readRegistrySecret(password) : password;
     try {
         await client.collection("_superusers").authWithPassword(email, secret);
     } catch {

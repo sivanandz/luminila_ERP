@@ -47,6 +47,7 @@ export default function ExpensesPage() {
     const [categories, setCategories] = useState<ExpenseCategory[]>([]);
     const [stats, setStats] = useState<ExpenseStats | null>(null);
     const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
 
     // Default the period to the 1st of the current month in LOCAL time. A
     // toISOString() round-trip shifts IST users back to the previous month
@@ -73,7 +74,7 @@ export default function ExpensesPage() {
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [newExpense, setNewExpense] = useState({
         amount: "",
-        date: new Date().toISOString().split('T')[0],
+        date: localDate(new Date()),
         category_id: "",
         payment_mode: "cash",
         payee: "",
@@ -113,30 +114,38 @@ export default function ExpensesPage() {
     };
 
     const handleCreate = async () => {
+        if (saving) return;
         if (!newExpense.amount || !newExpense.category_id || !newExpense.date) {
             toast.error("Please fill required fields (Amount, Date, Category)");
             return;
         }
 
-        const result = await createExpense({
-            ...newExpense,
-            amount: parseFloat(newExpense.amount),
-            payment_mode: newExpense.payment_mode as ExpensePaymentMode
-        });
-
-        if (result) {
-            toast.success("Expense recorded successfully");
-            setIsCreateOpen(false);
-            setNewExpense({
-                amount: "",
-                date: new Date().toISOString().split('T')[0],
-                category_id: "",
-                payment_mode: "cash",
-                payee: "",
-                description: "",
-                reference_number: ""
+        // Guard the whole round-trip so a double-click cannot mint a second
+        // sequential expense number for the same bill (P-10).
+        setSaving(true);
+        try {
+            const result = await createExpense({
+                ...newExpense,
+                amount: parseFloat(newExpense.amount),
+                payment_mode: newExpense.payment_mode as ExpensePaymentMode
             });
-            loadData();
+
+            if (result) {
+                toast.success("Expense recorded successfully");
+                setIsCreateOpen(false);
+                setNewExpense({
+                    amount: "",
+                    date: localDate(new Date()),
+                    category_id: "",
+                    payment_mode: "cash",
+                    payee: "",
+                    description: "",
+                    reference_number: ""
+                });
+                loadData();
+            }
+        } finally {
+            setSaving(false);
         }
     };
 
@@ -293,7 +302,7 @@ export default function ExpensesPage() {
                                 </div>
                                 <DialogFooter>
                                     <Button variant="outline" onClick={() => setIsCreateOpen(false)}>Cancel</Button>
-                                    <Button onClick={handleCreate}>Save Expense</Button>
+                                    <Button onClick={handleCreate} disabled={saving}>Save Expense</Button>
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>

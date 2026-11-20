@@ -773,9 +773,25 @@ async function handlePayIntent(
 
     // A crash between the header and the line write could leave a zero-line
     // order; repair it before attaching a gateway charge.
-    const existingItems = await client.collection("sales_order_items").getList(1, 1, {
-        filter: `order = "${sanitizeFilter(salesOrder.id)}"`,
-    }).catch(() => null);
+    // SW-03: only an unreadable-count that is genuinely empty may trigger the
+    // repair insert. A transport/5xx failure must fail closed — treating it as
+    // "no lines" inserts a second line while the gateway is charged for one,
+    // doubling stock deduction and invoicing.
+    let existingItems: { totalItems: number } | null = null;
+    try {
+        existingItems = await client.collection("sales_order_items").getList(1, 1, {
+            filter: `order = "${sanitizeFilter(salesOrder.id)}"`,
+        });
+    } catch (err) {
+        if ((err as { status?: number }).status === 404) {
+            existingItems = null;
+        } else {
+            return NextResponse.json(
+                { success: false, error: "Could not verify the order line items. Please retry." },
+                { status: 503, headers: CORS_HEADERS }
+            );
+        }
+    }
     if (!existingItems || existingItems.totalItems === 0) {
         await client.collection("sales_order_items").create({
             order: salesOrder.id,
@@ -820,17 +836,34 @@ async function handlePayIntent(
         );
     }
 
-    await client
-        .collection("sales_orders")
-        .update(salesOrder.id, {
-            gateway: "razorpay",
-            gateway_order_id: gateway.orderId,
-            payment_method: "razorpay_online",
-        })
-        .catch(async () => {
-            // A lost unique race on gateway_order_id means another request
-            // already attached a gateway order to this document.
-        });
+    // H-45: only a unique race (another request already attached a gateway
+    // order) may be ignored. Any other write failure must stop the browser
+    // from charging an order id the ERP never recorded.
+    try {
+        await client
+            .collection("sales_orders")
+            .update(salesOrder.id, {
+                gateway: "razorpay",
+                gateway_order_id: gateway.orderId,
+                payment_method: "razorpay_online",
+            });
+    } catch (err) {
+        // PB reports a unique violation as the structured field code
+        // `validation_not_unique` under the generic "Failed to update record."
+        // message — the message never contains "unique" (every other unique
+        // check in this repo inspects the field code).
+        const uniqueRace =
+            (err as { response?: { data?: Record<string, { code?: string }> } })?.response?.data
+                ?.gateway_order_id?.code === "validation_not_unique";
+        if (!uniqueRace) {
+            await client.collection("sales_orders")
+                .update(salesOrder.id, { status: "cancelled" }).catch(() => {});
+            return NextResponse.json(
+                { success: false, error: "Could not record the payment order. Please try again." },
+                { status: 503, headers: CORS_HEADERS }
+            );
+        }
+    }
 
     return NextResponse.json(
         {
@@ -908,6 +941,30 @@ async function handleOrderConfirmation(
             { success: false, error: "This order has no gateway payment to confirm." },
             { status: 409, headers: CORS_HEADERS }
         );
+    }
+
+    // H-28: intake validated the 10-minute hold, but confirmation can arrive
+    // late. Re-check it here so an expired reservation cannot be confirmed.
+    const confirmationOrderNumber = String(order.order_number || "");
+    if (confirmationOrderNumber.startsWith("ORD-FD-")) {
+        const reservationId = confirmationOrderNumber.slice("ORD-FD-".length);
+        const reservation = await client.collection("flash_drop_reservations").getOne<{
+            status?: string;
+            expires_at?: string;
+            order?: string;
+        }>(reservationId).catch(() => null);
+        if (reservation) {
+            const completedForThisOrder =
+                reservation.status === "completed" && reservation.order === order.id;
+            const expiresAt = Date.parse(String(reservation.expires_at || "").replace(" ", "T"));
+            const expired = Number.isFinite(expiresAt) && expiresAt <= Date.now();
+            if (!completedForThisOrder && (reservation.status !== "active" || expired)) {
+                return NextResponse.json(
+                    { success: false, error: "Your 10-minute hold has expired. Please reserve the item again." },
+                    { status: 409, headers: CORS_HEADERS }
+                );
+            }
+        }
     }
 
     // One gateway payment settles one order, even if the tuple is replayed.

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -67,6 +67,9 @@ export function InventoryBulkActionBar({
     const [priceAdjustModalOpen, setPriceAdjustModalOpen] = useState(false);
     const [pricePercent, setPricePercent] = useState("");
     const [fixedAdjustment, setFixedAdjustment] = useState("");
+    // U-10: pre-attempt prices for the current selection, so a partial-failure
+    // retry recomputes from the originals instead of stacking the % twice.
+    const priceAdjustBaseRef = useRef<{ ids: string[]; prices: Record<string, number> }>({ ids: [], prices: {} });
     // Editable tray locations (Settings → Tray Locations); presets until defined.
     const [trayOptions, setTrayOptions] = useState<TrayLocationOption[]>([]);
     React.useEffect(() => {
@@ -134,10 +137,22 @@ async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => P
             return;
         }
 
+        // Capture the selection's starting prices once. After a partial failure
+        // the table is refreshed and selectedProducts carries updated prices;
+        // without this snapshot a second Apply compounds the percentage (U-10).
+        const ids = selectedProducts.map((p) => p.id).sort();
+        const base = priceAdjustBaseRef.current;
+        if (base.ids.join("\n") !== ids.join("\n")) {
+            priceAdjustBaseRef.current = {
+                ids,
+                prices: Object.fromEntries(selectedProducts.map((p) => [p.id, p.price])),
+            };
+        }
+
         setBusy(true);
         try {
             await batchProcess(selectedProducts, 15, (p) => {
-                let nextPrice = p.price;
+                let nextPrice = priceAdjustBaseRef.current.prices[p.id] ?? p.price;
                 if (!isNaN(pct)) {
                     nextPrice = Math.round(nextPrice * (1 + pct / 100));
                 }
@@ -149,12 +164,14 @@ async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => P
                 });
             });
             toast.success(`Adjusted pricing on ${selectedIds.length} products!`);
+            priceAdjustBaseRef.current = { ids: [], prices: {} };
             setPriceAdjustModalOpen(false);
             onClearSelection();
             await onRefresh();
         } catch (err) {
             console.error("Bulk price adjust failed:", err);
-            toast.error("Failed to adjust prices.");
+            toast.error("Failed to adjust prices — some rows may have changed. Review the list; retrying uses the original prices.");
+            await onRefresh();
         } finally {
             setBusy(false);
         }
@@ -265,7 +282,12 @@ async function batchProcess<T>(items: T[], batchSize: number, fn: (item: T) => P
                                 <Eye size={12} className="mr-1.5" /> Publish All
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                                onClick={() => void handleToggleActive(false)}
+                                onClick={() => {
+                                    // U-11: unpublishing is destructive; require an explicit confirmation.
+                                    if (window.confirm(`Move ${selectedIds.length} products to draft? They will be hidden from the storefront.`)) {
+                                        void handleToggleActive(false);
+                                    }
+                                }}
                                 className="cursor-pointer hover:bg-bg-navy text-amber-300"
                             >
                                 <EyeOff size={12} className="mr-1.5" /> Move to Draft

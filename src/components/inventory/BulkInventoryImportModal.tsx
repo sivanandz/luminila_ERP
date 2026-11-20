@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef } from "react";
+import { accountScopeEmail } from "@/lib/pocketbase";
 import {
     Dialog,
     DialogContent,
@@ -147,7 +148,7 @@ export function BulkInventoryImportModal({
     };
 
     const handleDownloadTemplate = () => {
-        window.open("/api/inventory/template", "_blank");
+        window.open(`/api/inventory/template?tenant=${encodeURIComponent(accountScopeEmail())}`, "_blank");
     };
 
     return (

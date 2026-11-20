@@ -943,7 +943,7 @@ export async function ingestVendorProduct(input: {
             source: 'vendor_whatsapp',
             notes: `Vendor WhatsApp ingestion${input.weightGrams ? ` (${input.weightGrams}g)` : ''}`,
             account_email: tenantScopeEmail(),
-        }).catch((err) => console.warn('[whatsapp-crm] stock movement log failed:', err));
+        });
     }
 
     // Formal draft GRN for the procurement ledger (createGRN sets stock_level and logs stock movement)
@@ -964,10 +964,12 @@ export async function ingestVendorProduct(input: {
             });
         } catch (err) {
             console.warn('[whatsapp-crm] draft GRN creation failed:', err);
-            // Fallback: if GRN failed, ensure variant has stock recorded
+            // Fallback: if GRN failed, ensure variant has stock recorded.
+            // Let a failed fallback reach the caller instead of reporting success
+            // with zero stock and no ledger row.
             await pb.collection('product_variants').update(variant.id, {
                 stock_level: Math.max(0, input.quantity),
-            }).catch(() => {});
+            });
         }
     }
 

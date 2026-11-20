@@ -13,7 +13,8 @@
  */
 
 import { pb, accountScopeEmail, sanitizeFilter } from './pocketbase';
-import { loadUnifiedLines, loadTxWindow } from './analytics-v2/load';
+import { loadUnifiedLines, loadTxWindow, MIRROR_CHANNEL } from './analytics-v2/load';
+import { adjustedLineRevenues } from './analytics-v2/discount-allocation';
 import { buildChannelTable } from './analytics-v2/sales-metrics';
 import { resolveRange, compare, dayKey, pbBound, type ComparedMetric } from './analytics-v2/range';
 import type {
@@ -137,24 +138,31 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         const sumRevenue = (list: typeof txs) => list.reduce((sum, t) => sum + t.revenue, 0);
 
         const totalRevenue = sumRevenue(txs);
-        const totalOrders = txs.length;
+        const totalOrders = txs.filter((t) => !t.isRefund).length;
 
         const todayTx = txs.filter((t) => pbBound(t.dateISO) >= todayBound);
         const todayRevenue = sumRevenue(todayTx);
-        const todayOrdersCount = todayTx.length;
+        const todayOrdersCount = todayTx.filter((t) => !t.isRefund).length;
 
         const prevRevenue = sumRevenue(prevTxs);
         const revenueChange = prevRevenue > 0
             ? Math.round(((totalRevenue - prevRevenue) / prevRevenue) * 100)
             : 0;
 
-        // Margin from canonical line items (unit_cost snapshots; current-cost
-        // fallback inside load.ts — unknown costs count as 0-cost).
-        const lines = await loadUnifiedLines(tenant, win.current);
+        // Margin uses tax-exclusive net line revenue (as profitability does),
+        // not the tax/shipping-inclusive tx.revenue — otherwise GST collected
+        // inflates the dashboard margin (O-10).
+        const [lines, prevLines] = await Promise.all([
+            loadUnifiedLines(tenant, win.current),
+            loadUnifiedLines(tenant, win.previous),
+        ]);
+        const adjusted = adjustedLineRevenues(lines, txs);
+        const prevAdjusted = adjustedLineRevenues(prevLines, prevTxs);
+        const netRevenue = lines.reduce((s, l) => s + (adjusted.get(l) ?? l.netRevenue), 0);
         const cogs = lines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
-        const grossMargin = Math.round(totalRevenue - cogs);
-        const prevLines = await loadUnifiedLines(tenant, win.previous);
-        const prevGrossMargin = prevRevenue - prevLines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
+        const grossMargin = Math.round(netRevenue - cogs);
+        const prevNetRevenue = prevLines.reduce((s, l) => s + (prevAdjusted.get(l) ?? l.netRevenue), 0);
+        const prevGrossMargin = prevNetRevenue - prevLines.reduce((s, l) => s + l.quantity * l.unitCost, 0);
         const marginChange = compare(grossMargin, Math.round(prevGrossMargin));
 
         // Product count strictly scoped to tenant
@@ -288,6 +296,7 @@ export async function getTopProducts(limit: number = 10): Promise<TopProduct[]> 
         }
 
         return Array.from(byProduct.entries())
+            .filter(([, data]) => data.sold > 0 && data.revenue > 0) // no zero/negative-revenue non-sellers (O-20)
             .map(([id, data]) => ({
                 id,
                 name: data.name,
@@ -343,10 +352,10 @@ export async function getRecentActivity(limit: number = 10): Promise<RecentActiv
     if (!tenant) return [];
 
     try {
-        // Recent sales (mirror rows still appear in the activity feed — they
-        // are real events, just excluded from revenue math)
+        // Skip storefront mirror sales: the same checkout also writes a
+        // sales_orders row, so including the mirror lists one sale twice (D-08).
         const sales = await pb.collection('sales').getList<Sale>(1, 5, {
-            filter: `account_email="${sanitizeFilter(tenant)}"`,
+            filter: `account_email="${sanitizeFilter(tenant)}" && channel!="${MIRROR_CHANNEL}"`,
             sort: '-created'
         });
         sales.items.forEach((sale) => {
@@ -455,7 +464,7 @@ export async function getRevenueSummary(period: 'today' | 'week' | 'month' | 'ye
         const txs = await loadTxWindow(tenant, win.current);
 
         const revenue = txs.reduce((sum, t) => sum + t.revenue, 0);
-        const count = txs.length;
+        const count = txs.filter((t) => !t.isRefund).length;
         const avgOrderValue = count > 0 ? Math.round(revenue / count) : 0;
 
         return { revenue: Math.round(revenue), orders: count, avgOrderValue };

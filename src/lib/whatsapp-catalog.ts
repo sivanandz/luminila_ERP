@@ -332,5 +332,5 @@ export async function linkWhatsAppCatalogItem(productId: string, catalogItemId: 
 
 /** Remove the catalog link, keeping the product record intact. */
 export async function unlinkWhatsAppCatalogItem(productId: string): Promise<void> {
-    await pb.collection('products').update(productId, { whatsapp_catalog_id: "" }).catch(() => {});
+    await pb.collection('products').update(productId, { whatsapp_catalog_id: "" });
 }

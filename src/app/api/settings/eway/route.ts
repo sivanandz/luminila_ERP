@@ -196,12 +196,11 @@ export async function POST(req: NextRequest) {
     };
 
     if (existing) {
-        await session.client.collection('store_settings').update(existing.id, {
-            ...payload,
-            // Always stamp the caller's tenant (audit L-01): preserving a
-            // legacy empty owner kept the row globally readable forever.
-            account_email: tenant,
-        });
+        // T-09: the store_settings update rule rejects any body containing
+        // `account_email` (`...account_email:isset = false`). The row's owner is
+        // already pinned at create time; keep it out of the update payload.
+        const { account_email: _omittedOwner, ...updatePayload } = payload;
+        await session.client.collection('store_settings').update(existing.id, updatePayload);
     } else {
         await session.client.collection('store_settings').create(payload);
     }

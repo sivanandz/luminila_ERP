@@ -4,6 +4,7 @@
  */
 
 import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+import { localDayRange } from './analytics-v2/range';
 
 /**
  * `&& account_email = "…"` for tenant-scoped reads (POS-22).
@@ -353,7 +354,13 @@ export async function validateDiscount(
     if (discount.start_date && new Date(discount.start_date) > now) {
         return { valid: false, error: 'This discount is not yet valid', discountAmount: 0 };
     }
-    if (discount.end_date && new Date(discount.end_date) < now) {
+    // A date-only end date is valid through 23:59:59 LOCAL on that day; parsing
+    // it bare makes it expire at 05:30 IST (M-12). Reuse the shared local-day
+    // helper rather than rolling a new boundary. PocketBase datetimes arrive as
+    // "YYYY-MM-DD HH:mm:ss.SSSZ"; slice the date part or the helper's split
+    // yields NaN → Invalid Date → the coupon would never expire.
+    const endDateOnly = discount.end_date ? String(discount.end_date).slice(0, 10) : '';
+    if (endDateOnly && localDayRange(endDateOnly, endDateOnly).end < now) {
         return { valid: false, error: 'This discount has expired', discountAmount: 0 };
     }
 

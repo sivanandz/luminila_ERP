@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Database, Download, RotateCcw, Upload } from "lucide-react";
+import { AlertTriangle, Database, Download, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/layout/Header";
@@ -12,10 +12,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
     downloadBackup,
+    downloadRestoreSnapshot,
     getBackupStorageKeys,
     getLastBackupInfo,
     isBackupOlderThan,
-    restoreFromAutoBackup,
     restoreFromBackup,
     scheduleAutoBackup,
     summariseBackup,
@@ -120,6 +120,11 @@ export default function BackupPage() {
             setRestoring(true);
             const response = await restoreFromBackup(file);
             setResult(response as RestoreResult);
+            // H-34: a failed restore returns the only rollback copy. Download
+            // it immediately — the UI never rendered or applied it.
+            if ((!response.success || response.aborted) && response.snapshot) {
+                downloadRestoreSnapshot(response.snapshot);
+            }
             if (response.success) toast.success(response.message);
             else toast.error(response.message);
         } catch (error) {
@@ -128,13 +133,6 @@ export default function BackupPage() {
         } finally {
             setRestoring(false);
         }
-    };
-
-    const handleAutoRestore = async () => {
-        if (!confirm("Restore the last automatic backup from this browser?")) return;
-        const ok = await restoreFromAutoBackup();
-        if (ok) toast.success("Restored from the automatic backup");
-        else toast.error("No usable automatic backup found");
     };
 
     const toggleAuto = () => {
@@ -219,18 +217,15 @@ export default function BackupPage() {
                         </CardHeader>
                         <CardContent className="space-y-3 text-sm">
                             <p className="text-muted-foreground">
-                                When enabled, a full snapshot is written to this browser&apos;s local storage just
-                                after midnight and kept until replaced.
+                                When enabled, the time of the daily reminder is recorded in this browser. No data is
+                                stored here — use “Download full backup” for a restorable snapshot.
                             </p>
                             <p className="text-xs text-muted-foreground">
-                                Last snapshot: {lastAuto ? new Date(lastAuto).toLocaleString() : "never"}
+                                Last reminder: {lastAuto ? new Date(lastAuto).toLocaleString() : "never"}
                             </p>
                             <div className="flex flex-wrap gap-2">
                                 <Button variant={autoEnabled ? "outline" : "default"} onClick={toggleAuto}>
-                                    {autoEnabled ? "Disable auto backup" : "Enable auto backup"}
-                                </Button>
-                                <Button variant="outline" onClick={handleAutoRestore} disabled={!lastAuto}>
-                                    <RotateCcw className="w-4 h-4 mr-2" /> Restore last snapshot
+                                    {autoEnabled ? "Disable backup reminder" : "Enable backup reminder"}
                                 </Button>
                             </div>
                             <p className="text-[11px] text-amber-500">

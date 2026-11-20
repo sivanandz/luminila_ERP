@@ -45,10 +45,10 @@ export function resolveWppSecret(
 
 function readSidecarSecret(): string {
     if (typeof window === "undefined") {
-        // WA-9: server rendering has no sidecar session, and there is no
-        // build-time token in this bundle any more. Only the desktop shell's
-        // runtime injection or an operator-stored value can authenticate.
-        return "";
+        // C-04: server callers (OTP, paid-order/shipping notifications) have no
+        // window/localStorage, so use the server-only WPPCONNECT_SECRET. It is
+        // not NEXT_PUBLIC_*, so it is never inlined into the client bundle.
+        return resolveWppSecret(undefined, undefined, process.env.WPPCONNECT_SECRET);
     }
     let stored: string | null = null;
     try {

@@ -1619,6 +1619,24 @@ export default function WhatsAppPage() {
             const chat = typeof msg.from === "string" ? msg.from : "";
             if (!id || !chat) return;
 
+            // H-27: register STOP as it ARRIVES. The chat-open handler only sees
+            // the last inbound message and only when an operator opens the chat,
+            // so opt-outs were silently missed and marketing kept sending.
+            // setWhatsAppOptOut RESOLVES {ok:false} on registry/profile/consent
+            // failures — a bare .catch dropped those; log them so the sidecar's
+            // independent report path is the remaining net, visibly degraded.
+            if (detectIntent(typeof msg.body === "string" ? msg.body : "") === "OPT_OUT") {
+                void setWhatsAppOptOut(chat, undefined, 'stop')
+                    .then((r: boolean) => {
+                        if (!r) {
+                            console.warn('[whatsapp] STOP opt-out registration failed for', chat);
+                        }
+                    })
+                    .catch((e: unknown) => {
+                        console.warn('[whatsapp] STOP opt-out registration failed for', chat, e);
+                    });
+            }
+
             if (selectedChatRef.current === chat) {
                 setSelectedChatMessages(prev => {
                     if (prev.some(m => normalizeMessageId(m.id) === id)) return prev;

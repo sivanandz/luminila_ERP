@@ -8,7 +8,7 @@ import {
     calculateGST,
     amountToWords,
     getHSNForProduct,
-    GST_RATES,
+    getGSTRateForHSN,
 } from './gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from './sequence-generator';
 import { normalizeDateBounds } from './utils';
@@ -40,6 +40,7 @@ export interface InvoiceItem {
     discount_amount: number;
     taxable_amount: number;
     gst_rate: number;
+    gst_exempt?: boolean;
     cgst_rate: number;
     cgst_amount: number;
     sgst_rate: number;
@@ -805,6 +806,7 @@ interface InvoiceItemRecord {
     discount_amount?: number;
     taxable_amount?: number;
     gst_rate?: number;
+    gst_exempt?: boolean;
     cgst_rate?: number;
     cgst_amount?: number;
     sgst_rate?: number;
@@ -1192,14 +1194,16 @@ export async function deleteInvoicePermanently(id: string): Promise<void> {
     const items = await pb.collection('invoice_items').getFullList({
         filter: `invoice="${sanitizeFilter(id)}"${tenantClause}`,
     });
+    // Never orphan a child row (a payment receipt with no invoice is still
+    // counted by AR reports). Fail before deleting the header (SW-08).
     for (const item of items) {
-        await pb.collection('invoice_items').delete(item.id).catch(() => {});
+        await pb.collection('invoice_items').delete(item.id);
     }
     const payments = await pb.collection('invoice_payments').getFullList({
         filter: `invoice="${sanitizeFilter(id)}"${tenantClause}`,
     });
     for (const p of payments) {
-        await pb.collection('invoice_payments').delete(p.id).catch(() => {});
+        await pb.collection('invoice_payments').delete(p.id);
     }
     await pb.collection('invoices').delete(id);
 }
@@ -1259,7 +1263,11 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
 
     const storeSettings = await getStoreSettings();
     const isGstRegistered = storeSettings.is_gst_registered !== false;
-    const sellerStateCode = storeSettings.store_state_code || '27';
+    // Derive the seller state from the GSTIN when the optional field is blank;
+    // defaulting to Maharashtra mis-files every other state's store (M-10).
+    const sellerStateCode = storeSettings.store_state_code
+        || String(storeSettings.store_gstin || '').slice(0, 2)
+        || '27';
     // A POS sale can be billed to a registered, out-of-state customer. Reading
     // the linked customer is what decides CGST+SGST vs IGST; hardcoding the
     // seller's state forced every inter-state/B2B sale into an intra-state B2C
@@ -1283,16 +1291,21 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
     const lines = saleItems.map((item) => {
         const variant = item.expand?.variant;
         const product = variant?.expand?.product;
+        // Use the SAME HSN the invoice line will print, so the rate we file is
+        // the rate that HSN legally carries (H-01): 7117 imitation = 18%.
+        const hsnCode = getHSNForProduct(product?.category, variant?.material);
         return {
             item,
             variant,
             product,
+            hsnCode,
             grossPaise: toPaise((item.quantity || 0) * (item.unit_price || 0)),
             gstRate: resolveLineGstRate(
                 item.gst_rate,
                 product?.gst_rate,
                 isGstRegistered,
-                GST_RATES.JEWELRY
+                getGSTRateForHSN(hsnCode),
+                product?.gst_exempt
             ),
         };
     });
@@ -1320,7 +1333,7 @@ export async function createInvoiceFromSale(saleId: string): Promise<Invoice> {
             variant_id: item.variant,
             sr_no: index + 1,
             description: (product?.name || 'Product') + (variant?.variant_name ? ` - ${variant.variant_name}` : ''),
-            hsn_code: getHSNForProduct(product?.category, variant?.material),
+            hsn_code: line.hsnCode,
             quantity: item.quantity,
             unit: 'PCS',
             unit_price: item.unit_price,
@@ -1437,7 +1450,9 @@ export function calculateInvoiceTotals(
         const lineSubtotal = item.quantity * item.unit_price;
         const discountAmount = round2(lineSubtotal * (item.discount_percent / 100));
         const taxableAmount = round2(lineSubtotal - discountAmount);
-        const effectiveRate = isGstRegistered ? (item.gst_rate ?? GST_RATES.JEWELRY) : 0;
+        const effectiveRate = isGstRegistered
+            ? (item.gst_exempt ? 0 : item.gst_rate ?? getGSTRateForHSN(item.hsn_code || ''))
+            : 0;
 
         const gst = calculateGST(taxableAmount, sellerStateCode, buyerStateCode, effectiveRate);
 

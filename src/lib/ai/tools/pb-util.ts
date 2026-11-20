@@ -7,6 +7,7 @@
 
 import type PocketBase from 'pocketbase';
 import type { RecordModel } from 'pocketbase';
+import { dayKey as localDayKey } from '@/lib/analytics-v2/range';
 
 /** Escape a value for a PocketBase filter string (same rule as lib/pocketbase). */
 export function escapeFilterValue(value: string): string {
@@ -52,8 +53,8 @@ export function rollingWindow(days: number, now: Date): DateWindow {
     return {
         fromIso: from.toISOString(),
         toIso,
-        fromDate: from.toISOString().slice(0, 10),
-        toDate: now.toISOString().slice(0, 10),
+        fromDate: localDayKey(from),
+        toDate: localDayKey(now),
     };
 }
 
@@ -61,7 +62,9 @@ export function dayKey(isoLike: string): string {
     if (!isoLike) return '';
     const date = new Date(isoLike);
     if (Number.isNaN(date.getTime())) return isoLike.slice(0, 10);
-    return date.toISOString().slice(0, 10);
+    // Local calendar day, matching every other analytics bucket (O-19); a UTC
+    // slice put 00:00–05:29 IST sales in the previous day.
+    return localDayKey(date);
 }
 
 /** PocketBase record → plain object without the PB internals we don't need. */

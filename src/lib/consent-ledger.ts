@@ -95,14 +95,20 @@ export async function recordConsentEvent(db: typeof pb, input: ConsentEventInput
     return true;
 }
 
-/** Append several decisions for the same order/customer. */
+/**
+ * Append several decisions for the same order/customer.
+ * SW-20: return each outcome so callers can react instead of assuming every
+ * write landed (the single-event API already reports its result).
+ */
 export async function recordConsentEvents(
     db: typeof pb,
     inputs: ConsentEventInput[]
-): Promise<void> {
+): Promise<boolean[]> {
+    const outcomes: boolean[] = [];
     for (const input of inputs) {
-        await recordConsentEvent(db, input);
+        outcomes.push(await recordConsentEvent(db, input));
     }
+    return outcomes;
 }
 
 /** Current state = the newest event per purpose. */

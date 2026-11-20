@@ -111,8 +111,8 @@ export async function computeRFMAnalysis(
 
     // 2. Live purchase aggregates. `customers.total_spent/total_orders` are
     //    denormalized snapshots that go stale; recency, frequency and monetary
-    //    are computed from the ledgers instead. Storefront mirror `sales` rows
-    //    are excluded because the same revenue also exists as a sales order.
+    //    are computed from the ledgers instead. Storefront and WhatsApp mirror
+    //    `sales` rows are excluded because that revenue also exists as a sales order.
     const purchaseMap: Record<string, { last: string; total: number; count: number }> = {};
     const recordPurchase = (customerId: string | undefined, date: string | undefined, total: number) => {
         if (!customerId || !date) return;
@@ -125,7 +125,7 @@ export async function computeRFMAnalysis(
 
     try {
         const sales = await pb.collection("sales").getFullList<Sale>({
-            filter: `channel != "storefront" && status != "cancelled"${tenantClause()}`,
+            filter: `channel != "storefront" && channel != "whatsapp" && status != "cancelled"${tenantClause()}`,
             fields: "customer,created,total",
             sort: "-created",
         });

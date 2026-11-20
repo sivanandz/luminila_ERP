@@ -34,8 +34,9 @@ import {
     type DiscrepancyType,
     type ResolutionAction,
 } from "@/lib/discrepancies";
-import { getVariantById, getVariantForProduct, resolveBarcodeProduct } from "@/lib/products";
+import { getVariantById, getProductVariants, resolveBarcodeProduct, type ProductVariant } from "@/lib/products";
 import { getVendors } from "@/lib/vendors";
+import { pb } from "@/lib/pocketbase";
 
 interface DiscrepancyModalProps {
     isOpen: boolean;
@@ -59,6 +60,7 @@ export function DiscrepancyModal({
     const [activeTab, setActiveTab] = useState<"flag" | "active_list">("flag");
     const [discrepancies, setDiscrepancies] = useState<StockDiscrepancy[]>([]);
     const [loadingList, setLoadingList] = useState(false);
+    const [listError, setListError] = useState(false);
     const [typeFilter, setTypeFilter] = useState<string>("all");
 
     // Form State for Flagging
@@ -66,6 +68,7 @@ export function DiscrepancyModal({
     const [productName, setProductName] = useState("");
     const [productId, setProductId] = useState("");
     const [variantId, setVariantId] = useState("");
+    const [variantOptions, setVariantOptions] = useState<ProductVariant[]>([]);
     const [currentAvailableStock, setCurrentAvailableStock] = useState(0);
     const [discrepancyType, setDiscrepancyType] = useState<DiscrepancyType>("damaged");
     const [quantity, setQuantity] = useState<string>("1");
@@ -86,18 +89,30 @@ export function DiscrepancyModal({
     const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
 
     const handleScannedItem = (payload: ScannedItemPayload) => {
-        if (payload.product) {
-            setSku(payload.product.sku);
-            setProductName(payload.product.name);
-            setProductId(payload.product.id);
-            if (payload.variant?.id) {
-                setVariantId(payload.variant.id);
-            }
-            setCurrentAvailableStock(payload.product.stock ?? 0);
-            toast.success(`Scanned: ${payload.product.name}`);
-        } else {
+        if (!payload.product) {
             toast.error(`Barcode "${payload.barcode}" not found in catalog`);
+            return;
         }
+        setSku(payload.product.sku);
+        setProductName(payload.product.name);
+        setProductId(payload.product.id);
+        if (payload.variant?.id) {
+            // A tag scan names the exact piece: use that variant's own stock,
+            // not product.stock (an aggregate in the scan payload).
+            void getVariantById(payload.variant.id).then((v) => {
+                if (!v) return;
+                setVariantOptions([v]);
+                setVariantId(v.id);
+                setCurrentAvailableStock(v.stock_level);
+            });
+        } else {
+            // No specific variant on the tag — require an explicit pick (S-12).
+            setVariantOptions([]);
+            setVariantId("");
+            setCurrentAvailableStock(0);
+            void getProductVariants(payload.product.id).then(setVariantOptions).catch(() => setVariantOptions([]));
+        }
+        toast.success(`Scanned: ${payload.product.name}`);
     };
 
     // High-priority scanner listener: intercepts physical tray jewelry tags while modal is open
@@ -143,23 +158,25 @@ export function DiscrepancyModal({
                 setSku(preselectedProduct.sku);
                 setProductName(preselectedProduct.name);
                 setProductId(preselectedProduct.id);
-                setCurrentAvailableStock(preselectedProduct.stock);
                 setActiveTab("flag");
 
-                // Resolve the variant that will actually be deducted and sync the
-                // displayed max to its own stock_level — preselectedProduct.stock may
-                // be a product-wide aggregate the server never validates against.
-                const applyVariant = (v: { id: string; stock_level?: number } | null) => {
-                    if (!v) return;
-                    setVariantId(v.id);
-                    if (typeof v.stock_level === "number") {
-                        setCurrentAvailableStock(v.stock_level);
-                    }
-                };
+                // S-12: the deducted variant must be the piece in hand, never a
+                // default like "stockiest". If the caller knows the variant, load
+                // only that one; otherwise list them all and require a pick/scan.
+                setVariantOptions([]);
+                setVariantId("");
+                setCurrentAvailableStock(0);
                 if (preselectedProduct.variant_id) {
-                    getVariantById(preselectedProduct.variant_id).then(applyVariant).catch(() => {});
+                    void getVariantById(preselectedProduct.variant_id).then((v) => {
+                        if (!v) return;
+                        setVariantOptions([v]);
+                        setVariantId(v.id);
+                        setCurrentAvailableStock(v.stock_level);
+                    });
                 } else {
-                    getVariantForProduct(preselectedProduct.id).then(applyVariant).catch(() => {});
+                    void getProductVariants(preselectedProduct.id)
+                        .then(setVariantOptions)
+                        .catch(() => setVariantOptions([]));
                 }
             } else {
                 setActiveTab("active_list");
@@ -169,11 +186,18 @@ export function DiscrepancyModal({
 
     const loadDiscrepancies = async () => {
         setLoadingList(true);
+        setListError(false);
         try {
+            // U-09: getStockDiscrepancies swallows errors and returns [], so an
+            // empty result alone cannot prove the ledger is clear. Probe the
+            // collection first; a fetch failure must render an error, not "All Clear".
+            await pb.collection("stock_discrepancies").getList(1, 1, { fields: "id", requestKey: null });
             const list = await getStockDiscrepancies("active");
             setDiscrepancies(list);
         } catch (err) {
             console.error("Failed to load discrepancies:", err);
+            setDiscrepancies([]);
+            setListError(true);
         } finally {
             setLoadingList(false);
         }
@@ -389,6 +413,36 @@ export function DiscrepancyModal({
                                 </div>
                             </div>
 
+                            {/* S-12: deduction target must be explicit — never the stockiest variant. */}
+                            <div className="space-y-1">
+                                <Label className="text-xs font-semibold">
+                                    Specific Variant / Piece <span className="text-rose-600">*</span>
+                                </Label>
+                                <select
+                                    value={variantId}
+                                    onChange={(e) => {
+                                        const id = e.target.value;
+                                        setVariantId(id);
+                                        const v = variantOptions.find((item) => item.id === id);
+                                        setCurrentAvailableStock(v ? v.stock_level : 0);
+                                    }}
+                                    className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white text-xs font-medium focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                    required
+                                >
+                                    <option value="">Select the exact piece…</option>
+                                    {variantOptions.map((v) => (
+                                        <option key={v.id} value={v.id}>
+                                            {[v.variant_name, v.size && `Size ${v.size}`, v.color]
+                                                .filter(Boolean)
+                                                .join(" · ")} — {v.stock_level} in stock
+                                        </option>
+                                    ))}
+                                </select>
+                                <p className="text-[10px] text-slate-400">
+                                    Scan the physical tag or choose the exact piece; only this variant is deducted.
+                                </p>
+                            </div>
+
                             {/* Discrepancy Classification */}
                             <div className="space-y-2">
                                 <Label className="text-xs font-bold uppercase tracking-wider text-slate-600">
@@ -522,7 +576,7 @@ export function DiscrepancyModal({
                                 </Button>
                                 <Button
                                     type="submit"
-                                    disabled={submittingFlag || !sku}
+                                    disabled={submittingFlag || !sku || !variantId}
                                     className="bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs gap-1.5 shadow-sm"
                                 >
                                     <AlertTriangle className="w-3.5 h-3.5" />
@@ -561,6 +615,15 @@ export function DiscrepancyModal({
                             {loadingList ? (
                                 <div className="py-12 text-center text-xs text-slate-400">
                                     Loading quarantine ledger...
+                                </div>
+                            ) : listError ? (
+                                <div className="py-12 text-center">
+                                    <ShieldAlert className="w-8 h-8 text-amber-500 mx-auto mb-2" />
+                                    <p className="text-sm font-semibold text-slate-700">Could not load quarantine ledger</p>
+                                    <p className="text-xs text-slate-400 mt-0.5">The ledger could not be read — discard the “all clear” result until it loads.</p>
+                                    <Button size="sm" variant="outline" className="mt-3" onClick={() => void loadDiscrepancies()}>
+                                        Retry
+                                    </Button>
                                 </div>
                             ) : filteredDiscrepancies.length === 0 ? (
                                 <div className="py-12 text-center">

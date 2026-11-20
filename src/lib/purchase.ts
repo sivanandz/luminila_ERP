@@ -919,7 +919,14 @@ export async function createGRN(grn: Omit<GoodsReceivedNote, 'id' | 'grn_number'
                         });
                     }
                 } catch (err) {
+                    // SW-18: surface the failed variant link instead of only
+                    // logging it — future receipts/reconciliation match by
+                    // variant and cannot see this PO line otherwise.
+                    const message =
+                        `PO item ${item.po_item_id} could not be linked to variant ${item.variant_id}: ` +
+                        `${err instanceof Error ? err.message : String(err)}`;
                     console.error('Error updating PO item:', item.po_item_id, err);
+                    warnings.push(message);
                 }
             }
 

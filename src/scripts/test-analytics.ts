@@ -11,6 +11,7 @@ import { resolveRange, inWindow, deltaPct, compare, dayKey, pbBound, type Analyt
 import { buildTrend, buildChannelTable, buildPaymentMix, buildHeatmap, buildKpis, alignPreviousMonths, aggregateCustomerSplit, type TrendPoint } from '../lib/analytics-v2/sales-metrics';
 import { buildInsights, type InsightCard } from '../lib/analytics-v2/insights';
 import type { UnifiedTx } from '../lib/analytics-v2/load';
+import { adjustedLineRevenues } from '../lib/analytics-v2/discount-allocation';
 import type { TurnoverAnalytics } from '../lib/analytics-v2/turnover';
 import type { ProfitabilityAnalytics } from '../lib/analytics-v2/profitability';
 import type { SalesAnalytics } from '../lib/analytics-v2/sales-metrics';
@@ -419,6 +420,37 @@ test('aggregateCustomerSplit: unknown repeat buyer is new exactly once; empty ke
 test('aggregateCustomerSplit: empty window yields zeroed split', () => {
     const split = aggregateCustomerSplit([], new Set());
     assert.deepEqual(split, { newCustomers: 0, returningCustomers: 0, newRevenue: 0, returningRevenue: 0, repeatRatePct: 0 });
+});
+
+// ---- discount allocation (H-20) ----
+
+test('B2B line discounts are not subtracted twice', () => {
+    const mkLine = (lineDiscount: number, netRevenue: number): import('../lib/analytics-v2/load').UnifiedLine => ({
+        txId: 'b2b', kind: 'order', day: '2026-01-01', productId: 'p', variantId: 'v',
+        productName: 'P', sku: 'S', categoryId: '', categoryName: '', parentCategoryName: '',
+        quantity: 1, gross: netRevenue + lineDiscount, lineDiscount, netRevenue,
+        unitCost: 0, costFallback: false, purityKarat: '', makingCharges: 0,
+    });
+    // discount_total on the header is the SUM of the two line discounts.
+    const l1 = mkLine(100, 900);
+    const l2 = mkLine(50, 450);
+    const adjusted = adjustedLineRevenues([l1, l2], [tx({ id: 'b2b', day: '2026-01-01', discount: 150 })]);
+    assert.equal(adjusted.get(l1), 900, 'net revenue unchanged — already net of the line discount');
+    assert.equal(adjusted.get(l2), 450);
+});
+
+test('a header-only storefront coupon is still allocated', () => {
+    const mkLine = (netRevenue: number): import('../lib/analytics-v2/load').UnifiedLine => ({
+        txId: 'web', kind: 'order', day: '2026-01-01', productId: 'p', variantId: 'v',
+        productName: 'P', sku: 'S', categoryId: '', categoryName: '', parentCategoryName: '',
+        quantity: 1, gross: netRevenue, lineDiscount: 0, netRevenue,
+        unitCost: 0, costFallback: false, purityKarat: '', makingCharges: 0,
+    });
+    const l1 = mkLine(1000);
+    const l2 = mkLine(1000);
+    const adjusted = adjustedLineRevenues([l1, l2], [tx({ id: 'web', day: '2026-01-01', discount: 400 })]);
+    assert.equal(adjusted.get(l1), 800);
+    assert.equal(adjusted.get(l2), 800);
 });
 
 // ===========================================

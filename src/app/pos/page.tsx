@@ -97,7 +97,7 @@ import {
 import { createPOSSale } from "@/lib/pos-sales";
 import { includedTaxPaise } from "@/lib/invoice-math";
 import { getStoreSettings } from "@/lib/settings";
-import { GST_RATES } from "@/lib/gst";
+import { getGSTRateForHSN } from "@/lib/gst";
 import { getTypeAheadProducts, type ProductVariant } from "@/lib/products";
 import { getCurrentTenantEmail, pb } from "@/lib/pocketbase";
 import { getPOSQuickAddVariants, resolvePOSBarcodeVariant } from "@/lib/products";
@@ -151,6 +151,7 @@ interface CartItem {
     productId?: string;  // PocketBase product ID
     variantId?: string;  // PocketBase variant ID
     gst_rate?: number;   // GST rate from the product, captured at add time
+    gst_exempt?: boolean; // explicit 0% GST, distinct from an unset rate
     image?: string | null;
     hsn_code?: string;
     // Jewellery attributes captured at scan/search time so the sale line keeps
@@ -182,6 +183,7 @@ interface POSProduct {
     image?: string | null;
     hsn_code?: string;
     gst_rate?: number;
+    gst_exempt?: boolean;
     gross_weight?: number;
     net_weight?: number;
     stone_weight?: number;
@@ -269,6 +271,9 @@ export default function POSPage() {
         total: number;
         // Tax already inside `total`, snapshotted at sale time (PG-4).
         gstIncluded?: number;
+        // Whether the invoice was filed as IGST (out-of-state buyer); the 80mm
+        // receipt must not print the intra-state CGST/SGST split in that case.
+        interState?: boolean;
         paymentMethod: string;
         cashTendered?: number;
         changeGiven?: number;
@@ -693,9 +698,9 @@ export default function POSPage() {
 
     const handlePrint80mmThermal = () => {
         if (!lastTransaction) return;
-        const taxHalf = lastTransaction.gstIncluded
-            ? Number((lastTransaction.gstIncluded / 2).toFixed(2))
-            : 0;
+        const gstTotal = lastTransaction.gstIncluded || 0;
+        // An out-of-state invoice carries the whole tax as IGST, not two halves.
+        const taxHalf = lastTransaction.interState ? 0 : Number((gstTotal / 2).toFixed(2));
         const addressParts = [
             storeSettingsData?.store_address,
             storeSettingsData?.store_city,
@@ -724,6 +729,11 @@ export default function POSPage() {
             sgst: taxHalf,
             grandTotal: lastTransaction.total,
             paymentMethod: lastTransaction.paymentMethod,
+            // ReceiptData has no IGST column; print the head in the footer slot
+            // rather than showing a CGST/SGST split the invoice never carried.
+            footerMessage: lastTransaction.interState && gstTotal > 0
+                ? `IGST: ₹${gstTotal.toFixed(2)}`
+                : undefined,
         });
         MobilePrinter.printViaSystemSpooler(html);
     };
@@ -826,6 +836,7 @@ export default function POSPage() {
                         image: p?.image_data || p?.image_url || null,
                         hsn_code: p?.hsn_code || "71179010",
                         gst_rate: p?.gst_rate,
+                        gst_exempt: p?.gst_exempt,
                         gross_weight: jNum(vRec.gross_weight ?? pRec.gross_weight),
                         net_weight: jNum(vRec.net_weight ?? pRec.net_weight),
                         stone_weight: jNum(vRec.stone_weight ?? pRec.stone_weight),
@@ -873,6 +884,7 @@ export default function POSPage() {
                         image: p.image_data || p.image_url || null,
                         hsn_code: p.hsn_code || "71179010",
                         gst_rate: p.gst_rate,
+                        gst_exempt: p.gst_exempt,
                     };
                 });
                 setSearchResults(posProducts);
@@ -939,10 +951,10 @@ export default function POSPage() {
                     stock: stock,
                     image: p?.image_data || p?.image_url || null,
                     hsn_code: p?.hsn_code || "71179010",
-                    // A scanned 18% or 0% item must not fall back to the 3%
-                    // jewellery default, and its weights/purity must survive
-                    // into the cart (POS-07).
+                    // An 18% item keeps its rate; a genuine 0% item is marked
+                    // exempt (gst_rate 0 means "unset", not exempt).
                     gst_rate: jewelleryNumber('gst_rate'),
+                    gst_exempt: Boolean(jewellery['gst_exempt']),
                     gross_weight: jewelleryNumber('gross_weight'),
                     net_weight: jewelleryNumber('net_weight'),
                     purity_karat: jewelleryText('purity_karat'),
@@ -1001,6 +1013,7 @@ export default function POSPage() {
                     image: product.image || null,
                     hsn_code: product.hsn_code || "71179010",
                     gst_rate: product.gst_rate,
+                    gst_exempt: product.gst_exempt,
                     gross_weight: product.gross_weight,
                     net_weight: product.net_weight,
                     stone_weight: product.stone_weight,
@@ -1139,6 +1152,7 @@ export default function POSPage() {
         store_address?: string;
         store_city?: string;
         store_state?: string;
+        store_state_code?: string;
         store_pincode?: string;
         store_phone?: string;
         store_gstin?: string;
@@ -1250,11 +1264,17 @@ export default function POSPage() {
         ? includedTaxPaise(
             cart.map((item) => ({
                 grossPaise: Math.round(item.price * item.quantity * 100),
-                gstRate: item.gst_rate ?? GST_RATES.JEWELRY,
+                gstRate: item.gst_exempt ? 0 : item.gst_rate ?? getGSTRateForHSN(item.hsn_code || ''),
             })),
             Math.round((discountAmount + loyaltyDiscount) * 100)
         ) / 100
         : 0;
+    // Mirror the seller/buyer state comparison createInvoiceFromSale uses, so
+    // the 80mm receipt prints IGST instead of two CGST/SGST halves (M-05).
+    const sellerStateCode = storeSettingsData?.store_state_code
+        || String(storeSettingsData?.store_gstin || '').slice(0, 2);
+    const buyerStateCode = String(selectedCustomer?.state_code || '').trim();
+    const interStateSale = Boolean(sellerStateCode && buyerStateCode && sellerStateCode !== buyerStateCode);
     const changeAmount = cashTendered ? calculateChange(total, parseFloat(cashTendered) || 0) : 0;
 
     // Update points calculations when total or customer changes
@@ -1345,6 +1365,9 @@ export default function POSPage() {
     const handleSelectCustomer = (cust: Customer) => {
         setSelectedCustomer(cust);
         setSelectedCustomerId(cust.id);
+        // A tier discount replaces any coupon: without clearing it, checkout
+        // still burns the coupon's use with the wrong savings (M-06).
+        setAppliedCoupon(null);
         // A redemption belongs to the previously selected customer — never carry it over
         setPointsToRedeem(0);
         setRedemptionValue(0);
@@ -1363,6 +1386,7 @@ export default function POSPage() {
     const handleClearCustomer = () => {
         setSelectedCustomer(null);
         setSelectedCustomerId(null);
+        setAppliedCoupon(null);
         setPointsToRedeem(0);
         setRedemptionValue(0);
         setDiscount(0);
@@ -1403,6 +1427,8 @@ export default function POSPage() {
         setCart(target.items);
         setSelectedCustomer(target.customer);
         setSelectedCustomerId(target.customer?.id || null);
+        // Held carts do not store a coupon; a stale one must not be burned.
+        setAppliedCoupon(null);
         setDiscount(target.discount || 0);
         setDiscountMode(target.discountMode || 'percent');
         if (target.channel) {
@@ -1514,6 +1540,21 @@ export default function POSPage() {
             setRedemptionValue(0);
             return false;
         }
+        // H-02: re-cap the redemption against the bill the server will judge it
+        // by — redeemPoints enforces max_redemption_percent of
+        // (subtotal - discountAmount). The bill can change after the points were
+        // picked, and a post-sale throw was downgraded to a warning, leaving the
+        // discount applied but the points never debited.
+        const maxPoints = await calculateMaxRedeemablePoints(
+            Math.max(0, subtotal - discountAmount),
+            account.current_balance
+        );
+        if (pointsToRedeem > maxPoints) {
+            toast.error(`Redemption exceeds the ${settings.max_redemption_percent}% per-bill cap (max ${maxPoints} points on this bill). Sale cancelled — please adjust and retry.`);
+            setPointsToRedeem(0);
+            setRedemptionValue(0);
+            return false;
+        }
         return true;
     };
 
@@ -1618,7 +1659,7 @@ export default function POSPage() {
             // must not be reported as a failed sale (retrying would double-sell).
             try {
                 if (appliedCoupon?.discount?.id) {
-                    await recordDiscountUsage(appliedCoupon.discount.id, discountAmount, subtotal, {
+                    await recordDiscountUsage(appliedCoupon.discount.id, appliedCoupon.amount, subtotal, {
                         customerId: selectedCustomer?.id || selectedCustomerId || undefined,
                         saleId: result.saleId,
                         invoiceId: result.invoiceId,
@@ -1646,6 +1687,7 @@ export default function POSPage() {
                 // PG-4: snapshot the tax now — clearCart() empties the cart that
                 // gstIncluded is derived from before the receipt renders.
                 gstIncluded,
+                interState: interStateSale,
                 paymentMethod,
                 cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) || 0 : undefined,
                 changeGiven: paymentMethod === 'cash' ? changeAmount : undefined,
@@ -1763,7 +1805,7 @@ export default function POSPage() {
             // must not be reported as a failed sale (the payment was received).
             try {
                 if (appliedCoupon?.discount?.id) {
-                    await recordDiscountUsage(appliedCoupon.discount.id, discountAmount, subtotal, {
+                    await recordDiscountUsage(appliedCoupon.discount.id, appliedCoupon.amount, subtotal, {
                         customerId: selectedCustomer?.id || selectedCustomerId || undefined,
                         saleId: result.saleId,
                         invoiceId: result.invoiceId,
@@ -1789,6 +1831,7 @@ export default function POSPage() {
                 total,
                 // PG-4: snapshot before clearCart() empties the cart.
                 gstIncluded,
+                interState: interStateSale,
                 paymentMethod: 'phonepe',
                 couponCode: appliedCoupon?.discount.code,
             });

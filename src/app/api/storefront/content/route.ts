@@ -270,6 +270,7 @@ export async function GET(req: NextRequest) {
         const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
         
         let staffEmail = "";
+        let staffAccountEmail = "";
         let isAuthorized = false;
 
         if (token) {
@@ -278,19 +279,25 @@ export async function GET(req: NextRequest) {
                 await pb.collection("users").authRefresh();
                 isAuthorized = pb.authStore.isValid;
                 staffEmail = pb.authStore.record?.email || pb.authStore.model?.email || "";
+                staffAccountEmail = String(pb.authStore.record?.account_email || "").trim().toLowerCase();
             } catch {
                 try {
                     pb.authStore.save(token, null);
                     await pb.collection("_superusers").authRefresh();
                     isAuthorized = pb.authStore.isValid;
                     staffEmail = pb.authStore.record?.email || pb.authStore.model?.email || "";
+                    staffAccountEmail = String(pb.authStore.record?.account_email || "").trim().toLowerCase();
                 } catch {
                     isAuthorized = false;
                 }
             }
         }
 
-        const targetEmail = normalizeBindingEmail(staffEmail) || publicTenant;
+        // W-13: an authenticated staff read must target the tenant row (the
+        // same row the save writes), not the editor's personal email.
+        const targetEmail = (isAuthorized && staffAccountEmail)
+            ? staffAccountEmail
+            : (normalizeBindingEmail(staffEmail) || publicTenant);
 
         let record = null;
         const readPb = isAuthorized ? pb : client;
@@ -402,11 +409,16 @@ export async function POST(req: Request) {
             );
         }
 
+        // W-13: scope the content row to the tenant owner, not the editor's
+        // personal login. A manager with settings:update must edit the store's
+        // row or the public site (which reads under the owner) never sees it.
+        const tenant = staffSession.accountEmail;
+
         // Load existing tenant content from PocketBase
         let existingRecord = null;
         try {
             existingRecord = await pb.collection("store_settings").getFirstListItem(
-                `key="${PB_KEY}" && account_email="${staffEmail}"`
+                `key="${PB_KEY}" && account_email="${sanitizeFilter(tenant)}"`
             );
         } catch {}
 
@@ -420,7 +432,9 @@ export async function POST(req: Request) {
         const safeAdminBinding = {
             ...(current.adminBinding || {}),
             ...(body.adminBinding || {}),
-            boundAdminEmail: staffEmail,
+            // W-13: the public resolver follows this binding, so it must name
+            // the tenant owner — not whichever staff account saved the content.
+            boundAdminEmail: tenant,
         };
 
         const merged = {
@@ -446,16 +460,17 @@ export async function POST(req: Request) {
         };
 
         if (existingRecord) {
+            // The store_settings update rule rejects any body carrying
+            // `account_email`; the owner was pinned at create time.
             await pb.collection("store_settings").update(existingRecord.id, {
                 value: merged,
-                account_email: staffEmail,
                 category: "storefront_content",
             });
         } else {
             await pb.collection("store_settings").create({
                 key: PB_KEY,
                 value: merged,
-                account_email: staffEmail,
+                account_email: tenant,
                 category: "storefront_content",
             });
         }

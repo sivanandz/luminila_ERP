@@ -11,7 +11,8 @@
  * Turnover/GMROI per category live in turnover.ts (single source of truth).
  */
 
-import { tenantEmail, loadUnifiedLines } from './load';
+import { tenantEmail, loadUnifiedLines, loadTxWindow, type UnifiedLine } from './load';
+import { adjustedLineRevenues } from './discount-allocation';
 import { resolveRange, type AnalyticsRange } from './range';
 
 export interface PriceBandRow {
@@ -71,8 +72,15 @@ export async function getCategoryDeepDive(range: AnalyticsRange): Promise<Catego
     if (!tenant) return empty;
 
     const win = resolveRange(range);
-    const lines = await loadUnifiedLines(tenant, win.current);
+    const [lines, txs] = await Promise.all([
+        loadUnifiedLines(tenant, win.current),
+        loadTxWindow(tenant, win.current),
+    ]);
     if (lines.length === 0) return empty;
+    // Allocate header/bill discounts exactly as profitability does, so category
+    // revenue/margin agree with the profitability tab (O-18).
+    const adjusted = adjustedLineRevenues(lines, txs);
+    const netOf = (l: UnifiedLine) => adjusted.get(l) ?? l.netRevenue;
 
     // ---- price bands ----
     const bands = PRICE_BANDS.map((b) => ({ ...b, units: 0, revenue: 0, cogs: 0 }));
@@ -84,7 +92,7 @@ export async function getCategoryDeepDive(range: AnalyticsRange): Promise<Catego
         const price = Number.isFinite(rawPrice) ? Math.max(0, rawPrice) : 0;
         const band = bands.find((b) => price >= b.min && price < b.max) || bands[0];
         band.units += l.quantity;
-        band.revenue += l.netRevenue;
+        band.revenue += netOf(l);
         band.cogs += l.quantity * l.unitCost;
     }
     const priceBands: PriceBandRow[] = bands.map((b) => {
@@ -104,12 +112,12 @@ export async function getCategoryDeepDive(range: AnalyticsRange): Promise<Catego
         const purity = l.purityKarat || 'Unspecified';
         const a = purityAgg.get(purity) || { units: 0, revenue: 0, cogs: 0, making: 0 };
         a.units += l.quantity;
-        a.revenue += l.netRevenue;
+        a.revenue += netOf(l);
         a.cogs += l.quantity * l.unitCost;
         a.making += l.makingCharges * l.quantity;
         purityAgg.set(purity, a);
     }
-    const totalRevenue = lines.reduce((s, l) => s + l.netRevenue, 0);
+    const totalRevenue = lines.reduce((s, l) => s + netOf(l), 0);
     const purity: PurityRow[] = [...purityAgg.entries()]
         .map(([p, a]) => {
             const margin = a.revenue - a.cogs;
@@ -130,7 +138,7 @@ export async function getCategoryDeepDive(range: AnalyticsRange): Promise<Catego
         const name = l.parentCategoryName || l.categoryName;
         const a = catAgg.get(name) || { making: 0, revenue: 0 };
         a.making += l.makingCharges * l.quantity;
-        a.revenue += l.netRevenue;
+        a.revenue += netOf(l);
         catAgg.set(name, a);
     }
     const makingCharges: MakingChargeRow[] = [...catAgg.entries()]
@@ -151,9 +159,9 @@ export async function getCategoryDeepDive(range: AnalyticsRange): Promise<Catego
         const cat = l.parentCategoryName || l.categoryName;
         const month = l.day.slice(0, 7);
         const m = monthlyCats.get(month) || new Map<string, number>();
-        m.set(cat, (m.get(cat) || 0) + l.netRevenue);
+        m.set(cat, (m.get(cat) || 0) + netOf(l));
         monthlyCats.set(month, m);
-        catTotals.set(cat, (catTotals.get(cat) || 0) + l.netRevenue);
+        catTotals.set(cat, (catTotals.get(cat) || 0) + netOf(l));
     }
     const topCategories = [...catTotals.entries()]
         .sort((a, b) => b[1] - a[1])

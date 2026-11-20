@@ -228,17 +228,21 @@ export function includedTaxPaise(lines: TaxLineInput[], discountPaise: number): 
 
 /**
  * Resolve the GST rate for a product line. Explicit per-line rates win, then
- * the product's configured rate, then the jewelry default. A store that is not
- * GST registered passes registered=false and gets zero.
+ * the product's configured rate, then the jewelry default. Zero means "not
+ * configured" (products.gst_rate defaults to 0 and no writer sets it), so it
+ * falls through instead of silently filing a 0% invoice. Pass `exempt=true`
+ * for a genuine 0%-rated (exempt) product. A store that is not GST registered
+ * passes registered=false and gets zero.
  */
 export function resolveLineGstRate(
     explicitRate: number | null | undefined,
     productRate: number | null | undefined,
     registered: boolean,
-    fallbackRate: number
+    fallbackRate: number,
+    exempt = false
 ): number {
-    if (!registered) return 0;
-    if (typeof explicitRate === 'number' && explicitRate >= 0) return explicitRate;
-    if (typeof productRate === 'number' && productRate >= 0) return productRate;
+    if (!registered || exempt) return 0;
+    if (typeof explicitRate === 'number' && explicitRate > 0) return explicitRate;
+    if (typeof productRate === 'number' && productRate > 0) return productRate;
     return fallbackRate;
 }

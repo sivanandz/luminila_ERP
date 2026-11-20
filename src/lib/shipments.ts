@@ -154,6 +154,15 @@ export async function createShipmentForOrder(
         if (['cancelled', 'refunded'].includes(String(order.status || ''))) {
             return { success: false, error: 'A cancelled/refunded order cannot be shipped.' };
         }
+        // H-16: a shipped/delivered order must not be dispatched again — a new
+        // AWB would regress a delivered order to shipped and double-count stock
+        // in transit. Split shipments are separate `-BO` order rows.
+        if (['shipped', 'delivered'].includes(String(order.status || ''))) {
+            return {
+                success: false,
+                error: `Order is already ${String(order.status || '')}; dispatching again would regress its state.`,
+            };
+        }
         const method = String(order.payment_method || '').toLowerCase();
         const isCashOnDelivery = ['cash', 'cod', 'cash_on_delivery'].includes(method);
         if (String(order.payment_status || '').toUpperCase() !== 'PAID' && !isCashOnDelivery) {
@@ -237,7 +246,38 @@ export async function updateShipmentStatus(
             // stayed confirmed, blocking invoicing (ORD-10). Surface it, and put
             // the shipment back so the two records agree.
             try {
-                await db.collection('sales_orders').update(shipment.order_id, { status: 'delivered' });
+                // H-17: a leftover shipment row must never resurrect a cancelled
+                // order as delivered; cancellation refuses in-transit/delivered
+                // orders, so a deliverable row on a cancelled order is stale.
+                const parent = await db
+                    .collection('sales_orders')
+                    .getOne<{ status?: string }>(shipment.order_id);
+                if (String(parent.status || '') === 'cancelled') {
+                    await db
+                        .collection('shipments')
+                        .update(shipmentId, { shipping_status: previousStatus })
+                        .catch((revertErr) =>
+                            console.error('[shipments] Could not revert shipment status:', revertErr)
+                        );
+                    return { success: false, error: 'Cannot mark delivered: the order is cancelled.' };
+                }
+                // H-16: one parcel delivering must not close a multi-parcel
+                // order while sibling shipments are still out.
+                const siblings = await db
+                    .collection('shipments')
+                    .getFullList<{ id: string; shipping_status?: string }>({
+                        filter: db.filter('order_id = {:order} && id != {:id}', {
+                            order: shipment.order_id,
+                            id: shipmentId,
+                        }),
+                        requestKey: null,
+                    });
+                const stillOut = siblings.filter((s) =>
+                    ['pending', 'in_transit'].includes(String(s.shipping_status || ''))
+                );
+                if (stillOut.length === 0) {
+                    await db.collection('sales_orders').update(shipment.order_id, { status: 'delivered' });
+                }
             } catch (orderErr) {
                 await db
                     .collection('shipments')
@@ -347,8 +387,15 @@ export async function settleCodOrder(
             });
         } catch (claimErr) {
             if (isDuplicateRecordError(claimErr)) {
-                console.warn('[shipments] COD settlement already claimed for this order:', orderId);
-                return { success: true };
+                // A stale claim can survive a crash between claim create and the
+                // PAID write. Only a PAID order is settled; otherwise fail closed
+                // and surface the state for reconciliation (P-09).
+                const claimed = await db.collection('sales_orders').getOne(orderId);
+                if (String(claimed.payment_status || '').toUpperCase() === 'PAID') {
+                    return { success: true };
+                }
+                console.warn('[shipments] COD claim exists but order is not PAID — manual review:', orderId);
+                return { success: false, error: 'COD settlement was claimed but the order is not PAID. Manual review required.' };
             }
             // A real ledger failure must not mark the order paid.
             throw claimErr;

@@ -50,8 +50,10 @@ export interface Product {
     plating?: string;
     occasion?: string;
     base_metal?: string;
-    /** GST percentage. Optional until the column is provisioned. */
+    /** GST percentage; 0/absent means "use the category default". */
     gst_rate?: number;
+    /** Explicit 0% GST (exempt), distinct from an unset gst_rate. */
+    gst_exempt?: boolean;
     location?: string;
     account_email?: string;
     is_active: boolean;
@@ -479,8 +481,10 @@ export async function getVariantStockSummary(): Promise<{
     productByVariant: Map<string, string>;
     primaryVariantByProduct: Map<string, string>;
 }> {
+    // C-02: include draft/archived products too. A stock map that hides them
+    // makes an edit write their real stock to 0 and the tray audit see surplus.
     const variants = await pb.collection('product_variants').getFullList<ProductVariant>({
-        filter: `product.is_active = true${tenantClause()}`,
+        filter: `id != ""${tenantClause()}`,
     });
     const stockByProduct = new Map<string, number>();
     const materialByProduct = new Map<string, string>();
@@ -593,19 +597,6 @@ export async function getVariantById(variantId: string): Promise<ProductVariant 
     }
 }
 
-/** Stockiest variant of a product, for flows that pick a default line. */
-export async function getVariantForProduct(productId: string): Promise<ProductVariant | null> {
-    try {
-        const variants = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
-            filter: `product="${sanitizeFilter(productId)}"`,
-            sort: '-stock_level',
-        });
-        return variants.items[0] || null;
-    } catch {
-        return null;
-    }
-}
-
 /** Quick-add tiles for POS: recent active variants, tenant-filtered. */
 export async function getPOSQuickAddVariants(limit: number = 8): Promise<ProductVariant[]> {
     const tenantEmail = getCurrentTenantEmail();
@@ -641,11 +632,14 @@ export async function resolvePOSBarcodeVariant(code: string): Promise<ProductVar
     });
     if (exact.items.length > 0) return exact.items[0];
 
-    const byParentSku = await pb.collection('product_variants').getList<ProductVariant>(1, 1, {
+    // H-10: a parent-SKU-only tag cannot identify a size. Picking the first
+    // suffix silently sold/packed the wrong variant; report no match instead.
+    const byParentSku = await pb.collection('product_variants').getList<ProductVariant>(1, 2, {
         filter: `product.sku="${safe}" && product.is_active=true${tenantFilter}`,
         expand: 'product',
         sort: 'sku_suffix',
     });
+    if (byParentSku.items.length > 1) return null;
     return byParentSku.items[0] || null;
 }
 

@@ -73,12 +73,18 @@ export function peekLabelQueue(): QueuedLabelItem[] {
 }
 
 /**
- * Read and clear the label queue (atomic handover to /labels).
+ * Remove only the given SKUs from the queue after they have actually printed.
+ * S-15: peeking on mount (instead of consuming) keeps a reload or crash before
+ * Print from destroying the handover.
  */
-export function consumeLabelQueue(): QueuedLabelItem[] {
-    const items = peekLabelQueue();
-    if (typeof window !== "undefined" && items.length > 0) {
-        localStorage.removeItem(getQueueStorageKey());
+export function clearLabelQueue(skus: string[]): void {
+    if (typeof window === "undefined" || skus.length === 0) return;
+    const printed = new Set(skus);
+    const remaining = peekLabelQueue().filter((it) => !printed.has(it.sku));
+    const key = getQueueStorageKey();
+    if (remaining.length === 0) {
+        localStorage.removeItem(key);
+    } else {
+        localStorage.setItem(key, JSON.stringify(remaining));
     }
-    return items;
 }

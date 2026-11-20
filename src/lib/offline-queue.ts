@@ -4,7 +4,15 @@
  * and automatically drains/replays when connectivity is restored.
  */
 
-import { getCurrentTenantEmail, getTenantStorageKey, pb } from './pocketbase';
+import { accountScopeEmail, getCurrentTenantEmail, getTenantStorageKey, pb } from './pocketbase';
+
+/** H-41: queued mutations without a tenant would be stranded in `_default`. */
+export class OfflineQueueNotAuthenticatedError extends Error {
+    constructor() {
+        super('Cannot queue offline mutation without a signed-in tenant');
+        this.name = 'OfflineQueueNotAuthenticatedError';
+    }
+}
 
 export interface PendingMutation {
     id: string;
@@ -92,8 +100,15 @@ export class OfflineQueue {
      */
     private static saveQueue(queue: PendingMutation[]) {
         if (typeof window === 'undefined') return;
-        localStorage.setItem(storageKey(), JSON.stringify(queue));
-        window.dispatchEvent(new CustomEvent('offline-queue:changed', { detail: { count: queue.length } }));
+        // D-03: a quota/unavailable-storage failure here used to escape flush()
+        // and (a) be misread as a network retry and (b) strand isFlushing.
+        // Fail closed: keep the on-disk queue untouched and report distinctly.
+        try {
+            localStorage.setItem(storageKey(), JSON.stringify(queue));
+            window.dispatchEvent(new CustomEvent('offline-queue:changed', { detail: { count: queue.length } }));
+        } catch (error) {
+            console.error('Failed to persist offline queue (storage full/unavailable):', error);
+        }
     }
 
     /**
@@ -106,7 +121,10 @@ export class OfflineQueue {
         recordId?: string
     ): PendingMutation {
         const queue = this.getQueue();
-        const accountEmail = getCurrentTenantEmail();
+        // H-41: `getCurrentTenantEmail()` falls back to "default" when there is
+        // no session, which mints a namespace that is never replayed after login.
+        const accountEmail = accountScopeEmail();
+        if (!accountEmail) throw new OfflineQueueNotAuthenticatedError();
 
         // P14: repeated edits to one record collapse into a single replay.
         if (action === 'update' && recordId) {
@@ -120,6 +138,10 @@ export class OfflineQueue {
                 const merged: PendingMutation = {
                     ...queue[existingIndex],
                     timestamp: Date.now(),
+                    // D-07: a re-edit is a new payload; it must not inherit the
+                    // old attempt count or error, or the next failure dead-letters it.
+                    retries: 0,
+                    error: undefined,
                     data: { ...(queue[existingIndex].data || {}), ...(data || {}) },
                     accountEmail: queue[existingIndex].accountEmail || accountEmail,
                 };
@@ -153,11 +175,63 @@ export class OfflineQueue {
     }
 
     /**
+     * H-41: recover mutations stranded in the `_default` namespace by an older
+     * build that queued them with no session. Merge by id so a real tenant
+     * queue is never lost, and restamp ownership on every recovered row.
+     */
+    static rekeyDefaultQueue(tenant: string): void {
+        if (typeof window === 'undefined' || !tenant) return;
+        const pairs: Array<[string, string]> = [
+            [`${STORAGE_KEY_BASE}_default`, `${STORAGE_KEY_BASE}_${tenant}`],
+            [`${DEAD_LETTER_KEY_BASE}_default`, `${DEAD_LETTER_KEY_BASE}_${tenant}`],
+        ];
+        for (const [from, to] of pairs) {
+            try {
+                const raw = localStorage.getItem(from);
+                if (!raw) continue;
+                const stranded = JSON.parse(raw) as PendingMutation[];
+                if (!Array.isArray(stranded) || stranded.length === 0) {
+                    localStorage.removeItem(from);
+                    continue;
+                }
+                const targetRaw = localStorage.getItem(to);
+                const target: PendingMutation[] = targetRaw ? JSON.parse(targetRaw) : [];
+                const seen = new Set(target.map((row) => row.id));
+                for (const row of stranded) {
+                    if (seen.has(row.id)) continue;
+                    target.push({
+                        ...row,
+                        accountEmail: tenant,
+                        data: row.data ? { ...row.data, account_email: tenant } : row.data,
+                    });
+                    seen.add(row.id);
+                }
+                localStorage.setItem(to, JSON.stringify(target));
+                localStorage.removeItem(from);
+            } catch (error) {
+                console.error('Could not recover stranded offline queue:', error);
+            }
+        }
+    }
+
+    /**
      * Remove a successfully processed mutation
      */
     static remove(mutationId: string) {
         const queue = this.getQueue().filter((m) => m.id !== mutationId);
         this.saveQueue(queue);
+    }
+
+    /**
+     * H-42: a concurrent edit merges into a NEW object with the same id and a
+     * newer timestamp. Remove only the exact version we actually replayed.
+     */
+    private static removeIfUnchanged(mutationId: string, seenTimestamp: number): boolean {
+        const queue = this.getQueue();
+        const row = queue.find((m) => m.id === mutationId);
+        if (!row || row.timestamp !== seenTimestamp) return false;
+        this.saveQueue(queue.filter((m) => m.id !== mutationId));
+        return true;
     }
 
     /**
@@ -168,8 +242,11 @@ export class OfflineQueue {
     private static persistMutation(mutation: PendingMutation) {
         const queue = this.getQueue();
         const index = queue.findIndex((m) => m.id === mutation.id);
-        if (index >= 0) queue[index] = mutation;
-        this.saveQueue(queue);
+        // H-42: never overwrite a newer merged edit with the stale in-flight row.
+        if (index >= 0 && queue[index].timestamp === mutation.timestamp) {
+            queue[index] = mutation;
+            this.saveQueue(queue);
+        }
     }
 
     private static deadLetter(mutation: PendingMutation) {
@@ -217,6 +294,9 @@ export class OfflineQueue {
         let failed = 0;
         const currentTenant = getCurrentTenantEmail();
 
+        // D-03: any throw in the drain must still release the flush lock, or
+        // every later "online"/manual drain silently reports success forever.
+        try {
         for (const mutation of queue) {
             // P14: never replay one tenant's mutation under another account.
             if (mutation.accountEmail && currentTenant && mutation.accountEmail !== currentTenant) {
@@ -242,7 +322,11 @@ export class OfflineQueue {
                 } else if (mutation.action === 'delete' && mutation.recordId) {
                     await pb.collection(mutation.collection).delete(mutation.recordId);
                 }
-                this.remove(mutation.id);
+                if (!this.removeIfUnchanged(mutation.id, mutation.timestamp)) {
+                    // A newer merged edit replaced this row while the replay was
+                    // in flight; leave it queued so the merged payload replays.
+                    continue;
+                }
                 processed++;
             } catch (err) {
                 // The record was created by the previous, lost-response attempt.
@@ -254,7 +338,7 @@ export class OfflineQueue {
                         .getOne(mutation.clientRecordId)
                         .catch(() => null);
                     if (existing) {
-                        this.remove(mutation.id);
+                        if (!this.removeIfUnchanged(mutation.id, mutation.timestamp)) continue;
                         processed++;
                         continue;
                     }
@@ -280,8 +364,9 @@ export class OfflineQueue {
                 }
             }
         }
-
-        this.isFlushing = false;
+        } finally {
+            this.isFlushing = false;
+        }
         return { processed, failed };
     }
 

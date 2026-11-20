@@ -196,9 +196,11 @@ export default function InvoicesPage() {
         }
     };
 
-    // Calculate totals
-    const totalRevenue = invoices.reduce((sum, inv) => sum + inv.grand_total, 0);
-    const paidAmount = invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0);
+    // Calculate totals. A cancelled invoice is not a sale or a receivable;
+    // including it made the register disagree with GSTR-1 and reports (M-11).
+    const activeInvoices = invoices.filter((inv) => inv.status !== 'cancelled');
+    const totalRevenue = activeInvoices.reduce((sum, inv) => sum + inv.grand_total, 0);
+    const paidAmount = activeInvoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0);
     const pendingAmount = Math.max(0, totalRevenue - paidAmount);
     const invoiceCount = invoices.length;
     const totalPages = Math.max(1, Math.ceil(invoiceCount / PAGE_SIZE));
@@ -206,6 +208,9 @@ export default function InvoicesPage() {
     const paginatedInvoices = invoices.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
     const getStatusBadge = (invoice: Invoice) => {
+        if (invoice.status === 'cancelled') {
+            return <Badge className="bg-zinc-500/20 text-zinc-400 border-zinc-500/30">Cancelled</Badge>;
+        }
         if (invoice.is_paid || (invoice.balance_due !== undefined && invoice.balance_due === 0)) {
             return <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">Paid</Badge>;
         }

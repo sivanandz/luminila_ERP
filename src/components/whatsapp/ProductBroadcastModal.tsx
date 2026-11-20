@@ -48,6 +48,7 @@ import { getAllChats, whatsappManager, type WPPChat } from "@/lib/whatsapp";
 import { searchProductsForPicker } from "@/lib/products";
 import { getCurrentTenantEmail } from "@/lib/pocketbase";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePermissions } from "@/hooks/usePermissions";
 import { cn } from "@/lib/utils";
 import { getChannelPrice } from "@/lib/channel-pricing";
 
@@ -65,6 +66,10 @@ export function ProductBroadcastModal({
     onBroadcastSuccess,
 }: ProductBroadcastModalProps) {
     const { user } = useAuth();
+    // H-50: gate the send on a permission, not just the button being visible —
+    // the sibling BroadcastComposerModal forbids exactly this blast otherwise.
+    const { hasPermission, isAdmin } = usePermissions();
+    const canBroadcast = isAdmin || hasPermission("customers", "update");
 
     // Products being broadcast
     const [selectedProducts, setSelectedProducts] = useState<BroadcastProductItem[]>([]);
@@ -131,13 +136,8 @@ export function ProductBroadcastModal({
                 setAvailableCommunities(communities);
                 setAvailableGroups(groups);
 
-                // Auto-select all channels & communities by default if any exist
-                if (channels.length > 0) {
-                    setSelectedChannels(channels.map((c) => c.id));
-                }
-                if (communities.length > 0) {
-                    setSelectedCommunities(communities.map((c) => c.id));
-                }
+                // H-50: destinations are an explicit choice. Pre-selecting every
+                // channel/community armed a one-click blast to every audience.
             })
             .catch((err) => {
                 console.error('[broadcast] failed to discover chats:', err);
@@ -243,6 +243,10 @@ export function ProductBroadcastModal({
     }, [formattedPreview, isEditingCustomMessage]);
 
     const handleBroadcast = async () => {
+        if (!canBroadcast) {
+            toast.error("You do not have permission to send broadcasts.");
+            return;
+        }
         if (selectedProducts.length === 0) {
             toast.error("Please select at least 1 product to broadcast");
             return;
@@ -813,7 +817,7 @@ export function ProductBroadcastModal({
                     <Button
                         type="button"
                         onClick={handleBroadcast}
-                        disabled={broadcasting || selectedProducts.length === 0}
+                        disabled={!canBroadcast || broadcasting || selectedProducts.length === 0}
                         className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white gap-2"
                     >
                         {broadcasting ? (

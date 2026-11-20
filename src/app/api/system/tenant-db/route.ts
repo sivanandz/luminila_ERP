@@ -70,11 +70,36 @@ export async function GET(req: NextRequest) {
         const registry = readTenantRegistry();
         const targetEmail = emailParam || registry.activeTenantEmail;
 
-        const resolved = await resolveTenantDatabase(targetEmail, { activate: false });
-
+        // T-08: authenticate before any resolve. `resolveTenantDatabase` wakes
+        // (and can register) a tenant process, so an unauthenticated caller must
+        // never trigger it. A missing token returns early from authenticateOperator
+        // with no side effects.
         const session = await authenticateOperator(req, targetEmail);
         if (targetEmail && session.ok && tenantAccessAllowed(session.email, session.isSuperuser, targetEmail)) {
+            const resolved = await resolveTenantDatabase(targetEmail, { activate: false });
             return NextResponse.json(resolved);
+        }
+
+        // T-07: the login screen runs before a session exists. Give the browser
+        // only the URL it needs to reach a registered tenant, read straight
+        // from the registry so no database is woken or registered. No existence,
+        // port or slug inventory is exposed beyond the connection URL itself.
+        // Only the PRE-LOGIN case may take this path — an authenticated caller
+        // that failed tenantAccessAllowed must not be handed the URL anyway,
+        // which made the gate above decorative.
+        if (!session.ok && targetEmail) {
+            const record = registry.tenants[targetEmail];
+            const pbUrl = record?.port
+                ? `http://127.0.0.1:${record.port}`
+                : await primaryPocketBaseUrl();
+            return NextResponse.json({ success: true, pbUrl });
+        }
+
+        if (session.ok && targetEmail) {
+            return NextResponse.json(
+                { success: false, error: 'You are not permitted to resolve this tenant database.' },
+                { status: 403 }
+            );
         }
 
         return NextResponse.json(
@@ -98,13 +123,19 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
-        const mode: 'provision' | 'resolve' = body.mode || 'resolve';
+        // T-10: normalize before comparing. `"Provision"`, `" PROVISION "` etc.
+        // used to skip both early returns and fall through to the provisioning
+        // path, voiding the feature lock (and its superuser-password reset).
+        const mode = String(body.mode ?? 'resolve').trim().toLowerCase();
 
         if (mode === 'provision') {
             return NextResponse.json(
                 { success: false, error: 'Dynamic web provisioning is disabled. Use server-side CLI bootstrap.' },
                 { status: 403 }
             );
+        }
+        if (mode !== 'resolve') {
+            return errorResponse('Unsupported mode', 400);
         }
 
         // Provisioning is disabled; resolve answers with the primary instance.

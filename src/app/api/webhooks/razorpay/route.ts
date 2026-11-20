@@ -6,8 +6,18 @@ function statusForError(error?: string): number {
     const message = (error || "").toLowerCase();
     if (message.includes("secret is not configured")) return 503;
     if (message.includes("signature")) return 401;
-    if (message.includes("amount does not match")) return 409;
-    return 400;
+    // Permanent validation failures: retrying cannot change the outcome.
+    if (
+        message.includes("amount does not match") ||
+        message.includes("expired") ||
+        message.includes("did not resolve") ||
+        message.includes("not found for the tenant") ||
+        message.includes("no line items") ||
+        message.includes("currency")
+    ) return 409;
+    // H-13/SW-19: settlement, invoice and dedupe-marker failures are transient —
+    // a 4xx here stops Razorpay redelivering and loses the captured payment.
+    return 503;
 }
 
 export async function POST(req: Request) {

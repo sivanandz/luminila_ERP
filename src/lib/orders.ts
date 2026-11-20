@@ -15,15 +15,16 @@ import type {
     SalesOrderItem as SalesOrderItemRow,
 } from '@/types/database';
 import { createInvoice, getStoreSettings } from '@/lib/invoice';
-import { calculateGST, getStateCode, GST_RATES } from '@/lib/gst';
+import { calculateGST, getStateCode, getGSTRateForHSN } from '@/lib/gst';
 import { getNextSequenceNumber, createWithUniqueRetry } from '@/lib/sequence-generator';
-import { restoreChannelStockForReference, applyChannelStock, toStockDb } from '@/lib/channel-stock';
-import { splitInclusiveLine, toPaise, toRupees } from '@/lib/invoice-math';
+import { restoreChannelStockForReference, applyChannelStock, toStockDb, type StockRestoreResult } from '@/lib/channel-stock';
+import { allocateDiscountPaise, splitInclusiveLine, toPaise, toRupees } from '@/lib/invoice-math';
 import {
     aggregatesWereCounted,
     applyPurchaseReversal,
 } from '@/lib/channel-orders';
 import { adjustPoints, calculatePointsToEarn } from '@/lib/loyalty';
+import { dayKey } from '@/lib/analytics-v2/range';
 
 export type OrderStatus = 'draft' | 'sent' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled' | 'invoiced';
 export type OrderType = 'estimate' | 'sales_order';
@@ -97,7 +98,7 @@ interface SalesOrderItemRecord {
     product?: string;
     variant?: string;
     expand?: {
-        product?: { name?: string; hsn_code?: string; gst_rate?: number };
+        product?: { name?: string; hsn_code?: string; gst_rate?: number; gst_exempt?: boolean };
     };
 }
 
@@ -299,6 +300,68 @@ export async function createOrder(data: OrderInput) {
     }
 }
 
+/** Stable 15-char id for an idempotency claim on an order's stock side effects. */
+function stockClaimId(orderId: string, action: 'deduct' | 'restore'): string {
+    const hash = (input: string, seed: number) => {
+        let value = seed >>> 0;
+        for (let index = 0; index < input.length; index += 1) {
+            value ^= input.charCodeAt(index);
+            value = Math.imul(value, 16777619) >>> 0;
+        }
+        return value >>> 0;
+    };
+    const key = `${action}:${orderId}`;
+    const first = hash(key, 2166136261).toString(36);
+    const second = hash(key, 3339675911).toString(36);
+    return `stk${`${first}${second}`.padStart(12, '0').slice(0, 12)}`;
+}
+
+/** PocketBase reports a client-supplied id clash as a 400 (same rule as COD claims). */
+function isDuplicateIdError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) return false;
+    const candidate = error as {
+        status?: number;
+        message?: string;
+        data?: { data?: Record<string, { code?: string }> };
+    };
+    if (candidate.status !== 400) return false;
+    const idError = candidate.data?.data?.id?.code;
+    if (idError === 'validation_not_unique' || idError === 'validation_invalid_id') return true;
+    return typeof candidate.message === 'string' && /already (in use|exists)/i.test(candidate.message);
+}
+
+/**
+ * Atomically claim one stock side effect per order (O-09). The deterministic
+ * id makes two concurrent confirm/convert (or cancel) calls contend on the same
+ * row: exactly one creates it; the loser sees a duplicate-id conflict and skips
+ * the write. A real fault is rethrown — a stock write is never skipped on a
+ * transient error (fail closed).
+ */
+async function claimStockAction(orderId: string, action: 'deduct' | 'restore', tenantEmail: string): Promise<boolean> {
+    try {
+        await pb.collection('activity_logs').create({
+            id: stockClaimId(orderId, action),
+            account_email: tenantEmail,
+            entity_type: 'order_stock_claim',
+            entity_id: orderId,
+            action,
+            description: `Idempotency claim: stock ${action} for order ${orderId}`,
+            metadata: { orderId, action },
+        });
+        return true;
+    } catch (err) {
+        if (isDuplicateIdError(err)) return false;
+        throw err;
+    }
+}
+
+/** Release a claim so a retry can run after a failed stock write. */
+async function releaseStockClaim(orderId: string, action: 'deduct' | 'restore'): Promise<void> {
+    await pb.collection('activity_logs').delete(stockClaimId(orderId, action)).catch((err) =>
+        console.error(`[orders] Could not release ${action} stock claim for ${orderId}:`, err)
+    );
+}
+
 /**
  * Deduct stock for an order that has just become a confirmed sales order.
  * Reads its persisted lines so estimates converted later take the same path as
@@ -317,13 +380,19 @@ async function deductStockForConfirmedOrder(orderId: string, orderNumber: string
             name: item.description,
         }));
     if (lines.length === 0) return;
-    await applyChannelStock(toStockDb(pb), lines, {
-        accountEmail: tenantEmail,
-        channel: 'pos',
-        referenceId: orderId,
-        notes: `B2B Sales Order ${orderNumber}`,
-        oversell: 'reject',
-    });
+    if (!(await claimStockAction(orderId, 'deduct', tenantEmail))) return; // already deducted (O-09)
+    try {
+        await applyChannelStock(toStockDb(pb), lines, {
+            accountEmail: tenantEmail,
+            channel: 'pos',
+            referenceId: orderId,
+            notes: `B2B Sales Order ${orderNumber}`,
+            oversell: 'reject',
+        });
+    } catch (err) {
+        await releaseStockClaim(orderId, 'deduct');
+        throw err;
+    }
 }
 
 /**
@@ -517,17 +586,36 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
         ).trim().toLowerCase();
         const pricesIncludeGst = orderSource === 'storefront';
 
+        // Storefront coupons live only on the order header (no per-line
+        // discount_amount). Allocate that discount across the lines before tax
+        // is back-computed, else the invoice overstates taxable value, GST and
+        // the grand total on every couponed web order (C-05).
+        const headerDiscountShares = allocateDiscountPaise(
+            orderItems.map((item) => toPaise((item.unit_price || 0) * (item.quantity || 1))),
+            pricesIncludeGst ? toPaise(order.discount_total || 0) : 0
+        );
+
         const invoiceItems = orderItems.map((item, idx: number) => {
             // Taxable value is net of the line discount (sales_order_items stores
             // discount_amount alongside a post-discount total); GST applies to
             // the post-discount base so taxable + tax == line total.
             const gross = (item.unit_price || 0) * (item.quantity || 1);
-            const taxable = Math.max(0, gross - (item.discount_amount || 0));
+            const taxable = Math.max(0, gross - (item.discount_amount || 0) - toRupees(headerDiscountShares[idx]));
             // Nullish, not ||: an explicitly exempt line stays at 0%, while a
             // missing rate falls back to the product rate instead of silently
             // producing a 0% GST invoice.
             const product = item.expand?.product;
-            const configuredRate = item.tax_rate ?? product?.gst_rate ?? GST_RATES.JEWELRY;
+            // Zero is "not configured", not a rate (C-01 / migration 1793003401):
+            // stored tax_rate/gst_rate default to 0 and `??` treated them as
+            // configured, leaving the HSN fallback unreachable — unconfigured
+            // products billed 0% GST on this path while POS billed correctly.
+            const configuredRate = product?.gst_exempt
+                ? 0
+                : item.tax_rate && item.tax_rate > 0
+                  ? item.tax_rate
+                  : product?.gst_rate && product.gst_rate > 0
+                    ? product.gst_rate
+                    : getGSTRateForHSN(product?.hsn_code || '');
             const gstRate = isGstRegistered ? configuredRate : 0;
 
             if (pricesIncludeGst) {
@@ -598,7 +686,11 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
         const grandTotal = subtotal + totalTax + shippingCharges;
 
         const invoice = await createInvoice({
-            invoice_date: new Date().toISOString().split('T')[0],
+            // P-11: the invoice date is the business-local calendar day, not the
+            // UTC day — GSTR-1 files by this date (H-22 local-day windows), and
+            // toISOString() back-dated every invoice raised between 00:00 and
+            // 05:29 IST into the previous month (or financial year).
+            invoice_date: dayKey(new Date()),
             invoice_type: 'regular',
             order_id: orderId,
             customer_id: order.customer || '',
@@ -616,7 +708,10 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
             place_of_supply: buyerStateCode,
             subtotal: subtotal,
             tax: totalTax,
-            discount: order.discount_total || 0,
+            // Header discount is already netted into the lines (per-line
+            // discount_amount on B2B, allocated coupon on storefront), so
+            // repeating it here makes the printed total wrong (O-15).
+            discount: 0,
             total: grandTotal,
             taxable_value: subtotal,
             cgst_amount: invoiceItems.reduce((acc, it) => acc + it.cgst_amount, 0),
@@ -624,7 +719,7 @@ export async function generateInvoiceFromOrder(orderId: string, db: typeof pb = 
             igst_amount: invoiceItems.reduce((acc, it) => acc + it.igst_amount, 0),
             cess_amount: 0,
             total_tax: totalTax,
-            discount_amount: order.discount_total || 0,
+            discount_amount: 0,
             shipping_charges: order.shipping_charges || 0,
             grand_total: grandTotal,
             amount_in_words: '',
@@ -886,13 +981,19 @@ export async function cancelSalesOrder(
     }
 
     if (order.status === 'invoiced') {
-        const activeShipments = await pb
-            .collection('shipments')
-            .getFullList<{ id: string; shipping_status?: string }>({
-                filter: pb.filter('order_id = {:order}', { order: orderId }),
-                requestKey: null,
-            })
-            .catch(() => []);
+        // H-18: a failed shipment read must not read as "nothing dispatched" —
+        // that let a dispatched order be cancelled. Only not-found degrades.
+        let activeShipments: { id: string; shipping_status?: string }[] = [];
+        try {
+            activeShipments = await pb
+                .collection('shipments')
+                .getFullList<{ id: string; shipping_status?: string }>({
+                    filter: pb.filter('order_id = {:order}', { order: orderId }),
+                    requestKey: null,
+                });
+        } catch (err) {
+            if (!isNotFoundError(err)) throw err;
+        }
         const dispatched = activeShipments.find(
             (s) => s.shipping_status === 'in_transit' || s.shipping_status === 'delivered'
         );
@@ -911,12 +1012,38 @@ export async function cancelSalesOrder(
         );
     }
 
-    const restore = await restoreChannelStockForReference(toStockDb(pb), {
-        referenceId: orderId,
-        // The order's own owner is the only tenant whose variants may be restored.
-        accountEmail: order.account_email || tenant,
-        notes: options.reason ? `Cancelled: ${options.reason}` : undefined,
-    });
+    // Two concurrent cancels both read a non-cancelled status; the atomic claim
+    // lets exactly one restore stock (O-09).
+    const restoreTenant = order.account_email || tenant || '';
+    if (!(await claimStockAction(orderId, 'restore', restoreTenant))) {
+        // The claim holder may have finished cancelling since this invocation
+        // read the order — re-read before deciding (the local `order.status`
+        // was narrowed non-cancellable by the guards above).
+        const fresh = await pb.collection('sales_orders').getOne<{ status?: string }>(orderId);
+        if (String(fresh.status || '') === 'cancelled') {
+            return { success: true, orderId, restored: 0, alreadyRestored: true, alreadyCancelled: true };
+        }
+        // B2: the restore claim is held but the order never reached
+        // `cancelled` — a previous attempt restored stock and then failed
+        // partway. Reporting success here left a live order the UI believed
+        // was cancelled, its invoice and payment links still open. Surface
+        // it; the claim is never released automatically.
+        throw new Error(
+            `A previous cancellation attempt for order #${order.order_number || orderId} restored its stock but did not finish cancelling. Resolve the stuck attempt before retrying.`
+        );
+    }
+    let restore: StockRestoreResult;
+    try {
+        restore = await restoreChannelStockForReference(toStockDb(pb), {
+            referenceId: orderId,
+            // The order's own owner is the only tenant whose variants may be restored.
+            accountEmail: order.account_email || tenant,
+            notes: options.reason ? `Cancelled: ${options.reason}` : undefined,
+        });
+    } catch (err) {
+        await releaseStockClaim(orderId, 'restore');
+        throw err;
+    }
 
     // CO-15 residual: reverse lifetime counters and loyalty points when the
     // order actually counted them. The marker is written by the counting site
@@ -973,19 +1100,21 @@ export async function cancelSalesOrder(
         }
     }
 
-    // Void any linked non-cancelled invoices and packing sessions when pre-dispatch cancelling
-    if (order.status === 'invoiced') {
-        const linkedInvoices = await pb
-            .collection('invoices')
-            .getFullList<{ id: string; status?: string }>({
-                filter: `order="${sanitizeFilter(orderId)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
-                requestKey: null,
-            })
-            .catch(() => []);
-        for (const inv of linkedInvoices) {
-            if (inv.status !== 'cancelled') {
-                await pb.collection('invoices').update(inv.id, { status: 'cancelled' }).catch(() => {});
-            }
+    // Void any linked non-cancelled invoices and packing sessions when
+    // pre-dispatch cancelling. H-19: the lookup, not the order's status field,
+    // decides — generateInvoiceFromOrder can leave a live invoice on an order
+    // whose invoiced-status update was swallowed, and gating on
+    // `status === 'invoiced'` let that invoice survive cancellation.
+    const linkedInvoices = await pb
+        .collection('invoices')
+        .getFullList<{ id: string; status?: string }>({
+            filter: `order="${sanitizeFilter(orderId)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
+            requestKey: null,
+        })
+        .catch(() => []);
+    for (const inv of linkedInvoices) {
+        if (inv.status !== 'cancelled') {
+            await pb.collection('invoices').update(inv.id, { status: 'cancelled' }).catch(() => {});
         }
     }
 
@@ -1125,11 +1254,21 @@ export async function splitOrderForBackorder(
     const parentShipping = round2(Math.max(0, Number(order.shipping_charges) || 0));
     const remainGrandTotal = round2(remainSubtotal - remainDiscountTotal + remainTaxTotal + parentShipping);
 
-    let seq = 1;
+    // derive the next suffix from existing children so repeated splits of the
+    // same order never regenerate an already-used -BO number (O-14).
+    const parentNumber = order.order_number || order.id;
+    const siblings = await pb.collection('sales_orders').getFullList<{ order_number?: string }>({
+        filter: `order_number ~ "${sanitizeFilter(parentNumber)}-BO"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
+        fields: 'order_number',
+    });
+    const nextSeq = siblings.reduce((max, s) => {
+        const match = String(s.order_number || '').match(/-BO(\d+)$/);
+        return match ? Math.max(max, Number(match[1])) : max;
+    }, 0) + 1;
     let allocatedBoNumber = '';
     const backorderStatus: OrderStatus = order.status === 'confirmed' ? 'confirmed' : 'draft';
     const childOrder = await createWithUniqueRetry(
-        () => Promise.resolve(`${order.order_number || order.id}-BO${seq++}`),
+        () => Promise.resolve(`${parentNumber}-BO${nextSeq}`),
         async (allocated) => {
             allocatedBoNumber = allocated;
             return pb.collection('sales_orders').create<SalesOrderRecord>({
@@ -1180,7 +1319,6 @@ export async function splitOrderForBackorder(
                 .getFullList<{ id: string; variant?: string; quantity: number; source?: string; notes?: string }>({
                     filter: `reference_id="${sanitizeFilter(orderId)}"${tenant ? ` && account_email="${sanitizeFilter(tenant)}"` : ''}`,
                 })
-                .catch(() => [])
             : [];
 
         for (const p of childLines) {
@@ -1205,11 +1343,11 @@ export async function splitOrderForBackorder(
                             await pb.collection('stock_movements').update(mv.id, {
                                 reference_id: childOrder.id,
                                 notes: `Reassigned to backorder ${allocatedBoNumber}`,
-                            }).catch(() => {});
+                            });
                         } else {
                             await pb.collection('stock_movements').update(mv.id, {
                                 quantity: remainSigned,
-                            }).catch(() => {});
+                            });
                             await pb.collection('stock_movements').create({
                                 variant: p.row.variant,
                                 movement_type: 'sale',
@@ -1218,7 +1356,7 @@ export async function splitOrderForBackorder(
                                 source: mv.source || 'pos',
                                 account_email: tenant || order.account_email || '',
                                 notes: `Split from order ${order.order_number || orderId} to backorder ${allocatedBoNumber}`,
-                            }).catch(() => {});
+                            });
                         }
                     }
                 }

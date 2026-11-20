@@ -3,7 +3,7 @@
  * CRUD operations, search, purchase history using PocketBase
  */
 
-import { accountScopeEmail, pb, sanitizeFilter } from './pocketbase';
+import { accountScopeEmail, canActOnTenant, pb, sanitizeFilter } from './pocketbase';
 import { adjustPoints } from './loyalty';
 
 /** `&& account_email = "…"` for tenant-scoped reads under a superuser client (CRM-01). */
@@ -123,8 +123,8 @@ export async function getCustomers(filters?: {
 export async function getCustomer(id: string): Promise<Customer | null> {
     try {
         const record = await pb.collection('customers').getOne<Customer>(id);
-        const tenant = accountScopeEmail();
-        if (tenant && record.account_email && record.account_email !== tenant) return null;
+        // T-11: fail closed on unowned rows and on a missing session.
+        if (!canActOnTenant(record.account_email)) return null;
         return record;
     } catch (error) {
         console.error('Error fetching customer:', error);
@@ -183,8 +183,8 @@ async function assertCustomerOwnership(id: string): Promise<void> {
     const record = await pb.collection('customers').getOne<Customer>(id, {
         fields: 'id,account_email',
     });
-    const tenant = accountScopeEmail();
-    if (tenant && record.account_email && record.account_email !== tenant) {
+    // T-11: canActOnTenant fails closed for empty owners / no scope.
+    if (!canActOnTenant(record.account_email)) {
         throw new Error('Customer not found');
     }
 }
@@ -213,22 +213,35 @@ export async function updateCustomer(id: string, updates: Partial<Customer>): Pr
     }
 }
 
+/** True only when a PocketBase read failed because nothing matched. */
+function isNotFoundError(err: unknown): boolean {
+    return (err as { status?: number })?.status === 404;
+}
+
 export async function deleteCustomer(id: string): Promise<void> {
     await assertCustomerOwnership(id);
     const safeId = sanitizeFilter(id);
-    const [sales, orders, invoices] = await Promise.all([
-        pb.collection('sales').getList(1, 1, { filter: `customer="${safeId}"` }).catch(() => null),
-        pb.collection('sales_orders').getList(1, 1, { filter: `customer="${safeId}"` }).catch(() => null),
-        pb.collection('invoices').getList(1, 1, { filter: `customer="${safeId}"` }).catch(() => null),
+    // H-43: a failed history read must not read as "no history" — that deleted
+    // a customer with live invoices/orders and reported success. Only a
+    // not-found may degrade to an empty count.
+    const countHistory = async (collection: string): Promise<number> => {
+        try {
+            const page = await pb.collection(collection).getList(1, 1, { filter: `customer="${safeId}"` });
+            return page.totalItems;
+        } catch (err) {
+            if (isNotFoundError(err)) return 0;
+            throw err;
+        }
+    };
+    const [salesCount, ordersCount, invoicesCount] = await Promise.all([
+        countHistory('sales'),
+        countHistory('sales_orders'),
+        countHistory('invoices'),
     ]);
-    if ((sales && sales.totalItems > 0) || (orders && orders.totalItems > 0) || (invoices && invoices.totalItems > 0)) {
+    if (salesCount > 0 || ordersCount > 0 || invoicesCount > 0) {
         throw new Error('This customer has purchase or invoice history and cannot be deleted.');
     }
-    try {
-        await pb.collection('customers').delete(id);
-    } catch (error) {
-        throw error;
-    }
+    await pb.collection('customers').delete(id);
 }
 
 // ===========================================
@@ -567,8 +580,7 @@ export async function getCustomerSummary(customerId: string): Promise<{ name: st
     if (!customerId) return null;
     try {
         const customer = await pb.collection('customers').getOne(customerId);
-        const tenant = accountScopeEmail();
-        if (tenant && customer.account_email && customer.account_email !== tenant) return null;
+        if (!canActOnTenant(customer.account_email)) return null;
         return { name: customer.name || 'Customer', phone: (customer as { phone?: string }).phone || '' };
     } catch {
         return null;

@@ -115,30 +115,47 @@ function trustedProxyHops(): number {
 }
 
 /**
+ * T-06: `cf-connecting-ip`, `x-forwarded-for` and `x-real-ip` are only
+ * meaningful when a trusted proxy actually sits in front of the app and sets
+ * them. On a directly-reachable surface (LAN/Tailscale, `next dev`, the Tauri
+ * local server) every one of them is caller-controlled: a client can rotate
+ * `cf-connecting-ip` for a fresh bucket or set a victim's address to exhaust
+ * theirs. Only consult those headers when proxy trust is explicitly enabled.
+ */
+function trustProxyHeaders(): boolean {
+    if ((process.env.TRUST_PROXY_HEADERS || '').trim() === '1') return true;
+    const hops = Number(process.env.TRUSTED_PROXY_HOPS ?? '');
+    return Number.isFinite(hops) && hops > 0;
+}
+
+/**
  * Client IP for limiting.
  *
- * PAY-12: `x-forwarded-for` is a comma list that each proxy appends to, so the
- * left-most entry is whatever the caller sent — trusting it let a client rotate
- * the header and dodge OTP/scrape limits. Use the last entry (the hop our own
- * proxy appended), or `TRUSTED_PROXY_HOPS` entries from the right.
+ * PAY-12 (retained): when proxy trust is on, `x-forwarded-for` is a comma list
+ * that each proxy appends to, so the left-most entry is caller-controlled —
+ * use the right-most hop (or `TRUSTED_PROXY_HOPS` entries from the right).
+ * Otherwise give the request its own bucket rather than trusting a header any
+ * caller can forge.
  */
 export function clientKeyFromHeaders(headers: Headers): string {
-    const cfConnectingIp = headers.get('cf-connecting-ip')?.trim();
-    if (cfConnectingIp) return cfConnectingIp;
+    if (trustProxyHeaders()) {
+        const cfConnectingIp = headers.get('cf-connecting-ip')?.trim();
+        if (cfConnectingIp) return cfConnectingIp;
 
-    const forwarded = headers.get('x-forwarded-for');
-    if (forwarded) {
-        const hops = forwarded.split(',').map((hop) => hop.trim()).filter(Boolean);
-        if (hops.length > 0) {
-            const index = Math.max(0, hops.length - 1 - trustedProxyHops());
-            const client = hops[index];
-            if (client) return client;
+        const forwarded = headers.get('x-forwarded-for');
+        if (forwarded) {
+            const hops = forwarded.split(',').map((hop) => hop.trim()).filter(Boolean);
+            if (hops.length > 0) {
+                const index = Math.max(0, hops.length - 1 - trustedProxyHops());
+                const client = hops[index];
+                if (client) return client;
+            }
         }
+        const direct = headers.get('x-real-ip')?.trim();
+        if (direct) return direct;
     }
-    const direct = headers.get('x-real-ip')?.trim();
-    if (direct) return direct;
-    // PAY-12: no forwarding header at all — give the request its own bucket
-    // instead of a shared "unknown" that one caller can exhaust for everyone.
+    // No trusted proxy (or no usable header): a separate bucket per request,
+    // never a caller-supplied key and never a shared "unknown" bucket.
     return `direct:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
 }
 

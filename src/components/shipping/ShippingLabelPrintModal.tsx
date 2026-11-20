@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Printer } from "lucide-react";
 import { CourierCarrier } from "@/lib/logistics-engine";
 import { escapeHtml } from "@/lib/utils";
+import { dayKey } from "@/lib/analytics-v2/range";
 import DOMPurify from "dompurify";
 
 export interface ShippingLabelData {
@@ -297,7 +298,7 @@ export function ShippingLabelPrintModal({
                             </div>
                             <div style={{ textAlign: "right" }}>
                                 <div>Weight: <strong>{labelData.weightGrams}g</strong></div>
-                                <div>Date: <strong>{labelData.orderDate || new Date().toISOString().slice(0, 10)}</strong></div>
+                                <div>Date: <strong>{labelData.orderDate || dayKey(new Date())}</strong></div>
                             </div>
                         </div>
 

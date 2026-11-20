@@ -451,6 +451,53 @@ async function assertVariantOwned(variantId: string | undefined): Promise<void> 
     }
 }
 
+/** Stable 15-char id for a credit-note approval claim (S-13). */
+function creditNoteClaimId(noteId: string): string {
+    let hash = 2166136261 >>> 0;
+    for (let index = 0; index < noteId.length; index += 1) {
+        hash ^= noteId.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `cna${hash.toString(36).padStart(12, '0').slice(0, 12)}`;
+}
+
+/** PocketBase reports a client-supplied id clash as a 400 validation_not_unique. */
+function isDuplicateIdError(error: unknown): boolean {
+    const candidate = error as { status?: number; data?: { data?: Record<string, { code?: string }> } };
+    return candidate?.status === 400
+        && candidate?.data?.data?.id?.code === 'validation_not_unique';
+}
+
+/**
+ * S-13: atomically claim the right to run this note's inventory side effects.
+ * The deterministic-id create is PocketBase-atomic, so two concurrent approvals
+ * contend on one row — exactly one restocks. The claim is a lease, released
+ * when the attempt fails, so the retry can run.
+ */
+async function claimCreditNoteApproval(noteId: string, tenantEmail: string): Promise<boolean> {
+    try {
+        await pb.collection('activity_logs').create({
+            id: creditNoteClaimId(noteId),
+            account_email: tenantEmail,
+            entity_type: 'credit_note_approval_claim',
+            entity_id: noteId,
+            action: 'approve',
+            description: `Idempotency claim: approval side effects for credit note ${noteId}`,
+        });
+        return true;
+    } catch (err) {
+        if (isDuplicateIdError(err)) return false;
+        throw err;
+    }
+}
+
+/** Release the approval lease so a failed attempt can be retried (S-13 / H-06). */
+async function releaseCreditNoteApprovalClaim(noteId: string): Promise<void> {
+    await pb.collection('activity_logs').delete(creditNoteClaimId(noteId)).catch((err) =>
+        console.error(`[returns] Could not release the approval claim for ${noteId}:`, err)
+    );
+}
+
 export async function approveCreditNote(id: string, options?: ApproveCreditNoteOptions): Promise<void> {
     const cn = await requireOwnedCreditNote<{
         status?: string;
@@ -472,13 +519,62 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
         throw new Error(`Credit note ${cn.credit_note_number || id} is cancelled and cannot be approved`);
     }
 
-    // Claim the status transition BEFORE running inventory side effects. PocketBase
-    // has no conditional update, so check-then-act cannot be made fully atomic from
-    // the client; claiming first shrinks the concurrent-approval race window from
-    // the whole multi-request inventory branch down to the read-then-claim pair —
-    // a second terminal that reads after this claim sees 'approved' and skips the
-    // branch instead of double-restocking or duplicating stock_discrepancies.
+    // S-13: atomically claim the approval's inventory side effects. Two
+    // concurrent approvals contend on one deterministic-id row — exactly one
+    // restocks. The claim is released on failure so the retry can run (H-06).
+    const claimTenant = String(cn.account_email || '').trim().toLowerCase() || accountScopeEmail();
+    if (!(await claimCreditNoteApproval(id, claimTenant))) {
+        console.warn(`[approveCreditNote] ${id} is being approved elsewhere; skipping side effects`);
+        return;
+    }
+
+    // The status transition itself stays a plain write (no compare-and-set in
+    // PocketBase); the claim row above is what makes the side effects single-run.
     await pb.collection('credit_notes').update(id, { status: 'approved' });
+
+    // H-06: track what THIS attempt applies so a mid-loop failure can be undone
+    // before the note returns to pending; otherwise a retry restocks the earlier
+    // lines a second time.
+    type AppliedEffect =
+        | { kind: 'stock'; variant: string; qty: number }
+        | { kind: 'row'; collection: 'stock_movements' | 'stock_discrepancies'; id: string };
+    const applied: AppliedEffect[] = [];
+    const originalNotes = cn.notes;
+    let qcResult: ReturnType<typeof executeInwardQcInspection> | null = null;
+
+    // H-04: a bundle sale deducted its COMPONENT variants, so a resellable
+    // return must restock those components, not the bundle's own variant.
+    const restockTargetsFor = async (
+        variantId: string,
+        quantity: number
+    ): Promise<Array<{ variantId: string; quantity: number }>> => {
+        const variant = await pb.collection('product_variants')
+            .getOne<{ product?: string }>(variantId).catch(() => null);
+        const product = variant?.product
+            ? await pb.collection('products').getOne<{
+                  is_bundle?: boolean;
+                  bundle_items?: Array<{ variant_id?: string; product_id?: string; quantity?: number }>;
+              }>(variant.product).catch(() => null)
+            : null;
+        if (product?.is_bundle && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
+            const targets: Array<{ variantId: string; quantity: number }> = [];
+            for (const comp of product.bundle_items) {
+                let targetId = comp.variant_id;
+                if (!targetId && comp.product_id) {
+                    const variants = await pb.collection('product_variants').getFullList<{ id: string }>({
+                        filter: `product="${sanitizeFilter(comp.product_id)}"`,
+                        fields: 'id',
+                    }).catch(() => []);
+                    targetId = variants[0]?.id;
+                }
+                if (targetId) {
+                    targets.push({ variantId: targetId, quantity: quantity * (Number(comp.quantity) || 1) });
+                }
+            }
+            return targets;
+        }
+        return [{ variantId, quantity }];
+    };
 
     try {
         const noteOwner = String(cn.account_email || '').trim().toLowerCase();
@@ -497,7 +593,7 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                     ? 'size_fit_issue'
                     : 'customer_remorse';
 
-        const qcResult = qcGrade
+        qcResult = qcGrade
             ? executeInwardQcInspection({
                 returnNumber: cn.credit_note_number || id,
                 originalInvoiceNumber: cn.original_invoice || '',
@@ -553,21 +649,24 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                 await assertVariantOwned(item.variant);
                 if (routeToQuarantine) {
                     // 1. Quarantined / Defective goods: DO NOT restore to sellable inventory.
-                    // Log quarantine movement and create stock_discrepancies record
                     if (item.variant) {
-                        await pb.collection('stock_movements').create({
+                        const movement = await pb.collection('stock_movements').create({
                             variant: item.variant,
                             movement_type: 'quarantine',
-                            quantity: item.quantity,
+                            // S-11: the sale already removed the sellable unit; a
+                            // positive qty would add it back to the ledger balance
+                            // while sellable stock stays deducted. Zero mirrors the
+                            // write-off convention in discrepancies.ts.
+                            quantity: 0,
                             reference_id: id,
                             source: 'customer_return_quarantine',
                             notes: `Defective customer return held in quarantine (Return #${cn.credit_note_number || id})`,
                             account_email: accountScopeEmail() || getCurrentTenantEmail(),
-                        }).catch((err) => console.warn('Failed to log quarantine movement for return:', err));
+                        });
+                        applied.push({ kind: 'row', collection: 'stock_movements', id: movement.id });
                     }
 
-                    // Register discrepancy in quarantine ledger
-                    await pb.collection('stock_discrepancies').create({
+                    const discrepancy = await pb.collection('stock_discrepancies').create({
                         product: '',
                         variant: item.variant || '',
                         sku: item.description,
@@ -585,47 +684,69 @@ export async function approveCreditNote(id: string, options?: ApproveCreditNoteO
                         flagged_by: options?.flaggedBy || 'Staff',
                         account_email: accountScopeEmail() || getCurrentTenantEmail(),
                     });
+                    applied.push({ kind: 'row', collection: 'stock_discrepancies', id: discrepancy.id });
                 } else {
-                    // 2. Resellable condition: Restore stock to variant — only
-                    // if the original document actually deducted it.
-                    if (item.variant) {
-                        const deducted = await wasStockDeducted(item.variant, cn as {
+                    // 2. Resellable: restore the variants the sale actually
+                    // deducted (components for a bundle) and only when the
+                    // original document deducted them (H-04).
+                    for (const target of await restockTargetsFor(item.variant, item.quantity)) {
+                        await assertVariantOwned(target.variantId);
+                        const deducted = await wasStockDeducted(target.variantId, cn as {
                             original_sale?: string;
                             original_invoice?: string;
                         });
                         if (!deducted) {
                             console.warn(
-                                `[approveCreditNote] Variant ${item.variant} was never deducted by ` +
+                                `[approveCreditNote] Variant ${target.variantId} was never deducted by ` +
                                 `${cn.original_sale || cn.original_invoice || 'the original document'}; ` +
                                 `skipping restock to avoid minting stock.`
                             );
-                        } else {
-                            // A failed restock must abort the approval: the old
-                            // warn-and-continue left the note approved while the
-                            // items never returned to inventory (RET-7).
-                            await pb.collection('product_variants').update(item.variant, {
-                                'stock_level+': item.quantity
-                            });
-
-                            await pb.collection('stock_movements').create({
-                                variant: item.variant,
-                                movement_type: 'return',
-                                quantity: item.quantity,
-                                reference_id: id,
-                                source: 'credit_note',
-                                notes: `Restock from Return #${cn.credit_note_number || id}`,
-                                account_email: accountScopeEmail() || getCurrentTenantEmail(),
-                            }).catch((err) => console.warn('Failed to log stock movement for return:', err));
+                            continue;
                         }
+                        await pb.collection('product_variants').update(target.variantId, {
+                            'stock_level+': target.quantity
+                        });
+                        applied.push({ kind: 'stock', variant: target.variantId, qty: target.quantity });
+
+                        const movement = await pb.collection('stock_movements').create({
+                            variant: target.variantId,
+                            movement_type: 'return',
+                            quantity: target.quantity,
+                            reference_id: id,
+                            source: 'credit_note',
+                            notes: `Restock from Return #${cn.credit_note_number || id}`,
+                            account_email: accountScopeEmail() || getCurrentTenantEmail(),
+                        });
+                        applied.push({ kind: 'row', collection: 'stock_movements', id: movement.id });
                     }
                 }
             }
         }
     } catch (itemErr) {
         console.error('Error handling inventory for credit note:', itemErr);
-        // Inventory side effects did not complete. Leaving the note 'approved'
-        // let the caller report success and blocked retries through the
-        // idempotency guard, so hand it back as 'pending' (RET-7).
+        // H-06: undo ONLY what this attempt applied, in reverse. A retry then
+        // starts from a clean state instead of restocking earlier lines twice.
+        for (const effect of applied.reverse()) {
+            try {
+                if (effect.kind === 'stock') {
+                    await pb.collection('product_variants').update(effect.variant, {
+                        'stock_level-': effect.qty
+                    });
+                } else {
+                    await pb.collection(effect.collection).delete(effect.id);
+                }
+            } catch (compensationErr) {
+                console.error('Could not compensate credit-note inventory effect:', compensationErr);
+            }
+        }
+        if (qcResult && originalNotes !== undefined) {
+            await pb.collection('credit_notes').update(id, { notes: originalNotes }).catch((err) =>
+                console.error('Could not restore credit note notes after inventory failure:', err)
+            );
+        }
+        // S-13: release the approval lease so the retry can re-run the side
+        // effects after its compensation cleaned them up.
+        await releaseCreditNoteApprovalClaim(id);
         await pb.collection('credit_notes').update(id, { status: 'pending' }).catch((revertErr) =>
             console.error('Could not revert credit note to pending after inventory failure:', revertErr)
         );
@@ -1350,11 +1471,14 @@ export async function processExchange(
                 // The credit note covers the rest of the replacement, so the
                 // exchange invoice is fully settled once the balance is paid;
                 // leaving it "pending" contradicted the payment row (POS-09).
+                // H-15: a swallowed failure here left a PAID receipt against a
+                // pending ₹0 invoice. Throw into the tracked try so rollbackExchange
+                // undoes the payment row and the operator sees the error.
                 await pb.collection('invoices').update(exchange.invoiceId, {
                     status: 'paid',
                     is_paid: true,
                     paid_amount: exchange.grandTotal,
-                }).catch((err) => console.warn('Could not mark exchange invoice paid:', err));
+                });
             }
         }
 

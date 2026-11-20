@@ -148,5 +148,17 @@ test('rate resolution prefers explicit, then product, then fallback', () => {
     assert.equal(resolveLineGstRate(18, 3, false, 3), 0);
 });
 
+test('a zero rate means unset and falls through (C-01)', () => {
+    assert.equal(resolveLineGstRate(0, 5, true, 3), 5);
+    assert.equal(resolveLineGstRate(undefined, 0, true, 3), 3);
+    assert.equal(resolveLineGstRate(0, 0, true, 3), 3);
+});
+
+test('an exempt product stays at 0% even with a configured rate', () => {
+    assert.equal(resolveLineGstRate(undefined, 18, true, 3, true), 0);
+    assert.equal(resolveLineGstRate(18, undefined, true, 3, true), 0);
+    assert.equal(resolveLineGstRate(undefined, undefined, true, 3, true), 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
